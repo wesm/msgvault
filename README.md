@@ -1,10 +1,15 @@
-# Msgvault
+# msgvault
 
-Msgvault is an offline Gmail archive tool that exports and stores your email data locally with full-text search capabilities. It's designed to archive years of Gmail from multiple accounts, make it searchable offline, and eventually enable safe deletion of emails from Gmail once archived.
+msgvault is an offline Gmail archive tool that exports and stores your
+email data locally with full-text search capabilities. It's designed
+to archive years of Gmail from multiple accounts, make it searchable
+offline, and eventually enable safe deletion of emails from Gmail once
+archived.
 
 ## Features
 
 - **Full Gmail backup**: Downloads complete messages including raw MIME, attachments, labels, and metadata
+- **Lightning-fast interactive TUI**: Terminal-based interface for exploring your archive, powered by DuckDB
 - **Incremental sync**: Uses Gmail History API for efficient updates after initial sync
 - **Full-text search**: SQLite FTS5-powered search with Gmail-like query syntax
 - **Multi-account support**: Archive multiple Gmail accounts in a single database
@@ -13,7 +18,6 @@ Msgvault is an offline Gmail archive tool that exports and stores your email dat
 - **Resumable sync**: Interrupted syncs can resume from where they left off
 - **Date filtering**: Sync specific time ranges to test or archive historical data
 - **Rate limiting**: Token bucket rate limiting respects Gmail API quotas
-- **Interactive TUI**: Terminal-based interface for exploring your archive
 
 ## Installation
 
@@ -41,7 +45,7 @@ make install
 
 ## Google OAuth Configuration
 
-Msgvault requires OAuth credentials to access the Gmail API. Follow these steps to configure access:
+msgvault requires OAuth credentials to access the Gmail API. Follow these steps to configure access:
 
 ### Step 1: Create a Google Cloud Project
 
@@ -60,7 +64,7 @@ Msgvault requires OAuth credentials to access the Gmail API. Follow these steps 
 1. Go to **APIs & Services > OAuth consent screen**
 2. Choose **External** user type (or Internal if using Google Workspace)
 3. Fill in required fields:
-   - App name: "Msgvault" (or your preferred name)
+   - App name: "msgvault" (or your preferred name)
    - User support email: your email
    - Developer contact email: your email
 4. Click **Save and Continue**
@@ -75,12 +79,12 @@ Msgvault requires OAuth credentials to access the Gmail API. Follow these steps 
 1. Go to **APIs & Services > Credentials**
 2. Click **Create Credentials > OAuth client ID**
 3. Choose **Desktop application**
-4. Name it "Msgvault Desktop Client"
+4. Name it "msgvault Desktop Client"
 5. Click **Create**
 6. Download the JSON file (click the download icon)
 7. Save it as `client_secret.json` in a secure location
 
-### Step 5: Configure Msgvault
+### Step 5: Configure msgvault
 
 Create the config file at `~/.msgvault/config.toml`:
 
@@ -105,7 +109,7 @@ msgvault add-account you@gmail.com
 
 This will:
 1. Open your browser to Google's OAuth consent page
-2. Ask you to sign in and grant access to Msgvault
+2. Ask you to sign in and grant access to msgvault
 3. Store the OAuth tokens locally in `~/.msgvault/tokens/`
 
 ### Headless Server Setup
@@ -153,7 +157,7 @@ msgvault sync-incremental you@gmail.com
 
 ### Searching Messages
 
-Msgvault supports Gmail-like search syntax:
+msgvault supports Gmail-like search syntax:
 
 ```bash
 # Search by sender
@@ -264,7 +268,7 @@ msgvault list-labels
 
 ## Multi-Account Support
 
-Msgvault supports archiving multiple Gmail accounts in a single database:
+msgvault supports archiving multiple Gmail accounts in a single database:
 
 ```bash
 # Add multiple accounts
