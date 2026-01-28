@@ -2958,10 +2958,9 @@ func doExportAttachments(zipFilename, attachmentsDir string, attachments []query
 	if err != nil {
 		return exportResultMsg{err: fmt.Errorf("failed to create zip file: %w", err)}
 	}
-	defer zipFile.Close()
+	// Don't defer Close - we need to handle errors and avoid double-close
 
 	zipWriter := zip.NewWriter(zipFile)
-	defer zipWriter.Close()
 
 	var exportedCount int
 	var totalSize int64
@@ -3018,7 +3017,11 @@ func doExportAttachments(zipFilename, attachmentsDir string, attachments []query
 		totalSize += n
 	}
 
-	zipWriter.Close()
+	// Close zip writer first - check for errors as this finalizes the archive
+	if err := zipWriter.Close(); err != nil {
+		errors = append(errors, fmt.Sprintf("zip finalization error: %v", err))
+		writeError = true
+	}
 	zipFile.Close()
 
 	// Build result message
