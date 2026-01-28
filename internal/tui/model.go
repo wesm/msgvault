@@ -3022,7 +3022,10 @@ func doExportAttachments(zipFilename, attachmentsDir string, attachments []query
 		errors = append(errors, fmt.Sprintf("zip finalization error: %v", err))
 		writeError = true
 	}
-	zipFile.Close()
+	if err := zipFile.Close(); err != nil {
+		errors = append(errors, fmt.Sprintf("file close error: %v", err))
+		writeError = true
+	}
 
 	// Build result message
 	if exportedCount == 0 || writeError {
