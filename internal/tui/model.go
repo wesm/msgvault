@@ -53,13 +53,13 @@ const (
 type selectionState struct {
 	// Selected aggregate keys (sender emails, domains, labels, etc.)
 	// Keys are scoped to the current ViewType to prevent collisions.
-	AggregateKeys map[string]bool
+	aggregateKeys map[string]bool
 
-	// ViewType that the AggregateKeys belong to
-	AggregateViewType query.ViewType
+	// ViewType that the aggregateKeys belong to
+	aggregateViewType query.ViewType
 
 	// Selected message IDs
-	MessageIDs map[int64]bool
+	messageIDs map[int64]bool
 }
 
 // Model is the main TUI model following the Elm architecture.
@@ -172,9 +172,9 @@ func New(engine query.Engine, opts Options) Model {
 		loading:       true,
 		spinnerActive: true,
 		selection: selectionState{
-			AggregateKeys:     make(map[string]bool),
-			AggregateViewType: query.ViewSenders, // Match initial viewType
-			MessageIDs:        make(map[int64]bool),
+			aggregateKeys:     make(map[string]bool),
+			aggregateViewType: query.ViewSenders, // Match initial viewType
+			messageIDs:        make(map[int64]bool),
 		},
 		searchInput: ti,
 		searchMode:  searchModeFast,
@@ -955,8 +955,8 @@ func (m *Model) updateDetailLineCount() {
 // stageForDeletion prepares messages for deletion via the ActionController.
 func (m Model) stageForDeletion() (tea.Model, tea.Cmd) {
 	manifest, err := m.actions.StageForDeletion(
-		m.selection.AggregateKeys, m.selection.MessageIDs,
-		m.selection.AggregateViewType, m.accountFilter, m.accounts,
+		m.selection.aggregateKeys, m.selection.messageIDs,
+		m.selection.aggregateViewType, m.accountFilter, m.accounts,
 		m.viewType, m.filterKey, m.timeGranularity, m.messages,
 	)
 	if err != nil {
@@ -990,21 +990,21 @@ func (m Model) confirmDeletion() (tea.Model, tea.Cmd) {
 		len(m.pendingManifest.GmailIDs), m.pendingManifest.ID)
 
 	// Clear selection
-	m.selection.AggregateKeys = make(map[string]bool)
-	m.selection.MessageIDs = make(map[int64]bool)
+	m.selection.aggregateKeys = make(map[string]bool)
+	m.selection.messageIDs = make(map[int64]bool)
 	m.pendingManifest = nil
 
 	return m, nil
 }
 
-// HasSelection returns true if any items are selected.
-func (m Model) HasSelection() bool {
-	return len(m.selection.AggregateKeys) > 0 || len(m.selection.MessageIDs) > 0
+// hasSelection returns true if any items are selected.
+func (m Model) hasSelection() bool {
+	return len(m.selection.aggregateKeys) > 0 || len(m.selection.messageIDs) > 0
 }
 
-// SelectionCount returns the number of selected items.
-func (m Model) SelectionCount() int {
-	return len(m.selection.AggregateKeys) + len(m.selection.MessageIDs)
+// selectionCount returns the number of selected items.
+func (m Model) selectionCount() int {
+	return len(m.selection.aggregateKeys) + len(m.selection.messageIDs)
 }
 
 // ensureCursorVisible adjusts scroll offset to keep cursor in view.

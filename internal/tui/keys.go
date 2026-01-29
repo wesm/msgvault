@@ -209,9 +209,9 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadMessages()
 
 	case "d", "D": // Stage for deletion (selection or current row)
-		if !m.HasSelection() && len(m.rows) > 0 && m.cursor < len(m.rows) {
+		if !m.hasSelection() && len(m.rows) > 0 && m.cursor < len(m.rows) {
 			// No selection - select current row first
-			m.selection.AggregateKeys[m.rows[m.cursor].Key] = true
+			m.selection.aggregateKeys[m.rows[m.cursor].Key] = true
 		}
 		return m.stageForDeletion()
 
@@ -270,8 +270,8 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			// Only clear selection on top-level drill-down (sub-agg didn't clear before)
 			if !isSub {
-				m.selection.AggregateKeys = make(map[string]bool)
-				m.selection.MessageIDs = make(map[int64]bool)
+				m.selection.aggregateKeys = make(map[string]bool)
+				m.selection.messageIDs = make(map[int64]bool)
 			}
 
 			// If search query is active, use search with drill filter applied
@@ -294,8 +294,8 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if isSub && m.viewType == m.drillViewType {
 			m.viewType = (m.viewType + 1) % 5
 		}
-		m.selection.AggregateKeys = make(map[string]bool)
-		m.selection.AggregateViewType = m.viewType
+		m.selection.aggregateKeys = make(map[string]bool)
+		m.selection.aggregateViewType = m.viewType
 		m.cursor = 0
 		m.scrollOffset = 0
 		m.loading = true
@@ -315,8 +315,8 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.viewType--
 			}
 		}
-		m.selection.AggregateKeys = make(map[string]bool)
-		m.selection.AggregateViewType = m.viewType
+		m.selection.aggregateKeys = make(map[string]bool)
+		m.selection.aggregateViewType = m.viewType
 		m.cursor = 0
 		m.scrollOffset = 0
 		m.loading = true
@@ -431,10 +431,10 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case " ": // Space to toggle selection
 		if len(m.messages) > 0 && m.cursor < len(m.messages) {
 			id := m.messages[m.cursor].ID
-			if m.selection.MessageIDs[id] {
-				delete(m.selection.MessageIDs, id)
+			if m.selection.messageIDs[id] {
+				delete(m.selection.messageIDs, id)
 			} else {
-				m.selection.MessageIDs[id] = true
+				m.selection.messageIDs[id] = true
 			}
 		}
 
@@ -444,16 +444,16 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			endRow = len(m.messages)
 		}
 		for i := m.scrollOffset; i < endRow; i++ {
-			m.selection.MessageIDs[m.messages[i].ID] = true
+			m.selection.messageIDs[m.messages[i].ID] = true
 		}
 
 	case "x": // Clear selection
 		m.clearAllSelections()
 
 	case "d", "D": // Stage for deletion (selection or current row)
-		if !m.HasSelection() && len(m.messages) > 0 && m.cursor < len(m.messages) {
+		if !m.hasSelection() && len(m.messages) > 0 && m.cursor < len(m.messages) {
 			// No selection - select current row first
-			m.selection.MessageIDs[m.messages[m.cursor].ID] = true
+			m.selection.messageIDs[m.messages[m.cursor].ID] = true
 		}
 		return m.stageForDeletion()
 
@@ -482,8 +482,8 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.rows = nil // Clear stale rows from previous view
 			m.loading = true
 			m.err = nil
-			m.selection.AggregateKeys = make(map[string]bool)
-			m.selection.AggregateViewType = m.viewType
+			m.selection.aggregateKeys = make(map[string]bool)
+			m.selection.aggregateViewType = m.viewType
 			m.aggregateRequestID++
 			return m, m.loadData()
 		}
@@ -525,8 +525,8 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.rows = nil // Clear stale rows from previous view
 			m.loading = true
 			m.err = nil
-			m.selection.AggregateKeys = make(map[string]bool)
-			m.selection.AggregateViewType = m.viewType
+			m.selection.aggregateKeys = make(map[string]bool)
+			m.selection.aggregateViewType = m.viewType
 			m.aggregateRequestID++
 			return m, m.loadData()
 		}
@@ -1055,10 +1055,10 @@ func (m *Model) activateInlineSearch(placeholder string) tea.Cmd {
 func (m *Model) toggleAggregateSelection() {
 	if len(m.rows) > 0 && m.cursor < len(m.rows) {
 		key := m.rows[m.cursor].Key
-		if m.selection.AggregateKeys[key] {
-			delete(m.selection.AggregateKeys, key)
+		if m.selection.aggregateKeys[key] {
+			delete(m.selection.aggregateKeys, key)
 		} else {
-			m.selection.AggregateKeys[key] = true
+			m.selection.aggregateKeys[key] = true
 		}
 	}
 }
@@ -1069,12 +1069,12 @@ func (m *Model) selectVisibleAggregates() {
 		endRow = len(m.rows)
 	}
 	for i := m.scrollOffset; i < endRow; i++ {
-		m.selection.AggregateKeys[m.rows[i].Key] = true
+		m.selection.aggregateKeys[m.rows[i].Key] = true
 	}
 }
 
 func (m *Model) clearAllSelections() {
-	m.selection.AggregateKeys = make(map[string]bool)
-	m.selection.MessageIDs = make(map[int64]bool)
+	m.selection.aggregateKeys = make(map[string]bool)
+	m.selection.messageIDs = make(map[int64]bool)
 }
 

@@ -366,7 +366,7 @@ func makeRow(key string, count int) query.AggregateRow {
 // assertSelected checks that the given key is selected.
 func assertSelected(t *testing.T, m Model, key string) {
 	t.Helper()
-	if !m.selection.AggregateKeys[key] {
+	if !m.selection.aggregateKeys[key] {
 		t.Errorf("expected %q to be selected", key)
 	}
 }
@@ -374,7 +374,7 @@ func assertSelected(t *testing.T, m Model, key string) {
 // assertNotSelected checks that the given key is not selected.
 func assertNotSelected(t *testing.T, m Model, key string) {
 	t.Helper()
-	if m.selection.AggregateKeys[key] {
+	if m.selection.aggregateKeys[key] {
 		t.Errorf("expected %q to not be selected", key)
 	}
 }
@@ -382,7 +382,7 @@ func assertNotSelected(t *testing.T, m Model, key string) {
 // assertSelectionCount checks the number of selected items.
 func assertSelectionCount(t *testing.T, m Model, expected int) {
 	t.Helper()
-	got := len(m.selection.AggregateKeys)
+	got := len(m.selection.aggregateKeys)
 	if got != expected {
 		t.Errorf("expected %d selected items, got %d", expected, got)
 	}
@@ -475,7 +475,7 @@ func TestSelectionClearedOnViewSwitch(t *testing.T) {
 	newModel, _ := model.handleAggregateKeys(key(' '))
 	model = newModel.(Model)
 
-	if len(model.selection.AggregateKeys) != 1 {
+	if len(model.selection.aggregateKeys) != 1 {
 		t.Fatal("expected 1 selected")
 	}
 
@@ -484,13 +484,13 @@ func TestSelectionClearedOnViewSwitch(t *testing.T) {
 	model = newModel.(Model)
 
 	// Selection should be cleared
-	if len(model.selection.AggregateKeys) != 0 {
-		t.Errorf("expected selection cleared on view switch, got %d items", len(model.selection.AggregateKeys))
+	if len(model.selection.aggregateKeys) != 0 {
+		t.Errorf("expected selection cleared on view switch, got %d items", len(model.selection.aggregateKeys))
 	}
 
 	// ViewType should match selection's AggregateViewType
-	if model.selection.AggregateViewType != model.viewType {
-		t.Errorf("expected AggregateViewType %v to match viewType %v", model.selection.AggregateViewType, model.viewType)
+	if model.selection.aggregateViewType != model.viewType {
+		t.Errorf("expected aggregateViewType %v to match viewType %v", model.selection.aggregateViewType, model.viewType)
 	}
 }
 
@@ -517,8 +517,8 @@ func TestSelectionClearedOnShiftTab(t *testing.T) {
 	model = newModel.(Model)
 
 	// Selection should be cleared
-	if len(model.selection.AggregateKeys) != 0 {
-		t.Errorf("expected selection cleared on view switch, got %d items", len(model.selection.AggregateKeys))
+	if len(model.selection.aggregateKeys) != 0 {
+		t.Errorf("expected selection cleared on view switch, got %d items", len(model.selection.aggregateKeys))
 	}
 }
 
@@ -540,7 +540,7 @@ func TestClearSelection(t *testing.T) {
 	newModel, _ := model.handleAggregateKeys(key(' '))
 	model = newModel.(Model)
 
-	if len(model.selection.AggregateKeys) != 1 {
+	if len(model.selection.aggregateKeys) != 1 {
 		t.Fatal("expected 1 selected")
 	}
 
@@ -548,8 +548,8 @@ func TestClearSelection(t *testing.T) {
 	newModel, _ = model.handleAggregateKeys(key('x'))
 	model = newModel.(Model)
 
-	if len(model.selection.AggregateKeys) != 0 {
-		t.Errorf("expected selection cleared, got %d items", len(model.selection.AggregateKeys))
+	if len(model.selection.aggregateKeys) != 0 {
+		t.Errorf("expected selection cleared, got %d items", len(model.selection.aggregateKeys))
 	}
 }
 
@@ -814,36 +814,36 @@ func TestConfirmModalCancel(t *testing.T) {
 func TestSelectionCount(t *testing.T) {
 	model := Model{
 		selection: selectionState{
-			AggregateKeys: map[string]bool{"a": true, "b": true},
-			MessageIDs:    map[int64]bool{1: true, 2: true, 3: true},
+			aggregateKeys: map[string]bool{"a": true, "b": true},
+			messageIDs:    map[int64]bool{1: true, 2: true, 3: true},
 		},
 	}
 
-	if model.SelectionCount() != 5 {
-		t.Errorf("expected SelectionCount() = 5, got %d", model.SelectionCount())
+	if model.selectionCount() != 5 {
+		t.Errorf("expected SelectionCount() = 5, got %d", model.selectionCount())
 	}
 }
 
 func TestHasSelection(t *testing.T) {
 	model := Model{
 		selection: selectionState{
-			AggregateKeys: make(map[string]bool),
-			MessageIDs:    make(map[int64]bool),
+			aggregateKeys: make(map[string]bool),
+			messageIDs:    make(map[int64]bool),
 		},
 	}
 
-	if model.HasSelection() {
+	if model.hasSelection() {
 		t.Error("expected HasSelection() = false for empty selection")
 	}
 
-	model.selection.AggregateKeys["test"] = true
-	if !model.HasSelection() {
+	model.selection.aggregateKeys["test"] = true
+	if !model.hasSelection() {
 		t.Error("expected HasSelection() = true with aggregate selection")
 	}
 
-	model.selection.AggregateKeys = make(map[string]bool)
-	model.selection.MessageIDs[1] = true
-	if !model.HasSelection() {
+	model.selection.aggregateKeys = make(map[string]bool)
+	model.selection.messageIDs[1] = true
+	if !model.hasSelection() {
 		t.Error("expected HasSelection() = true with message selection")
 	}
 }
@@ -4489,7 +4489,7 @@ func TestDKeyAutoSelectsCurrentRow(t *testing.T) {
 	model.accounts = []query.AccountInfo{{ID: 1, Identifier: "test@gmail.com"}}
 
 	// Verify nothing is selected
-	if model.HasSelection() {
+	if model.hasSelection() {
 		t.Error("expected no selection initially")
 	}
 
@@ -4498,7 +4498,7 @@ func TestDKeyAutoSelectsCurrentRow(t *testing.T) {
 	m := newModel.(Model)
 
 	// Should have auto-selected current row
-	if !m.selection.AggregateKeys["bob@example.com"] {
+	if !m.selection.aggregateKeys["bob@example.com"] {
 		t.Error("expected bob@example.com to be auto-selected")
 	}
 
@@ -4529,20 +4529,20 @@ func TestDKeyWithExistingSelection(t *testing.T) {
 	model.accounts = []query.AccountInfo{{ID: 1, Identifier: "test@gmail.com"}}
 
 	// Pre-select alice (not the current row)
-	model.selection.AggregateKeys["alice@example.com"] = true
-	model.selection.AggregateViewType = query.ViewSenders
+	model.selection.aggregateKeys["alice@example.com"] = true
+	model.selection.aggregateViewType = query.ViewSenders
 
 	// Press 'd' - should use existing selection, not auto-select current row
 	newModel, _ := model.handleAggregateKeys(key('d'))
 	m := newModel.(Model)
 
 	// Should still have alice selected
-	if !m.selection.AggregateKeys["alice@example.com"] {
+	if !m.selection.aggregateKeys["alice@example.com"] {
 		t.Error("expected alice@example.com to remain selected")
 	}
 
 	// Should NOT have auto-selected bob
-	if m.selection.AggregateKeys["bob@example.com"] {
+	if m.selection.aggregateKeys["bob@example.com"] {
 		t.Error("expected bob@example.com to NOT be selected")
 	}
 
@@ -4571,7 +4571,7 @@ func TestMessageListDKeyAutoSelectsCurrentMessage(t *testing.T) {
 	model.accounts = []query.AccountInfo{{ID: 1, Identifier: "test@gmail.com"}}
 
 	// Verify nothing is selected
-	if model.HasSelection() {
+	if model.hasSelection() {
 		t.Error("expected no selection initially")
 	}
 
@@ -4580,7 +4580,7 @@ func TestMessageListDKeyAutoSelectsCurrentMessage(t *testing.T) {
 	m := newModel.(Model)
 
 	// Should have auto-selected current message
-	if !m.selection.MessageIDs[1] {
+	if !m.selection.messageIDs[1] {
 		t.Error("expected message ID 1 to be auto-selected")
 	}
 
@@ -4779,13 +4779,13 @@ func TestToggleAggregateSelection(t *testing.T) {
 
 	// Toggle on
 	m.toggleAggregateSelection()
-	if !m.selection.AggregateKeys["alice@example.com"] {
+	if !m.selection.aggregateKeys["alice@example.com"] {
 		t.Error("expected alice to be selected")
 	}
 
 	// Toggle off
 	m.toggleAggregateSelection()
-	if m.selection.AggregateKeys["alice@example.com"] {
+	if m.selection.aggregateKeys["alice@example.com"] {
 		t.Error("expected alice to be deselected")
 	}
 }
@@ -4803,12 +4803,12 @@ func TestSelectVisibleAggregates(t *testing.T) {
 
 	for i := 2; i < 5; i++ {
 		key := fmt.Sprintf("user%d", i)
-		if !m.selection.AggregateKeys[key] {
+		if !m.selection.aggregateKeys[key] {
 			t.Errorf("expected %s to be selected", key)
 		}
 	}
 	// Items outside visible range should not be selected
-	if m.selection.AggregateKeys["user0"] {
+	if m.selection.aggregateKeys["user0"] {
 		t.Error("user0 should not be selected")
 	}
 }
@@ -4822,7 +4822,7 @@ func TestSelectVisibleAggregates_OffsetBeyondRows(t *testing.T) {
 
 	m.selectVisibleAggregates()
 
-	if len(m.selection.AggregateKeys) != 0 {
+	if len(m.selection.aggregateKeys) != 0 {
 		t.Error("expected no selections when scrollOffset > len(rows)")
 	}
 }
@@ -4831,12 +4831,12 @@ func TestClearAllSelections(t *testing.T) {
 	m := NewBuilder().WithRows(
 		query.AggregateRow{Key: "a"},
 	).Build()
-	m.selection.AggregateKeys["a"] = true
-	m.selection.MessageIDs[1] = true
+	m.selection.aggregateKeys["a"] = true
+	m.selection.messageIDs[1] = true
 
 	m.clearAllSelections()
 
-	if len(m.selection.AggregateKeys) != 0 || len(m.selection.MessageIDs) != 0 {
+	if len(m.selection.aggregateKeys) != 0 || len(m.selection.messageIDs) != 0 {
 		t.Error("expected all selections to be cleared")
 	}
 }
@@ -4895,7 +4895,7 @@ func TestSubAggregateDrillDownPreservesSelection(t *testing.T) {
 		{Key: "domain2.com", Count: 40, TotalSize: 200000},
 	}
 	m2.loading = false
-	m2.selection.AggregateKeys["domain2.com"] = true
+	m2.selection.aggregateKeys["domain2.com"] = true
 	m2.cursor = 0
 
 	newModel3, _ := m2.handleAggregateKeys(keyEnter())
@@ -4905,7 +4905,7 @@ func TestSubAggregateDrillDownPreservesSelection(t *testing.T) {
 	}
 
 	// The selection should NOT have been cleared by the sub-aggregate Enter
-	if len(m3.selection.AggregateKeys) == 0 {
+	if len(m3.selection.aggregateKeys) == 0 {
 		t.Error("sub-aggregate Enter should not clear aggregate selection")
 	}
 }
@@ -4920,7 +4920,7 @@ func TestTopLevelDrillDownClearsSelection(t *testing.T) {
 		Build()
 
 	// Select bob, then drill into alice via Enter
-	model.selection.AggregateKeys["bob@example.com"] = true
+	model.selection.aggregateKeys["bob@example.com"] = true
 	model.cursor = 0
 
 	newModel, _ := model.handleAggregateKeys(keyEnter())
@@ -4930,11 +4930,11 @@ func TestTopLevelDrillDownClearsSelection(t *testing.T) {
 	}
 
 	// Selection should be cleared
-	if len(m.selection.AggregateKeys) != 0 {
-		t.Errorf("top-level Enter should clear aggregate selection, got %v", m.selection.AggregateKeys)
+	if len(m.selection.aggregateKeys) != 0 {
+		t.Errorf("top-level Enter should clear aggregate selection, got %v", m.selection.aggregateKeys)
 	}
-	if len(m.selection.MessageIDs) != 0 {
-		t.Errorf("top-level Enter should clear message selection, got %v", m.selection.MessageIDs)
+	if len(m.selection.messageIDs) != 0 {
+		t.Errorf("top-level Enter should clear message selection, got %v", m.selection.messageIDs)
 	}
 }
 

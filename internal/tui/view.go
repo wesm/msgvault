@@ -422,7 +422,7 @@ func (m Model) aggregateTableView() string {
 	for i := m.scrollOffset; i < endRow; i++ {
 		row := m.rows[i]
 		isCursor := i == m.cursor
-		isChecked := m.selection.AggregateKeys[row.Key]
+		isChecked := m.selection.aggregateKeys[row.Key]
 
 		// Selection indicator with cursor pointer
 		var selIndicator string
@@ -557,7 +557,7 @@ func (m Model) messageListView() string {
 	for i := m.scrollOffset; i < endRow; i++ {
 		msg := m.messages[i]
 		isCursor := i == m.cursor
-		isChecked := m.selection.MessageIDs[msg.ID]
+		isChecked := m.selection.messageIDs[msg.ID]
 
 		// Selection indicator with cursor pointer
 		var selIndicator string
@@ -969,7 +969,7 @@ func (m Model) footerView() string {
 	var selStr string
 
 	// Selection count
-	selCount := m.SelectionCount()
+	selCount := m.selectionCount()
 	if selCount > 0 {
 		selStr = fmt.Sprintf(" [%d selected] ", selCount)
 	}
