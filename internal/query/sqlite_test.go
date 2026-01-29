@@ -11,6 +11,42 @@ import (
 	"github.com/wesm/msgvault/internal/search"
 )
 
+// testEnv encapsulates the DB, Engine, and Context setup for tests.
+type testEnv struct {
+	DB     *sql.DB
+	Engine *SQLiteEngine
+	Ctx    context.Context
+	T      *testing.T
+}
+
+// newTestEnv creates a test environment with an in-memory SQLite database and test data.
+func newTestEnv(t *testing.T) *testEnv {
+	t.Helper()
+	db := setupTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	return &testEnv{
+		DB:     db,
+		Engine: NewSQLiteEngine(db),
+		Ctx:    context.Background(),
+		T:      t,
+	}
+}
+
+// EnableFTS creates the FTS5 virtual table and rebuilds it.
+// Skips the test if FTS5 is not available in this SQLite build.
+func (e *testEnv) EnableFTS() {
+	e.T.Helper()
+	_, err := e.DB.Exec(`
+		CREATE VIRTUAL TABLE messages_fts USING fts5(subject, body_text, snippet, content=messages, content_rowid=id);
+		INSERT INTO messages_fts(messages_fts) VALUES('rebuild');
+	`)
+	if err != nil {
+		e.T.Skipf("FTS5 not available in this SQLite build: %v", err)
+	}
+	// Re-create engine to clear cached FTS state
+	e.Engine = NewSQLiteEngine(e.DB)
+}
+
 // setupTestDB creates an in-memory SQLite database with test data.
 func setupTestDB(t *testing.T) *sql.DB {
 	t.Helper()
@@ -176,13 +212,9 @@ func setupTestDB(t *testing.T) *sql.DB {
 }
 
 func TestAggregateBySender(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
+	env := newTestEnv(t)
 
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
-
-	rows, err := engine.AggregateBySender(ctx, DefaultAggregateOptions())
+	rows, err := env.Engine.AggregateBySender(env.Ctx, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateBySender: %v", err)
 	}
@@ -208,13 +240,9 @@ func TestAggregateBySender(t *testing.T) {
 }
 
 func TestAggregateByRecipient(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
+	env := newTestEnv(t)
 
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
-
-	rows, err := engine.AggregateByRecipient(ctx, DefaultAggregateOptions())
+	rows, err := env.Engine.AggregateByRecipient(env.Ctx, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateByRecipient: %v", err)
 	}
@@ -233,13 +261,9 @@ func TestAggregateByRecipient(t *testing.T) {
 }
 
 func TestAggregateByDomain(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
+	env := newTestEnv(t)
 
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
-
-	rows, err := engine.AggregateByDomain(ctx, DefaultAggregateOptions())
+	rows, err := env.Engine.AggregateByDomain(env.Ctx, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateByDomain: %v", err)
 	}
@@ -258,13 +282,9 @@ func TestAggregateByDomain(t *testing.T) {
 }
 
 func TestAggregateByLabel(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
+	env := newTestEnv(t)
 
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
-
-	rows, err := engine.AggregateByLabel(ctx, DefaultAggregateOptions())
+	rows, err := env.Engine.AggregateByLabel(env.Ctx, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateByLabel: %v", err)
 	}
@@ -283,17 +303,13 @@ func TestAggregateByLabel(t *testing.T) {
 }
 
 func TestAggregateByTime(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Test monthly granularity
 	opts := DefaultAggregateOptions()
 	opts.TimeGranularity = TimeMonth
 
-	rows, err := engine.AggregateByTime(ctx, opts)
+	rows, err := env.Engine.AggregateByTime(env.Ctx, opts)
 	if err != nil {
 		t.Fatalf("AggregateByTime: %v", err)
 	}
@@ -320,17 +336,13 @@ func TestAggregateByTime(t *testing.T) {
 }
 
 func TestAggregateWithDateFilter(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	opts := DefaultAggregateOptions()
 	after := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 	opts.After = &after
 
-	rows, err := engine.AggregateBySender(ctx, opts)
+	rows, err := env.Engine.AggregateBySender(env.Ctx, opts)
 	if err != nil {
 		t.Fatalf("AggregateBySender with date filter: %v", err)
 	}
@@ -347,14 +359,10 @@ func TestAggregateWithDateFilter(t *testing.T) {
 }
 
 func TestListMessages(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// List all messages
-	messages, err := engine.ListMessages(ctx, MessageFilter{})
+	messages, err := env.Engine.ListMessages(env.Ctx, MessageFilter{})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -364,7 +372,7 @@ func TestListMessages(t *testing.T) {
 	}
 
 	// Filter by sender
-	messages, err = engine.ListMessages(ctx, MessageFilter{Sender: "alice@example.com"})
+	messages, err = env.Engine.ListMessages(env.Ctx, MessageFilter{Sender: "alice@example.com"})
 	if err != nil {
 		t.Fatalf("ListMessages by sender: %v", err)
 	}
@@ -374,7 +382,7 @@ func TestListMessages(t *testing.T) {
 	}
 
 	// Filter by label
-	messages, err = engine.ListMessages(ctx, MessageFilter{Label: "Work"})
+	messages, err = env.Engine.ListMessages(env.Ctx, MessageFilter{Label: "Work"})
 	if err != nil {
 		t.Fatalf("ListMessages by label: %v", err)
 	}
@@ -385,13 +393,9 @@ func TestListMessages(t *testing.T) {
 }
 
 func TestListMessagesWithLabels(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
+	env := newTestEnv(t)
 
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
-
-	messages, err := engine.ListMessages(ctx, MessageFilter{})
+	messages, err := env.Engine.ListMessages(env.Ctx, MessageFilter{})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -404,13 +408,9 @@ func TestListMessagesWithLabels(t *testing.T) {
 }
 
 func TestGetMessage(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
+	env := newTestEnv(t)
 
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
-
-	msg, err := engine.GetMessage(ctx, 1)
+	msg, err := env.Engine.GetMessage(env.Ctx, 1)
 	if err != nil {
 		t.Fatalf("GetMessage: %v", err)
 	}
@@ -437,13 +437,9 @@ func TestGetMessage(t *testing.T) {
 }
 
 func TestGetMessageWithAttachments(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
+	env := newTestEnv(t)
 
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
-
-	msg, err := engine.GetMessage(ctx, 2)
+	msg, err := env.Engine.GetMessage(env.Ctx, 2)
 	if err != nil {
 		t.Fatalf("GetMessage: %v", err)
 	}
@@ -471,13 +467,9 @@ func TestGetMessageWithAttachments(t *testing.T) {
 }
 
 func TestGetMessageBySourceID(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
+	env := newTestEnv(t)
 
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
-
-	msg, err := engine.GetMessageBySourceID(ctx, "msg3")
+	msg, err := env.Engine.GetMessageBySourceID(env.Ctx, "msg3")
 	if err != nil {
 		t.Fatalf("GetMessageBySourceID: %v", err)
 	}
@@ -492,13 +484,9 @@ func TestGetMessageBySourceID(t *testing.T) {
 }
 
 func TestListAccounts(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
+	env := newTestEnv(t)
 
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
-
-	accounts, err := engine.ListAccounts(ctx)
+	accounts, err := env.Engine.ListAccounts(env.Ctx)
 	if err != nil {
 		t.Fatalf("ListAccounts: %v", err)
 	}
@@ -513,13 +501,9 @@ func TestListAccounts(t *testing.T) {
 }
 
 func TestGetTotalStats(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
+	env := newTestEnv(t)
 
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
-
-	stats, err := engine.GetTotalStats(ctx, StatsOptions{})
+	stats, err := env.Engine.GetTotalStats(env.Ctx, StatsOptions{})
 	if err != nil {
 		t.Fatalf("GetTotalStats: %v", err)
 	}
@@ -544,20 +528,16 @@ func TestGetTotalStats(t *testing.T) {
 }
 
 func TestDeletedMessagesIncludedWithFlag(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
+	env := newTestEnv(t)
 
 	// Mark one message as deleted
-	_, err := db.Exec("UPDATE messages SET deleted_from_source_at = datetime('now') WHERE id = 1")
+	_, err := env.DB.Exec("UPDATE messages SET deleted_from_source_at = datetime('now') WHERE id = 1")
 	if err != nil {
 		t.Fatalf("mark deleted: %v", err)
 	}
 
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
-
 	// Aggregates should INCLUDE deleted messages (for TUI visibility)
-	rows, err := engine.AggregateBySender(ctx, DefaultAggregateOptions())
+	rows, err := env.Engine.AggregateBySender(env.Ctx, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateBySender: %v", err)
 	}
@@ -570,7 +550,7 @@ func TestDeletedMessagesIncludedWithFlag(t *testing.T) {
 	}
 
 	// ListMessages should INCLUDE deleted with DeletedAt field set
-	messages, err := engine.ListMessages(ctx, MessageFilter{})
+	messages, err := env.Engine.ListMessages(env.Ctx, MessageFilter{})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -598,7 +578,7 @@ func TestDeletedMessagesIncludedWithFlag(t *testing.T) {
 	}
 
 	// Stats should INCLUDE deleted messages
-	stats, err := engine.GetTotalStats(ctx, StatsOptions{})
+	stats, err := env.Engine.GetTotalStats(env.Ctx, StatsOptions{})
 	if err != nil {
 		t.Fatalf("GetTotalStats: %v", err)
 	}
@@ -609,17 +589,13 @@ func TestDeletedMessagesIncludedWithFlag(t *testing.T) {
 }
 
 func TestSortingOptions(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Sort by size descending
 	opts := DefaultAggregateOptions()
 	opts.SortField = SortBySize
 
-	rows, err := engine.AggregateBySender(ctx, opts)
+	rows, err := env.Engine.AggregateBySender(env.Ctx, opts)
 	if err != nil {
 		t.Fatalf("AggregateBySender: %v", err)
 	}
@@ -636,7 +612,7 @@ func TestSortingOptions(t *testing.T) {
 	// Sort ascending
 	opts.SortDirection = SortAsc
 
-	rows, err = engine.AggregateBySender(ctx, opts)
+	rows, err = env.Engine.AggregateBySender(env.Ctx, opts)
 	if err != nil {
 		t.Fatalf("AggregateBySender: %v", err)
 	}
@@ -648,20 +624,16 @@ func TestSortingOptions(t *testing.T) {
 }
 
 func TestGetMessageIncludesDeleted(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
+	env := newTestEnv(t)
 
 	// Mark message 1 as deleted
-	_, err := db.Exec("UPDATE messages SET deleted_from_source_at = datetime('now') WHERE id = 1")
+	_, err := env.DB.Exec("UPDATE messages SET deleted_from_source_at = datetime('now') WHERE id = 1")
 	if err != nil {
 		t.Fatalf("mark deleted: %v", err)
 	}
 
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
-
 	// GetMessage should RETURN deleted message (so user can still view it)
-	msg, err := engine.GetMessage(ctx, 1)
+	msg, err := env.Engine.GetMessage(env.Ctx, 1)
 	if err != nil {
 		t.Fatalf("GetMessage: %v", err)
 	}
@@ -670,7 +642,7 @@ func TestGetMessageIncludesDeleted(t *testing.T) {
 	}
 
 	// GetMessage should still work for non-deleted message
-	msg, err = engine.GetMessage(ctx, 2)
+	msg, err = env.Engine.GetMessage(env.Ctx, 2)
 	if err != nil {
 		t.Fatalf("GetMessage: %v", err)
 	}
@@ -680,20 +652,16 @@ func TestGetMessageIncludesDeleted(t *testing.T) {
 }
 
 func TestGetMessageBySourceIDIncludesDeleted(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
+	env := newTestEnv(t)
 
 	// Mark message 3 (source_message_id = 'msg3') as deleted
-	_, err := db.Exec("UPDATE messages SET deleted_from_source_at = datetime('now') WHERE source_message_id = 'msg3'")
+	_, err := env.DB.Exec("UPDATE messages SET deleted_from_source_at = datetime('now') WHERE source_message_id = 'msg3'")
 	if err != nil {
 		t.Fatalf("mark deleted: %v", err)
 	}
 
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
-
 	// GetMessageBySourceID should RETURN deleted message (so user can still view it)
-	msg, err := engine.GetMessageBySourceID(ctx, "msg3")
+	msg, err := env.Engine.GetMessageBySourceID(env.Ctx, "msg3")
 	if err != nil {
 		t.Fatalf("GetMessageBySourceID: %v", err)
 	}
@@ -702,7 +670,7 @@ func TestGetMessageBySourceIDIncludesDeleted(t *testing.T) {
 	}
 
 	// GetMessageBySourceID should still work for non-deleted message
-	msg, err = engine.GetMessageBySourceID(ctx, "msg2")
+	msg, err = env.Engine.GetMessageBySourceID(env.Ctx, "msg2")
 	if err != nil {
 		t.Fatalf("GetMessageBySourceID: %v", err)
 	}
@@ -712,11 +680,10 @@ func TestGetMessageBySourceIDIncludesDeleted(t *testing.T) {
 }
 
 func TestGetTotalStatsWithSourceID(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
+	env := newTestEnv(t)
 
 	// Add a second source account with its own labels and messages
-	_, err := db.Exec(`
+	_, err := env.DB.Exec(`
 		INSERT INTO sources (id, source_type, identifier, display_name) VALUES
 			(2, 'gmail', 'other@gmail.com', 'Other Account');
 
@@ -734,11 +701,8 @@ func TestGetTotalStatsWithSourceID(t *testing.T) {
 		t.Fatalf("insert second account: %v", err)
 	}
 
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
-
 	// Stats for all accounts
-	allStats, err := engine.GetTotalStats(ctx, StatsOptions{})
+	allStats, err := env.Engine.GetTotalStats(env.Ctx, StatsOptions{})
 	if err != nil {
 		t.Fatalf("GetTotalStats (all): %v", err)
 	}
@@ -755,7 +719,7 @@ func TestGetTotalStatsWithSourceID(t *testing.T) {
 
 	// Stats for source 1 only
 	sourceID := int64(1)
-	source1Stats, err := engine.GetTotalStats(ctx, StatsOptions{SourceID: &sourceID})
+	source1Stats, err := env.Engine.GetTotalStats(env.Ctx, StatsOptions{SourceID: &sourceID})
 	if err != nil {
 		t.Fatalf("GetTotalStats (source 1): %v", err)
 	}
@@ -772,15 +736,11 @@ func TestGetTotalStatsWithSourceID(t *testing.T) {
 }
 
 func TestGetTotalStatsWithInvalidSourceID(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Request stats for a non-existent source ID
 	nonExistentID := int64(9999)
-	stats, err := engine.GetTotalStats(ctx, StatsOptions{SourceID: &nonExistentID})
+	stats, err := env.Engine.GetTotalStats(env.Ctx, StatsOptions{SourceID: &nonExistentID})
 	if err != nil {
 		t.Fatalf("GetTotalStats with invalid source: %v", err)
 	}
@@ -801,15 +761,11 @@ func TestGetTotalStatsWithInvalidSourceID(t *testing.T) {
 }
 
 func TestWithAttachmentsOnlyAggregate(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Without filter - should get all messages
 	opts := DefaultAggregateOptions()
-	allRows, err := engine.AggregateBySender(ctx, opts)
+	allRows, err := env.Engine.AggregateBySender(env.Ctx, opts)
 	if err != nil {
 		t.Fatalf("AggregateBySender: %v", err)
 	}
@@ -833,7 +789,7 @@ func TestWithAttachmentsOnlyAggregate(t *testing.T) {
 
 	// With attachment filter - should only count messages with attachments
 	opts.WithAttachmentsOnly = true
-	attRows, err := engine.AggregateBySender(ctx, opts)
+	attRows, err := env.Engine.AggregateBySender(env.Ctx, opts)
 	if err != nil {
 		t.Fatalf("AggregateBySender with attachment filter: %v", err)
 	}
@@ -861,14 +817,10 @@ func TestWithAttachmentsOnlyAggregate(t *testing.T) {
 }
 
 func TestWithAttachmentsOnlyStats(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Stats without filter
-	allStats, err := engine.GetTotalStats(ctx, StatsOptions{})
+	allStats, err := env.Engine.GetTotalStats(env.Ctx, StatsOptions{})
 	if err != nil {
 		t.Fatalf("GetTotalStats: %v", err)
 	}
@@ -877,7 +829,7 @@ func TestWithAttachmentsOnlyStats(t *testing.T) {
 	}
 
 	// Stats with attachment filter
-	attStats, err := engine.GetTotalStats(ctx, StatsOptions{WithAttachmentsOnly: true})
+	attStats, err := env.Engine.GetTotalStats(env.Ctx, StatsOptions{WithAttachmentsOnly: true})
 	if err != nil {
 		t.Fatalf("GetTotalStats with attachment filter: %v", err)
 	}
@@ -894,11 +846,7 @@ func TestWithAttachmentsOnlyStats(t *testing.T) {
 }
 
 func TestListMessagesTimePeriodInference(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Test with month period - should infer TimeMonth granularity
 	filter := MessageFilter{
@@ -906,7 +854,7 @@ func TestListMessagesTimePeriodInference(t *testing.T) {
 		// TimeGranularity is zero (TimeYear) by default
 	}
 
-	messages, err := engine.ListMessages(ctx, filter)
+	messages, err := env.Engine.ListMessages(env.Ctx, filter)
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -921,7 +869,7 @@ func TestListMessagesTimePeriodInference(t *testing.T) {
 		TimePeriod: "2024-01-15",
 	}
 
-	messages, err = engine.ListMessages(ctx, filter)
+	messages, err = env.Engine.ListMessages(env.Ctx, filter)
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -937,7 +885,7 @@ func TestListMessagesTimePeriodInference(t *testing.T) {
 		TimeGranularity: TimeYear,
 	}
 
-	messages, err = engine.ListMessages(ctx, filter)
+	messages, err = env.Engine.ListMessages(env.Ctx, filter)
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -951,18 +899,14 @@ func TestListMessagesTimePeriodInference(t *testing.T) {
 func TestSearch_WithoutFTS(t *testing.T) {
 	// This test uses the standard test DB which doesn't have FTS
 	// to verify the LIKE fallback works
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Search for text in subject/body using LIKE fallback
 	q := &search.Query{
 		TextTerms: []string{"Hello"},
 	}
 
-	results, err := engine.Search(ctx, q, 100, 0)
+	results, err := env.Engine.Search(env.Ctx, q, 100, 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -974,17 +918,13 @@ func TestSearch_WithoutFTS(t *testing.T) {
 }
 
 func TestSearch_FromFilter(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	q := &search.Query{
 		FromAddrs: []string{"alice@example.com"},
 	}
 
-	results, err := engine.Search(ctx, q, 100, 0)
+	results, err := env.Engine.Search(env.Ctx, q, 100, 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -1002,17 +942,13 @@ func TestSearch_FromFilter(t *testing.T) {
 }
 
 func TestSearch_LabelFilter(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	q := &search.Query{
 		Labels: []string{"Work"},
 	}
 
-	results, err := engine.Search(ctx, q, 100, 0)
+	results, err := env.Engine.Search(env.Ctx, q, 100, 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -1024,11 +960,7 @@ func TestSearch_LabelFilter(t *testing.T) {
 }
 
 func TestSearch_DateRangeFilter(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	after := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 	before := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
@@ -1038,7 +970,7 @@ func TestSearch_DateRangeFilter(t *testing.T) {
 		BeforeDate: &before,
 	}
 
-	results, err := engine.Search(ctx, q, 100, 0)
+	results, err := env.Engine.Search(env.Ctx, q, 100, 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -1050,18 +982,14 @@ func TestSearch_DateRangeFilter(t *testing.T) {
 }
 
 func TestSearch_HasAttachment(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	hasAtt := true
 	q := &search.Query{
 		HasAttachment: &hasAtt,
 	}
 
-	results, err := engine.Search(ctx, q, 100, 0)
+	results, err := env.Engine.Search(env.Ctx, q, 100, 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -1079,11 +1007,7 @@ func TestSearch_HasAttachment(t *testing.T) {
 }
 
 func TestSearch_CombinedFilters(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Search for alice's messages with Work label
 	q := &search.Query{
@@ -1091,7 +1015,7 @@ func TestSearch_CombinedFilters(t *testing.T) {
 		Labels:    []string{"Work"},
 	}
 
-	results, err := engine.Search(ctx, q, 100, 0)
+	results, err := env.Engine.Search(env.Ctx, q, 100, 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -1103,18 +1027,14 @@ func TestSearch_CombinedFilters(t *testing.T) {
 }
 
 func TestSearch_SizeFilter(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	largerThan := int64(2500)
 	q := &search.Query{
 		LargerThan: &largerThan,
 	}
 
-	results, err := engine.Search(ctx, q, 100, 0)
+	results, err := env.Engine.Search(env.Ctx, q, 100, 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -1132,16 +1052,12 @@ func TestSearch_SizeFilter(t *testing.T) {
 // TestSearch_EmptyQuery verifies that searching with no filters returns all messages.
 // This tests the fix for the empty WHERE clause bug (fixed with "1=1" fallback).
 func TestSearch_EmptyQuery(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Empty query - no text terms, no filters
 	q := &search.Query{}
 
-	results, err := engine.Search(ctx, q, 100, 0)
+	results, err := env.Engine.Search(env.Ctx, q, 100, 0)
 	if err != nil {
 		t.Fatalf("Search with empty query: %v", err)
 	}
@@ -1153,19 +1069,15 @@ func TestSearch_EmptyQuery(t *testing.T) {
 }
 
 func TestHasFTSTable(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Our test DB doesn't have FTS
-	if engine.hasFTSTable(ctx) {
+	if env.Engine.hasFTSTable(env.Ctx) {
 		t.Error("expected hasFTSTable to return false for test DB without FTS")
 	}
 
 	// Try to create FTS table - skip if FTS5 not available in this SQLite build
-	_, err := db.Exec(`
+	_, err := env.DB.Exec(`
 		CREATE VIRTUAL TABLE messages_fts USING fts5(subject, body_text, snippet, content=messages, content_rowid=id);
 	`)
 	if err != nil {
@@ -1173,34 +1085,31 @@ func TestHasFTSTable(t *testing.T) {
 	}
 
 	// Create a new engine to get a fresh cache (old engine has cached "false")
-	engine2 := NewSQLiteEngine(db)
+	engine2 := NewSQLiteEngine(env.DB)
 
 	// Now it should detect FTS
-	if !engine2.hasFTSTable(ctx) {
+	if !engine2.hasFTSTable(env.Ctx) {
 		t.Error("expected hasFTSTable to return true after creating FTS table")
 	}
 }
 
 func TestHasFTSTable_ErrorDoesNotCache(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
+	env := newTestEnv(t)
 
 	// Create FTS table so we can detect if error path was taken
 	// (if FTS exists and canceled call returns false, error path was taken)
-	_, err := db.Exec(`
+	_, err := env.DB.Exec(`
 		CREATE VIRTUAL TABLE messages_fts USING fts5(subject, body_text, snippet, content=messages, content_rowid=id);
 	`)
 	if err != nil {
 		t.Skipf("FTS5 not available, cannot verify error-does-not-cache behavior: %v", err)
 	}
 
-	engine := NewSQLiteEngine(db)
-
 	// First call with canceled context should fail and return false without caching
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	firstResult := engine.hasFTSTable(canceledCtx)
+	firstResult := env.Engine.hasFTSTable(canceledCtx)
 
 	// If FTS exists but canceled call returned true, the driver didn't respect
 	// the canceled context - we can't test the error-retry behavior
@@ -1211,41 +1120,29 @@ func TestHasFTSTable_ErrorDoesNotCache(t *testing.T) {
 	// The canceled call returned false even though FTS exists - error path was taken.
 	// Now verify the retry with valid context succeeds (key test: errors don't cache)
 	validCtx := context.Background()
-	secondResult := engine.hasFTSTable(validCtx)
+	secondResult := env.Engine.hasFTSTable(validCtx)
 
 	if !secondResult {
 		t.Error("hasFTSTable retry returned false, but FTS is available; error was incorrectly cached")
 	}
 
 	// Verify it's now cached - third call should return same result
-	thirdResult := engine.hasFTSTable(validCtx)
+	thirdResult := env.Engine.hasFTSTable(validCtx)
 	if !thirdResult {
 		t.Error("hasFTSTable cached result is false, expected true")
 	}
 }
 
 func TestSearch_WithFTS(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	// Create FTS table and populate it - skip if FTS5 not available
-	_, err := db.Exec(`
-		CREATE VIRTUAL TABLE messages_fts USING fts5(subject, body_text, snippet, content=messages, content_rowid=id);
-		INSERT INTO messages_fts(messages_fts) VALUES('rebuild');
-	`)
-	if err != nil {
-		t.Skipf("FTS5 not available in this SQLite build: %v", err)
-	}
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
+	env.EnableFTS()
 
 	// Search using FTS
 	q := &search.Query{
 		TextTerms: []string{"World"},
 	}
 
-	results, err := engine.Search(ctx, q, 100, 0)
+	results, err := env.Engine.Search(env.Ctx, q, 100, 0)
 	if err != nil {
 		t.Fatalf("Search with FTS: %v", err)
 	}
@@ -1262,10 +1159,10 @@ func TestSearch_WithFTS(t *testing.T) {
 
 // setupTestDBWithEmptyBuckets creates a test DB with messages that have
 // empty senders, recipients, domains, and labels for testing MatchEmpty* filters.
-func setupTestDBWithEmptyBuckets(t *testing.T) *sql.DB {
+func newTestEnvWithEmptyBuckets(t *testing.T) *testEnv {
 	t.Helper()
 
-	db := setupTestDB(t)
+	env := newTestEnv(t)
 
 	// Add additional test data with empty values
 	extraData := `
@@ -1301,26 +1198,22 @@ func setupTestDBWithEmptyBuckets(t *testing.T) *sql.DB {
 		-- No labels for msg9
 	`
 
-	if _, err := db.Exec(extraData); err != nil {
+	if _, err := env.DB.Exec(extraData); err != nil {
 		t.Fatalf("insert empty bucket test data: %v", err)
 	}
 
-	return db
+	return env
 }
 
 func TestListMessages_MatchEmptySender(t *testing.T) {
-	db := setupTestDBWithEmptyBuckets(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnvWithEmptyBuckets(t)
 
 	// Filter for messages with empty/no sender
 	filter := MessageFilter{
 		MatchEmptySender: true,
 	}
 
-	messages, err := engine.ListMessages(ctx, filter)
+	messages, err := env.Engine.ListMessages(env.Ctx, filter)
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -1336,18 +1229,14 @@ func TestListMessages_MatchEmptySender(t *testing.T) {
 }
 
 func TestListMessages_MatchEmptyRecipient(t *testing.T) {
-	db := setupTestDBWithEmptyBuckets(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnvWithEmptyBuckets(t)
 
 	// Filter for messages with no recipients
 	filter := MessageFilter{
 		MatchEmptyRecipient: true,
 	}
 
-	messages, err := engine.ListMessages(ctx, filter)
+	messages, err := env.Engine.ListMessages(env.Ctx, filter)
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -1360,18 +1249,14 @@ func TestListMessages_MatchEmptyRecipient(t *testing.T) {
 }
 
 func TestListMessages_MatchEmptyDomain(t *testing.T) {
-	db := setupTestDBWithEmptyBuckets(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnvWithEmptyBuckets(t)
 
 	// Filter for messages with empty domain
 	filter := MessageFilter{
 		MatchEmptyDomain: true,
 	}
 
-	messages, err := engine.ListMessages(ctx, filter)
+	messages, err := env.Engine.ListMessages(env.Ctx, filter)
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -1383,18 +1268,14 @@ func TestListMessages_MatchEmptyDomain(t *testing.T) {
 }
 
 func TestListMessages_MatchEmptyLabel(t *testing.T) {
-	db := setupTestDBWithEmptyBuckets(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnvWithEmptyBuckets(t)
 
 	// Filter for messages with no labels
 	filter := MessageFilter{
 		MatchEmptyLabel: true,
 	}
 
-	messages, err := engine.ListMessages(ctx, filter)
+	messages, err := env.Engine.ListMessages(env.Ctx, filter)
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -1406,11 +1287,7 @@ func TestListMessages_MatchEmptyLabel(t *testing.T) {
 }
 
 func TestListMessages_MatchEmptyFiltersAreIndependent(t *testing.T) {
-	db := setupTestDBWithEmptyBuckets(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnvWithEmptyBuckets(t)
 
 	// Test data setup (from setupTestDBWithEmptyBuckets):
 	// - msg9 ("No Labels"): sender=alice, recipient=bob, domain=example.com, NO labels
@@ -1423,7 +1300,7 @@ func TestListMessages_MatchEmptyFiltersAreIndependent(t *testing.T) {
 		MatchEmptyLabel: true,
 		Sender:          "alice@example.com",
 	}
-	messages, err := engine.ListMessages(ctx, filter)
+	messages, err := env.Engine.ListMessages(env.Ctx, filter)
 	if err != nil {
 		t.Fatalf("ListMessages with MatchEmptyLabel + Sender: %v", err)
 	}
@@ -1457,7 +1334,7 @@ func TestListMessages_MatchEmptyFiltersAreIndependent(t *testing.T) {
 		MatchEmptyLabel:  true,
 		MatchEmptySender: true,
 	}
-	messages, err = engine.ListMessages(ctx, filter)
+	messages, err = env.Engine.ListMessages(env.Ctx, filter)
 	if err != nil {
 		t.Fatalf("ListMessages with MatchEmptyLabel + MatchEmptySender: %v", err)
 	}
@@ -1475,7 +1352,7 @@ func TestListMessages_MatchEmptyFiltersAreIndependent(t *testing.T) {
 	filter = MessageFilter{
 		MatchEmptyLabel: true,
 	}
-	messages, err = engine.ListMessages(ctx, filter)
+	messages, err = env.Engine.ListMessages(env.Ctx, filter)
 	if err != nil {
 		t.Fatalf("ListMessages with MatchEmptyLabel only: %v", err)
 	}
@@ -1488,14 +1365,10 @@ func TestListMessages_MatchEmptyFiltersAreIndependent(t *testing.T) {
 
 func TestSearch_CaseInsensitiveFallback(t *testing.T) {
 	// Test that the LIKE fallback is case-insensitive (when FTS is unavailable)
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Verify FTS is NOT available - this test specifically covers the LIKE fallback path
-	if engine.hasFTSTable(ctx) {
+	if env.Engine.hasFTSTable(env.Ctx) {
 		t.Skip("FTS is available; this test covers the non-FTS fallback path")
 	}
 
@@ -1504,7 +1377,7 @@ func TestSearch_CaseInsensitiveFallback(t *testing.T) {
 		TextTerms: []string{"hello"},
 	}
 
-	results, err := engine.Search(ctx, q, 100, 0)
+	results, err := env.Engine.Search(env.Ctx, q, 100, 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -1519,7 +1392,7 @@ func TestSearch_CaseInsensitiveFallback(t *testing.T) {
 		TextTerms: []string{"WORLD"},
 	}
 
-	results, err = engine.Search(ctx, q, 100, 0)
+	results, err = env.Engine.Search(env.Ctx, q, 100, 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -1535,14 +1408,10 @@ func TestSearch_CaseInsensitiveFallback(t *testing.T) {
 
 func TestSearch_SubjectTermsCaseInsensitive(t *testing.T) {
 	// Test that subject search is case-insensitive (LIKE fallback path)
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Verify FTS is NOT available - subject terms use LIKE when FTS is unavailable
-	if engine.hasFTSTable(ctx) {
+	if env.Engine.hasFTSTable(env.Ctx) {
 		t.Skip("FTS is available; this test covers the non-FTS fallback path")
 	}
 
@@ -1551,7 +1420,7 @@ func TestSearch_SubjectTermsCaseInsensitive(t *testing.T) {
 		SubjectTerms: []string{"HELLO"},
 	}
 
-	results, err := engine.Search(ctx, q, 100, 0)
+	results, err := env.Engine.Search(env.Ctx, q, 100, 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -1563,11 +1432,7 @@ func TestSearch_SubjectTermsCaseInsensitive(t *testing.T) {
 }
 
 func TestSubAggregateBySender(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Filter by recipient alice@example.com and sub-aggregate by sender
 	// Messages 4 and 5 are sent to alice, both from bob@company.org
@@ -1575,7 +1440,7 @@ func TestSubAggregateBySender(t *testing.T) {
 		Recipient: "alice@example.com",
 	}
 
-	results, err := engine.SubAggregate(ctx, filter, ViewSenders, DefaultAggregateOptions())
+	results, err := env.Engine.SubAggregate(env.Ctx, filter, ViewSenders, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("SubAggregate: %v", err)
 	}
@@ -1595,11 +1460,7 @@ func TestSubAggregateBySender(t *testing.T) {
 }
 
 func TestSubAggregateByRecipient(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Filter by sender alice@example.com and sub-aggregate by recipients
 	// Alice sends messages 1, 2, 3 to bob@company.org (and msg 1 also to carol)
@@ -1607,7 +1468,7 @@ func TestSubAggregateByRecipient(t *testing.T) {
 		Sender: "alice@example.com",
 	}
 
-	results, err := engine.SubAggregate(ctx, filter, ViewRecipients, DefaultAggregateOptions())
+	results, err := env.Engine.SubAggregate(env.Ctx, filter, ViewRecipients, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("SubAggregate: %v", err)
 	}
@@ -1633,11 +1494,7 @@ func TestSubAggregateByRecipient(t *testing.T) {
 }
 
 func TestSubAggregateByLabel(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Filter by sender alice@example.com and sub-aggregate by labels
 	// Alice's messages have INBOX (all 3), IMPORTANT (1), Work (1)
@@ -1645,7 +1502,7 @@ func TestSubAggregateByLabel(t *testing.T) {
 		Sender: "alice@example.com",
 	}
 
-	results, err := engine.SubAggregate(ctx, filter, ViewLabels, DefaultAggregateOptions())
+	results, err := env.Engine.SubAggregate(env.Ctx, filter, ViewLabels, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("SubAggregate: %v", err)
 	}
@@ -1664,29 +1521,25 @@ func TestSubAggregateByLabel(t *testing.T) {
 }
 
 func TestSubAggregateIncludesDeletedMessages(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Filter by sender alice@example.com (messages 1, 2, 3)
 	filter := MessageFilter{
 		Sender: "alice@example.com",
 	}
 
-	resultsBefore, err := engine.SubAggregate(ctx, filter, ViewRecipients, DefaultAggregateOptions())
+	resultsBefore, err := env.Engine.SubAggregate(env.Ctx, filter, ViewRecipients, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("SubAggregate before: %v", err)
 	}
 
 	// Mark message 1 (alice's message) as deleted
-	_, err = db.Exec("UPDATE messages SET deleted_from_source_at = datetime('now') WHERE id = 1")
+	_, err = env.DB.Exec("UPDATE messages SET deleted_from_source_at = datetime('now') WHERE id = 1")
 	if err != nil {
 		t.Fatalf("mark deleted: %v", err)
 	}
 
-	resultsAfter, err := engine.SubAggregate(ctx, filter, ViewRecipients, DefaultAggregateOptions())
+	resultsAfter, err := env.Engine.SubAggregate(env.Ctx, filter, ViewRecipients, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("SubAggregate after: %v", err)
 	}
@@ -1706,11 +1559,7 @@ func TestSubAggregateIncludesDeletedMessages(t *testing.T) {
 }
 
 func TestSubAggregateByTime(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Filter by sender alice@example.com and sub-aggregate by time
 	// Alice's messages: msg1 (2024-01), msg2 (2024-01), msg3 (2024-02)
@@ -1721,7 +1570,7 @@ func TestSubAggregateByTime(t *testing.T) {
 	opts := DefaultAggregateOptions()
 	opts.TimeGranularity = TimeMonth
 
-	results, err := engine.SubAggregate(ctx, filter, ViewTime, opts)
+	results, err := env.Engine.SubAggregate(env.Ctx, filter, ViewTime, opts)
 	if err != nil {
 		t.Fatalf("SubAggregate: %v", err)
 	}
@@ -1935,18 +1784,14 @@ func TestMergeFilterIntoQuery_SliceAliasingMutation(t *testing.T) {
 }
 
 func TestSearchWithDomainFilter(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Test search with @domain pattern (should match alice@example.com, bob@example.com)
 	q := &search.Query{
 		FromAddrs: []string{"@example.com"},
 	}
 
-	results, err := engine.Search(ctx, q, 100, 0)
+	results, err := env.Engine.Search(env.Ctx, q, 100, 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -1966,18 +1811,14 @@ func TestSearchWithDomainFilter(t *testing.T) {
 }
 
 func TestSearchMixedExactAndDomainFilter(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	// Test search with both exact address and @domain pattern
 	q := &search.Query{
 		FromAddrs: []string{"alice@example.com", "@other.com"},
 	}
 
-	results, err := engine.Search(ctx, q, 100, 0)
+	results, err := env.Engine.Search(env.Ctx, q, 100, 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -1999,11 +1840,10 @@ func TestSearchMixedExactAndDomainFilter(t *testing.T) {
 }
 
 func TestListMessages_ConversationIDFilter(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
+	env := newTestEnv(t)
 
 	// Add a second conversation with different messages
-	_, err := db.Exec(`
+	_, err := env.DB.Exec(`
 		INSERT INTO conversations (id, source_id, source_conversation_id, conversation_type, title) VALUES
 			(2, 1, 'thread2', 'email_thread', 'Second Thread');
 
@@ -2022,16 +1862,13 @@ func TestListMessages_ConversationIDFilter(t *testing.T) {
 		t.Fatalf("insert second conversation: %v", err)
 	}
 
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
-
 	// Filter by first conversation (id=1) - should get original 5 messages
 	convID1 := int64(1)
 	filter1 := MessageFilter{
 		ConversationID: &convID1,
 	}
 
-	messages1, err := engine.ListMessages(ctx, filter1)
+	messages1, err := env.Engine.ListMessages(env.Ctx, filter1)
 	if err != nil {
 		t.Fatalf("ListMessages for conversation 1: %v", err)
 	}
@@ -2053,7 +1890,7 @@ func TestListMessages_ConversationIDFilter(t *testing.T) {
 		ConversationID: &convID2,
 	}
 
-	messages2, err := engine.ListMessages(ctx, filter2)
+	messages2, err := env.Engine.ListMessages(env.Ctx, filter2)
 	if err != nil {
 		t.Fatalf("ListMessages for conversation 2: %v", err)
 	}
@@ -2076,7 +1913,7 @@ func TestListMessages_ConversationIDFilter(t *testing.T) {
 		SortDirection:  SortAsc,
 	}
 
-	messagesAsc, err := engine.ListMessages(ctx, filter2Asc)
+	messagesAsc, err := env.Engine.ListMessages(env.Ctx, filter2Asc)
 	if err != nil {
 		t.Fatalf("ListMessages with asc sort: %v", err)
 	}
@@ -2097,11 +1934,7 @@ func TestListMessages_ConversationIDFilter(t *testing.T) {
 // TestSearchFastCountMatchesSearch verifies that SearchFastCount returns the same
 // count as the number of results from Search for various query types.
 func TestSearchFastCountMatchesSearch(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	engine := NewSQLiteEngine(db)
-	ctx := context.Background()
+	env := newTestEnv(t)
 
 	tests := []struct {
 		name  string
@@ -2132,13 +1965,13 @@ func TestSearchFastCountMatchesSearch(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Get search results
-			results, err := engine.Search(ctx, tc.query, 1000, 0)
+			results, err := env.Engine.Search(env.Ctx, tc.query, 1000, 0)
 			if err != nil {
 				t.Fatalf("Search: %v", err)
 			}
 
 			// Get count
-			count, err := engine.SearchFastCount(ctx, tc.query, MessageFilter{})
+			count, err := env.Engine.SearchFastCount(env.Ctx, tc.query, MessageFilter{})
 			if err != nil {
 				t.Fatalf("SearchFastCount: %v", err)
 			}
