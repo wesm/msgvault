@@ -8,6 +8,26 @@ import (
 	"time"
 )
 
+// testManager creates a Manager in a temp directory for testing.
+func testManager(t *testing.T) *Manager {
+	t.Helper()
+	mgr, err := NewManager(filepath.Join(t.TempDir(), "deletions"))
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	return mgr
+}
+
+// createTestManifest creates a manifest via the manager with default IDs.
+func createTestManifest(t *testing.T, mgr *Manager, desc string) *Manifest {
+	t.Helper()
+	m, err := mgr.CreateManifest(desc, []string{"a", "b"}, Filters{})
+	if err != nil {
+		t.Fatalf("CreateManifest(%q) error = %v", desc, err)
+	}
+	return m
+}
+
 func TestSanitizeForFilename(t *testing.T) {
 	tests := []struct {
 		input string
@@ -266,11 +286,7 @@ func TestNewManager(t *testing.T) {
 }
 
 func TestManager_CreateAndListManifests(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr, err := NewManager(filepath.Join(tmpDir, "deletions"))
-	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
-	}
+	mgr := testManager(t)
 
 	// Create manifests
 	m1, err := mgr.CreateManifest("first batch", []string{"a", "b"}, Filters{Sender: "alice@example.com"})
@@ -278,10 +294,7 @@ func TestManager_CreateAndListManifests(t *testing.T) {
 		t.Fatalf("CreateManifest() error = %v", err)
 	}
 
-	m2, err := mgr.CreateManifest("second batch", []string{"c", "d", "e"}, Filters{})
-	if err != nil {
-		t.Fatalf("CreateManifest() error = %v", err)
-	}
+	m2 := createTestManifest(t, mgr, "second batch")
 
 	// List pending should return both
 	pending, err := mgr.ListPending()
@@ -315,17 +328,10 @@ func TestManager_CreateAndListManifests(t *testing.T) {
 }
 
 func TestManager_GetManifest(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr, err := NewManager(filepath.Join(tmpDir, "deletions"))
-	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
-	}
+	mgr := testManager(t)
 
 	// Create a manifest
-	m, err := mgr.CreateManifest("get test", []string{"x"}, Filters{})
-	if err != nil {
-		t.Fatalf("CreateManifest() error = %v", err)
-	}
+	m := createTestManifest(t, mgr, "get test")
 
 	// Get it back
 	loaded, path, err := mgr.GetManifest(m.ID)
@@ -341,13 +347,9 @@ func TestManager_GetManifest(t *testing.T) {
 }
 
 func TestManager_GetManifest_NotFound(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr, err := NewManager(filepath.Join(tmpDir, "deletions"))
-	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
-	}
+	mgr := testManager(t)
 
-	_, _, err = mgr.GetManifest("nonexistent-id")
+	_, _, err := mgr.GetManifest("nonexistent-id")
 	if err == nil {
 		t.Error("GetManifest() should error for nonexistent manifest")
 	}
@@ -357,17 +359,10 @@ func TestManager_GetManifest_NotFound(t *testing.T) {
 }
 
 func TestManager_MoveManifest(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr, err := NewManager(filepath.Join(tmpDir, "deletions"))
-	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
-	}
+	mgr := testManager(t)
 
 	// Create a pending manifest
-	m, err := mgr.CreateManifest("move test", []string{"a"}, Filters{})
-	if err != nil {
-		t.Fatalf("CreateManifest() error = %v", err)
-	}
+	m := createTestManifest(t, mgr, "move test")
 
 	// Move pending -> in_progress
 	if err := mgr.MoveManifest(m.ID, StatusPending, StatusInProgress); err != nil {
@@ -407,16 +402,9 @@ func TestManager_MoveManifest(t *testing.T) {
 }
 
 func TestManager_MoveManifest_ToFailed(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr, err := NewManager(filepath.Join(tmpDir, "deletions"))
-	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
-	}
+	mgr := testManager(t)
 
-	m, err := mgr.CreateManifest("fail test", []string{"a"}, Filters{})
-	if err != nil {
-		t.Fatalf("CreateManifest() error = %v", err)
-	}
+	m := createTestManifest(t, mgr, "fail test")
 
 	// Move pending -> in_progress -> failed
 	if err := mgr.MoveManifest(m.ID, StatusPending, StatusInProgress); err != nil {
@@ -436,16 +424,9 @@ func TestManager_MoveManifest_ToFailed(t *testing.T) {
 }
 
 func TestManager_MoveManifest_InvalidTransitions(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr, err := NewManager(filepath.Join(tmpDir, "deletions"))
-	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
-	}
+	mgr := testManager(t)
 
-	m, err := mgr.CreateManifest("invalid test", []string{"a"}, Filters{})
-	if err != nil {
-		t.Fatalf("CreateManifest() error = %v", err)
-	}
+	m := createTestManifest(t, mgr, "invalid test")
 
 	// Cannot move from completed
 	if err := mgr.MoveManifest(m.ID, StatusCompleted, StatusPending); err == nil {
@@ -459,16 +440,9 @@ func TestManager_MoveManifest_InvalidTransitions(t *testing.T) {
 }
 
 func TestManager_CancelManifest(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr, err := NewManager(filepath.Join(tmpDir, "deletions"))
-	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
-	}
+	mgr := testManager(t)
 
-	m, err := mgr.CreateManifest("cancel test", []string{"a"}, Filters{})
-	if err != nil {
-		t.Fatalf("CreateManifest() error = %v", err)
-	}
+	m := createTestManifest(t, mgr, "cancel test")
 
 	// Cancel it
 	if err := mgr.CancelManifest(m.ID); err != nil {
@@ -486,11 +460,7 @@ func TestManager_CancelManifest(t *testing.T) {
 }
 
 func TestManager_SaveManifest(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr, err := NewManager(filepath.Join(tmpDir, "deletions"))
-	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
-	}
+	mgr := testManager(t)
 
 	// Create manifest with each status and verify placement
 	statuses := []Status{StatusPending, StatusInProgress, StatusCompleted, StatusFailed}
@@ -514,17 +484,10 @@ func TestManager_SaveManifest(t *testing.T) {
 }
 
 func TestManager_ListManifests_SkipsInvalidFiles(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr, err := NewManager(filepath.Join(tmpDir, "deletions"))
-	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
-	}
+	mgr := testManager(t)
 
 	// Create a valid manifest
-	_, err = mgr.CreateManifest("valid", []string{"a"}, Filters{})
-	if err != nil {
-		t.Fatalf("CreateManifest() error = %v", err)
-	}
+	createTestManifest(t, mgr, "valid")
 
 	// Add an invalid JSON file
 	invalidPath := filepath.Join(mgr.PendingDir(), "invalid.json")
@@ -676,11 +639,7 @@ func TestManifest_FormatSummary_ExecutionNoCompletedAt(t *testing.T) {
 
 // TestManager_SaveManifest_UnknownStatus tests saving with an unknown status.
 func TestManager_SaveManifest_UnknownStatus(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr, err := NewManager(filepath.Join(tmpDir, "deletions"))
-	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
-	}
+	mgr := testManager(t)
 
 	m := NewManifest("unknown status", []string{"a"})
 	m.Status = "invalid_status" // Unknown status
@@ -702,11 +661,7 @@ func TestManager_SaveManifest_UnknownStatus(t *testing.T) {
 
 // TestManager_ListManifests_NonexistentDir tests listing from a nonexistent directory.
 func TestManager_ListManifests_NonexistentDir(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr, err := NewManager(filepath.Join(tmpDir, "deletions"))
-	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
-	}
+	mgr := testManager(t)
 
 	// Remove the pending directory
 	if err := os.RemoveAll(mgr.PendingDir()); err != nil {
