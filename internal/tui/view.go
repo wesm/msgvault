@@ -176,19 +176,19 @@ func (m Model) headerView() string {
 	// === LINE 2: Breadcrumb and Stats ===
 	var breadcrumb string
 	switch m.level {
-	case LevelAggregates:
+	case levelAggregates:
 		breadcrumb = viewTypeAbbrev(m.viewType)
 		if m.viewType == query.ViewTime {
 			breadcrumb += " (" + m.timeGranularity.String() + ")"
 		}
-	case LevelSubAggregate:
+	case levelSubAggregate:
 		// Show drill context: "S: foo@example.com (by To)"
 		drillKey := m.drillFilterKey()
 		breadcrumb = fmt.Sprintf("%s: %s (by %s)", viewTypePrefix(m.drillViewType), truncateRunes(drillKey, 30), viewTypeAbbrev(m.viewType))
 		if m.viewType == query.ViewTime {
 			breadcrumb += " " + m.timeGranularity.String()
 		}
-	case LevelMessageList:
+	case levelMessageList:
 		if m.searchQuery != "" {
 			// Search context shown in info bar, keep breadcrumb simple
 			breadcrumb = "Search Results"
@@ -205,13 +205,13 @@ func (m Model) headerView() string {
 		} else {
 			breadcrumb = fmt.Sprintf("%s: %s", viewTypePrefix(m.viewType), truncateRunes(m.filterKey, 40))
 		}
-	case LevelMessageDetail:
+	case levelMessageDetail:
 		subject := m.pendingDetailSubject
 		if m.messageDetail != nil {
 			subject = m.messageDetail.Subject
 		}
 		breadcrumb = fmt.Sprintf("Message: %s", truncateRunes(subject, 50))
-	case LevelThreadView:
+	case levelThreadView:
 		if m.threadTruncated {
 			breadcrumb = fmt.Sprintf("Thread (showing %d of %d+ messages)", len(m.threadMessages), len(m.threadMessages))
 		} else {
@@ -221,7 +221,7 @@ func (m Model) headerView() string {
 
 	// Stats - show contextual when drilled down or search filter is active
 	var statsStr string
-	if m.contextStats != nil && (m.level == LevelMessageList || m.level == LevelSubAggregate || m.searchQuery != "") {
+	if m.contextStats != nil && (m.level == levelMessageList || m.level == levelSubAggregate || m.searchQuery != "") {
 		// Show "+" suffix when search has more results than loaded
 		msgsSuffix := ""
 		if m.searchTotalCount == -1 {
@@ -386,7 +386,7 @@ func (m Model) aggregateTableView() string {
 	sb.WriteString(m.renderInfoLine(infoContent, isLoading))
 
 	// Overlay modal if active
-	if m.modal != ModalNone {
+	if m.modal != modalNone {
 		return m.overlayModal(sb.String())
 	}
 
@@ -551,7 +551,7 @@ func (m Model) messageListView() string {
 	sb.WriteString(m.renderInfoLine(infoContent, isLoading))
 
 	// Overlay modal if active
-	if m.modal != ModalNone {
+	if m.modal != modalNone {
 		return m.overlayModal(sb.String())
 	}
 
@@ -717,7 +717,7 @@ func (m Model) messageDetailView() string {
 	sb.WriteString(m.renderNotificationLine())
 
 	// Overlay modal if active
-	if m.modal != ModalNone {
+	if m.modal != modalNone {
 		return m.overlayModal(sb.String())
 	}
 
@@ -825,7 +825,7 @@ func (m Model) threadView() string {
 	sb.WriteString(m.renderNotificationLine())
 
 	// Overlay modal if active
-	if m.modal != ModalNone {
+	if m.modal != modalNone {
 		return m.overlayModal(sb.String())
 	}
 
@@ -845,7 +845,7 @@ func (m Model) footerView() string {
 	}
 
 	switch m.level {
-	case LevelAggregates:
+	case levelAggregates:
 		keys = []string{
 			"↑/k",
 			"↓/j",
@@ -868,7 +868,7 @@ func (m Model) footerView() string {
 			}
 		}
 
-	case LevelSubAggregate:
+	case levelSubAggregate:
 		keys = []string{
 			"↑/k",
 			"↓/j",
@@ -892,7 +892,7 @@ func (m Model) footerView() string {
 			}
 		}
 
-	case LevelMessageList:
+	case levelMessageList:
 		keys = []string{
 			"↑/k",
 			"↓/j",
@@ -921,7 +921,7 @@ func (m Model) footerView() string {
 			}
 		}
 
-	case LevelMessageDetail:
+	case levelMessageDetail:
 		keys = []string{
 			"←/→ prev/next",
 			"↑/↓ scroll",
@@ -944,7 +944,7 @@ func (m Model) footerView() string {
 			posStr = ""
 		}
 
-	case LevelThreadView:
+	case levelThreadView:
 		keys = []string{
 			"↑/↓ navigate",
 			"Enter view",
@@ -1170,7 +1170,7 @@ func (m Model) overlayModal(background string) string {
 	var modalContent string
 
 	switch m.modal {
-	case ModalDeleteConfirm:
+	case modalDeleteConfirm:
 		if m.pendingManifest != nil {
 			modalContent = modalTitleStyle.Render("Confirm Deletion") + "\n\n"
 			modalContent += fmt.Sprintf("Stage %d messages for deletion?\n\n", len(m.pendingManifest.GmailIDs))
@@ -1182,17 +1182,17 @@ func (m Model) overlayModal(background string) string {
 			modalContent += "[Y] Yes, stage for deletion    [N] Cancel"
 		}
 
-	case ModalDeleteResult:
+	case modalDeleteResult:
 		modalContent = modalTitleStyle.Render("Result") + "\n\n"
 		modalContent += m.modalResult + "\n\n"
 		modalContent += "Press any key to continue"
 
-	case ModalQuitConfirm:
+	case modalQuitConfirm:
 		modalContent = modalTitleStyle.Render("Quit?") + "\n\n"
 		modalContent += "Are you sure you want to quit?\n\n"
 		modalContent += "[Y] Yes    [N] No"
 
-	case ModalAccountSelector:
+	case modalAccountSelector:
 		modalContent = modalTitleStyle.Render("Select Account") + "\n\n"
 		// All Accounts option
 		indicator := "○"
@@ -1210,7 +1210,7 @@ func (m Model) overlayModal(background string) string {
 		}
 		modalContent += "\n[↑/↓] Navigate  [Enter] Select  [Esc] Cancel"
 
-	case ModalAttachmentFilter:
+	case modalAttachmentFilter:
 		modalContent = modalTitleStyle.Render("Filter Messages") + "\n\n"
 		// All Messages option
 		indicator := "○"
@@ -1226,7 +1226,7 @@ func (m Model) overlayModal(background string) string {
 		modalContent += fmt.Sprintf(" %s With Attachments\n", indicator)
 		modalContent += "\n[↑/↓] Navigate  [Enter] Select  [Esc] Cancel"
 
-	case ModalHelp:
+	case modalHelp:
 		modalContent = modalTitleStyle.Render("Keyboard Shortcuts") + "\n\n"
 		modalContent += "Navigation\n"
 		modalContent += "  ↑/k, ↓/j    Move cursor up/down\n"
@@ -1254,7 +1254,7 @@ func (m Model) overlayModal(background string) string {
 		modalContent += "  q           Quit\n\n"
 		modalContent += "Press any key to close"
 
-	case ModalExportAttachments:
+	case modalExportAttachments:
 		modalContent = modalTitleStyle.Render("Export Attachments") + "\n\n"
 		if m.messageDetail != nil && len(m.messageDetail.Attachments) > 0 {
 			modalContent += "Select attachments to export:\n\n"
@@ -1281,7 +1281,7 @@ func (m Model) overlayModal(background string) string {
 			modalContent += "[Enter] Export  [Esc] Cancel"
 		}
 
-	case ModalExportResult:
+	case modalExportResult:
 		modalContent = modalTitleStyle.Render("Export Complete") + "\n\n"
 		modalContent += m.modalResult + "\n\n"
 		modalContent += "Press any key to close"

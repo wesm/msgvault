@@ -24,51 +24,80 @@ import (
 // affects how many rows are available for scrolling in the UI.
 const aggregateLimit = 50000
 
-// ViewLevel represents the current navigation depth.
-type ViewLevel int
+// viewLevel represents the current navigation depth.
+type viewLevel int
 
 const (
-	LevelAggregates   ViewLevel = iota
-	LevelSubAggregate           // Sub-grouping after drill-down
-	LevelMessageList
-	LevelMessageDetail
-	LevelThreadView // Thread/conversation view showing all messages in a thread
+	levelAggregates   viewLevel = iota
+	levelSubAggregate           // Sub-grouping after drill-down
+	levelMessageList
+	levelMessageDetail
+	levelThreadView // Thread/conversation view showing all messages in a thread
 )
 
-// Breadcrumb stores state for navigation history.
-type Breadcrumb struct {
-	Level           ViewLevel
-	ViewType        query.ViewType
-	TimeGranularity query.TimeGranularity
-	SortField       query.SortField
-	SortDirection   query.SortDirection
-	Cursor          int
-	ScrollOffset    int
-	FilterKey       string              // The aggregate key used to filter messages
-	AllMessages     bool                // True when showing all messages (not filtered by aggregate)
-	DrillFilter     query.MessageFilter // Filter from parent drill-down
-	DrillViewType   query.ViewType      // ViewType that created the drill filter
-	ContextStats    *query.TotalStats   // Contextual stats for header display
-	SearchQuery     string              // Active search query (for aggregate filtering)
-
-	// Cached query results - restored on navigation back to avoid re-querying
-	CachedRows     []query.AggregateRow  // For aggregate/sub-aggregate views
-	CachedMessages []query.MessageSummary // For message list views
+// Options configuration for TUI.
+type Options struct {
+	DataDir string
+	Version string
 }
 
-// ModalType represents the type of modal dialog.
-type ModalType int
+// viewState encapsulates the state for a specific view (cursor, sort, filters, data).
+type viewState struct {
+	level           viewLevel
+	viewType        query.ViewType
+	timeGranularity query.TimeGranularity
+	sortField       query.SortField
+	sortDirection   query.SortDirection
+	msgSortField     query.MessageSortField
+	msgSortDirection query.SortDirection
+	cursor          int
+	scrollOffset    int
+	filterKey       string              // The aggregate key used to filter messages
+	allMessages     bool                // True when showing all messages (not filtered by aggregate)
+	drillFilter     query.MessageFilter // Filter from parent drill-down
+	drillViewType   query.ViewType      // ViewType that created the drill filter
+	contextStats    *query.TotalStats   // Contextual stats for header display
+	searchQuery     string              // Active search query (for aggregate filtering)
+	searchFilter    query.MessageFilter // Context filter applied to search
+	
+	// Data
+	rows         []query.AggregateRow
+	messages      []query.MessageSummary
+	messageDetail *query.MessageDetail
+	
+	// Detail view specific
+	detailScroll         int
+	detailLineCount      int
+	detailMessageIndex   int
+	detailFromThread     bool
+	pendingDetailSubject string
+	
+	// Thread view specific
+	threadConversationID int64
+	threadMessages       []query.MessageSummary
+	threadCursor         int
+	threadScrollOffset   int
+	threadTruncated      bool
+}
+
+// navigationSnapshot stores state for navigation history.
+type navigationSnapshot struct {
+	state viewState
+}
+
+// modalType represents the type of modal dialog.
+type modalType int
 
 const (
-	ModalNone ModalType = iota
-	ModalDeleteConfirm
-	ModalDeleteResult
-	ModalAccountSelector
-	ModalAttachmentFilter
-	ModalExportAttachments
-	ModalExportResult
-	ModalQuitConfirm
-	ModalHelp
+	modalNone modalType = iota
+	modalDeleteConfirm
+	modalDeleteResult
+	modalAccountSelector
+	modalAttachmentFilter
+	modalExportAttachments
+	modalExportResult
+	modalQuitConfirm
+	modalHelp
 )
 
 // SearchMode represents the search mode (fast metadata vs deep body search).
@@ -91,8 +120,8 @@ func (m SearchMode) String() string {
 	}
 }
 
-// SelectionState tracks selected items for batch operations.
-type SelectionState struct {
+// selectionState tracks selected items for batch operations.
+type selectionState struct {
 	// Selected aggregate keys (sender emails, domains, labels, etc.)
 	// Keys are scoped to the current ViewType to prevent collisions.
 	AggregateKeys map[string]bool
@@ -106,6 +135,8 @@ type SelectionState struct {
 
 // Model is the main TUI model following the Elm architecture.
 type Model struct {
+	viewState // Embedded state
+
 	// Query engine for data access
 	engine query.Engine
 
@@ -113,36 +144,11 @@ type Model struct {
 	version string
 
 	// Navigation
-	level       ViewLevel
-	breadcrumbs []Breadcrumb
+	breadcrumbs []navigationSnapshot
 
-	// Current view state (for aggregates)
-	viewType        query.ViewType
-	timeGranularity query.TimeGranularity
-
-	// Sorting (for aggregates)
-	sortField     query.SortField
-	sortDirection query.SortDirection
-
-	// Message list sorting
-	msgSortField     query.MessageSortField
-	msgSortDirection query.SortDirection
-
-	// Data - aggregates
-	rows         []query.AggregateRow
+	// Global Stats (not view specific)
 	stats        *query.TotalStats // Global stats
-	contextStats *query.TotalStats // Contextual stats when drilled down (from selected row)
 	accounts     []query.AccountInfo
-
-	// Data - messages
-	messages      []query.MessageSummary
-	messageDetail *query.MessageDetail
-	filterKey     string // Current filter (sender email, domain, label, etc.)
-	allMessages   bool   // True when showing all messages (not filtered by aggregate)
-
-	// Drill-down filter (for sub-grouping)
-	drillFilter   query.MessageFilter // Accumulated filter from drill-downs
-	drillViewType query.ViewType      // ViewType that created the drill filter (for breadcrumb)
 
 	// Account filter (nil = all accounts)
 	accountFilter *int64
@@ -150,20 +156,14 @@ type Model struct {
 	// Attachment filter (true = show only messages with attachments)
 	attachmentFilter bool
 
-	// Cursor and scrolling
-	cursor       int // Selected row index
-	scrollOffset int // First visible row
+	// Pagination config
 	pageSize     int // Rows visible per page
 
-	// Detail view scrolling
-	detailScroll    int
-	detailLineCount int // Total lines in detail view (for scroll clamping)
-
 	// Selection state
-	selection SelectionState
+	selection selectionState
 
 	// Modal state
-	modal           ModalType
+	modal           modalType
 	modalCursor     int                // Cursor position within modal (for selector modals)
 	modalResult     string             // Result message to display
 	pendingManifest *deletion.Manifest // Manifest being confirmed
@@ -187,13 +187,10 @@ type Model struct {
 	loadRequestID        uint64 // Current request ID for message list
 	detailRequestID      uint64 // Current request ID for message detail
 	searchRequestID      uint64 // Current request ID for search results
-	pendingDetailSubject string // Subject of message being loaded (for breadcrumb)
-
+	
 	// Search state
 	searchMode        SearchMode          // Fast (Parquet) or Deep (FTS5)
 	searchInput       textinput.Model     // Text input for search query
-	searchQuery       string              // Last executed search query (for breadcrumb)
-	searchFilter      query.MessageFilter // Context filter applied to search (from drill-down)
 	searchTotalCount  int64               // Total matching messages (for pagination display)
 	searchOffset      int                 // Current offset for pagination
 	searchLoadingMore bool                // True when loading additional results
@@ -211,17 +208,6 @@ type Model struct {
 	// This prevents visual flashing during async data loads on screen transitions.
 	frozenView string
 
-	// Detail view message navigation
-	detailMessageIndex int  // Index into messages[] or threadMessages[] for current detail view
-	detailFromThread   bool // True if detail was entered from thread view (navigate in threadMessages)
-
-	// Thread view state
-	threadConversationID int64                  // Conversation ID for thread view
-	threadMessages       []query.MessageSummary // Messages in the thread (chronological)
-	threadCursor         int                    // Cursor position in thread view
-	threadScrollOffset   int                    // Scroll offset in thread view
-	threadTruncated      bool                   // True if thread was truncated due to limit
-
 	// Flash message (temporary notification)
 	flashMessage   string    // Message to display
 	flashExpiresAt time.Time // When the flash message expires
@@ -234,10 +220,8 @@ type Model struct {
 	quitting bool
 }
 
-// New creates a new TUI model with the given query engine.
-// dataDir is the base directory for deletion manifests (e.g., ~/.msgvault).
-// version is the git commit hash or version string for the title bar.
-func New(engine query.Engine, dataDir string, version string) Model {
+// New creates a new TUI model with the given options.
+func New(engine query.Engine, opts Options) Model {
 	ti := textinput.New()
 	ti.Placeholder = "search (Tab: deep)"
 	ti.CharLimit = 200
@@ -245,19 +229,21 @@ func New(engine query.Engine, dataDir string, version string) Model {
 
 	return Model{
 		engine:           engine,
-		dataDir:          dataDir,
-		version:          version,
-		level:            LevelAggregates,
-		viewType:         query.ViewSenders,
-		timeGranularity:  query.TimeMonth,
-		sortField:        query.SortByCount,
-		sortDirection:    query.SortDesc,
-		msgSortField:     query.MessageSortByDate,
-		msgSortDirection: query.SortDesc,
+		dataDir:          opts.DataDir,
+		version:          opts.Version,
+		viewState: viewState{
+			level:            levelAggregates,
+			viewType:         query.ViewSenders,
+			timeGranularity:  query.TimeMonth,
+			sortField:        query.SortByCount,
+			sortDirection:    query.SortDesc,
+			msgSortField:     query.MessageSortByDate,
+			msgSortDirection: query.SortDesc,
+		},
 		pageSize:         20,
 		loading:       true,
 		spinnerActive: true,
-		selection: SelectionState{
+		selection: selectionState{
 			AggregateKeys:     make(map[string]bool),
 			AggregateViewType: query.ViewSenders, // Match initial viewType
 			MessageIDs:        make(map[int64]bool),
@@ -322,7 +308,7 @@ func (m Model) loadData() tea.Cmd {
 		var err error
 
 		// Use SubAggregate for sub-grouping, regular aggregate for top-level
-		if m.level == LevelSubAggregate {
+		if m.level == levelSubAggregate {
 			rows, err = m.engine.SubAggregate(ctx, m.drillFilter, m.viewType, opts)
 		} else {
 			switch m.viewType {
@@ -686,7 +672,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pageSize = 1
 		}
 		// Recalculate detail line count if in detail view (width affects wrapping)
-		if m.level == LevelMessageDetail && m.messageDetail != nil {
+		if m.level == levelMessageDetail && m.messageDetail != nil {
 			m.updateDetailLineCount()
 			m.clampDetailScroll()
 		}
@@ -727,7 +713,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					TotalSize:       totalSize,
 					AttachmentCount: totalAttachments,
 				}
-			} else if m.level == LevelAggregates {
+			} else if m.level == levelAggregates {
 				// Clear contextStats when no search filter at top level
 				m.contextStats = nil
 			}
@@ -865,7 +851,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				// Transition to message list view showing search results
-				m.level = LevelMessageList
+				m.level = levelMessageList
 			}
 		}
 		return m, nil
@@ -880,7 +866,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case exportResultMsg:
 		// Export completed - show result modal
 		m.loading = false
-		m.modal = ModalExportResult
+		m.modal = modalExportResult
 		if msg.err != nil {
 			m.modalResult = fmt.Sprintf("Export failed: %v", msg.err)
 		} else {
@@ -902,7 +888,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.inlineSearchLoading = true
 			spinCmd := m.startSpinner()
 
-			if m.level == LevelMessageList {
+			if m.level == levelMessageList {
 				// Message list: use search engine for live results
 				m.searchFilter = m.drillFilter
 				m.searchFilter.SourceID = m.accountFilter
@@ -938,15 +924,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Handle based on current view level
 	switch m.level {
-	case LevelAggregates:
+	case levelAggregates:
 		return m.handleAggregateKeys(msg)
-	case LevelSubAggregate:
+	case levelSubAggregate:
 		return m.handleSubAggregateKeys(msg)
-	case LevelMessageList:
+	case levelMessageList:
 		return m.handleMessageListKeys(msg)
-	case LevelMessageDetail:
+	case levelMessageDetail:
 		return m.handleMessageDetailKeys(msg)
-	case LevelThreadView:
+	case levelThreadView:
 		return m.handleThreadViewKeys(msg)
 	}
 	return m, nil
@@ -964,7 +950,7 @@ func (m Model) handleInlineSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Empty search clears filter - reload without flashing "Loading..."
 			m.searchQuery = ""
 			m.contextStats = nil
-			if m.level == LevelMessageList {
+			if m.level == levelMessageList {
 				m.loadRequestID++
 				return m, m.loadMessages()
 			}
@@ -973,7 +959,7 @@ func (m Model) handleInlineSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.searchQuery = queryStr
 		// In message list view, execute search to show results
-		if m.level == LevelMessageList {
+		if m.level == levelMessageList {
 			m.searchFilter = m.drillFilter
 			m.searchFilter.SourceID = m.accountFilter
 			m.searchFilter.WithAttachmentsOnly = m.attachmentFilter
@@ -993,7 +979,7 @@ func (m Model) handleInlineSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Clear search filter and reload without flashing "Loading..."
 		m.searchQuery = ""
 		m.contextStats = nil
-		if m.level == LevelMessageList {
+		if m.level == levelMessageList {
 			m.loadRequestID++
 			return m, m.loadMessages()
 		}
@@ -1006,7 +992,7 @@ func (m Model) handleInlineSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "tab":
 		// Toggle search mode between Fast and Deep (only at message list level)
-		if m.level != LevelMessageList {
+		if m.level != levelMessageList {
 			return m, nil // Tab has no effect at aggregate levels
 		}
 		if m.searchMode == SearchModeFast {
@@ -1071,14 +1057,14 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Handle modal
-	if m.modal != ModalNone {
+	if m.modal != modalNone {
 		return m.handleModalKeys(msg)
 	}
 
 	switch msg.String() {
 	// Quit - show confirmation modal (Ctrl+C exits immediately)
 	case "q":
-		m.modal = ModalQuitConfirm
+		m.modal = modalQuitConfirm
 		return m, nil
 	case "ctrl+c":
 		m.quitting = true
@@ -1096,7 +1082,7 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Account selector
 	case "A":
-		m.modal = ModalAccountSelector
+		m.modal = modalAccountSelector
 		// Set cursor to current selection, default to 0 if not found
 		m.modalCursor = 0 // Default to "All Accounts"
 		if m.accountFilter != nil {
@@ -1115,7 +1101,7 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Attachment filter
 	case "f":
-		m.modal = ModalAttachmentFilter
+		m.modal = modalAttachmentFilter
 		if m.attachmentFilter {
 			m.modalCursor = 1 // "With Attachments"
 		} else {
@@ -1158,20 +1144,10 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "a": // Jump to all messages view
 		m.frozenView = m.renderView() // Freeze screen until data loads
-		m.breadcrumbs = append(m.breadcrumbs, Breadcrumb{
-			Level:           m.level,
-			ViewType:        m.viewType,
-			TimeGranularity: m.timeGranularity,
-			SortField:       m.sortField,
-			SortDirection:   m.sortDirection,
-			Cursor:          m.cursor,
-			ScrollOffset:    m.scrollOffset,
-			CachedRows:      m.rows, // Cache for instant restore on goBack
-			SearchQuery:     m.searchQuery,
-		})
+		m.breadcrumbs = append(m.breadcrumbs, navigationSnapshot{state: m.viewState})
 		m.allMessages = true // Show all messages, not filtered by aggregate
 		m.filterKey = ""
-		m.level = LevelMessageList
+		m.level = levelMessageList
 		m.cursor = 0
 		m.scrollOffset = 0
 		m.messages = nil // Clear stale messages from previous view
@@ -1199,17 +1175,7 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.frozenView = m.renderView() // Freeze screen until data loads
 
 			// Save current state to breadcrumb
-			m.breadcrumbs = append(m.breadcrumbs, Breadcrumb{
-				Level:           m.level,
-				ViewType:        m.viewType,
-				TimeGranularity: m.timeGranularity,
-				SortField:       m.sortField,
-				SortDirection:   m.sortDirection,
-				Cursor:          m.cursor,
-				ScrollOffset:    m.scrollOffset,
-				CachedRows:      m.rows, // Cache for instant restore on goBack
-				SearchQuery:     m.searchQuery,
-			})
+			m.breadcrumbs = append(m.breadcrumbs, navigationSnapshot{state: m.viewState})
 
 			// Build drill filter from selected row
 			selectedRow := m.rows[m.cursor]
@@ -1247,7 +1213,7 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Go directly to message list (like moneyflow)
 			m.filterKey = key
 			m.allMessages = false
-			m.level = LevelMessageList
+			m.level = levelMessageList
 			m.cursor = 0
 			m.scrollOffset = 0
 			m.messages = nil // Clear stale messages from previous drill-down
@@ -1361,7 +1327,7 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Help
 	case "?":
-		m.modal = ModalHelp
+		m.modal = modalHelp
 		return m, nil
 	}
 
@@ -1395,14 +1361,14 @@ func (m Model) handleSubAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Handle modal
-	if m.modal != ModalNone {
+	if m.modal != modalNone {
 		return m.handleModalKeys(msg)
 	}
 
 	switch msg.String() {
 	// Quit - show confirmation modal (Ctrl+C exits immediately)
 	case "q":
-		m.modal = ModalQuitConfirm
+		m.modal = modalQuitConfirm
 		return m, nil
 	case "ctrl+c":
 		m.quitting = true
@@ -1426,7 +1392,7 @@ func (m Model) handleSubAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Account selector
 	case "A":
-		m.modal = ModalAccountSelector
+		m.modal = modalAccountSelector
 		m.modalCursor = 0
 		if m.accountFilter != nil {
 			for i, acc := range m.accounts {
@@ -1444,22 +1410,9 @@ func (m Model) handleSubAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Jump to all messages view (with drill filter applied)
 	case "a":
 		m.frozenView = m.renderView() // Freeze screen until data loads
-		m.breadcrumbs = append(m.breadcrumbs, Breadcrumb{
-			Level:           m.level,
-			ViewType:        m.viewType,
-			TimeGranularity: m.timeGranularity,
-			SortField:       m.sortField,
-			SortDirection:   m.sortDirection,
-			Cursor:          m.cursor,
-			ScrollOffset:    m.scrollOffset,
-			DrillFilter:     m.drillFilter,
-			DrillViewType:   m.drillViewType,
-			ContextStats:    m.contextStats,
-			CachedRows:      m.rows,
-			SearchQuery:     m.searchQuery,
-		})
+		m.breadcrumbs = append(m.breadcrumbs, navigationSnapshot{state: m.viewState})
 		m.allMessages = false
-		m.level = LevelMessageList
+		m.level = levelMessageList
 		m.cursor = 0
 		m.scrollOffset = 0
 		m.messages = nil // Clear stale messages from previous view
@@ -1476,7 +1429,7 @@ func (m Model) handleSubAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Attachment filter
 	case "f":
-		m.modal = ModalAttachmentFilter
+		m.modal = modalAttachmentFilter
 		if m.attachmentFilter {
 			m.modalCursor = 1
 		} else {
@@ -1531,20 +1484,7 @@ func (m Model) handleSubAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.frozenView = m.renderView() // Freeze screen until data loads
 
 			// Save current state (including contextStats before it's overwritten)
-			m.breadcrumbs = append(m.breadcrumbs, Breadcrumb{
-				Level:           m.level,
-				ViewType:        m.viewType,
-				TimeGranularity: m.timeGranularity,
-				SortField:       m.sortField,
-				SortDirection:   m.sortDirection,
-				Cursor:          m.cursor,
-				ScrollOffset:    m.scrollOffset,
-				DrillFilter:     m.drillFilter,
-				DrillViewType:   m.drillViewType,
-				ContextStats:    m.contextStats,
-				CachedRows:      m.rows, // Cache for instant restore on goBack
-				SearchQuery:     m.searchQuery,
-			})
+			m.breadcrumbs = append(m.breadcrumbs, navigationSnapshot{state: m.viewState})
 
 			// Set contextual stats from selected row
 			selectedRow := m.rows[m.cursor]
@@ -1576,7 +1516,7 @@ func (m Model) handleSubAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			m.filterKey = key
 			m.allMessages = false
-			m.level = LevelMessageList
+			m.level = levelMessageList
 			m.cursor = 0
 			m.scrollOffset = 0
 			m.messages = nil // Clear stale messages from previous drill-down
@@ -1700,7 +1640,7 @@ func (m Model) handleSubAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Help
 	case "?":
-		m.modal = ModalHelp
+		m.modal = modalHelp
 		return m, nil
 	}
 
@@ -1715,14 +1655,14 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Handle modal
-	if m.modal != ModalNone {
+	if m.modal != modalNone {
 		return m.handleModalKeys(msg)
 	}
 
 	switch msg.String() {
 	// Quit - show confirmation modal (Ctrl+C exits immediately)
 	case "q":
-		m.modal = ModalQuitConfirm
+		m.modal = modalQuitConfirm
 		return m, nil
 	case "ctrl+c":
 		m.quitting = true
@@ -1778,7 +1718,7 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Attachment filter
 	case "f":
-		m.modal = ModalAttachmentFilter
+		m.modal = modalAttachmentFilter
 		if m.attachmentFilter {
 			m.modalCursor = 1 // "With Attachments"
 		} else {
@@ -1801,22 +1741,10 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.frozenView = m.renderView() // Freeze screen until data loads
 
 			// Save current state to breadcrumb (including viewType for proper restoration)
-			m.breadcrumbs = append(m.breadcrumbs, Breadcrumb{
-				Level:          m.level,
-				ViewType:       m.viewType, // Save for restoration when going back
-				Cursor:         m.cursor,
-				ScrollOffset:   m.scrollOffset,
-				FilterKey:      m.filterKey,
-				AllMessages:    m.allMessages,
-				DrillFilter:    m.drillFilter,
-				DrillViewType:  m.drillViewType,
-				ContextStats:   m.contextStats,
-				CachedMessages: m.messages, // Cache for instant restore on goBack
-				SearchQuery:    m.searchQuery,
-			})
+			m.breadcrumbs = append(m.breadcrumbs, navigationSnapshot{state: m.viewState})
 
 			// Switch to sub-aggregate view
-			m.level = LevelSubAggregate
+			m.level = levelSubAggregate
 			m.viewType = m.nextSubGroupView(m.drillViewType)
 			m.cursor = 0
 			m.scrollOffset = 0
@@ -1835,19 +1763,7 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.frozenView = m.renderView() // Freeze screen until data loads
 
 			// Save current state (include all fields for proper restoration)
-			m.breadcrumbs = append(m.breadcrumbs, Breadcrumb{
-				Level:          m.level,
-				ViewType:       m.viewType,
-				Cursor:         m.cursor,
-				ScrollOffset:   m.scrollOffset,
-				FilterKey:      m.filterKey,
-				AllMessages:    m.allMessages,
-				DrillFilter:    m.drillFilter,
-				DrillViewType:  m.drillViewType,
-				ContextStats:   m.contextStats,
-				CachedMessages: m.messages, // Cache for instant restore on goBack
-				SearchQuery:    m.searchQuery,
-			})
+			m.breadcrumbs = append(m.breadcrumbs, navigationSnapshot{state: m.viewState})
 
 			// Store pending subject for breadcrumb while loading
 			m.pendingDetailSubject = m.messages[m.cursor].Subject
@@ -1856,7 +1772,7 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.messageDetail = nil           // Clear stale detail
 			m.detailLineCount = 0           // Reset line count to avoid stale N/M display
 			m.detailScroll = 0              // Reset scroll position
-			m.level = LevelMessageDetail
+			m.level = levelMessageDetail
 			m.loading = true
 			m.err = nil         // Clear any previous error
 			m.detailRequestID++ // Increment to invalidate stale responses
@@ -1905,22 +1821,10 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.frozenView = m.renderView() // Freeze screen until data loads
 		if m.hasDrillFilter() {
 			// Save current state to breadcrumb (including viewType for proper restoration)
-			m.breadcrumbs = append(m.breadcrumbs, Breadcrumb{
-				Level:          m.level,
-				ViewType:       m.viewType, // Save for restoration when going back
-				Cursor:         m.cursor,
-				ScrollOffset:   m.scrollOffset,
-				FilterKey:      m.filterKey,
-				AllMessages:    m.allMessages,
-				DrillFilter:    m.drillFilter,
-				DrillViewType:  m.drillViewType,
-				ContextStats:   m.contextStats,
-				CachedMessages: m.messages, // Cache for instant restore on goBack
-				SearchQuery:    m.searchQuery,
-			})
+			m.breadcrumbs = append(m.breadcrumbs, navigationSnapshot{state: m.viewState})
 
 			// Switch to sub-aggregate view
-			m.level = LevelSubAggregate
+			m.level = levelSubAggregate
 			m.viewType = m.nextSubGroupView(m.drillViewType)
 			m.cursor = 0
 			m.scrollOffset = 0
@@ -1937,7 +1841,7 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searchQuery = ""
 		m.searchFilter = query.MessageFilter{}
 		m.contextStats = nil
-		m.level = LevelAggregates
+		m.level = levelAggregates
 		m.cursor = 0
 		m.scrollOffset = 0
 		m.rows = nil // Clear stale rows from previous view
@@ -1993,25 +1897,13 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.frozenView = m.renderView() // Freeze screen until data loads
 
 				// Save current state
-				m.breadcrumbs = append(m.breadcrumbs, Breadcrumb{
-					Level:          m.level,
-					ViewType:       m.viewType,
-					Cursor:         m.cursor,
-					ScrollOffset:   m.scrollOffset,
-					FilterKey:      m.filterKey,
-					AllMessages:    m.allMessages,
-					DrillFilter:    m.drillFilter,
-					DrillViewType:  m.drillViewType,
-					ContextStats:   m.contextStats,
-					CachedMessages: m.messages, // Cache for instant restore on goBack
-					SearchQuery:    m.searchQuery,
-				})
+				m.breadcrumbs = append(m.breadcrumbs, navigationSnapshot{state: m.viewState})
 
 				m.threadConversationID = convID
 				m.threadMessages = nil
 				m.threadCursor = 0
 				m.threadScrollOffset = 0
-				m.level = LevelThreadView
+				m.level = levelThreadView
 				m.loading = true
 				m.err = nil
 				m.loadRequestID++
@@ -2021,7 +1913,7 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Help
 	case "?":
-		m.modal = ModalHelp
+		m.modal = modalHelp
 		return m, nil
 	}
 
@@ -2070,14 +1962,14 @@ func (m *Model) maybeLoadMoreSearchResults() tea.Cmd {
 // handleMessageDetailKeys handles keys in the message detail view.
 func (m Model) handleMessageDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Handle quit confirmation modal
-	if m.modal == ModalQuitConfirm {
+	if m.modal == modalQuitConfirm {
 		return m.handleModalKeys(msg)
 	}
 
 	switch msg.String() {
 	// Quit - show confirmation modal (Ctrl+C exits immediately)
 	case "q":
-		m.modal = ModalQuitConfirm
+		m.modal = modalQuitConfirm
 		return m, nil
 	case "ctrl+c":
 		m.quitting = true
@@ -2152,24 +2044,13 @@ func (m Model) handleMessageDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.frozenView = m.renderView() // Freeze screen until data loads
 
 			// Save current state
-			m.breadcrumbs = append(m.breadcrumbs, Breadcrumb{
-				Level:         m.level,
-				ViewType:      m.viewType,
-				Cursor:        m.cursor,
-				ScrollOffset:  m.scrollOffset,
-				FilterKey:     m.filterKey,
-				AllMessages:   m.allMessages,
-				DrillFilter:   m.drillFilter,
-				DrillViewType: m.drillViewType,
-				ContextStats:  m.contextStats,
-				SearchQuery:   m.searchQuery,
-			})
+			m.breadcrumbs = append(m.breadcrumbs, navigationSnapshot{state: m.viewState})
 
 			m.threadConversationID = m.messageDetail.ConversationID
 			m.threadMessages = nil
 			m.threadCursor = 0
 			m.threadScrollOffset = 0
-			m.level = LevelThreadView
+			m.level = levelThreadView
 			m.loading = true
 			m.err = nil
 			m.loadRequestID++
@@ -2179,7 +2060,7 @@ func (m Model) handleMessageDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Export attachments
 	case "e":
 		if m.messageDetail != nil && len(m.messageDetail.Attachments) > 0 {
-			m.modal = ModalExportAttachments
+			m.modal = modalExportAttachments
 			m.modalCursor = 0
 			// Initialize selection: all attachments selected by default
 			m.exportSelection = make(map[int]bool)
@@ -2198,14 +2079,14 @@ func (m Model) handleMessageDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handleThreadViewKeys handles keys in the thread view.
 func (m Model) handleThreadViewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Handle quit confirmation modal
-	if m.modal == ModalQuitConfirm {
+	if m.modal == modalQuitConfirm {
 		return m.handleModalKeys(msg)
 	}
 
 	switch msg.String() {
 	// Quit
 	case "q":
-		m.modal = ModalQuitConfirm
+		m.modal = modalQuitConfirm
 		return m, nil
 	case "ctrl+c":
 		m.quitting = true
@@ -2248,13 +2129,7 @@ func (m Model) handleThreadViewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.frozenView = m.renderView() // Freeze screen until data loads
 
 			// Save current thread view state
-			m.breadcrumbs = append(m.breadcrumbs, Breadcrumb{
-				Level:        m.level,
-				ViewType:     m.viewType,
-				Cursor:       m.threadCursor,
-				ScrollOffset: m.threadScrollOffset,
-				SearchQuery:  m.searchQuery,
-			})
+			m.breadcrumbs = append(m.breadcrumbs, navigationSnapshot{state: m.viewState})
 
 			// Load message detail
 			m.pendingDetailSubject = m.threadMessages[m.threadCursor].Subject
@@ -2263,7 +2138,7 @@ func (m Model) handleThreadViewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.messageDetail = nil
 			m.detailLineCount = 0
 			m.detailScroll = 0
-			m.level = LevelMessageDetail
+			m.level = levelMessageDetail
 			m.loading = true
 			m.err = nil
 			m.detailRequestID++
@@ -2272,7 +2147,7 @@ func (m Model) handleThreadViewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Help
 	case "?":
-		m.modal = ModalHelp
+		m.modal = modalHelp
 		return m, nil
 	}
 
@@ -2426,100 +2301,28 @@ func (m Model) goBack() (tea.Model, tea.Cmd) {
 
 	m.frozenView = "" // Clear frozen view on navigation back
 
-	// Track where we're coming from before restoring state
-	comingFromDetail := m.level == LevelMessageDetail
-
 	// Pop breadcrumb
 	bc := m.breadcrumbs[len(m.breadcrumbs)-1]
 	m.breadcrumbs = m.breadcrumbs[:len(m.breadcrumbs)-1]
 
-	// Restore search query from breadcrumb (may be empty if no search was active)
-	m.searchQuery = bc.SearchQuery
-	m.searchFilter = query.MessageFilter{}
+	// Track current cursor if we need to preserve it (e.g. from detail navigation)
+	currentCursor := m.cursor
+	currentLevel := m.level
 
-	// Restore state
-	m.level = bc.Level
-	m.err = nil // Clear any stale error
+	// Restore complete state from snapshot
+	m.viewState = bc.state
 
-	// When returning from detail view to message list, use current cursor position
-	// (may have changed via left/right navigation) instead of breadcrumb's cursor.
-	// This ensures Esc returns to the message the user was viewing.
-	if comingFromDetail && bc.Level == LevelMessageList {
-		// Keep m.cursor as-is (already updated by navigation in detail view)
-		// Adjust scroll to ensure cursor is visible
-		m.scrollOffset = bc.ScrollOffset
+	// Special case: returning from detail view to message list
+	// The user might have navigated left/right in detail view.
+	// If we simply restore `bc.state`, we revert to the cursor when we entered detail view.
+	// We want to keep the NEW cursor if we just navigated.
+	if currentLevel == levelMessageDetail && m.level == levelMessageList {
+		m.cursor = currentCursor
 		m.ensureCursorVisible()
-	} else {
-		m.cursor = bc.Cursor
-		m.scrollOffset = bc.ScrollOffset
 	}
 
-	// Restore state and use cached data if available (no re-query needed)
-	if bc.Level == LevelAggregates {
-		m.viewType = bc.ViewType
-		m.timeGranularity = bc.TimeGranularity
-		m.sortField = bc.SortField
-		m.sortDirection = bc.SortDirection
-		// Clear drill filter and contextual stats when going back to top-level aggregates
-		m.drillFilter = query.MessageFilter{}
-		m.drillViewType = 0
-		m.contextStats = nil
-		// Use cached rows if available (instant restore)
-		if bc.CachedRows != nil {
-			m.rows = bc.CachedRows
-			m.loading = false
-			return m, nil
-		}
-		// No cache - reload aggregate data
-		m.loading = true
-		m.restorePosition = true
-		m.aggregateRequestID++
-		return m, m.loadData()
-	} else if bc.Level == LevelSubAggregate {
-		m.viewType = bc.ViewType
-		m.timeGranularity = bc.TimeGranularity
-		m.sortField = bc.SortField
-		m.sortDirection = bc.SortDirection
-		m.drillFilter = bc.DrillFilter
-		m.drillViewType = bc.DrillViewType
-		m.contextStats = bc.ContextStats // Restore contextual stats for header
-		// Use cached rows if available (instant restore)
-		if bc.CachedRows != nil {
-			m.rows = bc.CachedRows
-			m.loading = false
-			return m, nil
-		}
-		// No cache - reload sub-aggregate data
-		m.loading = true
-		m.restorePosition = true
-		m.aggregateRequestID++
-		return m, m.loadData()
-	} else if bc.Level == LevelMessageList {
-		m.viewType = bc.ViewType // Restore viewType (may have changed in sub-aggregate)
-		m.filterKey = bc.FilterKey
-		m.allMessages = bc.AllMessages
-		m.drillFilter = bc.DrillFilter
-		m.drillViewType = bc.DrillViewType
-		m.contextStats = bc.ContextStats // Restore contextual stats for header
-		// Use cached messages if available (instant restore)
-		if bc.CachedMessages != nil {
-			m.messages = bc.CachedMessages
-			m.loading = false
-			return m, nil
-		}
-		// No cache - reload message list
-		m.loading = true
-		m.restorePosition = true
-		m.loadRequestID++
-		return m, m.loadMessages()
-	} else if bc.Level == LevelThreadView {
-		// Thread view doesn't cache, just restore state
-		m.threadCursor = bc.Cursor
-		m.threadScrollOffset = bc.ScrollOffset
-		// threadMessages should still be in memory from the previous load
-		m.loading = false
-		return m, nil
-	}
+	m.err = nil       // Clear any stale error
+	m.loading = false // Data is restored from snapshot
 
 	return m, nil
 }
@@ -2527,32 +2330,32 @@ func (m Model) goBack() (tea.Model, tea.Cmd) {
 // handleModalKeys handles keys when a modal is displayed.
 func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.modal {
-	case ModalDeleteConfirm:
+	case modalDeleteConfirm:
 		switch msg.String() {
 		case "y", "Y":
 			// Confirm deletion - save manifest
 			return m.confirmDeletion()
 		case "n", "N", "esc":
 			// Cancel
-			m.modal = ModalNone
+			m.modal = modalNone
 			m.pendingManifest = nil
 		}
 
-	case ModalDeleteResult:
+	case modalDeleteResult:
 		// Any key dismisses the result
-		m.modal = ModalNone
+		m.modal = modalNone
 		m.modalResult = ""
 
-	case ModalQuitConfirm:
+	case modalQuitConfirm:
 		switch msg.String() {
 		case "y", "Y", "enter":
 			m.quitting = true
 			return m, tea.Quit
 		case "n", "N", "esc", "q":
-			m.modal = ModalNone
+			m.modal = modalNone
 		}
 
-	case ModalAccountSelector:
+	case modalAccountSelector:
 		maxIdx := len(m.accounts) // 0 = All Accounts, then accounts
 		switch msg.String() {
 		case "up", "k":
@@ -2571,16 +2374,16 @@ func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				accID := m.accounts[m.modalCursor-1].ID
 				m.accountFilter = &accID
 			}
-			m.modal = ModalNone
+			m.modal = modalNone
 			m.loading = true
 			m.aggregateRequestID++
 			// Reload data with new account filter
 			return m, tea.Batch(m.loadData(), m.loadStats())
 		case "esc":
-			m.modal = ModalNone
+			m.modal = modalNone
 		}
 
-	case ModalAttachmentFilter:
+	case modalAttachmentFilter:
 		switch msg.String() {
 		case "up", "k":
 			if m.modalCursor > 0 {
@@ -2593,10 +2396,10 @@ func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			// Apply selection
 			m.attachmentFilter = (m.modalCursor == 1)
-			m.modal = ModalNone
+			m.modal = modalNone
 			m.loading = true
 			// Reload data and stats based on view level
-			if m.level == LevelMessageList {
+			if m.level == levelMessageList {
 				m.loadRequestID++
 				return m, tea.Batch(m.loadMessages(), m.loadStats())
 			}
@@ -2604,12 +2407,12 @@ func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.aggregateRequestID++
 			return m, tea.Batch(m.loadData(), m.loadStats())
 		case "esc":
-			m.modal = ModalNone
+			m.modal = modalNone
 		}
 
-	case ModalExportAttachments:
+	case modalExportAttachments:
 		if m.messageDetail == nil || len(m.messageDetail.Attachments) == 0 {
-			m.modal = ModalNone
+			m.modal = modalNone
 			return m, nil
 		}
 		maxIdx := len(m.messageDetail.Attachments) - 1
@@ -2636,18 +2439,18 @@ func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Export selected attachments
 			return m.exportAttachments()
 		case "esc":
-			m.modal = ModalNone
+			m.modal = modalNone
 			m.exportSelection = nil
 		}
 
-	case ModalExportResult:
+	case modalExportResult:
 		// Any key closes the result modal
-		m.modal = ModalNone
+		m.modal = modalNone
 		m.modalResult = ""
 
-	case ModalHelp:
+	case modalHelp:
 		// Any key closes help
-		m.modal = ModalNone
+		m.modal = modalNone
 	}
 
 	return m, nil
@@ -2687,7 +2490,7 @@ func (m Model) stageForDeletion() (tea.Model, tea.Cmd) {
 			// Fetch Gmail IDs for this aggregate
 			ids, err := m.engine.GetGmailIDsByFilter(ctx, filter)
 			if err != nil {
-				m.modal = ModalDeleteResult
+				m.modal = modalDeleteResult
 				m.modalResult = fmt.Sprintf("Error loading messages: %v", err)
 				return m, nil
 			}
@@ -2699,7 +2502,7 @@ func (m Model) stageForDeletion() (tea.Model, tea.Cmd) {
 	}
 
 	// From selected message IDs - resolve via current messages list
-	if len(m.selection.MessageIDs) > 0 && m.level == LevelMessageList {
+	if len(m.selection.MessageIDs) > 0 && m.level == levelMessageList {
 		for _, msg := range m.messages {
 			if m.selection.MessageIDs[msg.ID] {
 				gmailIDSet[msg.SourceMessageID] = true
@@ -2714,7 +2517,7 @@ func (m Model) stageForDeletion() (tea.Model, tea.Cmd) {
 	}
 
 	if len(gmailIDs) == 0 {
-		m.modal = ModalDeleteResult
+		m.modal = modalDeleteResult
 		m.modalResult = "No messages selected. Use Space to select, S for all visible."
 		return m, nil
 	}
@@ -2729,7 +2532,7 @@ func (m Model) stageForDeletion() (tea.Model, tea.Cmd) {
 		}
 	} else if len(m.selection.AggregateKeys) > 1 {
 		description = fmt.Sprintf("%s-multiple(%d)", m.selection.AggregateViewType.String(), len(m.selection.AggregateKeys))
-	} else if m.level == LevelMessageList {
+	} else if m.level == levelMessageList {
 		description = fmt.Sprintf("%s-%s", m.viewType.String(), m.filterKey)
 	} else {
 		description = "selection"
@@ -2774,7 +2577,7 @@ func (m Model) stageForDeletion() (tea.Model, tea.Cmd) {
 			}
 			break // Just use first key for filter context
 		}
-	} else if m.level == LevelMessageList {
+	} else if m.level == levelMessageList {
 		switch m.viewType {
 		case query.ViewSenders:
 			manifest.Filters.Sender = m.filterKey
@@ -2789,7 +2592,7 @@ func (m Model) stageForDeletion() (tea.Model, tea.Cmd) {
 
 	// Store pending manifest and show confirmation
 	m.pendingManifest = manifest
-	m.modal = ModalDeleteConfirm
+	m.modal = modalDeleteConfirm
 
 	return m, nil
 }
@@ -2797,7 +2600,7 @@ func (m Model) stageForDeletion() (tea.Model, tea.Cmd) {
 // confirmDeletion saves the manifest and shows result.
 func (m Model) confirmDeletion() (tea.Model, tea.Cmd) {
 	if m.pendingManifest == nil {
-		m.modal = ModalNone
+		m.modal = modalNone
 		return m, nil
 	}
 
@@ -2806,7 +2609,7 @@ func (m Model) confirmDeletion() (tea.Model, tea.Cmd) {
 		deletionsDir := filepath.Join(m.dataDir, "deletions")
 		mgr, err := deletion.NewManager(deletionsDir)
 		if err != nil {
-			m.modal = ModalDeleteResult
+			m.modal = modalDeleteResult
 			m.modalResult = fmt.Sprintf("Error: %v", err)
 			m.pendingManifest = nil
 			return m, nil
@@ -2816,14 +2619,14 @@ func (m Model) confirmDeletion() (tea.Model, tea.Cmd) {
 
 	// Save manifest
 	if err := m.deletionMgr.SaveManifest(m.pendingManifest); err != nil {
-		m.modal = ModalDeleteResult
+		m.modal = modalDeleteResult
 		m.modalResult = fmt.Sprintf("Error saving manifest: %v", err)
 		m.pendingManifest = nil
 		return m, nil
 	}
 
 	// Show success
-	m.modal = ModalDeleteResult
+	m.modal = modalDeleteResult
 	m.modalResult = fmt.Sprintf("Staged %d messages for deletion.\nBatch ID: %s\nRun 'msgvault delete-staged' to execute.",
 		len(m.pendingManifest.GmailIDs), m.pendingManifest.ID)
 
@@ -2879,25 +2682,25 @@ func (m Model) View() string {
 // before changing state (for the frozenView pattern).
 func (m Model) renderView() string {
 	switch m.level {
-	case LevelAggregates, LevelSubAggregate:
+	case levelAggregates, levelSubAggregate:
 		return fmt.Sprintf("%s\n%s\n%s",
 			m.headerView(),
 			m.aggregateTableView(),
 			m.footerView(),
 		)
-	case LevelMessageList:
+	case levelMessageList:
 		return fmt.Sprintf("%s\n%s\n%s",
 			m.headerView(),
 			m.messageListView(),
 			m.footerView(),
 		)
-	case LevelMessageDetail:
+	case levelMessageDetail:
 		return fmt.Sprintf("%s\n%s\n%s",
 			m.headerView(),
 			m.messageDetailView(),
 			m.footerView(),
 		)
-	case LevelThreadView:
+	case levelThreadView:
 		return fmt.Sprintf("%s\n%s\n%s",
 			m.headerView(),
 			m.threadView(),
@@ -2911,7 +2714,7 @@ func (m Model) renderView() string {
 // exportAttachments exports selected attachments to a zip file asynchronously.
 func (m Model) exportAttachments() (tea.Model, tea.Cmd) {
 	if m.messageDetail == nil || len(m.messageDetail.Attachments) == 0 {
-		m.modal = ModalNone
+		m.modal = modalNone
 		return m.showFlash("No attachments to export")
 	}
 
@@ -2940,7 +2743,7 @@ func (m Model) exportAttachments() (tea.Model, tea.Cmd) {
 	zipFilename := fmt.Sprintf("%s_%d.zip", subject, m.messageDetail.ID)
 
 	// Set loading state and close modal
-	m.modal = ModalNone
+	m.modal = modalNone
 	m.loading = true
 	m.exportSelection = nil
 

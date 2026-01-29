@@ -103,7 +103,7 @@ var (
 // newTestModel creates a Model with common test defaults.
 // The returned model has standard width/height and is ready for testing.
 func newTestModel(engine *mockEngine) Model {
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.width = 100
 	model.height = 24
 	model.pageSize = 10
@@ -119,7 +119,7 @@ func newTestModelWithRows(rows []query.AggregateRow) Model {
 }
 
 // newTestModelAtLevel creates a test model at the specified navigation level.
-func newTestModelAtLevel(level ViewLevel) Model {
+func newTestModelAtLevel(level viewLevel) Model {
 	engine := &mockEngine{}
 	model := newTestModel(engine)
 	model.level = level
@@ -322,7 +322,7 @@ func TestSelectionClearedOnViewSwitch(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
@@ -359,7 +359,7 @@ func TestSelectionClearedOnShiftTab(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
@@ -387,7 +387,7 @@ func TestClearSelection(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
@@ -419,7 +419,7 @@ func TestStageForDeletionWithAggregateSelection(t *testing.T) {
 		gmailIDs: []string{"msg1", "msg2"}, // Returned by GetGmailIDsByFilter
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
@@ -435,8 +435,8 @@ func TestStageForDeletionWithAggregateSelection(t *testing.T) {
 	model = newModel.(Model)
 
 	// Should show confirmation modal
-	if model.modal != ModalDeleteConfirm {
-		t.Errorf("expected ModalDeleteConfirm, got %v", model.modal)
+	if model.modal != modalDeleteConfirm {
+		t.Errorf("expected modalDeleteConfirm, got %v", model.modal)
 	}
 
 	// Should have pending manifest with 2 messages
@@ -455,7 +455,7 @@ func TestStageForDeletionWithAccountFilter(t *testing.T) {
 		gmailIDs: []string{"msg1", "msg2"},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
@@ -493,7 +493,7 @@ func TestStageForDeletionWithSingleAccount(t *testing.T) {
 		gmailIDs: []string{"msg1", "msg2"},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
@@ -529,7 +529,7 @@ func TestStageForDeletionWithMultipleAccountsNoFilter(t *testing.T) {
 		gmailIDs: []string{"msg1", "msg2"},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
@@ -566,7 +566,7 @@ func TestStageForDeletionWithAccountFilterNotFound(t *testing.T) {
 		gmailIDs: []string{"msg1", "msg2"},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
@@ -598,8 +598,8 @@ func TestStageForDeletionWithAccountFilterNotFound(t *testing.T) {
 		t.Errorf("expected empty account when filter not found, got %q", model.pendingManifest.Filters.Account)
 	}
 	// Modal should be delete confirm, not delete result (error)
-	if model.modal != ModalDeleteConfirm {
-		t.Errorf("expected ModalDeleteConfirm, got %v", model.modal)
+	if model.modal != modalDeleteConfirm {
+		t.Errorf("expected modalDeleteConfirm, got %v", model.modal)
 	}
 	// Verify the warning is shown in the modal when account is empty
 	view := model.View()
@@ -615,7 +615,7 @@ func TestAKeyShowsAllMessages(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
@@ -626,8 +626,8 @@ func TestAKeyShowsAllMessages(t *testing.T) {
 	model = newModel.(Model)
 
 	// Should navigate to message list with no filter
-	if model.level != LevelMessageList {
-		t.Errorf("expected LevelMessageList, got %v", model.level)
+	if model.level != levelMessageList {
+		t.Errorf("expected levelMessageList, got %v", model.level)
 	}
 
 	if model.filterKey != "" {
@@ -648,8 +648,8 @@ func TestAKeyShowsAllMessages(t *testing.T) {
 func TestModalDismiss(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
-	model.modal = ModalDeleteResult
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.modal = modalDeleteResult
 	model.modalResult = "Test result"
 	model.pageSize = 10
 	model.width = 100
@@ -659,8 +659,8 @@ func TestModalDismiss(t *testing.T) {
 	newModel, _ := model.handleModalKeys(key('x'))
 	model = newModel.(Model)
 
-	if model.modal != ModalNone {
-		t.Errorf("expected ModalNone after dismissal, got %v", model.modal)
+	if model.modal != modalNone {
+		t.Errorf("expected modalNone after dismissal, got %v", model.modal)
 	}
 
 	if model.modalResult != "" {
@@ -671,8 +671,8 @@ func TestModalDismiss(t *testing.T) {
 func TestConfirmModalCancel(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
-	model.modal = ModalDeleteConfirm
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.modal = modalDeleteConfirm
 	model.pendingManifest = &deletion.Manifest{}
 	model.pageSize = 10
 	model.width = 100
@@ -682,8 +682,8 @@ func TestConfirmModalCancel(t *testing.T) {
 	newModel, _ := model.handleModalKeys(key('n'))
 	model = newModel.(Model)
 
-	if model.modal != ModalNone {
-		t.Errorf("expected ModalNone after cancel, got %v", model.modal)
+	if model.modal != modalNone {
+		t.Errorf("expected modalNone after cancel, got %v", model.modal)
 	}
 
 	if model.pendingManifest != nil {
@@ -693,7 +693,7 @@ func TestConfirmModalCancel(t *testing.T) {
 
 func TestSelectionCount(t *testing.T) {
 	model := Model{
-		selection: SelectionState{
+		selection: selectionState{
 			AggregateKeys: map[string]bool{"a": true, "b": true},
 			MessageIDs:    map[int64]bool{1: true, 2: true, 3: true},
 		},
@@ -706,7 +706,7 @@ func TestSelectionCount(t *testing.T) {
 
 func TestHasSelection(t *testing.T) {
 	model := Model{
-		selection: SelectionState{
+		selection: selectionState{
 			AggregateKeys: make(map[string]bool),
 			MessageIDs:    make(map[int64]bool),
 		},
@@ -735,8 +735,8 @@ func TestStaleAsyncResponsesIgnored(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelMessageList
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelMessageList
 	model.loadRequestID = 5 // Current request ID
 
 	// Simulate a stale response with old request ID
@@ -774,8 +774,8 @@ func TestStaleAsyncResponsesIgnored(t *testing.T) {
 func TestStaleDetailResponsesIgnored(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelMessageDetail
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelMessageDetail
 	model.detailRequestID = 10 // Current request ID
 	model.width = 100          // Set realistic width
 	model.height = 30
@@ -821,9 +821,9 @@ func TestDetailLineCountResetOnLoad(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.messages = engine.messages
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.detailLineCount = 100 // Simulate previous message with 100 lines
 	model.detailScroll = 50     // Simulate scrolled position
 	model.pageSize = 20
@@ -850,8 +850,8 @@ func TestDetailLineCountResetOnLoad(t *testing.T) {
 func TestDetailScrollClamping(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelMessageDetail
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelMessageDetail
 	model.pageSize = 10
 	model.detailLineCount = 25 // 25 lines total
 	model.detailScroll = 0
@@ -880,8 +880,8 @@ func TestDetailScrollClamping(t *testing.T) {
 func TestResizeRecalculatesDetailLineCount(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelMessageDetail
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelMessageDetail
 	model.messageDetail = &query.MessageDetail{
 		Subject:  "Test Subject",
 		BodyText: "Line 1\nLine 2\nLine 3\nLine 4\nLine 5",
@@ -922,8 +922,8 @@ func TestResizeRecalculatesDetailLineCount(t *testing.T) {
 func TestEndKeyWithZeroLineCount(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelMessageDetail
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelMessageDetail
 	model.pageSize = 20
 	model.detailLineCount = 0 // No content yet (loading)
 	model.detailScroll = 0
@@ -941,7 +941,7 @@ func TestEndKeyWithZeroLineCount(t *testing.T) {
 func TestQuitConfirmationModal(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
@@ -950,8 +950,8 @@ func TestQuitConfirmationModal(t *testing.T) {
 	newModel, cmd := model.handleAggregateKeys(key('q'))
 	m := newModel.(Model)
 
-	if m.modal != ModalQuitConfirm {
-		t.Errorf("expected ModalQuitConfirm, got %v", m.modal)
+	if m.modal != modalQuitConfirm {
+		t.Errorf("expected modalQuitConfirm, got %v", m.modal)
 	}
 	if m.quitting {
 		t.Error("should not be quitting yet")
@@ -964,16 +964,16 @@ func TestQuitConfirmationModal(t *testing.T) {
 	newModel, _ = m.handleModalKeys(key('n'))
 	m = newModel.(Model)
 
-	if m.modal != ModalNone {
-		t.Errorf("expected ModalNone after cancel, got %v", m.modal)
+	if m.modal != modalNone {
+		t.Errorf("expected modalNone after cancel, got %v", m.modal)
 	}
 }
 
 func TestQuitConfirmationConfirm(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
-	model.modal = ModalQuitConfirm
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.modal = modalQuitConfirm
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
@@ -993,7 +993,7 @@ func TestQuitConfirmationConfirm(t *testing.T) {
 func TestAccountSelectorModal(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.accounts = []query.AccountInfo{
 		{ID: 1, Identifier: "alice@example.com"},
 		{ID: 2, Identifier: "bob@example.com"},
@@ -1006,8 +1006,8 @@ func TestAccountSelectorModal(t *testing.T) {
 	newModel, _ := model.handleAggregateKeys(key('A'))
 	m := newModel.(Model)
 
-	if m.modal != ModalAccountSelector {
-		t.Errorf("expected ModalAccountSelector, got %v", m.modal)
+	if m.modal != modalAccountSelector {
+		t.Errorf("expected modalAccountSelector, got %v", m.modal)
 	}
 	if m.modalCursor != 0 {
 		t.Errorf("expected modalCursor = 0 (All Accounts), got %d", m.modalCursor)
@@ -1024,8 +1024,8 @@ func TestAccountSelectorModal(t *testing.T) {
 	newModel, cmd := m.handleModalKeys(keyEnter())
 	m = newModel.(Model)
 
-	if m.modal != ModalNone {
-		t.Errorf("expected ModalNone after selection, got %v", m.modal)
+	if m.modal != modalNone {
+		t.Errorf("expected modalNone after selection, got %v", m.modal)
 	}
 	if m.accountFilter == nil || *m.accountFilter != 1 {
 		t.Errorf("expected accountFilter = 1, got %v", m.accountFilter)
@@ -1038,7 +1038,7 @@ func TestAccountSelectorModal(t *testing.T) {
 func TestAttachmentFilterModal(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
@@ -1048,8 +1048,8 @@ func TestAttachmentFilterModal(t *testing.T) {
 	newModel, _ := model.handleAggregateKeys(key('f'))
 	m := newModel.(Model)
 
-	if m.modal != ModalAttachmentFilter {
-		t.Errorf("expected ModalAttachmentFilter, got %v", m.modal)
+	if m.modal != modalAttachmentFilter {
+		t.Errorf("expected modalAttachmentFilter, got %v", m.modal)
 	}
 	if m.modalCursor != 0 {
 		t.Errorf("expected modalCursor = 0 (All Messages), got %d", m.modalCursor)
@@ -1066,8 +1066,8 @@ func TestAttachmentFilterModal(t *testing.T) {
 	newModel, _ = m.handleModalKeys(keyEnter())
 	m = newModel.(Model)
 
-	if m.modal != ModalNone {
-		t.Errorf("expected ModalNone after selection, got %v", m.modal)
+	if m.modal != modalNone {
+		t.Errorf("expected modalNone after selection, got %v", m.modal)
 	}
 	if !m.attachmentFilter {
 		t.Error("expected attachmentFilter = true")
@@ -1077,8 +1077,8 @@ func TestAttachmentFilterModal(t *testing.T) {
 func TestAttachmentFilterInMessageList(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelMessageList
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelMessageList
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
@@ -1088,8 +1088,8 @@ func TestAttachmentFilterInMessageList(t *testing.T) {
 	newModel, _ := model.handleMessageListKeys(key('f'))
 	m := newModel.(Model)
 
-	if m.modal != ModalAttachmentFilter {
-		t.Errorf("expected ModalAttachmentFilter, got %v", m.modal)
+	if m.modal != modalAttachmentFilter {
+		t.Errorf("expected modalAttachmentFilter, got %v", m.modal)
 	}
 
 	// Select "With Attachments" and verify reload is triggered
@@ -1117,7 +1117,7 @@ func TestSubGroupingNavigation(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
@@ -1128,8 +1128,8 @@ func TestSubGroupingNavigation(t *testing.T) {
 	newModel, cmd := model.handleAggregateKeys(keyEnter())
 	m := newModel.(Model)
 
-	if m.level != LevelMessageList {
-		t.Errorf("expected LevelMessageList, got %v", m.level)
+	if m.level != levelMessageList {
+		t.Errorf("expected levelMessageList, got %v", m.level)
 	}
 	if !m.hasDrillFilter() {
 		t.Error("expected drillFilter to be set")
@@ -1154,8 +1154,8 @@ func TestSubGroupingNavigation(t *testing.T) {
 	newModel, cmd = m.handleMessageListKeys(keyTab())
 	m = newModel.(Model)
 
-	if m.level != LevelSubAggregate {
-		t.Errorf("expected LevelSubAggregate after Tab, got %v", m.level)
+	if m.level != levelSubAggregate {
+		t.Errorf("expected levelSubAggregate after Tab, got %v", m.level)
 	}
 	// Default sub-group after drilling from Senders should be Recipients
 	if m.viewType != query.ViewRecipients {
@@ -1183,8 +1183,8 @@ func TestSubGroupingNavigation(t *testing.T) {
 	newModel, _ = m.handleSubAggregateKeys(keyEsc())
 	m = newModel.(Model)
 
-	if m.level != LevelMessageList {
-		t.Errorf("expected LevelMessageList after Esc from sub-aggregate, got %v", m.level)
+	if m.level != levelMessageList {
+		t.Errorf("expected levelMessageList after Esc from sub-aggregate, got %v", m.level)
 	}
 	// Drill filter should still be set (we're still viewing alice's messages)
 	if !m.hasDrillFilter() {
@@ -1200,8 +1200,8 @@ func TestSubGroupingNavigation(t *testing.T) {
 	newModel, _ = m.handleMessageListKeys(keyEsc())
 	m = newModel.(Model)
 
-	if m.level != LevelAggregates {
-		t.Errorf("expected LevelAggregates after Esc from message list, got %v", m.level)
+	if m.level != levelAggregates {
+		t.Errorf("expected levelAggregates after Esc from message list, got %v", m.level)
 	}
 	if m.hasDrillFilter() {
 		t.Error("expected drillFilter to be cleared after going back to aggregates")
@@ -1214,8 +1214,8 @@ func TestSubGroupingNavigation(t *testing.T) {
 func TestFillScreenDetailLineCount(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelMessageDetail
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelMessageDetail
 	model.width = 80
 	model.height = 24
 	model.pageSize = 19 // height - 5
@@ -1255,7 +1255,7 @@ func TestFillScreenDetailLineCount(t *testing.T) {
 func TestWindowSizeClampNegative(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 
 	// Simulate negative window size (can happen during terminal resize)
 	resizeMsg := tea.WindowSizeMsg{Width: -1, Height: -1}
@@ -1283,11 +1283,11 @@ func TestSubAggregateDrillDown(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelSubAggregate
+	model.level = levelSubAggregate
 	model.viewType = query.ViewRecipients
 	model.drillViewType = query.ViewSenders
 	model.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
@@ -1297,8 +1297,8 @@ func TestSubAggregateDrillDown(t *testing.T) {
 	newModel, cmd := model.handleSubAggregateKeys(keyEnter())
 	m := newModel.(Model)
 
-	if m.level != LevelMessageList {
-		t.Errorf("expected LevelMessageList, got %v", m.level)
+	if m.level != levelMessageList {
+		t.Errorf("expected levelMessageList, got %v", m.level)
 	}
 	// Drill filter should now include both sender and recipient
 	if m.drillFilter.Sender != "alice@example.com" {
@@ -1320,7 +1320,7 @@ func TestSearchModalOpen(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
@@ -1345,7 +1345,7 @@ func TestSearchModalOpen(t *testing.T) {
 // TestSearchResultsDisplay verifies search results are displayed.
 func TestSearchResultsDisplay(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
@@ -1365,8 +1365,8 @@ func TestSearchResultsDisplay(t *testing.T) {
 	newModel, _ := model.Update(results)
 	m := newModel.(Model)
 
-	if m.level != LevelMessageList {
-		t.Errorf("expected LevelMessageList, got %v", m.level)
+	if m.level != levelMessageList {
+		t.Errorf("expected levelMessageList, got %v", m.level)
 	}
 	if len(m.messages) != 2 {
 		t.Errorf("expected 2 messages, got %d", len(m.messages))
@@ -1379,7 +1379,7 @@ func TestSearchResultsDisplay(t *testing.T) {
 // TestSearchResultsStale verifies stale search results are ignored.
 func TestSearchResultsStale(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
@@ -1415,11 +1415,11 @@ func TestSearchModeString(t *testing.T) {
 // TestInlineSearchTabToggleAtMessageList verifies Tab toggles mode and triggers search at message list level.
 func TestInlineSearchTabToggleAtMessageList(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.inlineSearchActive = true
 	model.searchMode = SearchModeFast
 	model.searchInput.SetValue("test query")
@@ -1456,11 +1456,11 @@ func TestInlineSearchTabToggleAtMessageList(t *testing.T) {
 // TestInlineSearchTabToggleNoQueryNoSearch verifies Tab with empty query doesn't trigger search.
 func TestInlineSearchTabToggleNoQueryNoSearch(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.inlineSearchActive = true
 	model.searchMode = SearchModeFast
 	model.loading = false // Explicitly set to false (New() sets it to true)
@@ -1489,11 +1489,11 @@ func TestInlineSearchTabToggleNoQueryNoSearch(t *testing.T) {
 // TestInlineSearchTabAtAggregateLevel verifies Tab has no effect at aggregate level.
 func TestInlineSearchTabAtAggregateLevel(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelAggregates // Not message list
+	model.level = levelAggregates // Not message list
 	model.inlineSearchActive = true
 	model.searchMode = SearchModeFast
 	model.searchInput.SetValue("test query")
@@ -1516,11 +1516,11 @@ func TestInlineSearchTabAtAggregateLevel(t *testing.T) {
 // TestInlineSearchTabToggleBackToFast verifies Tab toggles back from Deep to Fast.
 func TestInlineSearchTabToggleBackToFast(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.inlineSearchActive = true
 	model.searchMode = SearchModeDeep // Start in Deep mode
 	model.searchInput.SetValue("test query")
@@ -1547,7 +1547,7 @@ func TestSpinnerAppearsInViewWhenLoading(t *testing.T) {
 			{Key: "test@example.com", Count: 10},
 		},
 	}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
@@ -1588,14 +1588,14 @@ func TestSpinnerAppearsInViewWhenLoading(t *testing.T) {
 // TestSearchBackClears verifies going back clears search state.
 func TestSearchBackClears(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.searchQuery = "test query"
 	model.searchFilter = query.MessageFilter{Sender: "alice@example.com"}
-	model.breadcrumbs = []Breadcrumb{{Level: LevelAggregates}}
+	model.breadcrumbs = []navigationSnapshot{{state: viewState{level: levelAggregates}}}
 
 	// Go back
 	newModel, _ := model.goBack()
@@ -1617,11 +1617,11 @@ func TestSearchFromSubAggregate(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelSubAggregate
+	model.level = levelSubAggregate
 	model.viewType = query.ViewRecipients
 	model.drillViewType = query.ViewSenders
 	model.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
@@ -1647,11 +1647,11 @@ func TestSearchFromMessageList(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.messages = engine.messages
 
 	// Press '/' to activate inline search
@@ -1674,12 +1674,12 @@ func TestGKeyCyclesViewType(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	// Set non-zero cursor/scroll to verify reset
 	model.cursor = 5
@@ -1717,12 +1717,12 @@ func TestGKeyCyclesViewTypeFullCycle(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 
 	expectedOrder := []query.ViewType{
@@ -1752,12 +1752,12 @@ func TestGKeyInSubAggregate(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelSubAggregate
+	model.level = levelSubAggregate
 	model.viewType = query.ViewRecipients
 	model.drillViewType = query.ViewSenders // Drilled from Senders
 	model.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
@@ -1783,12 +1783,12 @@ func TestGKeyInMessageListWithDrillFilter(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.messages = engine.messages
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.cursor = 2 // Start at third item
 	model.scrollOffset = 1
 	// Set up a drill filter so 'g' triggers sub-grouping
@@ -1800,8 +1800,8 @@ func TestGKeyInMessageListWithDrillFilter(t *testing.T) {
 	newModel, _ := model.handleMessageListKeys(key('g'))
 	m := newModel.(Model)
 
-	if m.level != LevelSubAggregate {
-		t.Errorf("expected level=LevelSubAggregate after 'g' with drill filter, got %v", m.level)
+	if m.level != levelSubAggregate {
+		t.Errorf("expected level=levelSubAggregate after 'g' with drill filter, got %v", m.level)
 	}
 	// ViewType should be next logical view (Recipients after Senders)
 	if m.viewType != query.ViewRecipients {
@@ -1819,12 +1819,12 @@ func TestGKeyInMessageListNoDrillFilter(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.messages = engine.messages
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.cursor = 2 // Start at third item
 	model.scrollOffset = 1
 	// No drill filter - 'g' should go back to aggregates
@@ -1834,8 +1834,8 @@ func TestGKeyInMessageListNoDrillFilter(t *testing.T) {
 	m := newModel.(Model)
 
 	// Should transition to aggregate level
-	if m.level != LevelAggregates {
-		t.Errorf("expected level=LevelAggregates after 'g' with no drill filter, got %v", m.level)
+	if m.level != levelAggregates {
+		t.Errorf("expected level=levelAggregates after 'g' with no drill filter, got %v", m.level)
 	}
 	// Cursor and scroll should reset
 	if m.cursor != 0 {
@@ -1877,12 +1877,12 @@ func TestStatsUpdateOnDrillDown(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	model.cursor = 0
 
@@ -1891,8 +1891,8 @@ func TestStatsUpdateOnDrillDown(t *testing.T) {
 	m := newModel.(Model)
 
 	// Verify we transitioned to message list
-	if m.level != LevelMessageList {
-		t.Errorf("expected LevelMessageList after drill-down, got %v", m.level)
+	if m.level != levelMessageList {
+		t.Errorf("expected levelMessageList after drill-down, got %v", m.level)
 	}
 
 	// The stats should be refreshed for the drill-down context
@@ -1925,12 +1925,12 @@ func TestPositionDisplayInMessageList(t *testing.T) {
 		engine.messages[i] = query.MessageSummary{ID: int64(i + 1), Subject: fmt.Sprintf("Test %d", i+1)}
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.messages = engine.messages
 	model.pageSize = 20
 	model.width = 100
 	model.height = 30
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.cursor = 49 // 50th message
 
 	// Get the footer view
@@ -1950,12 +1950,12 @@ func TestTabCyclesViewTypeAtAggregates(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	// Set non-zero cursor/scroll to verify reset
 	model.cursor = 5
@@ -1990,12 +1990,12 @@ func TestHomeKeyGoesToTop(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.cursor = 2
 	model.scrollOffset = 1
 
@@ -2023,12 +2023,12 @@ func TestContextStatsSetOnDrillDown(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	model.cursor = 0 // Select alice
 
@@ -2064,12 +2064,12 @@ func TestContextStatsClearedOnGoBack(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 
 	// Drill down
@@ -2102,12 +2102,12 @@ func TestContextStatsRestoredOnGoBackToSubAggregate(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 
 	// Step 1: Drill down to message list (sets contextStats from alice's row)
@@ -2118,7 +2118,7 @@ func TestContextStatsRestoredOnGoBackToSubAggregate(t *testing.T) {
 	}
 
 	// Simulate messages loaded and transition to message list level
-	m.level = LevelMessageList
+	m.level = levelMessageList
 	m.messages = engine.messages
 	m.filterKey = "alice@example.com"
 	originalContextStats := m.contextStats
@@ -2132,8 +2132,8 @@ func TestContextStatsRestoredOnGoBackToSubAggregate(t *testing.T) {
 		{Key: "domain2.com", Count: 40, TotalSize: 200000},
 	}
 	m2.loading = false
-	if m2.level != LevelSubAggregate {
-		t.Fatalf("expected LevelSubAggregate after Tab, got %v", m2.level)
+	if m2.level != levelSubAggregate {
+		t.Fatalf("expected levelSubAggregate after Tab, got %v", m2.level)
 	}
 	// contextStats should still be the same (alice's stats)
 	if m2.contextStats != originalContextStats {
@@ -2143,8 +2143,8 @@ func TestContextStatsRestoredOnGoBackToSubAggregate(t *testing.T) {
 	// Step 3: Drill down from sub-aggregate to message list (contextStats overwritten)
 	newModel3, _ := m2.handleSubAggregateKeys(keyEnter())
 	m3 := newModel3.(Model)
-	if m3.level != LevelMessageList {
-		t.Fatalf("expected LevelMessageList after Enter, got %v", m3.level)
+	if m3.level != levelMessageList {
+		t.Fatalf("expected levelMessageList after Enter, got %v", m3.level)
 	}
 	// contextStats should now be domain1's stats (60)
 	if m3.contextStats == nil || m3.contextStats.MessageCount != 60 {
@@ -2154,8 +2154,8 @@ func TestContextStatsRestoredOnGoBackToSubAggregate(t *testing.T) {
 	// Step 4: Go back to sub-aggregate (contextStats should be restored to alice's stats)
 	newModel4, _ := m3.goBack()
 	m4 := newModel4.(Model)
-	if m4.level != LevelSubAggregate {
-		t.Fatalf("expected LevelSubAggregate after goBack, got %v", m4.level)
+	if m4.level != levelSubAggregate {
+		t.Fatalf("expected levelSubAggregate after goBack, got %v", m4.level)
 	}
 	// contextStats should be restored from breadcrumb
 	if m4.contextStats == nil {
@@ -2169,10 +2169,10 @@ func TestContextStatsRestoredOnGoBackToSubAggregate(t *testing.T) {
 func TestContextStatsDisplayedInHeader(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.width = 100
 	model.height = 20
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.stats = &query.TotalStats{MessageCount: 10000, TotalSize: 50000000, AttachmentCount: 500}
 	model.contextStats = &query.TotalStats{MessageCount: 100, TotalSize: 500000}
 
@@ -2191,10 +2191,10 @@ func TestContextStatsDisplayedInHeader(t *testing.T) {
 func TestContextStatsShowsAttachmentCountInHeader(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.width = 120
 	model.height = 20
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.stats = &query.TotalStats{MessageCount: 10000, TotalSize: 50000000, AttachmentCount: 500}
 	// contextStats with attachment count
 	model.contextStats = &query.TotalStats{MessageCount: 100, TotalSize: 500000, AttachmentCount: 42}
@@ -2214,10 +2214,10 @@ func TestContextStatsShowsAttachmentCountInHeader(t *testing.T) {
 func TestContextStatsShowsZeroAttachmentCount(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.width = 120
 	model.height = 20
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.stats = &query.TotalStats{MessageCount: 10000, TotalSize: 50000000, AttachmentCount: 500}
 	// contextStats with zero attachment count
 	model.contextStats = &query.TotalStats{MessageCount: 100, TotalSize: 500000, AttachmentCount: 0}
@@ -2240,12 +2240,12 @@ func TestPositionShowsTotalFromContextStats(t *testing.T) {
 		messages[i] = query.MessageSummary{ID: int64(i + 1), Subject: fmt.Sprintf("Msg %d", i+1)}
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.messages = messages
 	model.pageSize = 20
 	model.width = 100
 	model.height = 30
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.cursor = 49                                         // 50th message
 	model.contextStats = &query.TotalStats{MessageCount: 500} // 500 total in group
 
@@ -2269,12 +2269,12 @@ func TestPositionShowsLoadedCountWhenAllLoaded(t *testing.T) {
 		messages[i] = query.MessageSummary{ID: int64(i + 1)}
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.messages = messages
 	model.pageSize = 20
 	model.width = 100
 	model.height = 30
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.cursor = 24
 	model.contextStats = &query.TotalStats{MessageCount: 50} // Same as loaded
 
@@ -2295,12 +2295,12 @@ func TestPositionShowsLoadedCountWhenNoContextStats(t *testing.T) {
 		messages[i] = query.MessageSummary{ID: int64(i + 1)}
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.messages = messages
 	model.pageSize = 20
 	model.width = 100
 	model.height = 30
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.cursor = 49
 	model.contextStats = nil // No context stats (e.g., "All Messages" view)
 
@@ -2326,12 +2326,12 @@ func TestPositionShowsLoadedCountWhenContextStatsSmaller(t *testing.T) {
 		messages[i] = query.MessageSummary{ID: int64(i + 1)}
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.messages = messages
 	model.pageSize = 20
 	model.width = 100
 	model.height = 30
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.cursor = 49
 	// contextStats says 50, but we have 100 loaded (stale/inconsistent state)
 	model.contextStats = &query.TotalStats{MessageCount: 50}
@@ -2356,12 +2356,12 @@ func TestPositionUsesGlobalStatsForAllMessagesView(t *testing.T) {
 		messages[i] = query.MessageSummary{ID: int64(i + 1)}
 	}
 
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.messages = messages
 	model.pageSize = 20
 	model.width = 100
 	model.height = 30
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.cursor = 99 // 100th message
 	model.allMessages = true                                      // All Messages view
 	model.contextStats = nil                                      // No drill-down context
@@ -2382,40 +2382,40 @@ func TestPositionUsesGlobalStatsForAllMessagesView(t *testing.T) {
 // TestHelpModalOpensWithQuestionMark verifies '?' opens the help modal.
 func TestHelpModalOpensWithQuestionMark(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelAggregates
-	model.modal = ModalNone
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelAggregates
+	model.modal = modalNone
 
 	// Press '?'
 	newModel, _ := model.Update(key('?'))
 	m := newModel.(Model)
 
-	if m.modal != ModalHelp {
-		t.Errorf("expected ModalHelp after '?', got %v", m.modal)
+	if m.modal != modalHelp {
+		t.Errorf("expected modalHelp after '?', got %v", m.modal)
 	}
 }
 
 // TestHelpModalClosesOnAnyKey verifies help modal closes on any key.
 func TestHelpModalClosesOnAnyKey(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelAggregates
-	model.modal = ModalHelp
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelAggregates
+	model.modal = modalHelp
 
 	// Press any key (e.g., Enter)
 	newModel, _ := model.Update(keyEnter())
 	m := newModel.(Model)
 
-	if m.modal != ModalNone {
-		t.Errorf("expected ModalNone after pressing key in help, got %v", m.modal)
+	if m.modal != modalNone {
+		t.Errorf("expected modalNone after pressing key in help, got %v", m.modal)
 	}
 }
 
 // TestVKeyReversesSortOrder verifies 'v' reverses sort direction.
 func TestVKeyReversesSortOrder(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelAggregates
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelAggregates
 	model.sortDirection = query.SortDesc
 	model.rows = []query.AggregateRow{{Key: "test", Count: 1}}
 
@@ -2439,8 +2439,8 @@ func TestVKeyReversesSortOrder(t *testing.T) {
 // TestSearchSetsContextStats verifies search results set contextStats for header metrics.
 func TestSearchSetsContextStats(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelAggregates
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelAggregates
 	model.searchRequestID = 1
 
 	// Simulate receiving search results
@@ -2465,8 +2465,8 @@ func TestSearchSetsContextStats(t *testing.T) {
 // TestSearchZeroResultsClearsContextStats verifies contextStats is set to zero on empty search.
 func TestSearchZeroResultsClearsContextStats(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelAggregates
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelAggregates
 	model.searchRequestID = 1
 	// Set stale contextStats from previous view
 	model.contextStats = &query.TotalStats{MessageCount: 500}
@@ -2493,8 +2493,8 @@ func TestSearchZeroResultsClearsContextStats(t *testing.T) {
 // TestSearchPaginationUpdatesContextStats verifies contextStats updates on append when total unknown.
 func TestSearchPaginationUpdatesContextStats(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelMessageList
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelMessageList
 	model.searchRequestID = 1
 	model.searchTotalCount = -1 // Unknown total
 	model.messages = make([]query.MessageSummary, 50)
@@ -2530,7 +2530,7 @@ func TestSearchPaginationUpdatesContextStats(t *testing.T) {
 // caused TotalSize and AttachmentCount to disappear from the header.
 func TestSearchResultsPreservesDrillDownContextStats(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.searchQuery = "important"
 	model.cursor = 0 // alice@example.com: Count=100, TotalSize=1000, AttachmentCount=5
 
@@ -2576,7 +2576,7 @@ func TestSearchResultsPreservesDrillDownContextStats(t *testing.T) {
 // TestSearchResultsWithoutDrillDownContextStats verifies that when searching
 // without a drill-down context, contextStats is created with only MessageCount.
 func TestSearchResultsWithoutDrillDownContextStats(t *testing.T) {
-	model := newTestModelAtLevel(LevelMessageList)
+	model := newTestModelAtLevel(levelMessageList)
 	model.searchRequestID = 1
 
 	// Simulate searchResultsMsg arriving (no prior drill-down, so no TotalSize/AttachmentCount)
@@ -2606,7 +2606,7 @@ func TestSearchResultsWithoutDrillDownContextStats(t *testing.T) {
 // TestAggregateSearchFilterSetsContextStats verifies contextStats is calculated from
 // filtered aggregate rows when a search filter is active.
 func TestAggregateSearchFilterSetsContextStats(t *testing.T) {
-	model := newTestModelAtLevel(LevelAggregates).
+	model := newTestModelAtLevel(levelAggregates).
 		withSearchQuery("test query").
 		withAggregateRequestID(1)
 
@@ -2637,7 +2637,7 @@ func TestAggregateSearchFilterSetsContextStats(t *testing.T) {
 // TestAggregateNoSearchFilterClearsContextStats verifies contextStats is cleared
 // when no search filter is active at aggregate level.
 func TestAggregateNoSearchFilterClearsContextStats(t *testing.T) {
-	model := newTestModelAtLevel(LevelAggregates).
+	model := newTestModelAtLevel(levelAggregates).
 		withAggregateRequestID(1).
 		withContextStats(&query.TotalStats{MessageCount: 500}) // Stale stats
 
@@ -2657,7 +2657,7 @@ func TestAggregateNoSearchFilterClearsContextStats(t *testing.T) {
 // TestSubAggregateSearchFilterSetsContextStats verifies contextStats is calculated
 // at sub-aggregate level when search filter is active.
 func TestSubAggregateSearchFilterSetsContextStats(t *testing.T) {
-	model := newTestModelAtLevel(LevelSubAggregate).
+	model := newTestModelAtLevel(levelSubAggregate).
 		withSearchQuery("important").
 		withAggregateRequestID(1)
 
@@ -2690,7 +2690,7 @@ func TestHeaderViewShowsFilteredStatsOnSearch(t *testing.T) {
 	filteredStats := &query.TotalStats{MessageCount: 42, TotalSize: 12345, AttachmentCount: 7}
 	globalStats := &query.TotalStats{MessageCount: 1000, TotalSize: 999999, AttachmentCount: 100}
 
-	model := newTestModelAtLevel(LevelAggregates).
+	model := newTestModelAtLevel(levelAggregates).
 		withSearchQuery("test").
 		withContextStats(filteredStats).
 		withGlobalStats(globalStats)
@@ -2710,7 +2710,7 @@ func TestHeaderViewShowsFilteredStatsOnSearch(t *testing.T) {
 // filtered aggregate uses search (not loadMessages) to apply the search filter.
 func TestDrillDownWithSearchQueryUsesSearch(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.searchQuery = "important" // Active search filter
 	model.cursor = 0                // alice@example.com
 
@@ -2719,8 +2719,8 @@ func TestDrillDownWithSearchQueryUsesSearch(t *testing.T) {
 	m := newModel.(Model)
 
 	// Should transition to message list
-	if m.level != LevelMessageList {
-		t.Errorf("expected LevelMessageList, got %v", m.level)
+	if m.level != levelMessageList {
+		t.Errorf("expected levelMessageList, got %v", m.level)
 	}
 
 	// Should preserve search query
@@ -2748,15 +2748,15 @@ func TestDrillDownWithSearchQueryUsesSearch(t *testing.T) {
 // without a search filter uses loadMessages (not search).
 func TestDrillDownWithoutSearchQueryUsesLoadMessages(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.searchQuery = "" // No search filter
 	model.cursor = 0
 
 	newModel, cmd := model.handleAggregateKeys(keyEnter())
 	m := newModel.(Model)
 
-	if m.level != LevelMessageList {
-		t.Errorf("expected LevelMessageList, got %v", m.level)
+	if m.level != levelMessageList {
+		t.Errorf("expected levelMessageList, got %v", m.level)
 	}
 
 	// loadRequestID should have been incremented
@@ -2778,7 +2778,7 @@ func TestDrillDownWithoutSearchQueryUsesLoadMessages(t *testing.T) {
 // also uses search when a query is active.
 func TestSubAggregateDrillDownWithSearchQuery(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
-	model.level = LevelSubAggregate
+	model.level = levelSubAggregate
 	model.searchQuery = "urgent"
 	model.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
 	model.drillViewType = query.ViewSenders
@@ -2788,8 +2788,8 @@ func TestSubAggregateDrillDownWithSearchQuery(t *testing.T) {
 	newModel, cmd := model.handleSubAggregateKeys(keyEnter())
 	m := newModel.(Model)
 
-	if m.level != LevelMessageList {
-		t.Errorf("expected LevelMessageList, got %v", m.level)
+	if m.level != levelMessageList {
+		t.Errorf("expected levelMessageList, got %v", m.level)
 	}
 
 	// Should preserve search query
@@ -2816,10 +2816,10 @@ func TestSubAggregateDrillDownWithSearchQuery(t *testing.T) {
 // navigating back from sub-aggregate to message list.
 func TestViewTypeRestoredAfterEscFromSubAggregate(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 
 	// Set up message list state with ViewSenders
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.viewType = query.ViewSenders
 	model.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
 	model.drillViewType = query.ViewSenders
@@ -2831,8 +2831,8 @@ func TestViewTypeRestoredAfterEscFromSubAggregate(t *testing.T) {
 	newModel, _ := model.Update(keyTab())
 	m := newModel.(Model)
 
-	if m.level != LevelSubAggregate {
-		t.Fatalf("expected LevelSubAggregate, got %v", m.level)
+	if m.level != levelSubAggregate {
+		t.Fatalf("expected levelSubAggregate, got %v", m.level)
 	}
 	// viewType should have changed to next sub-group view (Recipients)
 	if m.viewType != query.ViewRecipients {
@@ -2843,8 +2843,8 @@ func TestViewTypeRestoredAfterEscFromSubAggregate(t *testing.T) {
 	newModel2, _ := m.goBack()
 	m2 := newModel2.(Model)
 
-	if m2.level != LevelMessageList {
-		t.Fatalf("expected LevelMessageList after Esc, got %v", m2.level)
+	if m2.level != levelMessageList {
+		t.Fatalf("expected levelMessageList after Esc, got %v", m2.level)
 	}
 	// viewType should be restored to ViewSenders
 	if m2.viewType != query.ViewSenders {
@@ -2857,10 +2857,10 @@ func TestViewTypeRestoredAfterEscFromSubAggregate(t *testing.T) {
 // without requiring a reload.
 func TestCursorScrollPreservedAfterGoBack(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 
 	// Set up aggregate view with cursor at row 5
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	model.cursor = 5
 	model.scrollOffset = 3
@@ -2873,15 +2873,15 @@ func TestCursorScrollPreservedAfterGoBack(t *testing.T) {
 	newModel, _ := model.Update(keyEnter())
 	m := newModel.(Model)
 
-	if m.level != LevelMessageList {
-		t.Fatalf("expected LevelMessageList, got %v", m.level)
+	if m.level != levelMessageList {
+		t.Fatalf("expected levelMessageList, got %v", m.level)
 	}
 
 	// Verify breadcrumb was saved with cached rows
 	if len(m.breadcrumbs) != 1 {
 		t.Fatalf("expected 1 breadcrumb, got %d", len(m.breadcrumbs))
 	}
-	if m.breadcrumbs[0].CachedRows == nil {
+	if m.breadcrumbs[0].state.rows == nil {
 		t.Error("expected CachedRows to be set in breadcrumb")
 	}
 
@@ -2916,15 +2916,15 @@ func TestCursorScrollPreservedAfterGoBack(t *testing.T) {
 // TestGoBackClearsError verifies that goBack clears any stale error.
 func TestGoBackClearsError(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 
 	// Set up with a breadcrumb and an error
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.err = fmt.Errorf("some previous error")
-	model.breadcrumbs = []Breadcrumb{{
-		Level:    LevelAggregates,
-		ViewType: query.ViewSenders,
-	}}
+	model.breadcrumbs = []navigationSnapshot{{state: viewState{
+		level:    levelAggregates,
+		viewType: query.ViewSenders,
+	}}}
 
 	// Go back
 	newModel, _ := model.goBack()
@@ -2940,10 +2940,10 @@ func TestGoBackClearsError(t *testing.T) {
 // when navigating back from message detail to message list.
 func TestDrillFilterPreservedAfterMessageDetail(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 
 	// Set up message list with drill filter (sender + recipient combined)
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.viewType = query.ViewRecipients
 	model.drillFilter = query.MessageFilter{
 		Sender:    "alice@example.com",
@@ -2962,8 +2962,8 @@ func TestDrillFilterPreservedAfterMessageDetail(t *testing.T) {
 	newModel, _ := model.Update(keyEnter())
 	m := newModel.(Model)
 
-	if m.level != LevelMessageDetail {
-		t.Fatalf("expected LevelMessageDetail, got %v", m.level)
+	if m.level != levelMessageDetail {
+		t.Fatalf("expected levelMessageDetail, got %v", m.level)
 	}
 
 	// Verify breadcrumb saved drillFilter
@@ -2971,22 +2971,22 @@ func TestDrillFilterPreservedAfterMessageDetail(t *testing.T) {
 		t.Fatal("expected breadcrumb to be saved")
 	}
 	bc := m.breadcrumbs[len(m.breadcrumbs)-1]
-	if bc.DrillFilter.Sender != "alice@example.com" {
-		t.Errorf("expected breadcrumb DrillFilter.Sender='alice@example.com', got %q", bc.DrillFilter.Sender)
+	if bc.state.drillFilter.Sender != "alice@example.com" {
+		t.Errorf("expected breadcrumb DrillFilter.Sender='alice@example.com', got %q", bc.state.drillFilter.Sender)
 	}
-	if bc.DrillFilter.Recipient != "bob@example.com" {
-		t.Errorf("expected breadcrumb DrillFilter.Recipient='bob@example.com', got %q", bc.DrillFilter.Recipient)
+	if bc.state.drillFilter.Recipient != "bob@example.com" {
+		t.Errorf("expected breadcrumb DrillFilter.Recipient='bob@example.com', got %q", bc.state.drillFilter.Recipient)
 	}
-	if bc.DrillViewType != query.ViewSenders {
-		t.Errorf("expected breadcrumb DrillViewType=ViewSenders, got %v", bc.DrillViewType)
+	if bc.state.drillViewType != query.ViewSenders {
+		t.Errorf("expected breadcrumb DrillViewType=ViewSenders, got %v", bc.state.drillViewType)
 	}
 
 	// Press Esc to go back to message list
 	newModel2, _ := m.goBack()
 	m2 := newModel2.(Model)
 
-	if m2.level != LevelMessageList {
-		t.Fatalf("expected LevelMessageList after Esc, got %v", m2.level)
+	if m2.level != levelMessageList {
+		t.Fatalf("expected levelMessageList after Esc, got %v", m2.level)
 	}
 
 	// drillFilter should be restored
@@ -3009,10 +3009,10 @@ func TestDrillFilterPreservedAfterMessageDetail(t *testing.T) {
 // TestHeaderShowsTitleBar verifies the title bar shows msgvault with version.
 func TestHeaderShowsTitleBar(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "abc1234567890")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "abc1234567890"})
 	model.width = 100
 	model.height = 20
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 
 	header := model.headerView()
@@ -3037,10 +3037,10 @@ func TestHeaderShowsTitleBar(t *testing.T) {
 // TestHeaderShowsSelectedAccount verifies header shows selected account name.
 func TestHeaderShowsSelectedAccount(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.width = 100
 	model.height = 20
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.accounts = []query.AccountInfo{
 		{ID: 1, Identifier: "alice@gmail.com"},
 		{ID: 2, Identifier: "bob@gmail.com"},
@@ -3059,10 +3059,10 @@ func TestHeaderShowsSelectedAccount(t *testing.T) {
 // TestHeaderShowsViewTypeOnLine2 verifies line 2 shows current view type.
 func TestHeaderShowsViewTypeOnLine2(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.width = 100
 	model.height = 20
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	model.stats = &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}
 
@@ -3085,10 +3085,10 @@ func TestHeaderShowsViewTypeOnLine2(t *testing.T) {
 // TestHeaderDrillDownUsesPrefix verifies drill-down uses compact prefix (S: instead of From:).
 func TestHeaderDrillDownUsesPrefix(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.width = 100
 	model.height = 20
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.viewType = query.ViewRecipients
 	model.drillViewType = query.ViewSenders
 	model.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
@@ -3113,10 +3113,10 @@ func TestHeaderDrillDownUsesPrefix(t *testing.T) {
 // TestHeaderSubAggregateShowsDrillContext verifies sub-aggregate shows drill context.
 func TestHeaderSubAggregateShowsDrillContext(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.width = 100
 	model.height = 20
-	model.level = LevelSubAggregate
+	model.level = levelSubAggregate
 	model.viewType = query.ViewRecipients
 	model.drillViewType = query.ViewSenders
 	model.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
@@ -3148,10 +3148,10 @@ func TestHeaderSubAggregateShowsDrillContext(t *testing.T) {
 // TestHeaderWithAttachmentFilter verifies header shows attachment filter indicator.
 func TestHeaderWithAttachmentFilter(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.width = 100
 	model.height = 20
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.attachmentFilter = true
 
 	header := model.headerView()
@@ -3170,10 +3170,10 @@ func TestViewStructureHasTitleBarFirst(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "abc1234")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "abc1234"})
 	model.width = 100
 	model.height = 30
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	model.rows = engine.rows
 	model.pageSize = 20
@@ -3216,8 +3216,8 @@ func TestViewFitsTerminalHeight(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "abc1234")
-	model.level = LevelAggregates
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "abc1234"})
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	model.rows = engine.rows
 	model.stats = &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}
@@ -3260,8 +3260,8 @@ func TestViewFitsTerminalHeightDuringLoading(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "abc1234")
-	model.level = LevelAggregates
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "abc1234"})
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	model.rows = engine.rows
 	model.stats = &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}
@@ -3298,8 +3298,8 @@ func TestViewFitsTerminalHeightWithInlineSearch(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "abc1234")
-	model.level = LevelAggregates
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "abc1234"})
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	model.rows = engine.rows
 	model.stats = &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}
@@ -3336,8 +3336,8 @@ func TestViewFitsTerminalHeightAtMessageList(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "abc1234")
-	model.level = LevelMessageList
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "abc1234"})
+	model.level = levelMessageList
 	model.messages = engine.messages
 	model.filterKey = "alice@example.com"
 	model.stats = &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}
@@ -3373,7 +3373,7 @@ func TestViewFitsTerminalHeightStartupSequence(t *testing.T) {
 
 	// Stage 1: Before WindowSizeMsg (width=0)
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "abc1234")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "abc1234"})
 	model.loading = true
 
 	view1 := model.View()
@@ -3464,8 +3464,8 @@ func TestViewFitsTerminalHeightWithBadData(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "abc1234")
-	model.level = LevelAggregates
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "abc1234"})
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	model.rows = engine.rows
 	model.stats = &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}
@@ -3518,8 +3518,8 @@ func TestViewFitsVariousTerminalSizes(t *testing.T) {
 				},
 			}
 
-			model := New(engine, "/tmp/test", "abc1234")
-			model.level = LevelAggregates
+			model := New(engine, Options{DataDir: "/tmp/test", Version: "abc1234"})
+			model.level = levelAggregates
 			model.viewType = query.ViewSenders
 			model.rows = engine.rows
 			model.stats = &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}
@@ -3557,8 +3557,8 @@ func TestViewDuringSpinnerAnimation(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "abc1234")
-	model.level = LevelAggregates
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "abc1234"})
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	model.rows = engine.rows
 	model.stats = &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}
@@ -3603,8 +3603,8 @@ func TestViewLineByLineAnalysis(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "abc1234")
-	model.level = LevelAggregates
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "abc1234"})
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	model.rows = engine.rows
 	model.stats = &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}
@@ -3657,8 +3657,8 @@ func TestHeaderLineFitsWidth(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "abc1234")
-	model.level = LevelAggregates
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "abc1234"})
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	model.rows = engine.rows
 	// Very long stats string
@@ -3707,10 +3707,10 @@ func TestFooterShowsTotalUniqueWhenAvailable(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "abc1234")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "abc1234"})
 	model.width = 100
 	model.height = 30
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	model.rows = engine.rows
 	model.pageSize = 20
@@ -3735,10 +3735,10 @@ func TestFooterShowsLoadedCountWhenNoTotalUnique(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "abc1234")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "abc1234"})
 	model.width = 100
 	model.height = 30
-	model.level = LevelAggregates
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	model.rows = engine.rows
 	model.pageSize = 20
@@ -3789,10 +3789,10 @@ func TestViewTypePrefixFallback(t *testing.T) {
 // Left = previous in list (lower index), Right = next in list (higher index).
 func TestDetailNavigationPrevNext(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 
 	// Set up message detail view with messages loaded
-	model.level = LevelMessageDetail
+	model.level = levelMessageDetail
 	model.messages = []query.MessageSummary{
 		{ID: 1, Subject: "First message"},
 		{ID: 2, Subject: "Second message"},
@@ -3840,10 +3840,10 @@ func TestDetailNavigationPrevNext(t *testing.T) {
 // TestDetailNavigationAtBoundary verifies flash message at first/last message.
 func TestDetailNavigationAtBoundary(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 
 	// Set up message detail view at first message (index 0)
-	model.level = LevelMessageDetail
+	model.level = levelMessageDetail
 	model.messages = []query.MessageSummary{
 		{ID: 1, Subject: "First message"},
 		{ID: 2, Subject: "Second message"},
@@ -3891,10 +3891,10 @@ func TestDetailNavigationAtBoundary(t *testing.T) {
 // h=left=prev (lower index), l=right=next (higher index).
 func TestDetailNavigationHLKeys(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 
 	// Set up message detail view
-	model.level = LevelMessageDetail
+	model.level = levelMessageDetail
 	model.messages = []query.MessageSummary{
 		{ID: 1, Subject: "First"},
 		{ID: 2, Subject: "Second"},
@@ -3926,10 +3926,10 @@ func TestDetailNavigationHLKeys(t *testing.T) {
 // TestDetailNavigationEmptyList verifies navigation with empty message list.
 func TestDetailNavigationEmptyList(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 
 	// Set up detail view with empty messages (edge case)
-	model.level = LevelMessageDetail
+	model.level = levelMessageDetail
 	model.messages = []query.MessageSummary{} // Empty!
 	model.detailMessageIndex = 0
 	model.cursor = 0
@@ -3954,10 +3954,10 @@ func TestDetailNavigationEmptyList(t *testing.T) {
 // TestDetailNavigationOutOfBoundsIndex verifies clamping of stale index.
 func TestDetailNavigationOutOfBoundsIndex(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 
 	// Set up detail view with index beyond list bounds (simulates stale state)
-	model.level = LevelMessageDetail
+	model.level = levelMessageDetail
 	model.messages = []query.MessageSummary{
 		{ID: 1, Subject: "Only message"},
 	}
@@ -3983,10 +3983,10 @@ func TestDetailNavigationOutOfBoundsIndex(t *testing.T) {
 // when returning to message list after navigating in detail view.
 func TestDetailNavigationCursorPreservedOnGoBack(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 
 	// Set up message list view
-	model.level = LevelMessageList
+	model.level = levelMessageList
 	model.messages = []query.MessageSummary{
 		{ID: 1, Subject: "First"},
 		{ID: 2, Subject: "Second"},
@@ -3998,13 +3998,13 @@ func TestDetailNavigationCursorPreservedOnGoBack(t *testing.T) {
 	model.height = 20
 
 	// Enter detail view (simulates pressing Enter on first message)
-	model.breadcrumbs = append(model.breadcrumbs, Breadcrumb{
-		Level:        LevelMessageList,
-		ViewType:     query.ViewSenders,
-		Cursor:       0, // Original cursor position
-		ScrollOffset: 0,
-	})
-	model.level = LevelMessageDetail
+	model.breadcrumbs = append(model.breadcrumbs, navigationSnapshot{state: viewState{
+		level:        levelMessageList,
+		viewType:     query.ViewSenders,
+		cursor:       0, // Original cursor position
+		scrollOffset: 0,
+	}})
+	model.level = levelMessageDetail
 	model.detailMessageIndex = 0
 	model.cursor = 0
 
@@ -4018,8 +4018,8 @@ func TestDetailNavigationCursorPreservedOnGoBack(t *testing.T) {
 
 	// Cursor should be preserved at position 2 (where we navigated to)
 	// not restored to position 0 (where we entered)
-	if m.level != LevelMessageList {
-		t.Errorf("expected LevelMessageList, got %v", m.level)
+	if m.level != levelMessageList {
+		t.Errorf("expected levelMessageList, got %v", m.level)
 	}
 	if m.cursor != 2 {
 		t.Errorf("expected cursor=2 (preserved from navigation), got %d", m.cursor)
@@ -4031,7 +4031,7 @@ func TestDetailNavigationCursorPreservedOnGoBack(t *testing.T) {
 // threadCursor and threadScrollOffset in sync.
 func TestDetailNavigationFromThreadView(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 
 	// Set up thread view with different messages than the list
 	model.threadMessages = []query.MessageSummary{
@@ -4047,7 +4047,7 @@ func TestDetailNavigationFromThreadView(t *testing.T) {
 	}
 
 	// Enter detail view from thread view (simulates pressing Enter in thread view)
-	model.level = LevelMessageDetail
+	model.level = levelMessageDetail
 	model.detailFromThread = true
 	model.detailMessageIndex = 1 // Viewing second thread message (ID=101)
 	model.threadCursor = 1
@@ -4137,19 +4137,19 @@ func TestLayoutFitsTerminalHeight(t *testing.T) {
 	tests := []struct {
 		name   string
 		height int
-		level  ViewLevel
+		level  viewLevel
 	}{
-		{"aggregate_small", 10, LevelAggregates},
-		{"aggregate_normal", 24, LevelAggregates},
-		{"messagelist_small", 10, LevelMessageList},
-		{"messagelist_normal", 24, LevelMessageList},
-		{"detail_small", 10, LevelMessageDetail},
-		{"detail_normal", 24, LevelMessageDetail},
+		{"aggregate_small", 10, levelAggregates},
+		{"aggregate_normal", 24, levelAggregates},
+		{"messagelist_small", 10, levelMessageList},
+		{"messagelist_normal", 24, levelMessageList},
+		{"detail_small", 10, levelMessageDetail},
+		{"detail_normal", 24, levelMessageDetail},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			model := New(engine, "/tmp/test", "test123")
+			model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 			model.rows = engine.rows
 			model.width = 100
 			model.height = tc.height
@@ -4158,12 +4158,12 @@ func TestLayoutFitsTerminalHeight(t *testing.T) {
 			model.level = tc.level
 
 			// Set up messages for message list/detail views
-			if tc.level == LevelMessageList || tc.level == LevelMessageDetail {
+			if tc.level == levelMessageList || tc.level == levelMessageDetail {
 				model.messages = []query.MessageSummary{
 					{ID: 1, Subject: "Test message"},
 				}
 			}
-			if tc.level == LevelMessageDetail {
+			if tc.level == levelMessageDetail {
 				model.messageDetail = &query.MessageDetail{
 					ID:       1,
 					Subject:  "Test message",
@@ -4202,10 +4202,10 @@ func TestLayoutFitsTerminalHeight(t *testing.T) {
 // TestScrollClampingAfterResize verifies detailScroll is clamped when max changes.
 func TestScrollClampingAfterResize(t *testing.T) {
 	engine := &mockEngine{}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 
 	// Set up detail view with scroll position
-	model.level = LevelMessageDetail
+	model.level = levelMessageDetail
 	model.width = 100
 	model.height = 20
 	model.pageSize = 15
@@ -4248,13 +4248,13 @@ func TestModalCompositingPreservesANSI(t *testing.T) {
 			{Key: "charlie@example.com", Count: 25, TotalSize: 250000},
 		},
 	}
-	model := New(engine, "/tmp/test", "test123")
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = engine.rows
 	model.width = 80
 	model.height = 24
 	model.pageSize = 19
 	model.loading = false
-	model.modal = ModalQuitConfirm
+	model.modal = modalQuitConfirm
 
 	// Render the view with quit modal - this uses overlayModal
 	view := model.View()
@@ -4335,8 +4335,8 @@ func TestSubAggregateAKeyJumpsToMessages(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelSubAggregate
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelSubAggregate
 	model.viewType = query.ViewLabels
 	model.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
 	model.drillViewType = query.ViewSenders
@@ -4351,8 +4351,8 @@ func TestSubAggregateAKeyJumpsToMessages(t *testing.T) {
 	m := newModel.(Model)
 
 	// Should navigate to message list
-	if m.level != LevelMessageList {
-		t.Errorf("expected LevelMessageList, got %v", m.level)
+	if m.level != levelMessageList {
+		t.Errorf("expected levelMessageList, got %v", m.level)
 	}
 
 	// Should have a command to load messages
@@ -4371,8 +4371,8 @@ func TestSubAggregateAKeyJumpsToMessages(t *testing.T) {
 	}
 
 	// Breadcrumb should be for sub-aggregate level
-	if m.breadcrumbs[0].Level != LevelSubAggregate {
-		t.Errorf("expected breadcrumb level = LevelSubAggregate, got %v", m.breadcrumbs[0].Level)
+	if m.breadcrumbs[0].state.level != levelSubAggregate {
+		t.Errorf("expected breadcrumb level = levelSubAggregate, got %v", m.breadcrumbs[0].state.level)
 	}
 }
 
@@ -4386,8 +4386,8 @@ func TestDKeyAutoSelectsCurrentRow(t *testing.T) {
 		gmailIDs: []string{"msg1", "msg2"},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelAggregates
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	model.rows = engine.rows
 	model.pageSize = 10
@@ -4411,8 +4411,8 @@ func TestDKeyAutoSelectsCurrentRow(t *testing.T) {
 	}
 
 	// Should show delete confirmation modal
-	if m.modal != ModalDeleteConfirm {
-		t.Errorf("expected ModalDeleteConfirm, got %v", m.modal)
+	if m.modal != modalDeleteConfirm {
+		t.Errorf("expected modalDeleteConfirm, got %v", m.modal)
 	}
 }
 
@@ -4426,8 +4426,8 @@ func TestDKeyWithExistingSelection(t *testing.T) {
 		gmailIDs: []string{"msg1", "msg2"},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelAggregates
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelAggregates
 	model.viewType = query.ViewSenders
 	model.rows = engine.rows
 	model.pageSize = 10
@@ -4455,8 +4455,8 @@ func TestDKeyWithExistingSelection(t *testing.T) {
 	}
 
 	// Should show delete confirmation modal
-	if m.modal != ModalDeleteConfirm {
-		t.Errorf("expected ModalDeleteConfirm, got %v", m.modal)
+	if m.modal != modalDeleteConfirm {
+		t.Errorf("expected modalDeleteConfirm, got %v", m.modal)
 	}
 }
 
@@ -4469,8 +4469,8 @@ func TestMessageListDKeyAutoSelectsCurrentMessage(t *testing.T) {
 		},
 	}
 
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelMessageList
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelMessageList
 	model.messages = engine.messages
 	model.pageSize = 10
 	model.cursor = 0 // On first message
@@ -4493,16 +4493,16 @@ func TestMessageListDKeyAutoSelectsCurrentMessage(t *testing.T) {
 	}
 
 	// Should show delete confirmation modal
-	if m.modal != ModalDeleteConfirm {
-		t.Errorf("expected ModalDeleteConfirm, got %v", m.modal)
+	if m.modal != modalDeleteConfirm {
+		t.Errorf("expected modalDeleteConfirm, got %v", m.modal)
 	}
 }
 
 func TestExportAttachmentsModal(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelMessageDetail
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelMessageDetail
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
@@ -4519,8 +4519,8 @@ func TestExportAttachmentsModal(t *testing.T) {
 	newModel, _ := model.handleMessageDetailKeys(key('e'))
 	m := newModel.(Model)
 
-	if m.modal != ModalExportAttachments {
-		t.Errorf("expected ModalExportAttachments, got %v", m.modal)
+	if m.modal != modalExportAttachments {
+		t.Errorf("expected modalExportAttachments, got %v", m.modal)
 	}
 
 	// Should have all attachments selected by default
@@ -4562,8 +4562,8 @@ func TestExportAttachmentsModal(t *testing.T) {
 	// Test cancel with Esc
 	newModel, _ = m.handleModalKeys(keyEsc())
 	m = newModel.(Model)
-	if m.modal != ModalNone {
-		t.Errorf("expected ModalNone after Esc, got %v", m.modal)
+	if m.modal != modalNone {
+		t.Errorf("expected modalNone after Esc, got %v", m.modal)
 	}
 	if m.exportSelection != nil {
 		t.Error("expected exportSelection to be cleared after Esc")
@@ -4573,8 +4573,8 @@ func TestExportAttachmentsModal(t *testing.T) {
 func TestExportAttachmentsNoAttachments(t *testing.T) {
 	engine := &mockEngine{}
 
-	model := New(engine, "/tmp/test", "test123")
-	model.level = LevelMessageDetail
+	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
+	model.level = levelMessageDetail
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
@@ -4588,7 +4588,7 @@ func TestExportAttachmentsNoAttachments(t *testing.T) {
 	newModel, _ := model.handleMessageDetailKeys(key('e'))
 	m := newModel.(Model)
 
-	if m.modal == ModalExportAttachments {
+	if m.modal == modalExportAttachments {
 		t.Error("expected modal NOT to open when no attachments")
 	}
 	if m.flashMessage != "No attachments to export" {
