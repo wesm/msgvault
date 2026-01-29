@@ -628,6 +628,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Recalculate detail line count if in detail view (width affects wrapping)
 		if m.level == levelMessageDetail && m.messageDetail != nil {
 			m.updateDetailLineCount()
+			// Recompute detail search matches since line indices depend on text wrapping
+			if m.detailSearchQuery != "" {
+				m.findDetailMatches()
+				// Clamp match index to new match count
+				if m.detailSearchMatchIndex >= len(m.detailSearchMatches) {
+					if len(m.detailSearchMatches) > 0 {
+						m.detailSearchMatchIndex = len(m.detailSearchMatches) - 1
+					} else {
+						m.detailSearchMatchIndex = 0
+					}
+				}
+			}
 			m.clampDetailScroll()
 		}
 		return m, nil

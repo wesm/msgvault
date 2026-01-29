@@ -136,26 +136,35 @@ func extractSearchTerms(queryStr string) []string {
 }
 
 // applyHighlight wraps all case-insensitive occurrences of any term in text with highlightStyle.
+// It operates on runes to avoid byte-offset mismatches when strings.ToLower changes byte length
+// (e.g., certain Unicode characters like İ).
 func applyHighlight(text string, terms []string) string {
 	if len(terms) == 0 {
 		return text
 	}
-	lower := strings.ToLower(text)
-	// Build list of highlight intervals [start, end)
+	textRunes := []rune(text)
+	lowerRunes := []rune(strings.ToLower(text))
+	// Build list of highlight intervals [start, end) in rune indices
 	type interval struct{ start, end int }
 	var intervals []interval
 	for _, term := range terms {
-		tl := strings.ToLower(term)
-		idx := 0
-		for {
-			pos := strings.Index(lower[idx:], tl)
-			if pos < 0 {
-				break
+		termLowerRunes := []rune(strings.ToLower(term))
+		tLen := len(termLowerRunes)
+		if tLen == 0 {
+			continue
+		}
+		for i := 0; i <= len(lowerRunes)-tLen; i++ {
+			match := true
+			for j := 0; j < tLen; j++ {
+				if lowerRunes[i+j] != termLowerRunes[j] {
+					match = false
+					break
+				}
 			}
-			start := idx + pos
-			end := start + len(tl)
-			intervals = append(intervals, interval{start, end})
-			idx = end
+			if match {
+				intervals = append(intervals, interval{i, i + tLen})
+				i += tLen - 1 // skip past this match
+			}
 		}
 	}
 	if len(intervals) == 0 {
@@ -179,15 +188,15 @@ func applyHighlight(text string, terms []string) string {
 			merged = append(merged, iv)
 		}
 	}
-	// Build result
+	// Build result using rune slicing
 	var sb strings.Builder
 	prev := 0
 	for _, iv := range merged {
-		sb.WriteString(text[prev:iv.start])
-		sb.WriteString(highlightStyle.Render(text[iv.start:iv.end]))
+		sb.WriteString(string(textRunes[prev:iv.start]))
+		sb.WriteString(highlightStyle.Render(string(textRunes[iv.start:iv.end])))
 		prev = iv.end
 	}
-	sb.WriteString(text[prev:])
+	sb.WriteString(string(textRunes[prev:]))
 	return sb.String()
 }
 
