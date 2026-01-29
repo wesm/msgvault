@@ -1105,6 +1105,9 @@ func TestHasFTSTable_ErrorDoesNotCache(t *testing.T) {
 		t.Skipf("FTS5 not available, cannot verify error-does-not-cache behavior: %v", err)
 	}
 
+	// Re-create engine after FTS table creation to get fresh (uncached) state
+	env.Engine = NewSQLiteEngine(env.DB)
+
 	// First call with canceled context should fail and return false without caching
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
