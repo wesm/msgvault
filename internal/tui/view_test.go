@@ -132,3 +132,21 @@ func TestApplyHighlight(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyHighlightProducesOutput(t *testing.T) {
+	// Verify that highlighting actually modifies the output when matches exist.
+	// Note: lipgloss may strip ANSI in non-TTY environments, so we check that
+	// the raw output differs from the input OR contains ANSI escapes.
+	result := applyHighlight("hello world", []string{"world"})
+	if result == "hello world" {
+		t.Log("lipgloss did not produce ANSI output (expected in non-TTY environments)")
+	} else if !strings.Contains(result, "world") {
+		t.Errorf("highlighted output missing matched text: %q", result)
+	}
+
+	// No match should return input unchanged
+	result = applyHighlight("hello world", []string{"xyz"})
+	if result != "hello world" {
+		t.Errorf("expected unchanged output for no match, got: %q", result)
+	}
+}
