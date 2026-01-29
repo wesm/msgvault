@@ -171,7 +171,7 @@ func (m Model) goBack() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.frozenView = "" // Clear frozen view on navigation back
+	m.transitionBuffer = "" // Clear frozen view on navigation back
 
 	// Pop breadcrumb
 	bc := m.breadcrumbs[len(m.breadcrumbs)-1]

@@ -1531,7 +1531,7 @@ func TestInlineSearchTabToggleAtMessageList(t *testing.T) {
 		t.Error("expected inlineSearchLoading = true after Tab toggle with query")
 	}
 
-	// Should NOT clear messages (frozenView handles the transition)
+	// Should NOT clear messages (transitionBuffer handles the transition)
 	// The old messages stay in place until new results arrive
 
 	// Should trigger a search command

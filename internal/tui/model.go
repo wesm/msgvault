@@ -146,10 +146,10 @@ type Model struct {
 	inlineSearchDebounce uint64 // Increment to cancel pending debounce timers
 	inlineSearchLoading  bool   // True when a debounced search query is in-flight
 
-	// Frozen view: holds the last rendered view during level transitions.
+	// transitionBuffer holds the last rendered view during level transitions.
 	// When non-empty, View() returns this string instead of rendering fresh content.
 	// This prevents visual flashing during async data loads on screen transitions.
-	frozenView string
+	transitionBuffer string
 
 	// Flash message (temporary notification)
 	flashMessage   string    // Message to display
@@ -383,6 +383,10 @@ const flashDuration = 4 * time.Second
 // searchPageSize is the number of results per page for search pagination.
 const searchPageSize = 100
 
+// headerFooterLines is the number of fixed lines reserved for the UI chrome:
+// title bar (1) + breadcrumb (1) + table header (1) + separator (1) + footer (1).
+const headerFooterLines = 5
+
 // loadSearch executes the search query based on current mode.
 func (m Model) loadSearch(queryStr string) tea.Cmd {
 	return m.loadSearchWithOffset(queryStr, 0, false)
@@ -607,7 +611,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKeyPress(msg)
 
 	case tea.WindowSizeMsg:
-		m.frozenView = "" // Clear frozen view on resize to re-render with new dimensions
+		m.transitionBuffer = "" // Clear frozen view on resize to re-render with new dimensions
 		m.width = msg.Width
 		m.height = msg.Height
 		// Clamp dimensions to prevent panics from strings.Repeat with negative count
@@ -617,8 +621,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.height < 0 {
 			m.height = 0
 		}
-		// Reserve space for: title bar (1) + breadcrumb (1) + table header (1) + separator (1) + footer (1) = 5
-		m.pageSize = m.height - 5
+		m.pageSize = m.height - headerFooterLines
 		if m.pageSize < 1 {
 			m.pageSize = 1
 		}
@@ -634,7 +637,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.requestID != m.aggregateRequestID {
 			return m, nil
 		}
-		m.frozenView = "" // Unfreeze view now that data is ready
+		m.transitionBuffer = "" // Unfreeze view now that data is ready
 		m.loading = false
 		m.inlineSearchLoading = false
 		if msg.err != nil {
@@ -688,7 +691,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.requestID != m.loadRequestID {
 			return m, nil
 		}
-		m.frozenView = "" // Unfreeze view now that data is ready
+		m.transitionBuffer = "" // Unfreeze view now that data is ready
 		m.loading = false
 		m.inlineSearchLoading = false
 		if msg.err != nil {
@@ -711,7 +714,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.requestID != m.detailRequestID {
 			return m, nil
 		}
-		m.frozenView = "" // Unfreeze view now that data is ready
+		m.transitionBuffer = "" // Unfreeze view now that data is ready
 		m.loading = false
 		if msg.err != nil {
 			m.err = msg.err
@@ -729,7 +732,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.requestID != m.loadRequestID {
 			return m, nil
 		}
-		m.frozenView = "" // Unfreeze view now that data is ready
+		m.transitionBuffer = "" // Unfreeze view now that data is ready
 		m.loading = false
 		if msg.err != nil {
 			m.err = msg.err
@@ -749,7 +752,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.requestID != m.searchRequestID {
 			return m, nil
 		}
-		m.frozenView = "" // Unfreeze view now that data is ready
+		m.transitionBuffer = "" // Unfreeze view now that data is ready
 		m.loading = false
 		m.inlineSearchLoading = false
 		m.searchLoadingMore = false
@@ -1061,8 +1064,8 @@ func (m Model) View() string {
 
 	// If view is frozen (during level transitions), return the cached view
 	// to prevent flashing while async data loads complete.
-	if m.frozenView != "" {
-		return m.frozenView
+	if m.transitionBuffer != "" {
+		return m.transitionBuffer
 	}
 
 	return m.renderView()
@@ -1070,7 +1073,7 @@ func (m Model) View() string {
 
 // renderView renders the current view based on the active level.
 // Separated from View() so transitions can capture the current output
-// before changing state (for the frozenView pattern).
+// before changing state (for the transitionBuffer pattern).
 func (m Model) renderView() string {
 	switch m.level {
 	case levelAggregates, levelDrillDown:

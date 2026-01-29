@@ -119,9 +119,31 @@ func (m Model) handleInlineSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// handleGlobalKeys handles keys common to all views (quit, help).
+// Returns (model, cmd, true) if the key was handled, or (model, nil, false) otherwise.
+func (m Model) handleGlobalKeys(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch msg.String() {
+	case "q":
+		m.modal = modalQuitConfirm
+		return m, nil, true
+	case "ctrl+c":
+		m.quitting = true
+		return m, tea.Quit, true
+	case "?":
+		m.modal = modalHelp
+		return m, nil, true
+	}
+	return m, nil, false
+}
+
 // handleAggregateKeys handles keys in the aggregate and sub-aggregate views.
 func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	isSub := m.level == levelDrillDown
+
+	// Handle global keys (quit, help)
+	if m2, cmd, handled := m.handleGlobalKeys(msg); handled {
+		return m2, cmd
+	}
 
 	// Handle list navigation
 	if m.navigateList(msg.String(), len(m.rows)) {
@@ -129,13 +151,6 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
-	// Quit - show confirmation modal (Ctrl+C exits immediately)
-	case "q":
-		m.modal = modalQuitConfirm
-		return m, nil
-	case "ctrl+c":
-		m.quitting = true
-		return m, tea.Quit
 
 	// Esc: sub-agg tries goBack() first; top-level clears search
 	case "esc":
@@ -186,7 +201,7 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.clearAllSelections()
 
 	case "a": // Jump to all messages view
-		m.frozenView = m.renderView() // Freeze screen until data loads
+		m.transitionBuffer = m.renderView() // Freeze screen until data loads
 		m.pushBreadcrumb()
 		// Top-level: allMessages=true (no filter); sub-agg: allMessages=false (preserve drill filter)
 		m.allMessages = !isSub
@@ -218,7 +233,7 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Drill down - go to message list for selected aggregate
 	case "enter":
 		if len(m.rows) > 0 && m.cursor < len(m.rows) {
-			m.frozenView = m.renderView() // Freeze screen until data loads
+			m.transitionBuffer = m.renderView() // Freeze screen until data loads
 			m.pushBreadcrumb()
 
 			selectedRow := m.rows[m.cursor]
@@ -348,11 +363,6 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		m.aggregateRequestID++
 		return m, m.loadData()
-
-	// Help
-	case "?":
-		m.modal = modalHelp
-		return m, nil
 	}
 
 	return m, nil
@@ -379,8 +389,13 @@ func (m Model) nextSubGroupView(current query.ViewType) query.ViewType {
 
 // handleMessageListKeys handles keys in the message list view.
 func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Handle global keys (quit, help)
+	if m2, cmd, handled := m.handleGlobalKeys(msg); handled {
+		return m2, cmd
+	}
+
 	// Handle list navigation.
-	// NOTE: Unlike handleAggregateKeys/handleSubAggregateKeys, we check for deep search
+	// NOTE: Unlike handleAggregateKeys, we check for deep search
 	// loading between navigation and the early return. This is because pgdown/ctrl+d may
 	// need to trigger loading more search results after updating the cursor position.
 	handled := m.navigateList(msg.String(), len(m.messages))
@@ -402,14 +417,6 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
-	// Quit - show confirmation modal (Ctrl+C exits immediately)
-	case "q":
-		m.modal = modalQuitConfirm
-		return m, nil
-	case "ctrl+c":
-		m.quitting = true
-		return m, tea.Quit
-
 	// Back - navigate back if there are breadcrumbs, otherwise clear search
 	case "esc":
 		// If we have navigation history, go back first (preserves search context)
@@ -469,7 +476,7 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Sub-grouping: switch to aggregate breakdown within current filter
 	case "tab":
 		if m.hasDrillFilter() {
-			m.frozenView = m.renderView() // Freeze screen until data loads
+			m.transitionBuffer = m.renderView() // Freeze screen until data loads
 
 			// Save current state to breadcrumb (including viewType for proper restoration)
 			m.pushBreadcrumb()
@@ -491,7 +498,7 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Drill down to message detail
 	case "enter":
 		if len(m.messages) > 0 && m.cursor < len(m.messages) {
-			m.frozenView = m.renderView() // Freeze screen until data loads
+			m.transitionBuffer = m.renderView() // Freeze screen until data loads
 
 			// Save current state (include all fields for proper restoration)
 			m.pushBreadcrumb()
@@ -512,7 +519,7 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Sub-grouping: 'g' switches to aggregate breakdown within current filter (like tab)
 	case "g":
-		m.frozenView = m.renderView() // Freeze screen until data loads
+		m.transitionBuffer = m.renderView() // Freeze screen until data loads
 		if m.hasDrillFilter() {
 			// Save current state to breadcrumb (including viewType for proper restoration)
 			m.pushBreadcrumb()
@@ -578,7 +585,7 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.messages) > 0 && m.cursor < len(m.messages) {
 			convID := m.messages[m.cursor].ConversationID
 			if convID > 0 {
-				m.frozenView = m.renderView() // Freeze screen until data loads
+				m.transitionBuffer = m.renderView() // Freeze screen until data loads
 
 				// Save current state
 				m.pushBreadcrumb()
@@ -594,11 +601,6 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.loadThreadMessages(convID)
 			}
 		}
-
-	// Help
-	case "?":
-		m.modal = modalHelp
-		return m, nil
 	}
 
 	// Check if we should load more search results
@@ -668,15 +670,12 @@ func (m Model) handleMessageDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	switch msg.String() {
-	// Quit - show confirmation modal (Ctrl+C exits immediately)
-	case "q":
-		m.modal = modalQuitConfirm
-		return m, nil
-	case "ctrl+c":
-		m.quitting = true
-		return m, tea.Quit
+	// Handle global keys (quit, help) - but not when detail search is active
+	if m2, cmd, handled := m.handleGlobalKeys(msg); handled {
+		return m2, cmd
+	}
 
+	switch msg.String() {
 	// Back to message list or clear detail search
 	case "esc":
 		if m.detailSearchQuery != "" {
@@ -781,7 +780,7 @@ func (m Model) handleMessageDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// View thread
 	case "T":
 		if m.messageDetail != nil && m.messageDetail.ConversationID > 0 {
-			m.frozenView = m.renderView() // Freeze screen until data loads
+			m.transitionBuffer = m.renderView() // Freeze screen until data loads
 
 			// Save current state
 			m.pushBreadcrumb()
@@ -818,15 +817,12 @@ func (m Model) handleMessageDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleThreadViewKeys handles keys in the thread view.
 func (m Model) handleThreadViewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	// Quit
-	case "q":
-		m.modal = modalQuitConfirm
-		return m, nil
-	case "ctrl+c":
-		m.quitting = true
-		return m, tea.Quit
+	// Handle global keys (quit, help)
+	if m2, cmd, handled := m.handleGlobalKeys(msg); handled {
+		return m2, cmd
+	}
 
+	switch msg.String() {
 	// Back to previous view
 	case "esc":
 		return m.goBack()
@@ -861,7 +857,7 @@ func (m Model) handleThreadViewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// View message detail
 	case "enter":
 		if len(m.threadMessages) > 0 && m.threadCursor < len(m.threadMessages) {
-			m.frozenView = m.renderView() // Freeze screen until data loads
+			m.transitionBuffer = m.renderView() // Freeze screen until data loads
 
 			// Save current thread view state
 			m.pushBreadcrumb()
@@ -879,11 +875,6 @@ func (m Model) handleThreadViewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.detailRequestID++
 			return m, m.loadMessageDetail(m.threadMessages[m.threadCursor].ID)
 		}
-
-	// Help
-	case "?":
-		m.modal = modalHelp
-		return m, nil
 	}
 
 	return m, nil
