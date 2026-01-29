@@ -90,6 +90,151 @@ func (m *mockEngine) Close() error {
 // Test Fixtures
 // =============================================================================
 
+// TestModelBuilder helps construct Model instances for testing
+type TestModelBuilder struct {
+	rows          []query.AggregateRow
+	messages      []query.MessageSummary
+	messageDetail *query.MessageDetail
+	gmailIDs      []string
+	accounts      []query.AccountInfo
+	width         int
+	height        int
+	viewType      query.ViewType
+	level         viewLevel
+	dataDir       string
+	version       string
+}
+
+func NewBuilder() *TestModelBuilder {
+	return &TestModelBuilder{
+		width:   100,
+		height:  24,
+		dataDir: "/tmp/test",
+		version: "test123",
+	}
+}
+
+func (b *TestModelBuilder) WithRows(rows ...query.AggregateRow) *TestModelBuilder {
+	b.rows = rows
+	return b
+}
+
+func (b *TestModelBuilder) WithMessages(msgs ...query.MessageSummary) *TestModelBuilder {
+	b.messages = msgs
+	return b
+}
+
+func (b *TestModelBuilder) WithDetail(detail *query.MessageDetail) *TestModelBuilder {
+	b.messageDetail = detail
+	return b
+}
+
+func (b *TestModelBuilder) WithGmailIDs(ids ...string) *TestModelBuilder {
+	b.gmailIDs = ids
+	return b
+}
+
+func (b *TestModelBuilder) WithAccounts(accounts ...query.AccountInfo) *TestModelBuilder {
+	b.accounts = accounts
+	return b
+}
+
+func (b *TestModelBuilder) WithSize(width, height int) *TestModelBuilder {
+	b.width = width
+	b.height = height
+	return b
+}
+
+func (b *TestModelBuilder) WithLevel(level viewLevel) *TestModelBuilder {
+	b.level = level
+	return b
+}
+
+func (b *TestModelBuilder) WithViewType(vt query.ViewType) *TestModelBuilder {
+	b.viewType = vt
+	return b
+}
+
+func (b *TestModelBuilder) Build() Model {
+	engine := &mockEngine{
+		rows:          b.rows,
+		messages:      b.messages,
+		messageDetail: b.messageDetail,
+		gmailIDs:      b.gmailIDs,
+	}
+
+	model := New(engine, Options{DataDir: b.dataDir, Version: b.version})
+	model.width = b.width
+	model.height = b.height
+	model.pageSize = b.height - 5
+	if model.pageSize < 1 {
+		model.pageSize = 1
+	}
+
+	// Pre-populate data if provided
+	if len(b.rows) > 0 {
+		model.rows = b.rows
+	}
+	if len(b.messages) > 0 {
+		model.messages = b.messages
+	}
+	if b.messageDetail != nil {
+		model.messageDetail = b.messageDetail
+	}
+
+	// Assuming if we build with data, we are not loading
+	model.loading = false
+
+	if b.level != levelAggregates { // Assuming levelAggregates is 0/default
+		model.level = b.level
+	}
+
+	if b.viewType != 0 {
+		model.viewType = b.viewType
+	}
+
+	if len(b.accounts) > 0 {
+		model.accounts = b.accounts
+	}
+
+	return model
+}
+
+// sendKey sends a key message to the model and returns the updated concrete Model
+func sendKey(t *testing.T, m Model, k tea.KeyMsg) (Model, tea.Cmd) {
+	t.Helper()
+	newM, cmd := m.Update(k)
+	return newM.(Model), cmd
+}
+
+// assertModal checks that the model is in the expected modal state
+func assertModal(t *testing.T, m Model, expected modalType) {
+	t.Helper()
+	if m.modal != expected {
+		t.Errorf("expected modal %v, got %v", expected, m.modal)
+	}
+}
+
+// assertLevel checks that the model is at the expected view level
+func assertLevel(t *testing.T, m Model, expected viewLevel) {
+	t.Helper()
+	if m.level != expected {
+		t.Errorf("expected level %v, got %v", expected, m.level)
+	}
+}
+
+// makeMessages creates a slice of MessageSummary for testing
+func makeMessages(count int) []query.MessageSummary {
+	msgs := make([]query.MessageSummary, count)
+	for i := 0; i < count; i++ {
+		msgs[i] = query.MessageSummary{
+			ID:      int64(i + 1),
+			Subject: fmt.Sprintf("Subject %d", i+1),
+		}
+	}
+	return msgs
+}
+
 // Common test data
 var (
 	// testAggregateRows provides a standard set of aggregate rows for testing
@@ -248,23 +393,20 @@ func assertSelectionCount(t *testing.T, m Model, expected int) {
 // =============================================================================
 
 func TestSelectionToggle(t *testing.T) {
-	rows := []query.AggregateRow{
+	model := NewBuilder().WithRows(
 		makeRow("alice@example.com", 10),
 		makeRow("bob@example.com", 5),
 		makeRow("carol@example.com", 3),
-	}
-	model := newTestModelWithRows(rows)
+	).Build()
 
 	// Toggle selection with space
 	model.cursor = 0
-	newModel, _ := model.handleAggregateKeys(key(' '))
-	model = newModel.(Model)
+	model, _ = sendKey(t, model, key(' '))
 
 	assertSelected(t, model, "alice@example.com")
 
 	// Toggle off
-	newModel, _ = model.handleAggregateKeys(key(' '))
-	model = newModel.(Model)
+	model, _ = sendKey(t, model, key(' '))
 
 	assertNotSelected(t, model, "alice@example.com")
 }
@@ -412,32 +554,20 @@ func TestClearSelection(t *testing.T) {
 }
 
 func TestStageForDeletionWithAggregateSelection(t *testing.T) {
-	engine := &mockEngine{
-		rows: []query.AggregateRow{
-			{Key: "alice@example.com", Count: 2},
-		},
-		gmailIDs: []string{"msg1", "msg2"}, // Returned by GetGmailIDsByFilter
-	}
-
-	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
-	model.rows = engine.rows
-	model.pageSize = 10
-	model.width = 100
-	model.height = 20
+	model := NewBuilder().
+		WithRows(query.AggregateRow{Key: "alice@example.com", Count: 2}).
+		WithGmailIDs("msg1", "msg2").
+		Build()
 
 	// Select an aggregate
 	model.cursor = 0
-	newModel, _ := model.handleAggregateKeys(key(' '))
-	model = newModel.(Model)
+	model, _ = sendKey(t, model, key(' '))
 
 	// Stage for deletion with 'D'
-	newModel, _ = model.handleAggregateKeys(key('D'))
-	model = newModel.(Model)
+	model, _ = sendKey(t, model, key('D'))
 
 	// Should show confirmation modal
-	if model.modal != modalDeleteConfirm {
-		t.Errorf("expected modalDeleteConfirm, got %v", model.modal)
-	}
+	assertModal(t, model, modalDeleteConfirm)
 
 	// Should have pending manifest with 2 messages
 	if model.pendingManifest == nil {
@@ -609,26 +739,16 @@ func TestStageForDeletionWithAccountFilterNotFound(t *testing.T) {
 }
 
 func TestAKeyShowsAllMessages(t *testing.T) {
-	engine := &mockEngine{
-		rows: []query.AggregateRow{
-			{Key: "alice@example.com", Count: 2},
-		},
-	}
-
-	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
-	model.rows = engine.rows
-	model.pageSize = 10
-	model.width = 100
-	model.height = 20
+	model := NewBuilder().
+		WithRows(query.AggregateRow{Key: "alice@example.com", Count: 2}).
+		Build()
 
 	// Press 'a' - should go to all messages view
-	newModel, cmd := model.handleAggregateKeys(key('a'))
-	model = newModel.(Model)
+	var cmd tea.Cmd
+	model, cmd = sendKey(t, model, key('a'))
 
 	// Should navigate to message list with no filter
-	if model.level != levelMessageList {
-		t.Errorf("expected levelMessageList, got %v", model.level)
-	}
+	assertLevel(t, model, levelMessageList)
 
 	if model.filterKey != "" {
 		t.Errorf("expected empty filterKey for all messages, got %q", model.filterKey)
@@ -939,21 +1059,15 @@ func TestEndKeyWithZeroLineCount(t *testing.T) {
 }
 
 func TestQuitConfirmationModal(t *testing.T) {
-	engine := &mockEngine{}
-
-	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
-	model.pageSize = 10
-	model.width = 100
-	model.height = 20
+	model := NewBuilder().Build()
 
 	// Press 'q' should open quit confirmation, not quit immediately
-	newModel, cmd := model.handleAggregateKeys(key('q'))
-	m := newModel.(Model)
+	var cmd tea.Cmd
+	model, cmd = sendKey(t, model, key('q'))
 
-	if m.modal != modalQuitConfirm {
-		t.Errorf("expected modalQuitConfirm, got %v", m.modal)
-	}
-	if m.quitting {
+	assertModal(t, model, modalQuitConfirm)
+
+	if model.quitting {
 		t.Error("should not be quitting yet")
 	}
 	if cmd != nil {
@@ -961,12 +1075,9 @@ func TestQuitConfirmationModal(t *testing.T) {
 	}
 
 	// Press 'n' to cancel
-	newModel, _ = m.handleModalKeys(key('n'))
-	m = newModel.(Model)
+	model, _ = sendKey(t, model, key('n'))
 
-	if m.modal != modalNone {
-		t.Errorf("expected modalNone after cancel, got %v", m.modal)
-	}
+	assertModal(t, model, modalNone)
 }
 
 func TestQuitConfirmationConfirm(t *testing.T) {
@@ -1312,29 +1423,20 @@ func TestSubAggregateDrillDown(t *testing.T) {
 	}
 }
 
-// TestSearchModalOpen verifies '/' activates inline search.
 func TestSearchModalOpen(t *testing.T) {
-	engine := &mockEngine{
-		rows: []query.AggregateRow{
-			{Key: "alice@example.com", Count: 10},
-		},
-	}
-
-	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
-	model.pageSize = 10
-	model.width = 100
-	model.height = 20
-	model.rows = engine.rows
+	model := NewBuilder().
+		WithRows(makeRow("alice@example.com", 10)).
+		Build()
 
 	// Press '/' to activate inline search
-	newModel, cmd := model.handleAggregateKeys(key('/'))
-	m := newModel.(Model)
+	var cmd tea.Cmd
+	model, cmd = sendKey(t, model, key('/'))
 
-	if !m.inlineSearchActive {
+	if !model.inlineSearchActive {
 		t.Error("expected inlineSearchActive = true")
 	}
-	if m.searchMode != SearchModeFast {
-		t.Errorf("expected SearchModeFast, got %v", m.searchMode)
+	if model.searchMode != SearchModeFast {
+		t.Errorf("expected SearchModeFast, got %v", model.searchMode)
 	}
 	// Should return a command for textinput blink
 	if cmd == nil {
