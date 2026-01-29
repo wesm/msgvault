@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wesm/msgvault/internal/deletion"
@@ -138,20 +139,23 @@ func (c *ActionController) StageForDeletion(aggregateSelection map[string]bool, 
 		manifest.Filters.Account = accounts[0].Identifier
 	}
 
-	// Set context filters from first aggregate
+	// Set context filters from aggregates (use sorted first key for determinism)
 	if len(aggregateSelection) > 0 {
+		keys := make([]string, 0, len(aggregateSelection))
 		for key := range aggregateSelection {
-			switch aggregateViewType {
-			case query.ViewSenders:
-				manifest.Filters.Sender = key
-			case query.ViewRecipients:
-				manifest.Filters.Recipient = key
-			case query.ViewDomains:
-				manifest.Filters.SenderDomain = key
-			case query.ViewLabels:
-				manifest.Filters.Label = key
-			}
-			break
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		firstKey := keys[0]
+		switch aggregateViewType {
+		case query.ViewSenders:
+			manifest.Filters.Sender = firstKey
+		case query.ViewRecipients:
+			manifest.Filters.Recipient = firstKey
+		case query.ViewDomains:
+			manifest.Filters.SenderDomain = firstKey
+		case query.ViewLabels:
+			manifest.Filters.Label = firstKey
 		}
 	}
 

@@ -37,8 +37,8 @@ func Attachments(zipFilename, attachmentsDir string, attachments []query.Attachm
 
 	usedNames := make(map[string]int)
 	for _, att := range attachments {
-		if att.ContentHash == "" {
-			errors = append(errors, fmt.Sprintf("%s: missing content hash", att.Filename))
+		if len(att.ContentHash) < 2 {
+			errors = append(errors, fmt.Sprintf("%s: missing or invalid content hash", att.Filename))
 			continue
 		}
 
