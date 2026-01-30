@@ -60,6 +60,80 @@ func mustParse(t *testing.T, raw []byte) *Message {
 	return msg
 }
 
+// parseEmail combines makeRawEmail and mustParse into a single test helper.
+func parseEmail(t *testing.T, opts emailOptions) *Message {
+	t.Helper()
+	return mustParse(t, makeRawEmail(opts))
+}
+
+// assertSubject checks that msg.Subject equals want.
+func assertSubject(t *testing.T, msg *Message, want string) {
+	t.Helper()
+	if msg.Subject != want {
+		t.Errorf("Subject = %q, want %q", msg.Subject, want)
+	}
+}
+
+// assertStringSliceEqual compares two string slices with a descriptive label.
+func assertStringSliceEqual(t *testing.T, got, want []string, label string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Errorf("%s: got %v (len %d), want %v (len %d)", label, got, len(got), want, len(want))
+		return
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("%s[%d] = %q, want %q", label, i, got[i], want[i])
+		}
+	}
+}
+
+// assertParseDateOK checks that parseDate succeeds and returns a non-zero time.
+func assertParseDateOK(t *testing.T, input string) {
+	t.Helper()
+	got, err := parseDate(input)
+	if err != nil {
+		t.Errorf("parseDate(%q) unexpected error: %v", input, err)
+	}
+	if got.IsZero() {
+		t.Errorf("parseDate(%q) returned zero time, expected parsed date", input)
+	}
+}
+
+// assertParseDateZero checks that parseDate returns zero time without error.
+func assertParseDateZero(t *testing.T, input string) {
+	t.Helper()
+	got, err := parseDate(input)
+	if err != nil {
+		t.Errorf("parseDate(%q) unexpected error: %v (should return zero time, not error)", input, err)
+	}
+	if !got.IsZero() {
+		t.Errorf("parseDate(%q) = %v, expected zero time for invalid input", input, got)
+	}
+}
+
+// assertParseDateUTC checks that parseDate returns the expected UTC time.
+func assertParseDateUTC(t *testing.T, input string, want time.Time) {
+	t.Helper()
+	got, err := parseDate(input)
+	if err != nil {
+		t.Fatalf("parseDate(%q) unexpected error: %v", input, err)
+	}
+	if got.Location() != time.UTC {
+		t.Errorf("parseDate(%q) returned location %v, want UTC", input, got.Location())
+	}
+	if !got.Equal(want) {
+		t.Errorf("parseDate(%q) = %v, want %v", input, got, want)
+	}
+}
+
+// logParseDiagnostics logs To addresses and parsing errors for debugging.
+func logParseDiagnostics(t *testing.T, msg *Message) {
+	t.Helper()
+	t.Logf("To addresses: %v", msg.To)
+	t.Logf("Parsing errors: %v", msg.Errors)
+}
+
 func TestExtractDomain(t *testing.T) {
 	tests := []struct {
 		email  string
@@ -95,15 +169,7 @@ func TestParseReferences(t *testing.T) {
 
 	for _, tc := range tests {
 		got := parseReferences(tc.input)
-		if len(got) != len(tc.want) {
-			t.Errorf("parseReferences(%q) = %v, want %v", tc.input, got, tc.want)
-			continue
-		}
-		for i := range got {
-			if got[i] != tc.want[i] {
-				t.Errorf("parseReferences(%q)[%d] = %q, want %q", tc.input, i, got[i], tc.want[i])
-			}
-		}
+		assertStringSliceEqual(t, got, tc.want, "parseReferences("+tc.input+")")
 	}
 }
 
@@ -128,13 +194,7 @@ func TestParseDate(t *testing.T) {
 	}
 
 	for _, tc := range validDates {
-		got, err := parseDate(tc.input)
-		if err != nil {
-			t.Errorf("parseDate(%q) unexpected error: %v", tc.input, err)
-		}
-		if got.IsZero() {
-			t.Errorf("parseDate(%q) returned zero time, expected parsed date", tc.input)
-		}
+		assertParseDateOK(t, tc.input)
 	}
 
 	// Invalid/unparseable dates should return zero time without error
@@ -146,41 +206,17 @@ func TestParseDate(t *testing.T) {
 	}
 
 	for _, input := range invalidDates {
-		got, err := parseDate(input)
-		if err != nil {
-			t.Errorf("parseDate(%q) unexpected error: %v (should return zero time, not error)", input, err)
-		}
-		if !got.IsZero() {
-			t.Errorf("parseDate(%q) = %v, expected zero time for invalid input", input, got)
-		}
+		assertParseDateZero(t, input)
 	}
 
 	// Verify parsed values are converted to UTC
-	got, err := parseDate("Mon, 02 Jan 2006 15:04:05 -0700")
-	if err != nil {
-		t.Fatalf("parseDate() unexpected error: %v", err)
-	}
-	// Should be converted to UTC (15:04:05 -0700 = 22:04:05 UTC)
-	if got.Location() != time.UTC {
-		t.Errorf("parseDate returned location %v, want UTC", got.Location())
-	}
-	wantUTC := time.Date(2006, 1, 2, 22, 4, 5, 0, time.UTC)
-	if !got.Equal(wantUTC) {
-		t.Errorf("parseDate returned %v, want %v (UTC)", got, wantUTC)
-	}
+	// 15:04:05 -0700 = 22:04:05 UTC
+	assertParseDateUTC(t, "Mon, 02 Jan 2006 15:04:05 -0700",
+		time.Date(2006, 1, 2, 22, 4, 5, 0, time.UTC))
 
 	// Verify double-space handling with parenthesized timezone
-	got, err = parseDate("Mon,  2 Dec 2024 11:42:03 +0000 (UTC)")
-	if err != nil {
-		t.Fatalf("parseDate() unexpected error: %v", err)
-	}
-	if got.IsZero() {
-		t.Errorf("parseDate with double space returned zero time")
-	}
-	wantUTC = time.Date(2024, 12, 2, 11, 42, 3, 0, time.UTC)
-	if !got.Equal(wantUTC) {
-		t.Errorf("parseDate returned %v, want %v", got, wantUTC)
-	}
+	assertParseDateUTC(t, "Mon,  2 Dec 2024 11:42:03 +0000 (UTC)",
+		time.Date(2024, 12, 2, 11, 42, 3, 0, time.UTC))
 }
 
 func TestStripHTML(t *testing.T) {
@@ -295,14 +331,12 @@ func TestMessage_GetFirstFrom(t *testing.T) {
 // TestParse_MinimalMessage tests our Parse wrapper with a minimal valid message.
 // This verifies our wrapper works, not enmime's parsing logic.
 func TestParse_MinimalMessage(t *testing.T) {
-	raw := makeRawEmail(emailOptions{
+	msg := parseEmail(t, emailOptions{
 		Body: "Body text",
 		Headers: map[string]string{
 			"Date": "Mon, 02 Jan 2006 15:04:05 -0700",
 		},
 	})
-
-	msg := mustParse(t, raw)
 
 	if len(msg.From) != 1 || msg.From[0].Email != "sender@example.com" {
 		t.Errorf("From = %v, want sender@example.com", msg.From)
@@ -312,9 +346,7 @@ func TestParse_MinimalMessage(t *testing.T) {
 		t.Errorf("To = %v, want recipient@example.com", msg.To)
 	}
 
-	if msg.Subject != "Test" {
-		t.Errorf("Subject = %q, want %q", msg.Subject, "Test")
-	}
+	assertSubject(t, msg, "Test")
 
 	if msg.BodyText != "Body text" {
 		t.Errorf("BodyText = %q, want %q", msg.BodyText, "Body text")
@@ -330,20 +362,15 @@ func TestParse_MinimalMessage(t *testing.T) {
 // Enmime should not fail on invalid charset - it attempts conversion and collects errors.
 func TestParse_InvalidCharset(t *testing.T) {
 	// Message with non-existent charset - enmime should handle this gracefully
-	raw := makeRawEmail(emailOptions{
+	msg := parseEmail(t, emailOptions{
 		ContentType: "text/plain; charset=invalid-charset-xyz",
 		Body:        "Body text",
 	})
 
-	msg := mustParse(t, raw)
-
 	// Should still be able to access subject and addresses
-	if msg.Subject != "Test" {
-		t.Errorf("Subject = %q, want %q", msg.Subject, "Test")
-	}
+	assertSubject(t, msg, "Test")
 
 	// Body might be garbled or empty, but should not crash
-	// enmime collects errors in msg.Errors
 	t.Logf("Body text with invalid charset: %q", msg.BodyText)
 	t.Logf("Parsing errors: %v", msg.Errors)
 }
@@ -367,41 +394,31 @@ func TestParse_Latin1Charset(t *testing.T) {
 // Group syntax: "group-name: addr1, addr2, ...;"
 func TestParse_RFC2822GroupAddress(t *testing.T) {
 	// Message with undisclosed-recipients group (common in BCC scenarios)
-	raw := makeRawEmail(emailOptions{
+	msg := parseEmail(t, emailOptions{
 		To:   "undisclosed-recipients:;",
 		Body: "Body",
 	})
 
-	msg := mustParse(t, raw)
-
 	// Group with no addresses should result in empty To list
-	t.Logf("To addresses: %v", msg.To)
-	t.Logf("Parsing errors: %v", msg.Errors)
+	logParseDiagnostics(t, msg)
 
 	// Should not crash - that's the main requirement
-	if msg.Subject != "Test" {
-		t.Errorf("Subject = %q, want %q", msg.Subject, "Test")
-	}
+	assertSubject(t, msg, "Test")
 }
 
 // TestParse_RFC2822GroupAddressWithMembers verifies group with actual addresses.
 func TestParse_RFC2822GroupAddressWithMembers(t *testing.T) {
 	// Group with member addresses
-	raw := makeRawEmail(emailOptions{
+	msg := parseEmail(t, emailOptions{
 		To:   "team: alice@example.com, bob@example.com;",
 		Body: "Body",
 	})
 
-	msg := mustParse(t, raw)
-
-	t.Logf("To addresses: %v", msg.To)
-	t.Logf("Parsing errors: %v", msg.Errors)
+	logParseDiagnostics(t, msg)
 
 	// Ideally we'd extract alice and bob from the group
 	// Let's see how enmime handles this
-	if msg.Subject != "Test" {
-		t.Errorf("Subject = %q, want %q", msg.Subject, "Test")
-	}
+	assertSubject(t, msg, "Test")
 }
 
 // TestIsBodyPart_ContentTypeWithParams tests that Content-Type with charset
