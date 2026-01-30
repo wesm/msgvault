@@ -1,6 +1,7 @@
 package export
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/query"
@@ -9,7 +10,7 @@ import (
 // tempPaths returns a zip file path and output directory using t.TempDir().
 func tempPaths(t *testing.T) (zipPath, outDir string) {
 	t.Helper()
-	return t.TempDir() + "/test.zip", t.TempDir()
+	return filepath.Join(t.TempDir(), "test.zip"), t.TempDir()
 }
 
 // att constructs a minimal AttachmentInfo for test fixtures.
