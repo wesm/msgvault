@@ -139,8 +139,8 @@ func TestManifest_SaveAndLoad(t *testing.T) {
 	if loaded.Description != m.Description {
 		t.Errorf("Description = %q, want %q", loaded.Description, m.Description)
 	}
-	if len(loaded.GmailIDs) != len(m.GmailIDs) {
-		t.Errorf("GmailIDs length = %d, want %d", len(loaded.GmailIDs), len(m.GmailIDs))
+	if !slices.Equal(loaded.GmailIDs, m.GmailIDs) {
+		t.Errorf("GmailIDs = %v, want %v", loaded.GmailIDs, m.GmailIDs)
 	}
 	if !slices.Equal(loaded.Filters.Senders, m.Filters.Senders) {
 		t.Errorf("Filters.Senders = %v, want %v", loaded.Filters.Senders, m.Filters.Senders)
