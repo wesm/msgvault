@@ -6,6 +6,45 @@ import (
 	"unicode/utf8"
 )
 
+// encodingCase defines a test case for encoding conversion functions.
+type encodingCase struct {
+	name     string
+	input    []byte
+	expected string
+}
+
+// assertValidUTF8 asserts that the given string is valid UTF-8.
+func assertValidUTF8(t *testing.T, s string) {
+	t.Helper()
+	if !utf8.ValidString(s) {
+		t.Errorf("result is not valid UTF-8: %q", s)
+	}
+}
+
+// assertContainsAll asserts that got contains every substring in subs.
+func assertContainsAll(t *testing.T, got string, subs []string) {
+	t.Helper()
+	for _, substr := range subs {
+		if !strings.Contains(got, substr) {
+			t.Errorf("result %q should contain %q", got, substr)
+		}
+	}
+}
+
+// runEncodingTests runs table-driven tests that call ensureUTF8 on byte input
+// and check both the expected output and UTF-8 validity.
+func runEncodingTests(t *testing.T, tests []encodingCase) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ensureUTF8(string(tt.input))
+			if result != tt.expected {
+				t.Errorf("got %q, want %q", result, tt.expected)
+			}
+			assertValidUTF8(t, result)
+		})
+	}
+}
+
 func TestEnsureUTF8_AlreadyValid(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -32,125 +71,43 @@ func TestEnsureUTF8_AlreadyValid(t *testing.T) {
 }
 
 func TestEnsureUTF8_Windows1252(t *testing.T) {
-	// Windows-1252 specific characters that differ from Latin-1
-	tests := []struct {
-		name     string
-		input    []byte
-		expected string
-	}{
-		{
-			name:     "smart single quote (right)",
-			input:    []byte("Rand\x92s Opponent"), // 0x92 = ' (U+2019)
-			expected: "Rand\u2019s Opponent",
-		},
-		{
-			name:     "en dash",
-			input:    []byte("2020 \x96 2024"), // 0x96 = – (U+2013)
-			expected: "2020 \u2013 2024",
-		},
-		{
-			name:     "em dash",
-			input:    []byte("Hello\x97World"), // 0x97 = — (U+2014)
-			expected: "Hello\u2014World",
-		},
-		{
-			name:     "left double quote",
-			input:    []byte("\x93Hello\x94"), // 0x93/" 0x94/"
-			expected: "\u201cHello\u201d",
-		},
-		{
-			name:     "trademark",
-			input:    []byte("Brand\x99"), // 0x99 = ™
-			expected: "Brand\u2122",
-		},
-		{
-			name:     "bullet",
-			input:    []byte("\x95 Item"), // 0x95 = •
-			expected: "\u2022 Item",
-		},
-		{
-			name:     "euro sign",
-			input:    []byte("Price: \x80100"), // 0x80 = €
-			expected: "Price: \u20ac100",
-		},
-	}
-
-	runEncodingTests(t, tests)
+	runEncodingTests(t, []encodingCase{
+		{"smart single quote (right)", []byte("Rand\x92s Opponent"), "Rand\u2019s Opponent"},
+		{"en dash", []byte("2020 \x96 2024"), "2020 \u2013 2024"},
+		{"em dash", []byte("Hello\x97World"), "Hello\u2014World"},
+		{"left double quote", []byte("\x93Hello\x94"), "\u201cHello\u201d"},
+		{"trademark", []byte("Brand\x99"), "Brand\u2122"},
+		{"bullet", []byte("\x95 Item"), "\u2022 Item"},
+		{"euro sign", []byte("Price: \x80100"), "Price: \u20ac100"},
+	})
 }
 
 func TestEnsureUTF8_Latin1(t *testing.T) {
-	// ISO-8859-1 (Latin-1) characters
-	tests := []struct {
-		name     string
-		input    []byte
-		expected string
-	}{
-		{
-			name:     "o with acute",
-			input:    []byte("Mir\xf3 - Picasso"), // ó
-			expected: "Miró - Picasso",
-		},
-		{
-			name:     "c with cedilla",
-			input:    []byte("Gar\xe7on"), // ç
-			expected: "Garçon",
-		},
-		{
-			name:     "u with umlaut",
-			input:    []byte("M\xfcnchen"), // ü
-			expected: "München",
-		},
-		{
-			name:     "n with tilde",
-			input:    []byte("Espa\xf1a"), // ñ
-			expected: "España",
-		},
-		{
-			name:     "registered trademark",
-			input:    []byte("Laguiole.com \xae"), // ®
-			expected: "Laguiole.com ®",
-		},
-		{
-			name:     "degree symbol",
-			input:    []byte("25\xb0C"), // °
-			expected: "25°C",
-		},
-	}
-
-	runEncodingTests(t, tests)
+	runEncodingTests(t, []encodingCase{
+		{"o with acute", []byte("Mir\xf3 - Picasso"), "Miró - Picasso"},
+		{"c with cedilla", []byte("Gar\xe7on"), "Garçon"},
+		{"u with umlaut", []byte("M\xfcnchen"), "München"},
+		{"n with tilde", []byte("Espa\xf1a"), "España"},
+		{"registered trademark", []byte("Laguiole.com \xae"), "Laguiole.com ®"},
+		{"degree symbol", []byte("25\xb0C"), "25°C"},
+	})
 }
 
 func TestEnsureUTF8_AsianEncodings(t *testing.T) {
-	// For short Asian text samples, exact charset detection is unreliable
-	// The key requirement is that output is valid UTF-8 and non-empty
 	tests := []struct {
 		name  string
 		input []byte
 	}{
-		{
-			name:  "Shift-JIS Japanese",
-			input: []byte{0x82, 0xb1, 0x82, 0xf1, 0x82, 0xc9, 0x82, 0xbf, 0x82, 0xcd}, // こんにちは
-		},
-		{
-			name:  "GBK Simplified Chinese",
-			input: []byte{0xc4, 0xe3, 0xba, 0xc3}, // 你好
-		},
-		{
-			name:  "Big5 Traditional Chinese",
-			input: []byte{0xa9, 0x6f, 0xa6, 0x6e}, // 你好
-		},
-		{
-			name:  "EUC-KR Korean",
-			input: []byte{0xbe, 0xc8, 0xb3, 0xe7}, // 안녕
-		},
+		{"Shift-JIS Japanese", []byte{0x82, 0xb1, 0x82, 0xf1, 0x82, 0xc9, 0x82, 0xbf, 0x82, 0xcd}},
+		{"GBK Simplified Chinese", []byte{0xc4, 0xe3, 0xba, 0xc3}},
+		{"Big5 Traditional Chinese", []byte{0xa9, 0x6f, 0xa6, 0x6e}},
+		{"EUC-KR Korean", []byte{0xbe, 0xc8, 0xb3, 0xe7}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := ensureUTF8(string(tt.input))
-			if !utf8.ValidString(result) {
-				t.Errorf("result is not valid UTF-8: %q", result)
-			}
+			assertValidUTF8(t, result)
 			if len(result) == 0 {
 				t.Errorf("result is empty")
 			}
@@ -159,35 +116,28 @@ func TestEnsureUTF8_AsianEncodings(t *testing.T) {
 }
 
 func TestEnsureUTF8_MixedContent(t *testing.T) {
-	// Real-world scenario: ASCII mixed with encoded characters
 	tests := []struct {
 		name     string
 		input    []byte
-		contains []string // Substrings that should be present
+		contains []string
 	}{
 		{
-			name:     "email subject with smart quotes",
-			input:    []byte("Re: Can\x92t access the \x93dashboard\x94"),
-			contains: []string{"Re:", "Can", "access the", "dashboard"},
+			"email subject with smart quotes",
+			[]byte("Re: Can\x92t access the \x93dashboard\x94"),
+			[]string{"Re:", "Can", "access the", "dashboard"},
 		},
 		{
-			name:     "price with currency",
-			input:    []byte("Only \x80199.99 \x96 Limited Time"),
-			contains: []string{"Only", "199.99", "Limited Time"},
+			"price with currency",
+			[]byte("Only \x80199.99 \x96 Limited Time"),
+			[]string{"Only", "199.99", "Limited Time"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := ensureUTF8(string(tt.input))
-			if !utf8.ValidString(result) {
-				t.Errorf("result is not valid UTF-8: %q", result)
-			}
-			for _, substr := range tt.contains {
-				if !strings.Contains(result, substr) {
-					t.Errorf("result %q should contain %q", result, substr)
-				}
-			}
+			assertValidUTF8(t, result)
+			assertContainsAll(t, result, tt.contains)
 		})
 	}
 }
@@ -198,31 +148,11 @@ func TestSanitizeUTF8(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{
-			name:     "valid UTF-8 unchanged",
-			input:    "Hello, 世界!",
-			expected: "Hello, 世界!",
-		},
-		{
-			name:     "single invalid byte",
-			input:    "Hello\x80World",
-			expected: "Hello\ufffdWorld",
-		},
-		{
-			name:     "multiple invalid bytes",
-			input:    "Test\x80\x81\x82String",
-			expected: "Test\ufffd\ufffd\ufffdString",
-		},
-		{
-			name:     "truncated UTF-8 sequence",
-			input:    "Hello\xc3", // Incomplete 2-byte sequence
-			expected: "Hello\ufffd",
-		},
-		{
-			name:     "invalid continuation byte",
-			input:    "Test\xc3\x00End", // Invalid continuation
-			expected: "Test\ufffd\x00End",
-		},
+		{"valid UTF-8 unchanged", "Hello, 世界!", "Hello, 世界!"},
+		{"single invalid byte", "Hello\x80World", "Hello\ufffdWorld"},
+		{"multiple invalid bytes", "Test\x80\x81\x82String", "Test\ufffd\ufffd\ufffdString"},
+		{"truncated UTF-8 sequence", "Hello\xc3", "Hello\ufffd"},
+		{"invalid continuation byte", "Test\xc3\x00End", "Test\ufffd\x00End"},
 	}
 
 	for _, tt := range tests {
@@ -231,9 +161,7 @@ func TestSanitizeUTF8(t *testing.T) {
 			if result != tt.expected {
 				t.Errorf("sanitizeUTF8(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
-			if !utf8.ValidString(result) {
-				t.Errorf("result is not valid UTF-8")
-			}
+			assertValidUTF8(t, result)
 		})
 	}
 }
@@ -268,25 +196,6 @@ func TestGetEncodingByName(t *testing.T) {
 			}
 			if !tt.wantNil && result == nil {
 				t.Errorf("getEncodingByName(%q) = nil, want encoding", tt.charset)
-			}
-		})
-	}
-}
-
-// Helper to run table-driven encoding tests
-func runEncodingTests(t *testing.T, tests []struct {
-	name     string
-	input    []byte
-	expected string
-}) {
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := ensureUTF8(string(tt.input))
-			if result != tt.expected {
-				t.Errorf("got %q, want %q", result, tt.expected)
-			}
-			if !utf8.ValidString(result) {
-				t.Errorf("result is not valid UTF-8")
 			}
 		})
 	}
