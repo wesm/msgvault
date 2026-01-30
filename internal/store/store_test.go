@@ -112,6 +112,20 @@ func assertNoActiveSync(t *testing.T, st *store.Store, sourceID int64) {
 	}
 }
 
+func mustEnsureParticipant(t *testing.T, st *store.Store, email, name, domain string) int64 {
+	t.Helper()
+	pid, err := st.EnsureParticipant(email, name, domain)
+	testutil.MustNoErr(t, err, "EnsureParticipant "+email)
+	return pid
+}
+
+func assertSyncCheckpointField(t *testing.T, field string, got, want int64) {
+	t.Helper()
+	if got != want {
+		t.Errorf("sync %s = %d, want %d", field, got, want)
+	}
+}
+
 func TestStore_Open(t *testing.T) {
 	st := testutil.NewTestStore(t)
 
@@ -452,13 +466,11 @@ st, source, convID := setupStore(t)
 
 	msgID := createMessage(t, st, source.ID, convID, "msg-1")
 
-	pid1, err := st.EnsureParticipant("alice@example.com", "Alice", "example.com")
-	testutil.MustNoErr(t, err, "EnsureParticipant alice")
-	pid2, err := st.EnsureParticipant("bob@example.org", "Bob", "example.org")
-	testutil.MustNoErr(t, err, "EnsureParticipant bob")
+	pid1 := mustEnsureParticipant(t, st, "alice@example.com", "Alice", "example.com")
+	pid2 := mustEnsureParticipant(t, st, "bob@example.org", "Bob", "example.org")
 
 	// Set recipients
-	err = st.ReplaceMessageRecipients(msgID, "to", []int64{pid1, pid2}, []string{"Alice", "Bob"})
+	err := st.ReplaceMessageRecipients(msgID, "to", []int64{pid1, pid2}, []string{"Alice", "Bob"})
 	if err != nil {
 		t.Fatalf("ReplaceMessageRecipients() error = %v", err)
 	}
@@ -568,14 +580,10 @@ st, source, _ := setupStore(t)
 	}
 
 	// Verify checkpoint was saved
+	assertActiveSync(t, st, source.ID, syncID, "running")
 	active, err := st.GetActiveSync(source.ID)
 	testutil.MustNoErr(t, err, "GetActiveSync")
-	if active == nil {
-		t.Fatal("expected active sync, got nil")
-	}
-	if active.MessagesProcessed != 100 {
-		t.Errorf("MessagesProcessed = %d, want 100", active.MessagesProcessed)
-	}
+	assertSyncCheckpointField(t, "MessagesProcessed", active.MessagesProcessed, 100)
 }
 
 func TestStore_SyncComplete(t *testing.T) {
@@ -794,11 +802,10 @@ st, source, convID := setupStore(t)
 
 	msgID := createMessage(t, st, source.ID, convID, "msg-recip")
 
-	pid1, err := st.EnsureParticipant("alice@example.com", "Alice", "example.com")
-	testutil.MustNoErr(t, err, "EnsureParticipant")
+	pid1 := mustEnsureParticipant(t, st, "alice@example.com", "Alice", "example.com")
 
 	// Add recipient
-	err = st.ReplaceMessageRecipients(msgID, "to", []int64{pid1}, []string{"Alice"})
+	err := st.ReplaceMessageRecipients(msgID, "to", []int64{pid1}, []string{"Alice"})
 	testutil.MustNoErr(t, err, "ReplaceMessageRecipients")
 
 	assertRecipientsCount(t, st, msgID, "to", 1)
