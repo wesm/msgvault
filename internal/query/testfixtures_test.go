@@ -52,6 +52,9 @@ func (b *parquetBuilder) addEmptyTable(name, subdir, file, columns, dummyValues 
 
 // withEmpty marks the last added table as empty (schema-only).
 func (b *parquetBuilder) withEmpty() *parquetBuilder {
+	if len(b.tables) == 0 {
+		b.t.Fatal("withEmpty called on builder with no tables")
+	}
 	b.tables[len(b.tables)-1].empty = true
 	return b
 }
