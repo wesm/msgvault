@@ -138,8 +138,8 @@ func TestStageForDeletion_ViewTypes(t *testing.T) {
 			}
 		}},
 		{"domains", query.ViewDomains, "example.com", func(t *testing.T, f deletion.Filters) {
-			if len(f.SenderDomain) != 1 || f.SenderDomain[0] != "example.com" {
-				t.Errorf("expected sender_domains [example.com], got %v", f.SenderDomain)
+			if len(f.SenderDomains) != 1 || f.SenderDomains[0] != "example.com" {
+				t.Errorf("expected sender_domains [example.com], got %v", f.SenderDomains)
 			}
 		}},
 		{"labels", query.ViewLabels, "INBOX", func(t *testing.T, f deletion.Filters) {

@@ -152,7 +152,7 @@ func (c *ActionController) StageForDeletion(aggregateSelection map[string]bool, 
 		case query.ViewRecipients:
 			manifest.Filters.Recipients = keys
 		case query.ViewDomains:
-			manifest.Filters.SenderDomain = keys
+			manifest.Filters.SenderDomains = keys
 		case query.ViewLabels:
 			manifest.Filters.Labels = keys
 		}

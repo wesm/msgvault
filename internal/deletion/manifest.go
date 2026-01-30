@@ -32,7 +32,7 @@ const (
 // Filters specifies criteria for selecting messages.
 type Filters struct {
 	Senders      []string `json:"senders,omitempty"`
-	SenderDomain []string `json:"sender_domains,omitempty"`
+	SenderDomains []string `json:"sender_domains,omitempty"`
 	Recipients   []string `json:"recipients,omitempty"`
 	Labels       []string `json:"labels,omitempty"`
 	After        string   `json:"after,omitempty"`  // ISO date

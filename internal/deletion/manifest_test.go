@@ -3,6 +3,7 @@ package deletion
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -141,7 +142,7 @@ func TestManifest_SaveAndLoad(t *testing.T) {
 	if len(loaded.GmailIDs) != len(m.GmailIDs) {
 		t.Errorf("GmailIDs length = %d, want %d", len(loaded.GmailIDs), len(m.GmailIDs))
 	}
-	if len(loaded.Filters.Senders) != len(m.Filters.Senders) || (len(loaded.Filters.Senders) > 0 && loaded.Filters.Senders[0] != m.Filters.Senders[0]) {
+	if !slices.Equal(loaded.Filters.Senders, m.Filters.Senders) {
 		t.Errorf("Filters.Senders = %v, want %v", loaded.Filters.Senders, m.Filters.Senders)
 	}
 	if loaded.Summary == nil {
