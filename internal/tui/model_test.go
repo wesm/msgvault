@@ -164,6 +164,7 @@ func (b *TestModelBuilder) WithViewType(vt query.ViewType) *TestModelBuilder {
 
 func (b *TestModelBuilder) WithPageSize(size int) *TestModelBuilder {
 	b.pageSize = size
+	b.rawPageSize = false
 	return b
 }
 
@@ -1363,6 +1364,60 @@ func TestWindowSizeClampNegative(t *testing.T) {
 	}
 	if m.pageSize < 1 {
 		t.Errorf("expected pageSize >= 1, got %d", m.pageSize)
+	}
+}
+
+func TestDefaultLoadingWithNoData(t *testing.T) {
+	// Build with no rows/messages and no explicit loading override.
+	// The builder should preserve New()'s default loading=true.
+	model := NewBuilder().WithPageSize(10).WithSize(100, 20).Build()
+
+	if !model.loading {
+		t.Errorf("expected loading=true (New default) when no data provided, got false")
+	}
+}
+
+func TestPageSizeRawZeroAndNegative(t *testing.T) {
+	tests := []struct {
+		name     string
+		pageSize int
+	}{
+		{"zero page size", 0},
+		{"negative page size", -1},
+		{"large negative page size", -100},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Should not panic when building or rendering with raw zero/negative page sizes.
+			model := NewBuilder().
+				WithPageSizeRaw(tc.pageSize).
+				WithRows(testAggregateRows...).
+				WithSize(100, 20).
+				Build()
+
+			if model.pageSize != tc.pageSize {
+				t.Errorf("expected pageSize=%d, got %d", tc.pageSize, model.pageSize)
+			}
+
+			// Rendering should not panic even with unusual page sizes.
+			_ = model.View()
+		})
+	}
+}
+
+func TestWithPageSizeClearsRawFlag(t *testing.T) {
+	// WithPageSizeRaw followed by WithPageSize should clear the raw flag,
+	// so the normal clamping logic applies.
+	model := NewBuilder().
+		WithPageSizeRaw(0).
+		WithPageSize(10).
+		WithRows(testAggregateRows...).
+		WithSize(100, 20).
+		Build()
+
+	if model.pageSize != 10 {
+		t.Errorf("expected pageSize=10 after WithPageSize cleared raw flag, got %d", model.pageSize)
 	}
 }
 
