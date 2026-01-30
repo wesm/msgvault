@@ -3,6 +3,9 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func stripANSI(s string) string {
@@ -144,13 +147,17 @@ func TestApplyHighlight(t *testing.T) {
 }
 
 func TestApplyHighlightProducesOutput(t *testing.T) {
+	// Force color output so lipgloss produces ANSI escapes even in non-TTY.
+	origProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	defer lipgloss.SetColorProfile(origProfile)
+
 	// Verify that highlighting actually modifies the output when matches exist.
-	// Note: lipgloss may strip ANSI in non-TTY environments, so we check that
-	// the raw output differs from the input OR contains ANSI escapes.
 	result := applyHighlight("hello world", []string{"world"})
 	if result == "hello world" {
-		t.Log("lipgloss did not produce ANSI output (expected in non-TTY environments)")
-	} else if !strings.Contains(result, "world") {
+		t.Errorf("expected styled output to differ from input, got unchanged: %q", result)
+	}
+	if !strings.Contains(result, "world") {
 		t.Errorf("highlighted output missing matched text: %q", result)
 	}
 
