@@ -292,7 +292,10 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Clear search on drill-down: the drill filter already
 			// constrains to the correct subset. The breadcrumb
 			// preserves the outer search for back-navigation.
+			// Increment searchRequestID to invalidate any in-flight
+			// search responses from the aggregate level.
 			m.searchQuery = ""
+			m.searchRequestID++
 
 			m.loadRequestID++
 			return m, m.loadMessages()

@@ -2655,12 +2655,13 @@ func TestDrillDownWithSearchQueryClearsSearch(t *testing.T) {
 		t.Errorf("expected searchQuery cleared, got %q", m.searchQuery)
 	}
 
-	// Should use loadMessages (loadRequestID incremented, not searchRequestID)
+	// loadRequestID incremented for loadMessages
 	if m.loadRequestID != 1 {
 		t.Errorf("expected loadRequestID=1, got %d", m.loadRequestID)
 	}
-	if m.searchRequestID != 0 {
-		t.Errorf("expected searchRequestID=0, got %d", m.searchRequestID)
+	// searchRequestID incremented to invalidate in-flight search responses
+	if m.searchRequestID != 1 {
+		t.Errorf("expected searchRequestID=1, got %d", m.searchRequestID)
 	}
 
 	if cmd == nil {
@@ -2688,9 +2689,9 @@ func TestDrillDownWithoutSearchQueryUsesLoadMessages(t *testing.T) {
 		t.Errorf("expected loadRequestID=1, got %d", m.loadRequestID)
 	}
 
-	// searchRequestID should not have been incremented
-	if m.searchRequestID != 0 {
-		t.Errorf("expected searchRequestID=0, got %d", m.searchRequestID)
+	// searchRequestID incremented to invalidate any in-flight search responses
+	if m.searchRequestID != 1 {
+		t.Errorf("expected searchRequestID=1, got %d", m.searchRequestID)
 	}
 
 	if cmd == nil {
@@ -2721,12 +2722,13 @@ func TestSubAggregateDrillDownWithSearchQueryClearsSearch(t *testing.T) {
 		t.Errorf("expected searchQuery cleared, got %q", m.searchQuery)
 	}
 
-	// Should use loadMessages (loadRequestID incremented, not searchRequestID)
+	// loadRequestID incremented for loadMessages
 	if m.loadRequestID != 1 {
 		t.Errorf("expected loadRequestID=1, got %d", m.loadRequestID)
 	}
-	if m.searchRequestID != 0 {
-		t.Errorf("expected searchRequestID=0, got %d", m.searchRequestID)
+	// searchRequestID incremented to invalidate in-flight search responses
+	if m.searchRequestID != 1 {
+		t.Errorf("expected searchRequestID=1, got %d", m.searchRequestID)
 	}
 
 	if cmd == nil {
@@ -2813,6 +2815,44 @@ func TestSubAggregateDrillDownSearchBreadcrumbRoundTrip(t *testing.T) {
 
 	if m2.searchQuery != "urgent" {
 		t.Errorf("expected searchQuery restored to %q, got %q", "urgent", m2.searchQuery)
+	}
+}
+
+// TestStaleSearchResponseIgnoredAfterDrillDown verifies that a search response
+// from the aggregate level is ignored after drill-down because searchRequestID
+// was incremented.
+func TestStaleSearchResponseIgnoredAfterDrillDown(t *testing.T) {
+	model := newTestModelWithRows(testAggregateRows)
+	model.level = levelAggregates
+	model.searchQuery = "important"
+	model.searchRequestID = 5 // Simulate prior searches
+	model.cursor = 0
+
+	// Capture the pre-drill searchRequestID (this is what an in-flight response would carry)
+	staleRequestID := model.searchRequestID
+
+	// Drill down — clears search and increments searchRequestID
+	newModel, _ := model.handleAggregateKeys(keyEnter())
+	m := newModel.(Model)
+
+	// Populate the message list with expected data
+	m.messages = []query.MessageSummary{{ID: 100, Subject: "Drilled message"}}
+	m.loading = false
+
+	// Simulate a stale search response arriving with the old requestID
+	staleResponse := searchResultsMsg{
+		messages:  []query.MessageSummary{{ID: 999, Subject: "Stale search result"}},
+		requestID: staleRequestID,
+	}
+	newModel2, _ := m.Update(staleResponse)
+	m2 := newModel2.(Model)
+
+	// The stale response should be ignored — messages unchanged
+	if len(m2.messages) != 1 {
+		t.Errorf("expected 1 message (stale ignored), got %d", len(m2.messages))
+	}
+	if m2.messages[0].ID != 100 {
+		t.Errorf("expected message ID 100 (original), got %d", m2.messages[0].ID)
 	}
 }
 
