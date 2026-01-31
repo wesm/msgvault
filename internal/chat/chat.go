@@ -115,7 +115,7 @@ func (s *Session) planQuery(ctx context.Context, userQuestion string) (*search.Q
 	var plan queryPlan
 	if err := json.Unmarshal([]byte(jsonStr), &plan); err != nil {
 		// If parsing fails, fall back to a broad text search
-		q := &search.Query{TextTerms: []string{userQuestion}}
+		q := &search.Query{TextTerms: strings.Fields(userQuestion)}
 		return q, "broad search (couldn't parse plan)", nil
 	}
 

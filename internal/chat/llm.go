@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -25,9 +26,19 @@ type OllamaClient struct {
 
 // NewOllamaClient creates an OllamaClient for the given server and model.
 func NewOllamaClient(serverURL, model string) (*OllamaClient, error) {
+	if serverURL == "" {
+		serverURL = "http://localhost:11434"
+	}
+	// Prepend scheme if missing so url.Parse produces a valid host.
+	if !strings.HasPrefix(serverURL, "http://") && !strings.HasPrefix(serverURL, "https://") {
+		serverURL = "http://" + serverURL
+	}
 	u, err := url.Parse(serverURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid server URL %q: %w", serverURL, err)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("invalid server URL %q: missing host", serverURL)
 	}
 	client := api.NewClient(u, &http.Client{})
 	return &OllamaClient{client: client, model: model}, nil

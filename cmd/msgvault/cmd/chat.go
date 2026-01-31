@@ -87,12 +87,15 @@ Requires Ollama running with a model available.`,
 			MaxBodyLen: 2000,
 		})
 
-		// REPL loop
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-		defer cancel()
+		// REPL loop — Ctrl+C cancels the current request, not the session.
+		// We create a fresh context per request so Ctrl+C during generation
+		// doesn't poison subsequent questions.
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt)
+		defer signal.Stop(sigCh)
 
 		fmt.Printf("msgvault chat (model: %s, server: %s)\n", model, server)
-		fmt.Println("Type your question, or 'quit' to exit.")
+		fmt.Println("Type your question, or 'quit' to exit. Ctrl+C cancels current request.")
 		fmt.Println()
 
 		scanner := bufio.NewScanner(os.Stdin)
@@ -109,12 +112,30 @@ Requires Ollama running with a model available.`,
 				break
 			}
 
-			if err := session.Ask(ctx, line); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			// Per-request context: cancelled by Ctrl+C or when request completes
+			reqCtx, reqCancel := context.WithCancel(context.Background())
+			go func() {
+				select {
+				case <-sigCh:
+					reqCancel()
+				case <-reqCtx.Done():
+				}
+			}()
+
+			if err := session.Ask(reqCtx, line); err != nil {
+				if reqCtx.Err() != nil {
+					fmt.Fprintln(os.Stderr, "\n(cancelled)")
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				}
 			}
+			reqCancel()
 			fmt.Println()
 		}
 
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("read input: %w", err)
+		}
 		return nil
 	},
 }
