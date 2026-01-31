@@ -146,6 +146,13 @@ type Model struct {
 	inlineSearchDebounce uint64 // Increment to cancel pending debounce timers
 	inlineSearchLoading  bool   // True when a debounced search query is in-flight
 
+	// Pre-search snapshot: cached message list state before search began,
+	// so Esc can restore instantly without re-querying.
+	preSearchMessages     []query.MessageSummary
+	preSearchCursor       int
+	preSearchScrollOffset int
+	preSearchContextStats *query.TotalStats
+
 	// transitionBuffer holds the last rendered view during level transitions.
 	// When non-empty, View() returns this string instead of rendering fresh content.
 	// This prevents visual flashing during async data loads on screen transitions.

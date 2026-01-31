@@ -17,8 +17,12 @@ func (m Model) handleInlineSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inlineSearchLoading = false
 		queryStr := m.searchInput.Value()
 		if queryStr == "" {
-			// Empty search clears filter - reload without flashing "Loading..."
+			// Empty search clears filter - restore from snapshot if available
 			m.searchQuery = ""
+			m.searchRequestID++
+			if m.level == levelMessageList && m.preSearchMessages != nil {
+				return m, m.restorePreSearchSnapshot()
+			}
 			m.contextStats = nil
 			if m.level == levelMessageList {
 				m.loadRequestID++
@@ -46,8 +50,11 @@ func (m Model) handleInlineSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inlineSearchActive = false
 		m.inlineSearchLoading = false
 		m.searchInput.SetValue("")
-		// Clear search filter and reload without flashing "Loading..."
 		m.searchQuery = ""
+		m.searchRequestID++
+		if m.level == levelMessageList && m.preSearchMessages != nil {
+			return m, m.restorePreSearchSnapshot()
+		}
 		m.contextStats = nil
 		if m.level == levelMessageList {
 			m.loadRequestID++
@@ -422,9 +429,12 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.searchQuery != "" {
 			m.searchQuery = ""
 			m.searchFilter = query.MessageFilter{}
-			m.contextStats = nil
 			m.searchInput.SetValue("")
 			m.searchRequestID++
+			if m.preSearchMessages != nil {
+				return m, m.restorePreSearchSnapshot()
+			}
+			m.contextStats = nil
 			m.loadRequestID++
 			return m, m.loadMessages()
 		}
@@ -1032,7 +1042,28 @@ func (m *Model) openAttachmentFilter() {
 	}
 }
 
+// restorePreSearchSnapshot restores the cached message list state from before
+// the search began, avoiding a re-query. Returns nil cmd since no async work needed.
+func (m *Model) restorePreSearchSnapshot() tea.Cmd {
+	m.messages = m.preSearchMessages
+	m.cursor = m.preSearchCursor
+	m.scrollOffset = m.preSearchScrollOffset
+	m.contextStats = m.preSearchContextStats
+	m.loading = false
+	// Clear the snapshot
+	m.preSearchMessages = nil
+	m.preSearchContextStats = nil
+	return nil
+}
+
 func (m *Model) activateInlineSearch(placeholder string) tea.Cmd {
+	// Snapshot current message list so Esc can restore instantly
+	if m.level == levelMessageList && m.searchQuery == "" {
+		m.preSearchMessages = m.messages
+		m.preSearchCursor = m.cursor
+		m.preSearchScrollOffset = m.scrollOffset
+		m.preSearchContextStats = m.contextStats
+	}
 	m.inlineSearchActive = true
 	m.searchMode = searchModeFast
 	m.searchInput.Placeholder = placeholder
