@@ -579,6 +579,78 @@ func TestDuckDBEngine_AggregateBySender(t *testing.T) {
 	}
 }
 
+func TestDuckDBEngine_AggregateBySenderName(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+	results, err := engine.AggregateBySenderName(ctx, DefaultAggregateOptions())
+	if err != nil {
+		t.Fatalf("AggregateBySenderName: %v", err)
+	}
+
+	// Expected: "Alice" (3 msgs), "Bob" (2 msgs) - display_name from participants
+	if len(results) != 2 {
+		t.Errorf("expected 2 sender names, got %d", len(results))
+	}
+
+	if len(results) > 0 && results[0].Key != "Alice" {
+		t.Errorf("expected 'Alice' first, got %q", results[0].Key)
+	}
+	if len(results) > 0 && results[0].Count != 3 {
+		t.Errorf("expected Alice count 3, got %d", results[0].Count)
+	}
+}
+
+func TestDuckDBEngine_SubAggregateBySenderName(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	// Filter by recipient alice, sub-aggregate by sender name
+	filter := MessageFilter{Recipient: "alice@example.com"}
+	results, err := engine.SubAggregate(ctx, filter, ViewSenderNames, DefaultAggregateOptions())
+	if err != nil {
+		t.Fatalf("SubAggregate: %v", err)
+	}
+
+	// Messages to alice are 4, 5 (from Bob)
+	if len(results) != 1 {
+		t.Errorf("expected 1 sender name, got %d", len(results))
+	}
+	if len(results) > 0 && results[0].Key != "Bob" {
+		t.Errorf("expected 'Bob', got %q", results[0].Key)
+	}
+}
+
+func TestDuckDBEngine_ListMessages_SenderNameFilter(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	filter := MessageFilter{SenderName: "Alice"}
+	results, err := engine.ListMessages(ctx, filter)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+
+	// Alice sent messages 1, 2, 3
+	if len(results) != 3 {
+		t.Errorf("expected 3 messages from Alice, got %d", len(results))
+	}
+}
+
+func TestDuckDBEngine_GetGmailIDsByFilter_SenderName(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	filter := MessageFilter{SenderName: "Alice"}
+	ids, err := engine.GetGmailIDsByFilter(ctx, filter)
+	if err != nil {
+		t.Fatalf("GetGmailIDsByFilter: %v", err)
+	}
+
+	if len(ids) != 3 {
+		t.Errorf("expected 3 gmail IDs for Alice, got %d", len(ids))
+	}
+}
+
 // TestDuckDBEngine_AggregateAttachmentFields verifies attachment_count and attachment_size
 // are correctly scanned from aggregate queries (attachment_size is DOUBLE, attachment_count is INT).
 func TestDuckDBEngine_AggregateAttachmentFields(t *testing.T) {

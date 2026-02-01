@@ -5065,3 +5065,196 @@ func TestHeaderUpdateNoticeNarrowTerminal(t *testing.T) {
 		t.Errorf("header line 1 width %d exceeds narrow terminal width 40", lineWidth)
 	}
 }
+
+// === Sender Names View Tests ===
+
+// TestSenderNamesDrillDown verifies that pressing Enter on a SenderNames row
+// sets drillFilter.SenderName and transitions to message list.
+func TestSenderNamesDrillDown(t *testing.T) {
+	rows := []query.AggregateRow{
+		{Key: "Alice Smith", Count: 10},
+		{Key: "Bob Jones", Count: 5},
+	}
+
+	model := NewBuilder().WithRows(rows...).
+		WithPageSize(10).WithSize(100, 20).WithViewType(query.ViewSenderNames).Build()
+
+	// Press Enter to drill into first sender name
+	newModel, cmd := model.handleAggregateKeys(keyEnter())
+	m := newModel.(Model)
+
+	if m.level != levelMessageList {
+		t.Errorf("expected levelMessageList, got %v", m.level)
+	}
+	if m.drillFilter.SenderName != "Alice Smith" {
+		t.Errorf("expected drillFilter.SenderName='Alice Smith', got %q", m.drillFilter.SenderName)
+	}
+	if m.drillViewType != query.ViewSenderNames {
+		t.Errorf("expected drillViewType=ViewSenderNames, got %v", m.drillViewType)
+	}
+	if cmd == nil {
+		t.Error("expected command to load messages")
+	}
+	if len(m.breadcrumbs) != 1 {
+		t.Errorf("expected 1 breadcrumb, got %d", len(m.breadcrumbs))
+	}
+}
+
+// TestSenderNamesDrillDownEmptyKey verifies drilling into an empty sender name
+// sets MatchEmptySenderName.
+func TestSenderNamesDrillDownEmptyKey(t *testing.T) {
+	rows := []query.AggregateRow{
+		{Key: "", Count: 3},
+	}
+
+	model := NewBuilder().WithRows(rows...).
+		WithPageSize(10).WithSize(100, 20).WithViewType(query.ViewSenderNames).Build()
+
+	newModel, _ := model.handleAggregateKeys(keyEnter())
+	m := newModel.(Model)
+
+	if !m.drillFilter.MatchEmptySenderName {
+		t.Error("expected MatchEmptySenderName=true for empty key")
+	}
+	if m.drillFilter.SenderName != "" {
+		t.Errorf("expected empty SenderName, got %q", m.drillFilter.SenderName)
+	}
+}
+
+// TestSenderNamesDrillFilterKey verifies drillFilterKey returns the SenderName.
+func TestSenderNamesDrillFilterKey(t *testing.T) {
+	model := NewBuilder().
+		WithRows(query.AggregateRow{Key: "test", Count: 1}).
+		WithPageSize(10).WithSize(100, 20).Build()
+	model.drillViewType = query.ViewSenderNames
+	model.drillFilter = query.MessageFilter{SenderName: "John Doe"}
+
+	key := model.drillFilterKey()
+	if key != "John Doe" {
+		t.Errorf("expected drillFilterKey='John Doe', got %q", key)
+	}
+
+	// Test empty case
+	model.drillFilter = query.MessageFilter{MatchEmptySenderName: true}
+	key = model.drillFilterKey()
+	if key != "(empty)" {
+		t.Errorf("expected '(empty)' for MatchEmptySenderName, got %q", key)
+	}
+}
+
+// TestSenderNamesBreadcrumbPrefix verifies the "N:" prefix in breadcrumbs.
+func TestSenderNamesBreadcrumbPrefix(t *testing.T) {
+	prefix := viewTypePrefix(query.ViewSenderNames)
+	if prefix != "N" {
+		t.Errorf("expected prefix 'N', got %q", prefix)
+	}
+
+	abbrev := viewTypeAbbrev(query.ViewSenderNames)
+	if abbrev != "Name" {
+		t.Errorf("expected abbrev 'Name', got %q", abbrev)
+	}
+}
+
+// TestShiftTabCyclesSenderNames verifies shift+tab cycles backward through
+// SenderNames in the correct order.
+func TestShiftTabCyclesSenderNames(t *testing.T) {
+	model := NewBuilder().
+		WithRows(query.AggregateRow{Key: "test", Count: 1}).
+		WithPageSize(10).WithSize(100, 20).
+		WithViewType(query.ViewSenderNames).Build()
+
+	// Shift+tab from SenderNames should go back to Senders
+	m := applyAggregateKey(t, model, keyShiftTab())
+	if m.viewType != query.ViewSenders {
+		t.Errorf("expected ViewSenders after shift+tab from SenderNames, got %v", m.viewType)
+	}
+}
+
+// TestSubAggregateFromSenderNames verifies that drilling from SenderNames
+// and then tabbing skips SenderNames in the sub-aggregate cycle.
+func TestSubAggregateFromSenderNames(t *testing.T) {
+	rows := []query.AggregateRow{
+		{Key: "Alice Smith", Count: 10},
+	}
+	msgs := []query.MessageSummary{
+		{ID: 1, Subject: "Test"},
+	}
+
+	model := NewBuilder().WithRows(rows...).WithMessages(msgs...).
+		WithPageSize(10).WithSize(100, 20).WithViewType(query.ViewSenderNames).Build()
+
+	// Drill into the name
+	newModel, _ := model.handleAggregateKeys(keyEnter())
+	m := newModel.(Model)
+
+	// Tab to sub-aggregate
+	m.messages = msgs
+	newModel2, _ := m.handleMessageListKeys(keyTab())
+	m2 := newModel2.(Model)
+
+	if m2.level != levelDrillDown {
+		t.Fatalf("expected levelDrillDown, got %v", m2.level)
+	}
+	// Should skip SenderNames (the drill view type) and go to Recipients
+	if m2.viewType != query.ViewRecipients {
+		t.Errorf("expected ViewRecipients (skipping SenderNames), got %v", m2.viewType)
+	}
+}
+
+// TestHasDrillFilterWithSenderName verifies hasDrillFilter returns true
+// for SenderName and MatchEmptySenderName.
+func TestHasDrillFilterWithSenderName(t *testing.T) {
+	model := NewBuilder().
+		WithRows(query.AggregateRow{Key: "test", Count: 1}).
+		WithPageSize(10).WithSize(100, 20).Build()
+
+	model.drillFilter = query.MessageFilter{SenderName: "John"}
+	if !model.hasDrillFilter() {
+		t.Error("expected hasDrillFilter=true for SenderName")
+	}
+
+	model.drillFilter = query.MessageFilter{MatchEmptySenderName: true}
+	if !model.hasDrillFilter() {
+		t.Error("expected hasDrillFilter=true for MatchEmptySenderName")
+	}
+}
+
+// TestSenderNamesBreadcrumbRoundTrip verifies that drilling into a sender name,
+// navigating to message detail, and going back preserves the SenderName filter.
+func TestSenderNamesBreadcrumbRoundTrip(t *testing.T) {
+	model := NewBuilder().
+		WithMessages(
+			query.MessageSummary{ID: 1, Subject: "Test message"},
+		).
+		WithLevel(levelMessageList).WithViewType(query.ViewRecipients).Build()
+	model.drillFilter = query.MessageFilter{SenderName: "Alice Smith"}
+	model.drillViewType = query.ViewSenderNames
+
+	// Press Enter to go to message detail
+	newModel, _ := model.Update(keyEnter())
+	m := newModel.(Model)
+
+	if m.level != levelMessageDetail {
+		t.Fatalf("expected levelMessageDetail, got %v", m.level)
+	}
+
+	// Verify breadcrumb saved SenderName
+	if len(m.breadcrumbs) == 0 {
+		t.Fatal("expected breadcrumb to be saved")
+	}
+	bc := m.breadcrumbs[len(m.breadcrumbs)-1]
+	if bc.state.drillFilter.SenderName != "Alice Smith" {
+		t.Errorf("expected breadcrumb SenderName='Alice Smith', got %q", bc.state.drillFilter.SenderName)
+	}
+
+	// Press Esc to go back
+	newModel2, _ := m.goBack()
+	m2 := newModel2.(Model)
+
+	if m2.drillFilter.SenderName != "Alice Smith" {
+		t.Errorf("expected SenderName='Alice Smith' after goBack, got %q", m2.drillFilter.SenderName)
+	}
+	if m2.drillViewType != query.ViewSenderNames {
+		t.Errorf("expected drillViewType=ViewSenderNames, got %v", m2.drillViewType)
+	}
+}
