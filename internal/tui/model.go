@@ -12,6 +12,7 @@ import (
 	"github.com/wesm/msgvault/internal/deletion"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/search"
+	"github.com/wesm/msgvault/internal/update"
 )
 
 // defaultAggregateLimit is the maximum number of aggregate rows to load for display.
@@ -82,6 +83,10 @@ type Model struct {
 
 	// Version info for title bar
 	version string
+
+	// Update notification
+	updateAvailable  string // Latest version if update available
+	updateIsDevBuild bool   // True if running a dev build
 
 	// Configurable limits
 	aggregateLimit     int
@@ -220,8 +225,21 @@ func (m Model) Init() tea.Cmd {
 		m.loadData(),
 		m.loadStats(),
 		m.loadAccounts(),
+		m.checkForUpdate(),
 		spinnerTick(), // Start spinner for initial load
 	)
+}
+
+// checkForUpdate runs a background update check using the cached version info.
+func (m Model) checkForUpdate() tea.Cmd {
+	version := m.version
+	return func() tea.Msg {
+		info, err := update.CheckForUpdate(version, false)
+		if err != nil || info == nil {
+			return updateCheckMsg{}
+		}
+		return updateCheckMsg{version: info.LatestVersion, isDevBuild: info.IsDevBuild}
+	}
 }
 
 // dataLoadedMsg is sent when aggregate data is loaded.
@@ -241,6 +259,12 @@ type statsLoadedMsg struct {
 type accountsLoadedMsg struct {
 	accounts []query.AccountInfo
 	err      error
+}
+
+// updateCheckMsg is sent when the background update check completes.
+type updateCheckMsg struct {
+	version    string // Latest version if available
+	isDevBuild bool
 }
 
 // loadData fetches aggregate data based on current view settings.
@@ -703,6 +727,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			m.accounts = msg.accounts
 		}
+		return m, nil
+
+	case updateCheckMsg:
+		m.updateAvailable = msg.version
+		m.updateIsDevBuild = msg.isDevBuild
 		return m, nil
 
 	case messagesLoadedMsg:

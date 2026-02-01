@@ -25,8 +25,8 @@ email data locally with full-text search capabilities.
 This is the Go implementation providing sync, search, and TUI functionality
 in a single binary.`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Skip config loading for version command
-		if cmd.Name() == "version" {
+		// Skip config loading for commands that don't need it
+		if cmd.Name() == "version" || cmd.Name() == "update" {
 			return nil
 		}
 

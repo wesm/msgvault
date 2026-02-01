@@ -274,8 +274,24 @@ func (m Model) headerView() string {
 		accountStr += " [Attachments]"
 	}
 
-	// Build line 1: "msgvault [hash] - Account"
+	// Update notification (right-aligned on title bar)
+	var updateNotice string
+	if m.updateAvailable != "" {
+		if m.updateIsDevBuild {
+			updateNotice = fmt.Sprintf("latest: %s — msgvault update --force", m.updateAvailable)
+		} else {
+			updateNotice = fmt.Sprintf("update: %s — msgvault update", m.updateAvailable)
+		}
+	}
+
+	// Build line 1: "msgvault [hash] - Account          update: vX.Y.Z"
 	line1Content := fmt.Sprintf("%s - %s", titleText, accountStr)
+	if updateNotice != "" {
+		gap := m.width - 2 - len(line1Content) - len(updateNotice)
+		if gap > 1 {
+			line1Content += strings.Repeat(" ", gap) + updateNotice
+		}
+	}
 	line1 := titleBarStyle.Render(padRight(line1Content, m.width-2)) // -2 for padding
 
 	// === LINE 2: Breadcrumb and Stats ===
