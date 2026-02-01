@@ -275,4 +275,5 @@ type AccountInfo struct {
 type StatsOptions struct {
 	SourceID            *int64 // nil means all accounts
 	WithAttachmentsOnly bool   // only count messages with attachments
+	SearchQuery         string // when set, stats reflect only messages matching this search
 }

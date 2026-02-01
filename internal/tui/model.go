@@ -244,9 +244,10 @@ func (m Model) checkForUpdate() tea.Cmd {
 
 // dataLoadedMsg is sent when aggregate data is loaded.
 type dataLoadedMsg struct {
-	rows      []query.AggregateRow
-	err       error
-	requestID uint64 // To detect stale responses
+	rows          []query.AggregateRow
+	filteredStats *query.TotalStats // distinct message stats when search is active
+	err           error
+	requestID     uint64 // To detect stale responses
 }
 
 // statsLoadedMsg is sent when stats are loaded.
@@ -314,7 +315,20 @@ func (m Model) loadData() tea.Cmd {
 			}
 		}
 
-		return dataLoadedMsg{rows: rows, err: err, requestID: requestID}
+		// When search is active, compute distinct message stats separately.
+		// Summing row.Count across groups overcounts for 1:N views (Recipients, Labels)
+		// where a message appears in multiple groups.
+		var filteredStats *query.TotalStats
+		if err == nil && opts.SearchQuery != "" {
+			statsOpts := query.StatsOptions{
+				SourceID:            m.accountFilter,
+				WithAttachmentsOnly: m.attachmentFilter,
+				SearchQuery:         opts.SearchQuery,
+			}
+			filteredStats, _ = m.engine.GetTotalStats(ctx, statsOpts)
+		}
+
+		return dataLoadedMsg{rows: rows, filteredStats: filteredStats, err: err, requestID: requestID}
 	}
 }
 
@@ -714,9 +728,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.restorePosition = false // Clear flag after use
 
-			// When search filter is active, calculate stats from filtered aggregate rows
-			// so the header metrics reflect the filtered data
-			if m.searchQuery != "" {
+			// When search filter is active, use distinct message stats from the
+			// filtered stats query. This avoids inflated totals from 1:N views
+			// (Recipients, Labels) where summing row.Count overcounts.
+			if m.searchQuery != "" && msg.filteredStats != nil {
+				m.contextStats = msg.filteredStats
+			} else if m.searchQuery != "" {
+				// Fallback if stats query failed: sum row counts
 				var totalCount, totalSize, totalAttachments int64
 				for _, row := range msg.rows {
 					totalCount += row.Count

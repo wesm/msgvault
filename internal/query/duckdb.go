@@ -170,7 +170,11 @@ func escapeILIKE(s string) string {
 // Column references use msg. prefix to be explicit since aggregate queries join multiple CTEs.
 // buildAggregateSearchConditions builds SQL conditions for a search query in aggregate views.
 // Returns conditions and args that can be appended to existing conditions.
-func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string) ([]string, []interface{}) {
+// buildAggregateSearchConditions builds WHERE conditions for aggregate search.
+// keyColumns are SQL expressions for the grouping dimension that text terms
+// should filter on (e.g. "p.email_address", "p.display_name"). When nil,
+// text terms search subject + sender (the default for Senders/Time views).
+func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyColumns ...string) ([]string, []interface{}) {
 	if searchQuery == "" {
 		return nil, nil
 	}
@@ -180,20 +184,32 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string) ([]str
 
 	q := search.Parse(searchQuery)
 
-	// Text terms: search subject and sender (email/name)
+	// Text terms: filter on the view's grouping key columns when provided,
+	// otherwise fall back to subject + sender search.
 	for _, term := range q.TextTerms {
 		termPattern := "%" + escapeILIKE(term) + "%"
-		conditions = append(conditions, `(
-			msg.subject ILIKE ? ESCAPE '\' OR
-			EXISTS (
-				SELECT 1 FROM mr mr_search
-				JOIN p p_search ON p_search.id = mr_search.participant_id
-				WHERE mr_search.message_id = msg.id
-				  AND mr_search.recipient_type = 'from'
-				  AND (p_search.email_address ILIKE ? ESCAPE '\' OR p_search.display_name ILIKE ? ESCAPE '\')
-			)
-		)`)
-		args = append(args, termPattern, termPattern, termPattern)
+		if len(keyColumns) > 0 {
+			// Filter on the grouping dimension's columns
+			var parts []string
+			for _, col := range keyColumns {
+				parts = append(parts, col+` ILIKE ? ESCAPE '\'`)
+				args = append(args, termPattern)
+			}
+			conditions = append(conditions, "("+strings.Join(parts, " OR ")+")")
+		} else {
+			// Default: search subject and sender (for Senders/Time views)
+			conditions = append(conditions, `(
+				msg.subject ILIKE ? ESCAPE '\' OR
+				EXISTS (
+					SELECT 1 FROM mr mr_search
+					JOIN p p_search ON p_search.id = mr_search.participant_id
+					WHERE mr_search.message_id = msg.id
+					  AND mr_search.recipient_type = 'from'
+					  AND (p_search.email_address ILIKE ? ESCAPE '\' OR p_search.display_name ILIKE ? ESCAPE '\')
+				)
+			)`)
+			args = append(args, termPattern, termPattern, termPattern)
+		}
 	}
 
 	// from: filter - match sender email
@@ -268,7 +284,10 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string) ([]str
 	return conditions, args
 }
 
-func (e *DuckDBEngine) buildWhereClause(opts AggregateOptions) (string, []interface{}) {
+// buildWhereClause builds WHERE conditions for aggregate queries.
+// keyColumns are passed through to buildAggregateSearchConditions to control
+// which columns text search terms filter on.
+func (e *DuckDBEngine) buildWhereClause(opts AggregateOptions, keyColumns ...string) (string, []interface{}) {
 	var conditions []string
 	var args []interface{}
 
@@ -291,8 +310,8 @@ func (e *DuckDBEngine) buildWhereClause(opts AggregateOptions) (string, []interf
 		conditions = append(conditions, "msg.has_attachments = 1")
 	}
 
-	// Text search filter for aggregates - filter to messages matching search query
-	searchConds, searchArgs := e.buildAggregateSearchConditions(opts.SearchQuery)
+	// Text search filter for aggregates - filter on view's key columns
+	searchConds, searchArgs := e.buildAggregateSearchConditions(opts.SearchQuery, keyColumns...)
 	conditions = append(conditions, searchConds...)
 	args = append(args, searchArgs...)
 
@@ -398,7 +417,7 @@ func (e *DuckDBEngine) AggregateBySenderName(ctx context.Context, opts Aggregate
 // AggregateByRecipient groups messages by recipient email.
 // Includes to, cc recipients (bcc not exported to Parquet for privacy).
 func (e *DuckDBEngine) AggregateByRecipient(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := e.buildWhereClause(opts)
+	where, args := e.buildWhereClause(opts, "p.email_address", "p.display_name")
 
 	limit := opts.Limit
 	if limit == 0 {
@@ -436,7 +455,7 @@ func (e *DuckDBEngine) AggregateByRecipient(ctx context.Context, opts AggregateO
 // Uses COALESCE(display_name, email_address) so recipients without a display name
 // fall back to their email address.
 func (e *DuckDBEngine) AggregateByRecipientName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := e.buildWhereClause(opts)
+	where, args := e.buildWhereClause(opts, "p.email_address", "p.display_name")
 
 	limit := opts.Limit
 	if limit == 0 {
@@ -507,7 +526,7 @@ func (e *DuckDBEngine) AggregateByDomain(ctx context.Context, opts AggregateOpti
 
 // AggregateByLabel groups messages by label.
 func (e *DuckDBEngine) AggregateByLabel(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := e.buildWhereClause(opts)
+	where, args := e.buildWhereClause(opts, "lbl.name")
 
 	limit := opts.Limit
 	if limit == 0 {
@@ -783,17 +802,29 @@ func (e *DuckDBEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 		where += " AND msg.has_attachments = true"
 	}
 
-	// Add search query conditions (for filtered drill-down)
-	searchConds, searchArgs := e.buildAggregateSearchConditions(opts.SearchQuery)
-	for _, cond := range searchConds {
-		where += " AND " + cond
-	}
-	args = append(args, searchArgs...)
-
 	limit := opts.Limit
 	if limit == 0 {
 		limit = 100
 	}
+
+	// For 1:N views (Recipients, RecipientNames, Labels), search must filter
+	// on the grouping key column to avoid inflated counts from summing across groups.
+	// For 1:1 views (Senders, SenderNames, Domains, Time), the default
+	// subject+sender search is correct and more useful.
+	var searchKeyColumns []string
+	switch groupBy {
+	case ViewRecipients, ViewRecipientNames:
+		searchKeyColumns = []string{"p_agg.email_address", "p_agg.display_name"}
+	case ViewLabels:
+		searchKeyColumns = []string{"lbl_agg.name"}
+	}
+
+	// Add search query conditions (for filtered drill-down)
+	searchConds, searchArgs := e.buildAggregateSearchConditions(opts.SearchQuery, searchKeyColumns...)
+	for _, cond := range searchConds {
+		where += " AND " + cond
+	}
+	args = append(args, searchArgs...)
 
 	var query string
 	switch groupBy {
@@ -1023,6 +1054,13 @@ func (e *DuckDBEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 
 	if opts.WithAttachmentsOnly {
 		conditions = append(conditions, "msg.has_attachments = 1")
+	}
+
+	// Search filter — uses EXISTS subqueries so no row multiplication
+	if opts.SearchQuery != "" {
+		searchConds, searchArgs := e.buildAggregateSearchConditions(opts.SearchQuery)
+		conditions = append(conditions, searchConds...)
+		args = append(args, searchArgs...)
 	}
 
 	whereClause := "1=1"

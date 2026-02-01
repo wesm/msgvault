@@ -2670,6 +2670,41 @@ func TestAggregateSearchFilterSetsContextStats(t *testing.T) {
 	}
 }
 
+// TestAggregateSearchFilterUsesFilteredStats verifies that contextStats uses
+// the filteredStats from the query (distinct message count) rather than summing
+// row counts, which would overcount for 1:N views like Recipients and Labels.
+func TestAggregateSearchFilterUsesFilteredStats(t *testing.T) {
+	model := newTestModelAtLevel(levelAggregates).
+		withSearchQuery("test query").
+		withAggregateRequestID(1)
+
+	// Simulate recipient view: rows sum to 175 (inflated) but actual distinct is 100
+	filteredStats := &query.TotalStats{MessageCount: 100, TotalSize: 5000, AttachmentCount: 10}
+	msg := dataLoadedMsg{
+		rows: []query.AggregateRow{
+			{Key: "alice@example.com", Count: 80, TotalSize: 4000, AttachmentCount: 5},
+			{Key: "bob@example.com", Count: 60, TotalSize: 3000, AttachmentCount: 3},
+			{Key: "carol@example.com", Count: 35, TotalSize: 1500, AttachmentCount: 2},
+		},
+		filteredStats: filteredStats,
+		requestID:     1,
+	}
+
+	newModel, _ := model.Update(msg)
+	m := newModel.(Model)
+
+	if m.contextStats == nil {
+		t.Fatal("expected contextStats to be set")
+	}
+	// Should use filteredStats (100), not sum of row counts (175)
+	if m.contextStats.MessageCount != 100 {
+		t.Errorf("contextStats.MessageCount = %d, want 100 (from filteredStats, not row sum 175)", m.contextStats.MessageCount)
+	}
+	if m.contextStats.TotalSize != 5000 {
+		t.Errorf("contextStats.TotalSize = %d, want 5000", m.contextStats.TotalSize)
+	}
+}
+
 // TestAggregateNoSearchFilterClearsContextStats verifies contextStats is cleared
 // when no search filter is active at aggregate level.
 func TestAggregateNoSearchFilterClearsContextStats(t *testing.T) {

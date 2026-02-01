@@ -558,6 +558,114 @@ func TestDuckDBEngine_AggregateByRecipient(t *testing.T) {
 	}
 }
 
+// TestDuckDBEngine_AggregateByRecipient_SearchFiltersOnKey verifies that
+// searching in Recipients view filters on recipient email/name, not subject/sender.
+// This reproduces a bug where the search applied to subject/sender instead of
+// the recipient grouping key, causing inflated counts when summed across groups.
+func TestDuckDBEngine_AggregateByRecipient_SearchFiltersOnKey(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	// Search for "bob" — should return only bob@company.org as a recipient
+	// Test data: bob is a recipient (to) in msgs 1,2,3
+	opts := DefaultAggregateOptions()
+	opts.SearchQuery = "bob"
+	rows, err := engine.AggregateByRecipient(ctx, opts)
+	if err != nil {
+		t.Fatalf("AggregateByRecipient (search 'bob'): %v", err)
+	}
+
+	// Should only match bob@company.org as recipient, not bob as sender
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 recipient matching 'bob', got %d", len(rows))
+	}
+	if rows[0].Key != "bob@company.org" {
+		t.Errorf("expected bob@company.org, got %s", rows[0].Key)
+	}
+	if rows[0].Count != 3 {
+		t.Errorf("expected count=3 for bob, got %d", rows[0].Count)
+	}
+
+	// Search for "dan" — should return only dan@other.net (cc recipient in msg 2)
+	opts.SearchQuery = "dan"
+	rows, err = engine.AggregateByRecipient(ctx, opts)
+	if err != nil {
+		t.Fatalf("AggregateByRecipient (search 'dan'): %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 recipient matching 'dan', got %d", len(rows))
+	}
+	if rows[0].Key != "dan@other.net" {
+		t.Errorf("expected dan@other.net, got %s", rows[0].Key)
+	}
+
+	// Verify totals don't exceed baseline
+	baseOpts := DefaultAggregateOptions()
+	baseRows, err := engine.AggregateByRecipient(ctx, baseOpts)
+	if err != nil {
+		t.Fatalf("AggregateByRecipient (no search): %v", err)
+	}
+	var baseTotal, searchTotal int64
+	for _, r := range baseRows {
+		baseTotal += r.Count
+	}
+	opts.SearchQuery = "a" // matches alice, carol, dan (display names with 'a')
+	rows, err = engine.AggregateByRecipient(ctx, opts)
+	if err != nil {
+		t.Fatalf("AggregateByRecipient (search 'a'): %v", err)
+	}
+	for _, r := range rows {
+		searchTotal += r.Count
+	}
+	if searchTotal > baseTotal {
+		t.Errorf("search inflated total count: baseline=%d, withSearch=%d", baseTotal, searchTotal)
+	}
+}
+
+// TestDuckDBEngine_AggregateByLabel_SearchFiltersOnKey verifies that
+// searching in Labels view filters on label name, not subject/sender.
+func TestDuckDBEngine_AggregateByLabel_SearchFiltersOnKey(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	// Search for "work" — should return only the Work label
+	opts := DefaultAggregateOptions()
+	opts.SearchQuery = "work"
+	rows, err := engine.AggregateByLabel(ctx, opts)
+	if err != nil {
+		t.Fatalf("AggregateByLabel (search 'work'): %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 label matching 'work', got %d", len(rows))
+	}
+	if rows[0].Key != "Work" {
+		t.Errorf("expected 'Work', got %s", rows[0].Key)
+	}
+}
+
+// TestDuckDBEngine_AggregateByDomain_SearchFiltersOnKey verifies that
+// searching in Domains view filters on domain, not subject/sender.
+func TestDuckDBEngine_AggregateByDomain_SearchFiltersOnKey(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	// Search for "company" — should return only company.org
+	opts := DefaultAggregateOptions()
+	opts.SearchQuery = "company"
+	rows, err := engine.AggregateByDomain(ctx, opts)
+	if err != nil {
+		t.Fatalf("AggregateByDomain (search 'company'): %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 domain matching 'company', got %d", len(rows))
+	}
+	if rows[0].Key != "company.org" {
+		t.Errorf("expected 'company.org', got %s", rows[0].Key)
+	}
+}
+
 // TestDuckDBEngine_AggregateBySender verifies sender aggregation from Parquet.
 func TestDuckDBEngine_AggregateBySender(t *testing.T) {
 	engine := newParquetEngine(t)
