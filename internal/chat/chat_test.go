@@ -209,6 +209,7 @@ func (e *stubEngine) GetMessage(_ context.Context, id int64) (*query.MessageDeta
 func (e *stubEngine) AggregateBySender(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
 func (e *stubEngine) AggregateBySenderName(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
 func (e *stubEngine) AggregateByRecipient(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
+func (e *stubEngine) AggregateByRecipientName(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
 func (e *stubEngine) AggregateByDomain(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
 func (e *stubEngine) AggregateByLabel(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
 func (e *stubEngine) AggregateByTime(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }

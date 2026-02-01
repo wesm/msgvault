@@ -269,7 +269,8 @@ msgvault tui --account user@gmail.com
 | `j`/`k`, `↑`/`↓`| Navigate rows                                  |
 | `Enter`          | Drill down into selection                       |
 | `Esc`/`Backspace`| Go back                                        |
-| `Tab`            | Cycle view (Senders → Names → To → Domains → Labels → Time) |
+| `Tab`            | Cycle view (Senders → Sender Names → To → To Names → Domains → Labels → Time) |
+| `t`              | Jump to Time view (cycle granularity when already in Time) |
 | `s`              | Cycle sort (Name → Count → Size)                |
 | `r`              | Reverse sort direction                          |
 | `t`              | Cycle time granularity (Year/Month/Day)         |

@@ -54,6 +54,9 @@ func (e *stubEngine) AggregateBySenderName(_ context.Context, _ query.AggregateO
 func (e *stubEngine) AggregateByRecipient(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
 	return e.aggregateRows, nil
 }
+func (e *stubEngine) AggregateByRecipientName(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
+	return e.aggregateRows, nil
+}
 func (e *stubEngine) AggregateByDomain(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
 	return e.aggregateRows, nil
 }

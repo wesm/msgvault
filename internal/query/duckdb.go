@@ -432,6 +432,43 @@ func (e *DuckDBEngine) AggregateByRecipient(ctx context.Context, opts AggregateO
 	return e.executeAggregateQuery(ctx, query, args)
 }
 
+// AggregateByRecipientName groups messages by recipient display name.
+// Uses COALESCE(display_name, email_address) so recipients without a display name
+// fall back to their email address.
+func (e *DuckDBEngine) AggregateByRecipientName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
+	where, args := e.buildWhereClause(opts)
+
+	limit := opts.Limit
+	if limit == 0 {
+		limit = 100
+	}
+
+	query := fmt.Sprintf(`
+		WITH %s
+		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
+		FROM (
+			SELECT
+				COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) as key,
+				COUNT(*) as count,
+				COALESCE(SUM(msg.size_estimate), 0) as total_size,
+				CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
+				CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
+				COUNT(*) OVER() as total_unique
+			FROM msg
+			JOIN mr ON mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc')
+			JOIN p ON p.id = mr.participant_id
+			LEFT JOIN att ON att.message_id = msg.id
+			WHERE %s AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) IS NOT NULL
+			GROUP BY COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address)
+		)
+		%s
+		LIMIT ?
+	`, e.parquetCTEs(), where, e.sortClause(opts))
+
+	args = append(args, limit)
+	return e.executeAggregateQuery(ctx, query, args)
+}
+
 // AggregateByDomain groups messages by sender domain.
 func (e *DuckDBEngine) AggregateByDomain(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
 	where, args := e.buildWhereClause(opts)
@@ -637,6 +674,26 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM mr WHERE mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc'))")
 	}
 
+	// Recipient name filter - use EXISTS subquery (becomes semi-join)
+	if filter.RecipientName != "" {
+		conditions = append(conditions, `EXISTS (
+			SELECT 1 FROM mr
+			JOIN p ON p.id = mr.participant_id
+			WHERE mr.message_id = msg.id
+			  AND mr.recipient_type IN ('to', 'cc')
+			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) = ?
+		)`)
+		args = append(args, filter.RecipientName)
+	} else if filter.MatchEmptyRecipientName {
+		conditions = append(conditions, `NOT EXISTS (
+			SELECT 1 FROM mr
+			JOIN p ON p.id = mr.participant_id
+			WHERE mr.message_id = msg.id
+			  AND mr.recipient_type IN ('to', 'cc')
+			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) IS NOT NULL
+		)`)
+	}
+
 	// Domain filter - use EXISTS subquery (becomes semi-join)
 	if filter.Domain != "" {
 		conditions = append(conditions, `EXISTS (
@@ -804,6 +861,29 @@ func (e *DuckDBEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 				LEFT JOIN att ON att.message_id = msg.id
 				WHERE %s AND p_agg.email_address IS NOT NULL
 				GROUP BY p_agg.email_address
+			)
+			%s
+			LIMIT ?
+		`, e.parquetCTEs(), where, e.sortClause(opts))
+
+	case ViewRecipientNames:
+		query = fmt.Sprintf(`
+			WITH %s
+			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
+			FROM (
+				SELECT
+					COALESCE(NULLIF(TRIM(p_agg.display_name), ''), p_agg.email_address) as key,
+					COUNT(*) as count,
+					COALESCE(SUM(msg.size_estimate), 0) as total_size,
+					CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
+					CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
+					COUNT(*) OVER() as total_unique
+				FROM msg
+				JOIN mr mr_agg ON mr_agg.message_id = msg.id AND mr_agg.recipient_type IN ('to', 'cc')
+				JOIN p p_agg ON p_agg.id = mr_agg.participant_id
+				LEFT JOIN att ON att.message_id = msg.id
+				WHERE %s AND COALESCE(NULLIF(TRIM(p_agg.display_name), ''), p_agg.email_address) IS NOT NULL
+				GROUP BY COALESCE(NULLIF(TRIM(p_agg.display_name), ''), p_agg.email_address)
 			)
 			%s
 			LIMIT ?
@@ -1669,6 +1749,17 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 			  AND p.email_address = ?
 		)`)
 		args = append(args, filter.Recipient)
+	}
+
+	if filter.RecipientName != "" {
+		conditions = append(conditions, `EXISTS (
+			SELECT 1 FROM mr
+			JOIN p ON p.id = mr.participant_id
+			WHERE mr.message_id = msg.id
+			  AND mr.recipient_type IN ('to', 'cc')
+			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) = ?
+		)`)
+		args = append(args, filter.RecipientName)
 	}
 
 	if filter.Domain != "" {

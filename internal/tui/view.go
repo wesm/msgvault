@@ -206,9 +206,11 @@ func viewTypeAbbrev(vt query.ViewType) string {
 	case query.ViewSenders:
 		return "Sender"
 	case query.ViewSenderNames:
-		return "Name"
+		return "Sender Name"
 	case query.ViewRecipients:
 		return "Recipient"
+	case query.ViewRecipientNames:
+		return "Recipient Name"
 	case query.ViewDomains:
 		return "Domain"
 	case query.ViewLabels:
@@ -229,6 +231,8 @@ func viewTypePrefix(vt query.ViewType) string {
 		return "N"
 	case query.ViewRecipients:
 		return "R"
+	case query.ViewRecipientNames:
+		return "RN"
 	case query.ViewDomains:
 		return "D"
 	case query.ViewLabels:
@@ -1404,7 +1408,8 @@ func (m Model) overlayModal(background string) string {
 		modalContent += "  Enter       Drill down\n"
 		modalContent += "  Esc         Go back\n\n"
 		modalContent += "Views & Sorting\n"
-		modalContent += "  g/Tab       Cycle view types (From/Name/To/Dom/Label/Time)\n"
+		modalContent += "  g/Tab       Cycle view types (From/SenderName/To/ToName/Dom/Label/Time)\n"
+	modalContent += "  t           Jump to Time view (cycle granularity when in Time)\n"
 		modalContent += "  s           Cycle sort field\n"
 		modalContent += "  v/r         Reverse sort order\n"
 		modalContent += "  t           Cycle time granularity (Year/Month/Day)\n\n"

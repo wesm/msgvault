@@ -34,6 +34,10 @@ func (m *mockEngine) AggregateByRecipient(ctx context.Context, opts query.Aggreg
 	return m.rows, nil
 }
 
+func (m *mockEngine) AggregateByRecipientName(ctx context.Context, opts query.AggregateOptions) ([]query.AggregateRow, error) {
+	return m.rows, nil
+}
+
 func (m *mockEngine) AggregateByDomain(ctx context.Context, opts query.AggregateOptions) ([]query.AggregateRow, error) {
 	return m.rows, nil
 }
@@ -1780,6 +1784,7 @@ func TestGKeyCyclesViewTypeFullCycle(t *testing.T) {
 	expectedOrder := []query.ViewType{
 		query.ViewSenderNames,
 		query.ViewRecipients,
+		query.ViewRecipientNames,
 		query.ViewDomains,
 		query.ViewLabels,
 		query.ViewTime,
@@ -1809,9 +1814,9 @@ func TestGKeyInSubAggregate(t *testing.T) {
 	// Press 'g' - should cycle to next view type, skipping drillViewType
 	m := applyAggregateKey(t, model, key('g'))
 
-	// Should skip ViewSenders (the drillViewType) and go to Domains
-	if m.viewType != query.ViewDomains {
-		t.Errorf("expected ViewDomains (skipping drillViewType), got %v", m.viewType)
+	// Should skip ViewSenders (the drillViewType) and go to RecipientNames
+	if m.viewType != query.ViewRecipientNames {
+		t.Errorf("expected ViewRecipientNames (skipping drillViewType), got %v", m.viewType)
 	}
 }
 
@@ -3825,6 +3830,7 @@ func TestViewTypePrefixFallback(t *testing.T) {
 	}{
 		{query.ViewSenders, "S"},
 		{query.ViewRecipients, "R"},
+		{query.ViewRecipientNames, "RN"},
 		{query.ViewDomains, "D"},
 		{query.ViewLabels, "L"},
 		{query.ViewTime, "T"},
@@ -5150,8 +5156,8 @@ func TestSenderNamesBreadcrumbPrefix(t *testing.T) {
 	}
 
 	abbrev := viewTypeAbbrev(query.ViewSenderNames)
-	if abbrev != "Name" {
-		t.Errorf("expected abbrev 'Name', got %q", abbrev)
+	if abbrev != "Sender Name" {
+		t.Errorf("expected abbrev 'Sender Name', got %q", abbrev)
 	}
 }
 

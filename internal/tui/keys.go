@@ -274,6 +274,9 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case query.ViewRecipients:
 				m.drillFilter.Recipient = key
 				m.drillFilter.MatchEmptyRecipient = (key == "")
+			case query.ViewRecipientNames:
+				m.drillFilter.RecipientName = key
+				m.drillFilter.MatchEmptyRecipientName = (key == "")
 			case query.ViewDomains:
 				m.drillFilter.Domain = key
 				m.drillFilter.MatchEmptyDomain = (key == "")
@@ -314,9 +317,9 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// View switching - 'g' cycles through groupings, Tab also works
 	// Sub-agg skips the drill view type (can't sub-group by the same dimension)
 	case "g", "tab":
-		m.viewType = (m.viewType + 1) % 6
+		m.viewType = (m.viewType + 1) % 7
 		if isSub && m.viewType == m.drillViewType {
-			m.viewType = (m.viewType + 1) % 6
+			m.viewType = (m.viewType + 1) % 7
 		}
 		m.selection.aggregateKeys = make(map[string]bool)
 		m.selection.aggregateViewType = m.viewType
@@ -328,13 +331,13 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "shift+tab":
 		if m.viewType == 0 {
-			m.viewType = 5
+			m.viewType = 6
 		} else {
 			m.viewType--
 		}
 		if isSub && m.viewType == m.drillViewType {
 			if m.viewType == 0 {
-				m.viewType = 5
+				m.viewType = 6
 			} else {
 				m.viewType--
 			}
@@ -347,14 +350,20 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.aggregateRequestID++
 		return m, m.loadData()
 
-	// Time granularity (only in Time view)
+	// Time view: jump to Time view, or cycle granularity if already there
 	case "t":
 		if m.viewType == query.ViewTime {
 			m.timeGranularity = (m.timeGranularity + 1) % 3
-			m.loading = true
-			m.aggregateRequestID++
-			return m, m.loadData()
+		} else {
+			m.viewType = query.ViewTime
+			m.selection.aggregateKeys = make(map[string]bool)
+			m.selection.aggregateViewType = m.viewType
+			m.cursor = 0
+			m.scrollOffset = 0
 		}
+		m.loading = true
+		m.aggregateRequestID++
+		return m, m.loadData()
 
 	// Sorting
 	case "s":
@@ -386,6 +395,8 @@ func (m Model) nextSubGroupView(current query.ViewType) query.ViewType {
 	case query.ViewSenderNames:
 		return query.ViewRecipients
 	case query.ViewRecipients:
+		return query.ViewRecipientNames
+	case query.ViewRecipientNames:
 		return query.ViewDomains
 	case query.ViewDomains:
 		return query.ViewLabels

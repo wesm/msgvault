@@ -303,6 +303,8 @@ func (m Model) loadData() tea.Cmd {
 				rows, err = m.engine.AggregateBySenderName(ctx, opts)
 			case query.ViewRecipients:
 				rows, err = m.engine.AggregateByRecipient(ctx, opts)
+			case query.ViewRecipientNames:
+				rows, err = m.engine.AggregateByRecipientName(ctx, opts)
 			case query.ViewDomains:
 				rows, err = m.engine.AggregateByDomain(ctx, opts)
 			case query.ViewLabels:
@@ -529,12 +531,14 @@ func (m Model) hasDrillFilter() bool {
 	return m.drillFilter.Sender != "" ||
 		m.drillFilter.SenderName != "" ||
 		m.drillFilter.Recipient != "" ||
+		m.drillFilter.RecipientName != "" ||
 		m.drillFilter.Domain != "" ||
 		m.drillFilter.Label != "" ||
 		m.drillFilter.TimePeriod != "" ||
 		m.drillFilter.MatchEmptySender ||
 		m.drillFilter.MatchEmptySenderName ||
 		m.drillFilter.MatchEmptyRecipient ||
+		m.drillFilter.MatchEmptyRecipientName ||
 		m.drillFilter.MatchEmptyDomain ||
 		m.drillFilter.MatchEmptyLabel
 }
@@ -557,6 +561,11 @@ func (m Model) drillFilterKey() string {
 			return "(empty)"
 		}
 		return m.drillFilter.Recipient
+	case query.ViewRecipientNames:
+		if m.drillFilter.MatchEmptyRecipientName {
+			return "(empty)"
+		}
+		return m.drillFilter.RecipientName
 	case query.ViewDomains:
 		if m.drillFilter.MatchEmptyDomain {
 			return "(empty)"

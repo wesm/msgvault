@@ -15,6 +15,7 @@ type Engine interface {
 	AggregateBySender(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
 	AggregateBySenderName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
 	AggregateByRecipient(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
+	AggregateByRecipientName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
 	AggregateByDomain(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
 	AggregateByLabel(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
 	AggregateByTime(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
@@ -80,6 +81,8 @@ func (e *SQLiteEngine) GetAggregateFunc(viewType ViewType) AggregateFunc {
 		return e.AggregateBySenderName
 	case ViewRecipients:
 		return e.AggregateByRecipient
+	case ViewRecipientNames:
+		return e.AggregateByRecipientName
 	case ViewDomains:
 		return e.AggregateByDomain
 	case ViewLabels:
