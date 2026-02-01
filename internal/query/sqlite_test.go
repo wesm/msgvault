@@ -2372,3 +2372,60 @@ func TestMatchEmptyRecipientName_CombinedWithSender(t *testing.T) {
 		t.Errorf("expected 0 messages for MatchEmptyRecipientName+Sender, got %d", len(messages))
 	}
 }
+
+func TestCombinedRecipientAndRecipientNameFilter(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Both Recipient (email) and RecipientName (display name) set — must match
+	// the same participant row, not different recipients.
+	// Bob Jones has email bob@company.org, display_name "Bob Jones".
+	filter := MessageFilter{
+		Recipient:     "bob@company.org",
+		RecipientName: "Bob Jones",
+	}
+	messages := env.MustListMessages(filter)
+
+	// Messages 1,2,3 all have Bob Jones as a to recipient
+	if len(messages) != 3 {
+		t.Errorf("expected 3 messages matching both Recipient+RecipientName for Bob, got %d", len(messages))
+	}
+}
+
+func TestCombinedRecipientAndRecipientName_Mismatch(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Recipient email matches Bob but RecipientName matches Alice — since both
+	// predicates must apply to the same participant row, this should return 0.
+	filter := MessageFilter{
+		Recipient:     "bob@company.org",
+		RecipientName: "Alice Smith",
+	}
+	messages := env.MustListMessages(filter)
+
+	if len(messages) != 0 {
+		t.Errorf("expected 0 messages for mismatched Recipient+RecipientName, got %d", len(messages))
+	}
+}
+
+func TestCombinedRecipientAndRecipientName_NoOvercount(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Message 1 has two 'to' recipients: Bob and Carol.
+	// Filtering by Recipient=bob + RecipientName=Bob Jones should still return
+	// msg1 exactly once (not duplicated by Carol's join row).
+	filter := MessageFilter{
+		Recipient:     "bob@company.org",
+		RecipientName: "Bob Jones",
+	}
+	messages := env.MustListMessages(filter)
+
+	seen := make(map[int64]int)
+	for _, m := range messages {
+		seen[m.ID]++
+	}
+	for id, count := range seen {
+		if count > 1 {
+			t.Errorf("message ID %d returned %d times (expected once)", id, count)
+		}
+	}
+}

@@ -213,14 +213,16 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		conditions = append(conditions, "mr_filter_to.id IS NULL")
 	}
 
-	// Recipient name filter — uses its own aliases (mr_rn_filter/p_rn_filter)
-	// to avoid conflicts with the Recipient filter's mr_filter_to join.
+	// Recipient name filter — reuses the Recipient filter's join when present,
+	// ensuring both predicates apply to the same participant row.
 	if filter.RecipientName != "" {
-		joins = append(joins, `
-			JOIN message_recipients mr_rn_filter ON mr_rn_filter.message_id = m.id AND mr_rn_filter.recipient_type IN ('to', 'cc')
-			JOIN participants p_rn_filter ON p_rn_filter.id = mr_rn_filter.participant_id
-		`)
-		conditions = append(conditions, "COALESCE(NULLIF(TRIM(p_rn_filter.display_name), ''), p_rn_filter.email_address) = ?")
+		if filter.Recipient == "" && !filter.MatchEmptyRecipient {
+			joins = append(joins, `
+				JOIN message_recipients mr_filter_to ON mr_filter_to.message_id = m.id AND mr_filter_to.recipient_type IN ('to', 'cc')
+				JOIN participants p_filter_to ON p_filter_to.id = mr_filter_to.participant_id
+			`)
+		}
+		conditions = append(conditions, "COALESCE(NULLIF(TRIM(p_filter_to.display_name), ''), p_filter_to.email_address) = ?")
 		args = append(args, filter.RecipientName)
 	} else if filter.MatchEmptyRecipientName {
 		conditions = append(conditions, `NOT EXISTS (
@@ -930,14 +932,15 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		conditions = append(conditions, "mr_to.id IS NULL")
 	}
 
-	// Recipient name filter — uses its own aliases (mr_rn_filter/p_rn_filter)
-	// to avoid conflicts with the Recipient filter's mr_to join.
+	// Recipient name filter — reuses the Recipient filter's join when present.
 	if filter.RecipientName != "" {
-		joins = append(joins, `
-			JOIN message_recipients mr_rn_filter ON mr_rn_filter.message_id = m.id AND mr_rn_filter.recipient_type IN ('to', 'cc')
-			JOIN participants p_rn_filter ON p_rn_filter.id = mr_rn_filter.participant_id
-		`)
-		conditions = append(conditions, "COALESCE(NULLIF(TRIM(p_rn_filter.display_name), ''), p_rn_filter.email_address) = ?")
+		if filter.Recipient == "" && !filter.MatchEmptyRecipient {
+			joins = append(joins, `
+				JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type IN ('to', 'cc')
+				JOIN participants p_to ON p_to.id = mr_to.participant_id
+			`)
+		}
+		conditions = append(conditions, "COALESCE(NULLIF(TRIM(p_to.display_name), ''), p_to.email_address) = ?")
 		args = append(args, filter.RecipientName)
 	} else if filter.MatchEmptyRecipientName {
 		conditions = append(conditions, `NOT EXISTS (
@@ -1537,11 +1540,13 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	}
 
 	if filter.RecipientName != "" {
-		joins = append(joins, `
-			JOIN message_recipients mr_rn_filter ON mr_rn_filter.message_id = m.id AND mr_rn_filter.recipient_type IN ('to', 'cc')
-			JOIN participants p_rn_filter ON p_rn_filter.id = mr_rn_filter.participant_id
-		`)
-		conditions = append(conditions, "COALESCE(NULLIF(TRIM(p_rn_filter.display_name), ''), p_rn_filter.email_address) = ?")
+		if filter.Recipient == "" {
+			joins = append(joins, `
+				JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type IN ('to', 'cc')
+				JOIN participants p_to ON p_to.id = mr_to.participant_id
+			`)
+		}
+		conditions = append(conditions, "COALESCE(NULLIF(TRIM(p_to.display_name), ''), p_to.email_address) = ?")
 		args = append(args, filter.RecipientName)
 	}
 
