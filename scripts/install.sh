@@ -79,7 +79,7 @@ verify_checksum() {
         return 0
     fi
 
-    local expected=$(grep -F " ${filename}" "$checksums_file" | cut -d' ' -f1)
+    local expected=$(awk -v f="$filename" '$2==f {print $1}' "$checksums_file")
     if [ -z "$expected" ]; then
         warn "No checksum found for $filename, skipping verification"
         return 0

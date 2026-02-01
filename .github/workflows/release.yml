@@ -29,7 +29,11 @@ jobs:
       - name: Install zig
         run: |
           ZIG_VERSION="0.14.0"
-          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" | tar -xJ
+          ZIG_SHA256="473ec26806133cf4d1918caf1a410f8403a13d979726a9045b421b685031a982"
+          ZIG_TARBALL="zig-linux-x86_64-${ZIG_VERSION}.tar.xz"
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_TARBALL}" -o "$ZIG_TARBALL"
+          echo "${ZIG_SHA256}  ${ZIG_TARBALL}" | sha256sum -c - || { echo "FATAL: zig checksum mismatch"; exit 1; }
+          tar -xJf "$ZIG_TARBALL"
           echo "$PWD/zig-linux-x86_64-${ZIG_VERSION}" >> $GITHUB_PATH
 
       - name: Build
@@ -65,12 +69,21 @@ jobs:
           # Verify the binary is statically linked (fail build if not)
           echo "--- Binary type ---"
           file dist/msgvault
-          file dist/msgvault | grep -q "statically linked" || { echo "FATAL: binary is not statically linked"; exit 1; }
+          file dist/msgvault | grep -qE "statically linked|static-pie linked" || { echo "FATAL: binary is not statically linked"; exit 1; }
 
           echo "--- Dynamic dependencies ---"
+          # readelf is the most reliable check: no NEEDED entries means no shared libs
+          if command -v readelf &>/dev/null; then
+            NEEDED=$(readelf -d dist/msgvault 2>/dev/null | grep NEEDED || true)
+            echo "$NEEDED"
+            if [ -n "$NEEDED" ]; then
+              echo "FATAL: binary has dynamic library dependencies:"
+              echo "$NEEDED"
+              exit 1
+            fi
+          fi
           LDD_OUT=$(ldd dist/msgvault 2>&1 || true)
           echo "$LDD_OUT"
-          echo "$LDD_OUT" | grep -q "not a dynamic executable\|not a regular file\|statically linked" || { echo "FATAL: binary has dynamic dependencies"; exit 1; }
 
           # Smoke test on native arch (amd64 only — arm64 is cross-compiled)
           if [ "${{ matrix.goarch }}" = "amd64" ]; then
@@ -166,8 +179,11 @@ jobs:
 
             # Smoke test linux amd64 artifact (runs natively on ubuntu runner)
             if echo "$archive" | grep -q "linux_amd64"; then
-              SMOKE_OUT=$("$tmpdir/msgvault" version 2>&1)
-              echo "  linux_amd64 smoke: $SMOKE_OUT"
+              "$tmpdir/msgvault" version > /tmp/smoke_out.txt 2>&1
+              cat /tmp/smoke_out.txt
+              VERSION="${GITHUB_REF#refs/tags/v}"
+              grep -q "v${VERSION}" /tmp/smoke_out.txt || { echo "FATAL: extracted linux_amd64 binary version mismatch"; exit 1; }
+              echo "  linux_amd64 smoke: OK"
             fi
 
             file "$tmpdir/msgvault"
