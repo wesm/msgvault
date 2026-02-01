@@ -324,6 +324,7 @@ func (m Model) loadData() tea.Cmd {
 				SourceID:            m.accountFilter,
 				WithAttachmentsOnly: m.attachmentFilter,
 				SearchQuery:         opts.SearchQuery,
+				GroupBy:             m.viewType,
 			}
 			filteredStats, _ = m.engine.GetTotalStats(ctx, statsOpts)
 		}

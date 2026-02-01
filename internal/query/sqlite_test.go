@@ -2429,3 +2429,67 @@ func TestCombinedRecipientAndRecipientName_NoOvercount(t *testing.T) {
 		}
 	}
 }
+
+// TestRecipientName_WithMatchEmptyRecipient verifies that combining RecipientName
+// with MatchEmptyRecipient does not cause a SQL error (the combination is
+// contradictory and should return 0 results).
+func TestRecipientName_WithMatchEmptyRecipient(t *testing.T) {
+	env := newTestEnv(t)
+
+	filter := MessageFilter{
+		RecipientName:       "Bob Jones",
+		MatchEmptyRecipient: true,
+	}
+
+	// Should not error — the combination is contradictory so 0 rows expected.
+	messages := env.MustListMessages(filter)
+	if len(messages) != 0 {
+		t.Errorf("expected 0 messages for contradictory RecipientName+MatchEmptyRecipient, got %d", len(messages))
+	}
+}
+
+// TestGetGmailIDsByFilter_RecipientName_WithMatchEmptyRecipient verifies that
+// GetGmailIDsByFilter does not produce SQL errors when RecipientName is combined
+// with MatchEmptyRecipient. (GetGmailIDsByFilter does not implement
+// MatchEmptyRecipient, so RecipientName is applied normally.)
+func TestGetGmailIDsByFilter_RecipientName_WithMatchEmptyRecipient(t *testing.T) {
+	env := newTestEnv(t)
+
+	filter := MessageFilter{
+		RecipientName:       "Bob Jones",
+		MatchEmptyRecipient: true,
+	}
+	ids, err := env.Engine.GetGmailIDsByFilter(env.Ctx, filter)
+	if err != nil {
+		t.Fatalf("GetGmailIDsByFilter: %v", err)
+	}
+	// MatchEmptyRecipient is not supported in GetGmailIDsByFilter, so
+	// RecipientName filters normally — Bob Jones received msg1, msg2, msg3.
+	if len(ids) != 3 {
+		t.Errorf("expected 3 gmail IDs, got %d", len(ids))
+	}
+}
+
+// TestSubAggregate_RecipientName_WithRecipient verifies that combined
+// Recipient+RecipientName works correctly in SubAggregate (buildFilterJoinsAndConditions).
+func TestSubAggregate_RecipientName_WithRecipient(t *testing.T) {
+	env := newTestEnv(t)
+
+	filter := MessageFilter{
+		Recipient:     "bob@company.org",
+		RecipientName: "Bob Jones",
+	}
+	opts := AggregateOptions{Limit: 100}
+	rows, err := env.Engine.SubAggregate(env.Ctx, filter, ViewSenders, opts)
+	if err != nil {
+		t.Fatalf("SubAggregate: %v", err)
+	}
+
+	// Bob Jones received msg1, msg2, msg3 — all from Alice
+	if len(rows) != 1 {
+		t.Errorf("expected 1 sender for Bob Jones, got %d", len(rows))
+	}
+	if len(rows) > 0 && rows[0].Key != "alice@example.com" {
+		t.Errorf("expected sender alice@example.com, got %s", rows[0].Key)
+	}
+}

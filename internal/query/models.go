@@ -273,7 +273,8 @@ type AccountInfo struct {
 
 // StatsOptions configures a stats query.
 type StatsOptions struct {
-	SourceID            *int64 // nil means all accounts
-	WithAttachmentsOnly bool   // only count messages with attachments
-	SearchQuery         string // when set, stats reflect only messages matching this search
+	SourceID            *int64   // nil means all accounts
+	WithAttachmentsOnly bool     // only count messages with attachments
+	SearchQuery         string   // when set, stats reflect only messages matching this search
+	GroupBy             ViewType // when set, search filters on this view's key columns instead of subject+sender
 }

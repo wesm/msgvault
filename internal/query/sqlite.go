@@ -216,7 +216,14 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 	// Recipient name filter — reuses the Recipient filter's join when present,
 	// ensuring both predicates apply to the same participant row.
 	if filter.RecipientName != "" {
-		if filter.Recipient == "" && !filter.MatchEmptyRecipient {
+		if filter.MatchEmptyRecipient {
+			// MatchEmptyRecipient LEFT JOINs mr without participants — add
+			// the participants join so the p_filter_to alias is available.
+			// (This combination is contradictory and will return 0 rows.)
+			joins = append(joins, `
+				JOIN participants p_filter_to ON p_filter_to.id = mr_filter_to.participant_id
+			`)
+		} else if filter.Recipient == "" {
 			joins = append(joins, `
 				JOIN message_recipients mr_filter_to ON mr_filter_to.message_id = m.id AND mr_filter_to.recipient_type IN ('to', 'cc')
 				JOIN participants p_filter_to ON p_filter_to.id = mr_filter_to.participant_id
@@ -934,7 +941,13 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 
 	// Recipient name filter — reuses the Recipient filter's join when present.
 	if filter.RecipientName != "" {
-		if filter.Recipient == "" && !filter.MatchEmptyRecipient {
+		if filter.MatchEmptyRecipient {
+			// MatchEmptyRecipient LEFT JOINs mr without participants — add
+			// the participants join so the p_to alias is available.
+			joins = append(joins, `
+				JOIN participants p_to ON p_to.id = mr_to.participant_id
+			`)
+		} else if filter.Recipient == "" {
 			joins = append(joins, `
 				JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type IN ('to', 'cc')
 				JOIN participants p_to ON p_to.id = mr_to.participant_id
@@ -1541,6 +1554,9 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 
 	if filter.RecipientName != "" {
 		if filter.Recipient == "" {
+			// Always add the full join chain — GetGmailIDsByFilter does not
+			// have a standalone MatchEmptyRecipient handler, so mr_to may
+			// not exist yet.
 			joins = append(joins, `
 				JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type IN ('to', 'cc')
 				JOIN participants p_to ON p_to.id = mr_to.participant_id

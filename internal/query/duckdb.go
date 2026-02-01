@@ -285,6 +285,80 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyCol
 }
 
 // buildWhereClause builds WHERE conditions for aggregate queries.
+// buildStatsSearchConditions builds search conditions for GetTotalStats.
+// For 1:N views (Recipients, RecipientNames, Labels), text terms filter via
+// EXISTS subqueries on the grouping dimension so stats match visible rows.
+// For 1:1 views, falls back to the default subject+sender search.
+func (e *DuckDBEngine) buildStatsSearchConditions(searchQuery string, groupBy ViewType) ([]string, []interface{}) {
+	if searchQuery == "" {
+		return nil, nil
+	}
+
+	q := search.Parse(searchQuery)
+
+	var conditions []string
+	var args []interface{}
+
+	// Text terms — use EXISTS for 1:N views since the stats query has no
+	// participant/label joins.
+	for _, term := range q.TextTerms {
+		termPattern := "%" + escapeILIKE(term) + "%"
+		switch groupBy {
+		case ViewRecipients, ViewRecipientNames:
+			conditions = append(conditions, `EXISTS (
+				SELECT 1 FROM mr mr_rs
+				JOIN p p_rs ON p_rs.id = mr_rs.participant_id
+				WHERE mr_rs.message_id = msg.id
+				  AND mr_rs.recipient_type IN ('to', 'cc')
+				  AND (p_rs.email_address ILIKE ? ESCAPE '\' OR p_rs.display_name ILIKE ? ESCAPE '\')
+			)`)
+			args = append(args, termPattern, termPattern)
+		case ViewLabels:
+			conditions = append(conditions, `EXISTS (
+				SELECT 1 FROM ml ml_rs
+				JOIN lbl lbl_rs ON lbl_rs.id = ml_rs.label_id
+				WHERE ml_rs.message_id = msg.id
+				  AND lbl_rs.name ILIKE ? ESCAPE '\'
+			)`)
+			args = append(args, termPattern)
+		default:
+			// Default: search subject and sender
+			conditions = append(conditions, `(
+				msg.subject ILIKE ? ESCAPE '\' OR
+				EXISTS (
+					SELECT 1 FROM mr mr_search
+					JOIN p p_search ON p_search.id = mr_search.participant_id
+					WHERE mr_search.message_id = msg.id
+					  AND mr_search.recipient_type = 'from'
+					  AND (p_search.email_address ILIKE ? ESCAPE '\' OR p_search.display_name ILIKE ? ESCAPE '\')
+				)
+			)`)
+			args = append(args, termPattern, termPattern, termPattern)
+		}
+	}
+
+	// Non-text filters (from:, to:, subject:, label:, etc.) are the same
+	// regardless of view — delegate to the standard builder with no key columns.
+	nonTextConds, nonTextArgs := e.buildAggregateSearchConditions(searchQuery)
+	// Remove text-term conditions from the standard builder output (they are
+	// the first len(q.TextTerms) entries). We already handled text terms above.
+	if len(q.TextTerms) > 0 && len(nonTextConds) > len(q.TextTerms) {
+		conditions = append(conditions, nonTextConds[len(q.TextTerms):]...)
+		args = append(args, nonTextArgs[countArgsForTextTerms(len(q.TextTerms)):]...)
+	} else if len(q.TextTerms) == 0 {
+		conditions = append(conditions, nonTextConds...)
+		args = append(args, nonTextArgs...)
+	}
+
+	return conditions, args
+}
+
+// countArgsForTextTerms returns the number of args used by N text terms in
+// buildAggregateSearchConditions with no keyColumns (3 args per term: subject + 2 sender).
+func countArgsForTextTerms(n int) int {
+	return n * 3
+}
+
 // keyColumns are passed through to buildAggregateSearchConditions to control
 // which columns text search terms filter on.
 func (e *DuckDBEngine) buildWhereClause(opts AggregateOptions, keyColumns ...string) (string, []interface{}) {
@@ -1056,9 +1130,11 @@ func (e *DuckDBEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 		conditions = append(conditions, "msg.has_attachments = 1")
 	}
 
-	// Search filter — uses EXISTS subqueries so no row multiplication
+	// Search filter — uses EXISTS subqueries so no row multiplication.
+	// For 1:N views (Recipients, RecipientNames, Labels), filter on the
+	// grouping key columns so stats match the visible aggregate rows.
 	if opts.SearchQuery != "" {
-		searchConds, searchArgs := e.buildAggregateSearchConditions(opts.SearchQuery)
+		searchConds, searchArgs := e.buildStatsSearchConditions(opts.SearchQuery, opts.GroupBy)
 		conditions = append(conditions, searchConds...)
 		args = append(args, searchArgs...)
 	}

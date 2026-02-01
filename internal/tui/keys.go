@@ -546,7 +546,7 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Time sub-grouping: jump directly to sub-aggregate Time view
 	case "t":
-		if m.hasDrillFilter() {
+		if m.hasDrillFilter() && m.drillViewType != query.ViewTime {
 			m.transitionBuffer = m.renderView()
 			m.pushBreadcrumb()
 			m.level = levelDrillDown

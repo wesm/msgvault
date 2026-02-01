@@ -1874,6 +1874,29 @@ func TestTKeyInMessageListJumpsToTimeSubGroup(t *testing.T) {
 	}
 }
 
+// TestTKeyInMessageListFromTimeDrillIsNoop verifies that pressing 't' when
+// the drill dimension is already Time is a no-op (avoids redundant sub-aggregate).
+func TestTKeyInMessageListFromTimeDrillIsNoop(t *testing.T) {
+	model := NewBuilder().
+		WithMessages(
+			query.MessageSummary{ID: 1, Subject: "Test 1"},
+		).
+		WithPageSize(10).WithSize(100, 20).
+		WithLevel(levelMessageList).WithViewType(query.ViewTime).
+		Build()
+	model.drillFilter = query.MessageFilter{TimePeriod: "2024-01"}
+	model.drillViewType = query.ViewTime
+
+	m := applyMessageListKey(t, model, key('t'))
+
+	if m.level != levelMessageList {
+		t.Errorf("expected level unchanged at levelMessageList, got %v", m.level)
+	}
+	if m.loading {
+		t.Error("expected loading=false (no-op)")
+	}
+}
+
 // TestTKeyInMessageListNoDrillFilterIsNoop verifies that 't' does nothing
 // in message list without a drill filter.
 func TestTKeyInMessageListNoDrillFilterIsNoop(t *testing.T) {
