@@ -1850,6 +1850,47 @@ func TestGKeyInMessageListWithDrillFilter(t *testing.T) {
 	}
 }
 
+// TestTKeyInMessageListJumpsToTimeSubGroup verifies that pressing 't' in a
+// drilled-down message list enters sub-grouping with ViewTime.
+func TestTKeyInMessageListJumpsToTimeSubGroup(t *testing.T) {
+	model := NewBuilder().
+		WithMessages(
+			query.MessageSummary{ID: 1, Subject: "Test 1"},
+			query.MessageSummary{ID: 2, Subject: "Test 2"},
+		).
+		WithPageSize(10).WithSize(100, 20).
+		WithLevel(levelMessageList).WithViewType(query.ViewSenders).
+		Build()
+	model.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
+	model.drillViewType = query.ViewSenders
+
+	m := applyMessageListKey(t, model, key('t'))
+
+	if m.level != levelDrillDown {
+		t.Errorf("expected level=levelDrillDown after 't', got %v", m.level)
+	}
+	if m.viewType != query.ViewTime {
+		t.Errorf("expected viewType=ViewTime after 't', got %v", m.viewType)
+	}
+}
+
+// TestTKeyInMessageListNoDrillFilterIsNoop verifies that 't' does nothing
+// in message list without a drill filter.
+func TestTKeyInMessageListNoDrillFilterIsNoop(t *testing.T) {
+	model := NewBuilder().
+		WithMessages(
+			query.MessageSummary{ID: 1, Subject: "Test 1"},
+		).
+		WithPageSize(10).WithSize(100, 20).
+		WithLevel(levelMessageList).Build()
+
+	m := applyMessageListKey(t, model, key('t'))
+
+	if m.level != levelMessageList {
+		t.Errorf("expected level unchanged at levelMessageList, got %v", m.level)
+	}
+}
+
 // TestNextSubGroupViewSkipsSenderNames verifies that drilling from Senders
 // skips SenderNames (redundant) and goes straight to Recipients.
 func TestNextSubGroupViewSkipsSenderNames(t *testing.T) {

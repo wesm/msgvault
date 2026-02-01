@@ -544,6 +544,24 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.loadMessageDetail(m.messages[m.cursor].ID)
 		}
 
+	// Time sub-grouping: jump directly to sub-aggregate Time view
+	case "t":
+		if m.hasDrillFilter() {
+			m.transitionBuffer = m.renderView()
+			m.pushBreadcrumb()
+			m.level = levelDrillDown
+			m.viewType = query.ViewTime
+			m.cursor = 0
+			m.scrollOffset = 0
+			m.rows = nil
+			m.loading = true
+			m.err = nil
+			m.selection.aggregateKeys = make(map[string]bool)
+			m.selection.aggregateViewType = m.viewType
+			m.aggregateRequestID++
+			return m, m.loadData()
+		}
+
 	// Sub-grouping: 'g' switches to aggregate breakdown within current filter (like tab)
 	case "g":
 		m.transitionBuffer = m.renderView() // Freeze screen until data loads
