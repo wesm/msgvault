@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/marcboeker/go-duckdb"
 	_ "github.com/mattn/go-sqlite3"
@@ -1060,6 +1061,97 @@ func TestDuckDBEngine_SearchFast_CaseInsensitive(t *testing.T) {
 		if len(results) != tc.expected {
 			t.Errorf("SearchFast(%q): expected %d results, got %d", tc.query, tc.expected, len(results))
 		}
+	}
+}
+
+// TestDuckDBEngine_ListMessages_DateFilter verifies that After/Before date filters
+// work with DuckDB's TIMESTAMP column (regression: VARCHAR params need CAST).
+func TestDuckDBEngine_ListMessages_DateFilter(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	// Test data: msg1-3 Jan 2024, msg4 Feb 2024, msg5 Mar 2024
+	feb1 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	mar1 := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	// After Feb 1 (>=): msg3 (Feb 1 09:00), msg4 (Feb 15), msg5 (Mar 1) = 3
+	results, err := engine.ListMessages(ctx, MessageFilter{After: &feb1})
+	if err != nil {
+		t.Fatalf("ListMessages with After: %v", err)
+	}
+	if len(results) != 3 {
+		t.Errorf("After Feb 1: expected 3 messages, got %d", len(results))
+	}
+
+	// Before Feb 1 (<): msg1 (Jan 15), msg2 (Jan 16) = 2
+	results, err = engine.ListMessages(ctx, MessageFilter{Before: &feb1})
+	if err != nil {
+		t.Fatalf("ListMessages with Before: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("Before Feb 1: expected 2 messages, got %d", len(results))
+	}
+
+	// After Feb 1 AND Before Mar 1: msg3 (Feb 1), msg4 (Feb 15) = 2
+	results, err = engine.ListMessages(ctx, MessageFilter{After: &feb1, Before: &mar1})
+	if err != nil {
+		t.Fatalf("ListMessages with After+Before: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("Feb range: expected 2 messages, got %d", len(results))
+	}
+}
+
+// TestDuckDBEngine_SearchFast_DateFilter verifies that after:/before: in search
+// queries work with DuckDB's TIMESTAMP column.
+func TestDuckDBEngine_SearchFast_DateFilter(t *testing.T) {
+	engine := newParquetEngine(t)
+
+	// after:2024-02-01 (>=): msg3 (Feb 1), msg4 (Feb 15), msg5 (Mar 1)
+	results := searchFast(t, engine, "after:2024-02-01", MessageFilter{})
+	if len(results) != 3 {
+		t.Errorf("after:2024-02-01: expected 3 results, got %d", len(results))
+	}
+
+	// before:2024-02-01 (<): msg1 (Jan 15), msg2 (Jan 16)
+	results = searchFast(t, engine, "before:2024-02-01", MessageFilter{})
+	if len(results) != 2 {
+		t.Errorf("before:2024-02-01: expected 2 results, got %d", len(results))
+	}
+
+	// Combined: after:2024-02-01 before:2024-03-01 -> msg3, msg4
+	results = searchFast(t, engine, "after:2024-02-01 before:2024-03-01", MessageFilter{})
+	if len(results) != 2 {
+		t.Errorf("Feb range: expected 2 results, got %d", len(results))
+	}
+}
+
+// TestDuckDBEngine_AggregateBySender_DateFilter verifies date filters on aggregates.
+func TestDuckDBEngine_AggregateBySender_DateFilter(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	// After Feb 1 (>=): msg3 from alice, msg4 from bob, msg5 from bob
+	// -> Alice: 1, Bob: 2
+	feb1 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	opts := DefaultAggregateOptions()
+	opts.After = &feb1
+
+	results, err := engine.AggregateBySender(ctx, opts)
+	if err != nil {
+		t.Fatalf("AggregateBySender with After: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("expected 2 senders after Feb 1, got %d", len(results))
+	}
+	bob := requireAggregateRow(t, results, "bob@company.org")
+	if bob.Count != 2 {
+		t.Errorf("expected bob count 2, got %d", bob.Count)
+	}
+	alice := requireAggregateRow(t, results, "alice@example.com")
+	if alice.Count != 1 {
+		t.Errorf("expected alice count 1, got %d", alice.Count)
 	}
 }
 

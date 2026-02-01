@@ -247,11 +247,11 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string) ([]str
 
 	// Date filters from search query
 	if q.AfterDate != nil {
-		conditions = append(conditions, "msg.sent_at >= ?")
+		conditions = append(conditions, "msg.sent_at >= CAST(? AS TIMESTAMP)")
 		args = append(args, q.AfterDate.Format("2006-01-02 15:04:05"))
 	}
 	if q.BeforeDate != nil {
-		conditions = append(conditions, "msg.sent_at < ?")
+		conditions = append(conditions, "msg.sent_at < CAST(? AS TIMESTAMP)")
 		args = append(args, q.BeforeDate.Format("2006-01-02 15:04:05"))
 	}
 
@@ -278,12 +278,12 @@ func (e *DuckDBEngine) buildWhereClause(opts AggregateOptions) (string, []interf
 	}
 
 	if opts.After != nil {
-		conditions = append(conditions, "msg.sent_at >= ?")
+		conditions = append(conditions, "msg.sent_at >= CAST(? AS TIMESTAMP)")
 		args = append(args, opts.After.Format("2006-01-02 15:04:05"))
 	}
 
 	if opts.Before != nil {
-		conditions = append(conditions, "msg.sent_at < ?")
+		conditions = append(conditions, "msg.sent_at < CAST(? AS TIMESTAMP)")
 		args = append(args, opts.Before.Format("2006-01-02 15:04:05"))
 	}
 
@@ -569,12 +569,12 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 	}
 
 	if filter.After != nil {
-		conditions = append(conditions, "msg.sent_at >= ?")
+		conditions = append(conditions, "msg.sent_at >= CAST(? AS TIMESTAMP)")
 		args = append(args, filter.After.Format("2006-01-02 15:04:05"))
 	}
 
 	if filter.Before != nil {
-		conditions = append(conditions, "msg.sent_at < ?")
+		conditions = append(conditions, "msg.sent_at < CAST(? AS TIMESTAMP)")
 		args = append(args, filter.Before.Format("2006-01-02 15:04:05"))
 	}
 
@@ -715,11 +715,11 @@ func (e *DuckDBEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 		args = append(args, *opts.SourceID)
 	}
 	if opts.After != nil {
-		where += " AND msg.sent_at >= ?"
+		where += " AND msg.sent_at >= CAST(? AS TIMESTAMP)"
 		args = append(args, opts.After.Format("2006-01-02 15:04:05"))
 	}
 	if opts.Before != nil {
-		where += " AND msg.sent_at < ?"
+		where += " AND msg.sent_at < CAST(? AS TIMESTAMP)"
 		args = append(args, opts.Before.Format("2006-01-02 15:04:05"))
 	}
 	if opts.WithAttachmentsOnly {
@@ -1506,11 +1506,11 @@ func (e *DuckDBEngine) Search(ctx context.Context, q *search.Query, limit, offse
 
 	// Date range filters
 	if q.AfterDate != nil {
-		conditions = append(conditions, "m.sent_at >= ?")
+		conditions = append(conditions, "m.sent_at >= CAST(? AS TIMESTAMP)")
 		args = append(args, q.AfterDate.Format("2006-01-02 15:04:05"))
 	}
 	if q.BeforeDate != nil {
-		conditions = append(conditions, "m.sent_at < ?")
+		conditions = append(conditions, "m.sent_at < CAST(? AS TIMESTAMP)")
 		args = append(args, q.BeforeDate.Format("2006-01-02 15:04:05"))
 	}
 
@@ -1912,11 +1912,11 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 		args = append(args, *filter.SourceID)
 	}
 	if filter.After != nil {
-		conditions = append(conditions, "msg.sent_at >= ?")
+		conditions = append(conditions, "msg.sent_at >= CAST(? AS TIMESTAMP)")
 		args = append(args, filter.After.Format("2006-01-02 15:04:05"))
 	}
 	if filter.Before != nil {
-		conditions = append(conditions, "msg.sent_at < ?")
+		conditions = append(conditions, "msg.sent_at < CAST(? AS TIMESTAMP)")
 		args = append(args, filter.Before.Format("2006-01-02 15:04:05"))
 	}
 	if filter.WithAttachmentsOnly {
@@ -2037,11 +2037,11 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 
 	// Date range filters
 	if q.AfterDate != nil {
-		conditions = append(conditions, "msg.sent_at >= ?")
+		conditions = append(conditions, "msg.sent_at >= CAST(? AS TIMESTAMP)")
 		args = append(args, q.AfterDate.Format("2006-01-02 15:04:05"))
 	}
 	if q.BeforeDate != nil {
-		conditions = append(conditions, "msg.sent_at < ?")
+		conditions = append(conditions, "msg.sent_at < CAST(? AS TIMESTAMP)")
 		args = append(args, q.BeforeDate.Format("2006-01-02 15:04:05"))
 	}
 
