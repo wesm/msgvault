@@ -214,8 +214,9 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 	}
 
 	// Domain filter
+	// Note: MatchEmptySenderName uses NOT EXISTS (no join), so it doesn't provide p_filter_from.
 	if filter.Domain != "" {
-		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" && !filter.MatchEmptySenderName {
+		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" {
 			joins = append(joins, `
 				JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
 				JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
@@ -224,7 +225,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		conditions = append(conditions, "p_filter_from.domain = ?")
 		args = append(args, filter.Domain)
 	} else if filter.MatchEmptyDomain {
-		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" && !filter.MatchEmptySenderName {
+		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" {
 			joins = append(joins, `
 				LEFT JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
 				LEFT JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
@@ -844,8 +845,9 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 	}
 
 	// Domain filter
+	// Note: MatchEmptySenderName uses NOT EXISTS (no join), so it doesn't provide p_from.
 	if filter.Domain != "" {
-		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" && !filter.MatchEmptySenderName { // Don't duplicate the join
+		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" {
 			joins = append(joins, `
 				JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
 				JOIN participants p_from ON p_from.id = mr_from.participant_id
@@ -855,7 +857,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		args = append(args, filter.Domain)
 	} else if filter.MatchEmptyDomain {
 		// Match messages with no/empty domain
-		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" && !filter.MatchEmptySenderName {
+		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" {
 			joins = append(joins, `
 				LEFT JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
 				LEFT JOIN participants p_from ON p_from.id = mr_from.participant_id

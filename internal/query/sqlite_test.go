@@ -498,9 +498,62 @@ func TestSubAggregate_MatchEmptySenderName(t *testing.T) {
 		t.Fatalf("SubAggregate with MatchEmptySenderName: %v", err)
 	}
 
-	// msg6 has labels from the base fixture (INBOX via message_labels)
-	// The key thing is it doesn't error — NOT EXISTS works correctly.
-	_ = results
+	// msg6 has no labels assigned to it in the empty-buckets fixture,
+	// so we expect 0 label sub-aggregates for the empty-sender-name bucket.
+	if len(results) != 0 {
+		t.Errorf("expected 0 label sub-aggregates for empty sender name, got %d", len(results))
+		for _, r := range results {
+			t.Logf("  key=%q count=%d", r.Key, r.Count)
+		}
+	}
+}
+
+func TestMatchEmptySenderName_MixedFromRecipients(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Add a message with two 'from' recipients: one with a valid name, one with NULL email.
+	// MatchEmptySenderName should NOT match this because at least one from has a valid name.
+	_, err := env.DB.Exec(`
+		INSERT INTO participants (id, email_address, display_name, domain) VALUES
+			(30, NULL, NULL, NULL);
+		INSERT INTO messages (id, conversation_id, source_id, source_message_id, message_type, sent_at, subject, snippet, size_estimate, has_attachments) VALUES
+			(30, 1, 1, 'msg30', 'email', '2024-06-01 10:00:00', 'Mixed From', 'test', 100, 0);
+		INSERT INTO message_recipients (message_id, participant_id, recipient_type) VALUES
+			(30, 1, 'from'),
+			(30, 30, 'from');
+	`)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// MatchEmptySenderName should NOT match msg30 because participant 1 (Alice Smith)
+	// has a valid COALESCE(NULLIF(TRIM(display_name), ''), email_address).
+	filter := MessageFilter{MatchEmptySenderName: true}
+	messages := env.MustListMessages(filter)
+
+	for _, m := range messages {
+		if m.Subject == "Mixed From" {
+			t.Error("MatchEmptySenderName should not match message with at least one valid from sender")
+		}
+	}
+}
+
+func TestMatchEmptySenderName_CombinedWithDomain(t *testing.T) {
+	env := newTestEnvWithEmptyBuckets(t)
+
+	// Combining MatchEmptySenderName with Domain should not cause SQL errors.
+	// This tests that domain filters correctly add their own join even when
+	// MatchEmptySenderName uses NOT EXISTS (no shared join).
+	filter := MessageFilter{
+		MatchEmptySenderName: true,
+		Domain:               "example.com",
+	}
+	messages := env.MustListMessages(filter)
+
+	// No message can have both no sender name AND domain=example.com, so expect 0.
+	if len(messages) != 0 {
+		t.Errorf("expected 0 messages for MatchEmptySenderName+Domain, got %d", len(messages))
+	}
 }
 
 func TestListMessages_MatchEmptySenderName_NotExists(t *testing.T) {
