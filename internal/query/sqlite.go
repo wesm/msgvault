@@ -178,6 +178,26 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		conditions = append(conditions, "(mr_filter_from.id IS NULL OR p_filter_from.email_address IS NULL OR p_filter_from.email_address = '')")
 	}
 
+	// Sender name filter
+	if filter.SenderName != "" {
+		if filter.Sender == "" && !filter.MatchEmptySender {
+			joins = append(joins, `
+				JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
+				JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
+			`)
+		}
+		conditions = append(conditions, "COALESCE(p_filter_from.display_name, p_filter_from.email_address) = ?")
+		args = append(args, filter.SenderName)
+	} else if filter.MatchEmptySenderName {
+		if filter.Sender == "" && !filter.MatchEmptySender {
+			joins = append(joins, `
+				LEFT JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
+				LEFT JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
+			`)
+		}
+		conditions = append(conditions, "(mr_filter_from.id IS NULL OR COALESCE(p_filter_from.display_name, p_filter_from.email_address) IS NULL)")
+	}
+
 	// Recipient filter
 	if filter.Recipient != "" {
 		joins = append(joins, `
@@ -195,7 +215,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 
 	// Domain filter
 	if filter.Domain != "" {
-		if filter.Sender == "" && !filter.MatchEmptySender {
+		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" && !filter.MatchEmptySenderName {
 			joins = append(joins, `
 				JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
 				JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
@@ -204,7 +224,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		conditions = append(conditions, "p_filter_from.domain = ?")
 		args = append(args, filter.Domain)
 	} else if filter.MatchEmptyDomain {
-		if filter.Sender == "" && !filter.MatchEmptySender {
+		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" && !filter.MatchEmptySenderName {
 			joins = append(joins, `
 				LEFT JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
 				LEFT JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
@@ -309,6 +329,33 @@ func (e *SQLiteEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 				%s
 				WHERE %s AND p.email_address IS NOT NULL
 				GROUP BY p.email_address
+			)
+			%s
+			LIMIT ?
+		`, filterJoins, where, sortClause(opts))
+
+	case ViewSenderNames:
+		query = fmt.Sprintf(`
+			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
+			FROM (
+				SELECT
+					COALESCE(p.display_name, p.email_address) as key,
+					COUNT(*) as count,
+					COALESCE(SUM(m.size_estimate), 0) as total_size,
+					COALESCE(SUM(att.att_size), 0) as attachment_size,
+					COALESCE(SUM(att.att_count), 0) as attachment_count,
+					COUNT(*) OVER() as total_unique
+				FROM messages m
+				JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
+				JOIN participants p ON p.id = mr.participant_id
+				LEFT JOIN (
+					SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
+					FROM attachments
+					GROUP BY message_id
+				) att ON att.message_id = m.id
+				%s
+				WHERE %s AND COALESCE(p.display_name, p.email_address) IS NOT NULL
+				GROUP BY COALESCE(p.display_name, p.email_address)
 			)
 			%s
 			LIMIT ?
@@ -473,6 +520,46 @@ func (e *SQLiteEngine) AggregateBySender(ctx context.Context, opts AggregateOpti
 			) att ON att.message_id = m.id
 			WHERE %s AND p.email_address IS NOT NULL
 			GROUP BY p.email_address
+		)
+		%s
+		LIMIT ?
+	`, where, sortClause(opts))
+
+	args = append(args, limit)
+	return e.executeAggregateQuery(ctx, query, args)
+}
+
+// AggregateBySenderName groups messages by sender display name.
+// Uses COALESCE(display_name, email_address) so senders without a display name
+// fall back to their email address.
+func (e *SQLiteEngine) AggregateBySenderName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
+	where, args := buildWhereClause(opts, "m")
+
+	limit := opts.Limit
+	if limit == 0 {
+		limit = 100
+	}
+
+	query := fmt.Sprintf(`
+		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
+		FROM (
+			SELECT
+				COALESCE(p.display_name, p.email_address) as key,
+				COUNT(*) as count,
+				COALESCE(SUM(m.size_estimate), 0) as total_size,
+				COALESCE(SUM(att.att_size), 0) as attachment_size,
+				COALESCE(SUM(att.att_count), 0) as attachment_count,
+				COUNT(*) OVER() as total_unique
+			FROM messages m
+			JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
+			JOIN participants p ON p.id = mr.participant_id
+			LEFT JOIN (
+				SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
+				FROM attachments
+				GROUP BY message_id
+			) att ON att.message_id = m.id
+			WHERE %s AND COALESCE(p.display_name, p.email_address) IS NOT NULL
+			GROUP BY COALESCE(p.display_name, p.email_address)
 		)
 		%s
 		LIMIT ?
@@ -720,6 +807,26 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		conditions = append(conditions, "(mr_from.id IS NULL OR p_from.email_address IS NULL OR p_from.email_address = '')")
 	}
 
+	// Sender name filter
+	if filter.SenderName != "" {
+		if filter.Sender == "" && !filter.MatchEmptySender {
+			joins = append(joins, `
+				JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
+				JOIN participants p_from ON p_from.id = mr_from.participant_id
+			`)
+		}
+		conditions = append(conditions, "COALESCE(p_from.display_name, p_from.email_address) = ?")
+		args = append(args, filter.SenderName)
+	} else if filter.MatchEmptySenderName {
+		if filter.Sender == "" && !filter.MatchEmptySender {
+			joins = append(joins, `
+				LEFT JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
+				LEFT JOIN participants p_from ON p_from.id = mr_from.participant_id
+			`)
+		}
+		conditions = append(conditions, "(mr_from.id IS NULL OR COALESCE(p_from.display_name, p_from.email_address) IS NULL)")
+	}
+
 	// Recipient filter
 	if filter.Recipient != "" {
 		joins = append(joins, `
@@ -738,7 +845,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 
 	// Domain filter
 	if filter.Domain != "" {
-		if filter.Sender == "" && !filter.MatchEmptySender { // Don't duplicate the join
+		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" && !filter.MatchEmptySenderName { // Don't duplicate the join
 			joins = append(joins, `
 				JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
 				JOIN participants p_from ON p_from.id = mr_from.participant_id
@@ -748,7 +855,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		args = append(args, filter.Domain)
 	} else if filter.MatchEmptyDomain {
 		// Match messages with no/empty domain
-		if filter.Sender == "" && !filter.MatchEmptySender {
+		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" && !filter.MatchEmptySenderName {
 			joins = append(joins, `
 				LEFT JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
 				LEFT JOIN participants p_from ON p_from.id = mr_from.participant_id
@@ -1302,6 +1409,17 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 		args = append(args, filter.Sender)
 	}
 
+	if filter.SenderName != "" {
+		if filter.Sender == "" {
+			joins = append(joins, `
+				JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
+				JOIN participants p_from ON p_from.id = mr_from.participant_id
+			`)
+		}
+		conditions = append(conditions, "COALESCE(p_from.display_name, p_from.email_address) = ?")
+		args = append(args, filter.SenderName)
+	}
+
 	if filter.Recipient != "" {
 		joins = append(joins, `
 			JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type IN ('to', 'cc', 'bcc')
@@ -1312,7 +1430,7 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	}
 
 	if filter.Domain != "" {
-		if filter.Sender == "" { // Don't duplicate the join
+		if filter.Sender == "" && filter.SenderName == "" { // Don't duplicate the join
 			joins = append(joins, `
 				JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
 				JOIN participants p_from ON p_from.id = mr_from.participant_id

@@ -268,6 +268,9 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case query.ViewSenders:
 				m.drillFilter.Sender = key
 				m.drillFilter.MatchEmptySender = (key == "")
+			case query.ViewSenderNames:
+				m.drillFilter.SenderName = key
+				m.drillFilter.MatchEmptySenderName = (key == "")
 			case query.ViewRecipients:
 				m.drillFilter.Recipient = key
 				m.drillFilter.MatchEmptyRecipient = (key == "")
@@ -311,9 +314,9 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// View switching - 'g' cycles through groupings, Tab also works
 	// Sub-agg skips the drill view type (can't sub-group by the same dimension)
 	case "g", "tab":
-		m.viewType = (m.viewType + 1) % 5
+		m.viewType = (m.viewType + 1) % 6
 		if isSub && m.viewType == m.drillViewType {
-			m.viewType = (m.viewType + 1) % 5
+			m.viewType = (m.viewType + 1) % 6
 		}
 		m.selection.aggregateKeys = make(map[string]bool)
 		m.selection.aggregateViewType = m.viewType
@@ -325,13 +328,13 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "shift+tab":
 		if m.viewType == 0 {
-			m.viewType = 4
+			m.viewType = 5
 		} else {
 			m.viewType--
 		}
 		if isSub && m.viewType == m.drillViewType {
 			if m.viewType == 0 {
-				m.viewType = 4
+				m.viewType = 5
 			} else {
 				m.viewType--
 			}
@@ -379,6 +382,8 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) nextSubGroupView(current query.ViewType) query.ViewType {
 	switch current {
 	case query.ViewSenders:
+		return query.ViewSenderNames
+	case query.ViewSenderNames:
 		return query.ViewRecipients
 	case query.ViewRecipients:
 		return query.ViewDomains

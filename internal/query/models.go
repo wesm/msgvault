@@ -82,6 +82,7 @@ type ViewType int
 
 const (
 	ViewSenders ViewType = iota
+	ViewSenderNames
 	ViewRecipients
 	ViewDomains
 	ViewLabels
@@ -92,6 +93,8 @@ func (v ViewType) String() string {
 	switch v {
 	case ViewSenders:
 		return "Senders"
+	case ViewSenderNames:
+		return "Names"
 	case ViewRecipients:
 		return "Recipients"
 	case ViewDomains:
@@ -172,10 +175,11 @@ const (
 // MessageFilter specifies which messages to retrieve.
 type MessageFilter struct {
 	// Filter by aggregate key
-	Sender    string // filter by sender email
-	Recipient string // filter by recipient email
-	Domain    string // filter by sender domain
-	Label     string // filter by label name
+	Sender     string // filter by sender email
+	SenderName string // filter by sender display name (COALESCE(display_name, email))
+	Recipient  string // filter by recipient email
+	Domain     string // filter by sender domain
+	Label      string // filter by label name
 
 	// Filter by conversation (thread)
 	ConversationID *int64 // filter by conversation/thread ID
@@ -189,10 +193,11 @@ type MessageFilter struct {
 	// creates an AND condition that may return no results (e.g., messages with
 	// no sender AND no recipient AND no domain). The TUI sets exactly one flag
 	// based on the current view type when drilling into an empty aggregate bucket.
-	MatchEmptySender    bool
-	MatchEmptyRecipient bool
-	MatchEmptyDomain    bool
-	MatchEmptyLabel     bool
+	MatchEmptySender     bool
+	MatchEmptySenderName bool
+	MatchEmptyRecipient  bool
+	MatchEmptyDomain     bool
+	MatchEmptyLabel      bool
 
 	// Time range
 	TimePeriod      string // e.g., "2024", "2024-01", "2024-01-15"

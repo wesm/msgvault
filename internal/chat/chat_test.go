@@ -207,6 +207,7 @@ func (e *stubEngine) GetMessage(_ context.Context, id int64) (*query.MessageDeta
 
 // Unused interface methods — return zero values.
 func (e *stubEngine) AggregateBySender(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
+func (e *stubEngine) AggregateBySenderName(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
 func (e *stubEngine) AggregateByRecipient(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
 func (e *stubEngine) AggregateByDomain(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
 func (e *stubEngine) AggregateByLabel(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }

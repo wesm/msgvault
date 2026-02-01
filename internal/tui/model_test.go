@@ -26,6 +26,10 @@ func (m *mockEngine) AggregateBySender(ctx context.Context, opts query.Aggregate
 	return m.rows, nil
 }
 
+func (m *mockEngine) AggregateBySenderName(ctx context.Context, opts query.AggregateOptions) ([]query.AggregateRow, error) {
+	return m.rows, nil
+}
+
 func (m *mockEngine) AggregateByRecipient(ctx context.Context, opts query.AggregateOptions) ([]query.AggregateRow, error) {
 	return m.rows, nil
 }
@@ -1263,9 +1267,9 @@ func TestSubGroupingNavigation(t *testing.T) {
 	if m.level != levelDrillDown {
 		t.Errorf("expected levelDrillDown after Tab, got %v", m.level)
 	}
-	// Default sub-group after drilling from Senders should be Recipients
-	if m.viewType != query.ViewRecipients {
-		t.Errorf("expected viewType = ViewRecipients for sub-grouping, got %v", m.viewType)
+	// Default sub-group after drilling from Senders should be SenderNames
+	if m.viewType != query.ViewSenderNames {
+		t.Errorf("expected viewType = ViewSenderNames for sub-grouping, got %v", m.viewType)
 	}
 	if cmd == nil {
 		t.Error("expected command to load sub-aggregate data")
@@ -1276,9 +1280,9 @@ func TestSubGroupingNavigation(t *testing.T) {
 	newModel, cmd = m.handleAggregateKeys(keyTab())
 	m = newModel.(Model)
 
-	// Should skip Senders (drill view type) and go to Domains
-	if m.viewType != query.ViewDomains {
-		t.Errorf("expected viewType = ViewDomains after Tab, got %v", m.viewType)
+	// Should skip Senders (drill view type) and go to Recipients
+	if m.viewType != query.ViewRecipients {
+		t.Errorf("expected viewType = ViewRecipients after Tab, got %v", m.viewType)
 	}
 	if cmd == nil {
 		t.Error("expected command to reload data after Tab")
@@ -1742,13 +1746,13 @@ func TestGKeyCyclesViewType(t *testing.T) {
 	model.cursor = 5
 	model.scrollOffset = 3
 
-	// Press 'g' - should cycle to Recipients (not go to home)
+	// Press 'g' - should cycle to SenderNames (not go to home)
 	newModel, cmd := model.handleAggregateKeys(key('g'))
 	m := newModel.(Model)
 
-	// Expected: viewType changes to ViewRecipients
-	if m.viewType != query.ViewRecipients {
-		t.Errorf("expected ViewRecipients after 'g', got %v", m.viewType)
+	// Expected: viewType changes to ViewSenderNames
+	if m.viewType != query.ViewSenderNames {
+		t.Errorf("expected ViewSenderNames after 'g', got %v", m.viewType)
 	}
 	// Should trigger data reload
 	if cmd == nil {
@@ -1774,6 +1778,7 @@ func TestGKeyCyclesViewTypeFullCycle(t *testing.T) {
 		WithViewType(query.ViewSenders).Build()
 
 	expectedOrder := []query.ViewType{
+		query.ViewSenderNames,
 		query.ViewRecipients,
 		query.ViewDomains,
 		query.ViewLabels,
@@ -1834,9 +1839,9 @@ func TestGKeyInMessageListWithDrillFilter(t *testing.T) {
 	if m.level != levelDrillDown {
 		t.Errorf("expected level=levelDrillDown after 'g' with drill filter, got %v", m.level)
 	}
-	// ViewType should be next logical view (Recipients after Senders)
-	if m.viewType != query.ViewRecipients {
-		t.Errorf("expected viewType=Recipients after 'g', got %v", m.viewType)
+	// ViewType should be next logical view (SenderNames after Senders)
+	if m.viewType != query.ViewSenderNames {
+		t.Errorf("expected viewType=SenderNames after 'g', got %v", m.viewType)
 	}
 }
 
@@ -1971,12 +1976,12 @@ func TestTabCyclesViewTypeAtAggregates(t *testing.T) {
 	model.cursor = 5
 	model.scrollOffset = 3
 
-	// Press Tab - should cycle to Recipients
+	// Press Tab - should cycle to SenderNames
 	newModel, cmd := model.handleAggregateKeys(keyTab())
 	m := newModel.(Model)
 
-	if m.viewType != query.ViewRecipients {
-		t.Errorf("expected ViewRecipients after Tab, got %v", m.viewType)
+	if m.viewType != query.ViewSenderNames {
+		t.Errorf("expected ViewSenderNames after Tab, got %v", m.viewType)
 	}
 	if cmd == nil {
 		t.Error("expected reload command after Tab")
@@ -3025,9 +3030,9 @@ func TestViewTypeRestoredAfterEscFromSubAggregate(t *testing.T) {
 	if m.level != levelDrillDown {
 		t.Fatalf("expected levelDrillDown, got %v", m.level)
 	}
-	// viewType should have changed to next sub-group view (Recipients)
-	if m.viewType != query.ViewRecipients {
-		t.Errorf("expected ViewRecipients in sub-aggregate, got %v", m.viewType)
+	// viewType should have changed to next sub-group view (SenderNames)
+	if m.viewType != query.ViewSenderNames {
+		t.Errorf("expected ViewSenderNames in sub-aggregate, got %v", m.viewType)
 	}
 
 	// Press Esc to go back to message list

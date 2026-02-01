@@ -48,6 +48,9 @@ func (e *stubEngine) ListAccounts(_ context.Context) ([]query.AccountInfo, error
 func (e *stubEngine) AggregateBySender(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
 	return e.aggregateRows, nil
 }
+func (e *stubEngine) AggregateBySenderName(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
+	return e.aggregateRows, nil
+}
 func (e *stubEngine) AggregateByRecipient(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
 	return e.aggregateRows, nil
 }

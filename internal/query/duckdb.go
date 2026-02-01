@@ -358,6 +358,43 @@ func (e *DuckDBEngine) AggregateBySender(ctx context.Context, opts AggregateOpti
 	return e.executeAggregateQuery(ctx, query, args)
 }
 
+// AggregateBySenderName groups messages by sender display name.
+// Uses COALESCE(display_name, email_address) so senders without a display name
+// fall back to their email address.
+func (e *DuckDBEngine) AggregateBySenderName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
+	where, args := e.buildWhereClause(opts)
+
+	limit := opts.Limit
+	if limit == 0 {
+		limit = 100
+	}
+
+	query := fmt.Sprintf(`
+		WITH %s
+		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
+		FROM (
+			SELECT
+				COALESCE(p.display_name, p.email_address) as key,
+				COUNT(*) as count,
+				COALESCE(SUM(msg.size_estimate), 0) as total_size,
+				CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
+				CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
+				COUNT(*) OVER() as total_unique
+			FROM msg
+			JOIN mr ON mr.message_id = msg.id AND mr.recipient_type = 'from'
+			JOIN p ON p.id = mr.participant_id
+			LEFT JOIN att ON att.message_id = msg.id
+			WHERE %s AND COALESCE(p.display_name, p.email_address) IS NOT NULL
+			GROUP BY COALESCE(p.display_name, p.email_address)
+		)
+		%s
+		LIMIT ?
+	`, e.parquetCTEs(), where, e.sortClause(opts))
+
+	args = append(args, limit)
+	return e.executeAggregateQuery(ctx, query, args)
+}
+
 // AggregateByRecipient groups messages by recipient email.
 // Includes to, cc recipients (bcc not exported to Parquet for privacy).
 func (e *DuckDBEngine) AggregateByRecipient(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
@@ -566,6 +603,26 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 		)`)
 	}
 
+	// Sender name filter - use EXISTS subquery (becomes semi-join)
+	if filter.SenderName != "" {
+		conditions = append(conditions, `EXISTS (
+			SELECT 1 FROM mr
+			JOIN p ON p.id = mr.participant_id
+			WHERE mr.message_id = msg.id
+			  AND mr.recipient_type = 'from'
+			  AND COALESCE(p.display_name, p.email_address) = ?
+		)`)
+		args = append(args, filter.SenderName)
+	} else if filter.MatchEmptySenderName {
+		conditions = append(conditions, `NOT EXISTS (
+			SELECT 1 FROM mr
+			JOIN p ON p.id = mr.participant_id
+			WHERE mr.message_id = msg.id
+			  AND mr.recipient_type = 'from'
+			  AND COALESCE(p.display_name, p.email_address) IS NOT NULL
+		)`)
+	}
+
 	// Recipient filter - use EXISTS subquery (becomes semi-join)
 	if filter.Recipient != "" {
 		conditions = append(conditions, `EXISTS (
@@ -701,6 +758,29 @@ func (e *DuckDBEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 				LEFT JOIN att ON att.message_id = msg.id
 				WHERE %s AND p_agg.email_address IS NOT NULL
 				GROUP BY p_agg.email_address
+			)
+			%s
+			LIMIT ?
+		`, e.parquetCTEs(), where, e.sortClause(opts))
+
+	case ViewSenderNames:
+		query = fmt.Sprintf(`
+			WITH %s
+			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
+			FROM (
+				SELECT
+					COALESCE(p_agg.display_name, p_agg.email_address) as key,
+					COUNT(*) as count,
+					COALESCE(SUM(msg.size_estimate), 0) as total_size,
+					CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
+					CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
+					COUNT(*) OVER() as total_unique
+				FROM msg
+				JOIN mr mr_agg ON mr_agg.message_id = msg.id AND mr_agg.recipient_type = 'from'
+				JOIN p p_agg ON p_agg.id = mr_agg.participant_id
+				LEFT JOIN att ON att.message_id = msg.id
+				WHERE %s AND COALESCE(p_agg.display_name, p_agg.email_address) IS NOT NULL
+				GROUP BY COALESCE(p_agg.display_name, p_agg.email_address)
 			)
 			%s
 			LIMIT ?
@@ -1567,6 +1647,17 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 			  AND p.email_address = ?
 		)`)
 		args = append(args, filter.Sender)
+	}
+
+	if filter.SenderName != "" {
+		conditions = append(conditions, `EXISTS (
+			SELECT 1 FROM mr
+			JOIN p ON p.id = mr.participant_id
+			WHERE mr.message_id = msg.id
+			  AND mr.recipient_type = 'from'
+			  AND COALESCE(p.display_name, p.email_address) = ?
+		)`)
+		args = append(args, filter.SenderName)
 	}
 
 	if filter.Recipient != "" {

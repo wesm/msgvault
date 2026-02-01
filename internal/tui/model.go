@@ -299,6 +299,8 @@ func (m Model) loadData() tea.Cmd {
 			switch m.viewType {
 			case query.ViewSenders:
 				rows, err = m.engine.AggregateBySender(ctx, opts)
+			case query.ViewSenderNames:
+				rows, err = m.engine.AggregateBySenderName(ctx, opts)
 			case query.ViewRecipients:
 				rows, err = m.engine.AggregateByRecipient(ctx, opts)
 			case query.ViewDomains:
@@ -525,11 +527,13 @@ func (m Model) loadMessages() tea.Cmd {
 // hasDrillFilter returns true if drillFilter has any filter criteria set.
 func (m Model) hasDrillFilter() bool {
 	return m.drillFilter.Sender != "" ||
+		m.drillFilter.SenderName != "" ||
 		m.drillFilter.Recipient != "" ||
 		m.drillFilter.Domain != "" ||
 		m.drillFilter.Label != "" ||
 		m.drillFilter.TimePeriod != "" ||
 		m.drillFilter.MatchEmptySender ||
+		m.drillFilter.MatchEmptySenderName ||
 		m.drillFilter.MatchEmptyRecipient ||
 		m.drillFilter.MatchEmptyDomain ||
 		m.drillFilter.MatchEmptyLabel
@@ -543,6 +547,11 @@ func (m Model) drillFilterKey() string {
 			return "(empty)"
 		}
 		return m.drillFilter.Sender
+	case query.ViewSenderNames:
+		if m.drillFilter.MatchEmptySenderName {
+			return "(empty)"
+		}
+		return m.drillFilter.SenderName
 	case query.ViewRecipients:
 		if m.drillFilter.MatchEmptyRecipient {
 			return "(empty)"

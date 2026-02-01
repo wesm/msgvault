@@ -13,6 +13,7 @@ import (
 type Engine interface {
 	// Aggregate queries - return rows grouped by key
 	AggregateBySender(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
+	AggregateBySenderName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
 	AggregateByRecipient(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
 	AggregateByDomain(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
 	AggregateByLabel(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
@@ -75,6 +76,8 @@ func (e *SQLiteEngine) GetAggregateFunc(viewType ViewType) AggregateFunc {
 	switch viewType {
 	case ViewSenders:
 		return e.AggregateBySender
+	case ViewSenderNames:
+		return e.AggregateBySenderName
 	case ViewRecipients:
 		return e.AggregateByRecipient
 	case ViewDomains:
