@@ -1,0 +1,144 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+            cc: gcc
+          - goarch: arm64
+            cc: aarch64-linux-gnu-gcc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install cross-compiler
+        if: matrix.goarch == 'arm64'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+          CC: ${{ matrix.cc }}
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+
+          mkdir -p dist
+          LDFLAGS="-s -w -X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=v${VERSION}"
+          go build -tags fts5 -trimpath -ldflags="$LDFLAGS" -o dist/msgvault ./cmd/msgvault
+
+          cd dist
+          ARCHIVE="msgvault_${VERSION}_linux_${{ matrix.goarch }}.tar.gz"
+          tar czf "$ARCHIVE" msgvault
+          rm msgvault
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msgvault-linux-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+
+  build-darwin:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+          - goarch: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          GOOS: darwin
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+
+          mkdir -p dist
+          LDFLAGS="-s -w -X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=v${VERSION}"
+          go build -tags fts5 -trimpath -ldflags="$LDFLAGS" -o dist/msgvault ./cmd/msgvault
+
+          cd dist
+          ARCHIVE="msgvault_${VERSION}_darwin_${{ matrix.goarch }}.tar.gz"
+          tar czf "$ARCHIVE" msgvault
+          rm msgvault
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msgvault-darwin-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+
+  release:
+    needs: [build-linux, build-darwin]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Get tag message
+        id: tag_message
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+
+          # Only extract message from annotated tags (type "tag"), not lightweight tags (type "commit")
+          TAG_TYPE=$(git cat-file -t "$TAG_NAME")
+          if [ "$TAG_TYPE" != "tag" ]; then
+            echo "Warning: $TAG_NAME is a lightweight tag, using auto-generated notes"
+            echo "has_body=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Get the tag message body (our changelog), skipping the first line ("Release X.Y.Z")
+          TAG_MSG=$(git tag -l --format='%(contents:body)' "$TAG_NAME")
+
+          if [ -n "$TAG_MSG" ]; then
+            # Use unique delimiter to avoid conflicts with tag message content
+            DELIM="TAGMSG_$(date +%s%N)"
+            echo "body<<$DELIM" >> $GITHUB_OUTPUT
+            echo "$TAG_MSG" >> $GITHUB_OUTPUT
+            echo "$DELIM" >> $GITHUB_OUTPUT
+            echo "has_body=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_body=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/*.tar.gz
+            artifacts/SHA256SUMS
+          body: ${{ steps.tag_message.outputs.has_body == 'true' && steps.tag_message.outputs.body || '' }}
+          generate_release_notes: ${{ steps.tag_message.outputs.has_body != 'true' }}
