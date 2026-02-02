@@ -325,7 +325,7 @@ func TestHeaderShowsSelectedAccount(t *testing.T) {
 // TestHeaderShowsViewTypeOnLine2 verifies line 2 shows current view type.
 func TestHeaderShowsViewTypeOnLine2(t *testing.T) {
 	model := NewBuilder().WithSize(100, 20).WithViewType(query.ViewSenders).
-		WithStats(standardStats).
+		WithStats(standardStats()).
 		Build()
 
 	assertHeaderLine(t, model, 1, "Sender", "1000 msgs")
@@ -374,7 +374,7 @@ func TestViewStructureHasTitleBarFirst(t *testing.T) {
 		WithViewType(query.ViewSenders).
 		WithSize(100, 30).
 		WithPageSize(20).
-		WithStats(standardStats).
+		WithStats(standardStats()).
 		Build()
 
 	view := model.View()
@@ -410,7 +410,7 @@ func TestViewFitsTerminalHeight(t *testing.T) {
 	model := NewBuilder().
 		WithRows(standardRows...).
 		WithViewType(query.ViewSenders).
-		WithStats(standardStats).
+		WithStats(standardStats()).
 		Build()
 
 	// Simulate WindowSizeMsg to trigger pageSize calculation (the real code path)
@@ -439,7 +439,7 @@ func TestViewFitsTerminalHeightDuringLoading(t *testing.T) {
 	model := NewBuilder().
 		WithRows(standardRows...).
 		WithViewType(query.ViewSenders).
-		WithStats(standardStats).
+		WithStats(standardStats()).
 		WithLoading(true).
 		Build()
 
@@ -463,7 +463,7 @@ func TestViewFitsTerminalHeightWithInlineSearch(t *testing.T) {
 	model := NewBuilder().
 		WithRows(standardRows...).
 		WithViewType(query.ViewSenders).
-		WithStats(standardStats).
+		WithStats(standardStats()).
 		Build()
 	model.inlineSearchActive = true // Enable inline search
 
@@ -492,7 +492,7 @@ func TestViewFitsTerminalHeightAtMessageList(t *testing.T) {
 	model := NewBuilder().
 		WithMessages(msgs...).
 		WithLevel(levelMessageList).
-		WithStats(standardStats).
+		WithStats(standardStats()).
 		WithContextStats(&query.TotalStats{MessageCount: 2, TotalSize: 3000, AttachmentCount: 0}).
 		Build()
 	model.filterKey = "alice@example.com"
@@ -545,7 +545,7 @@ func TestViewFitsTerminalHeightStartupSequence(t *testing.T) {
 	}
 
 	// Stage 3: After stats load (still loading=true, no data)
-	model.stats = standardStats
+	model.stats = standardStats()
 
 	view3 := model.View()
 	actualLines3 := countViewLines(view3)
@@ -602,7 +602,7 @@ func TestViewFitsTerminalHeightWithBadData(t *testing.T) {
 	model := NewBuilder().
 		WithRows(rows...).
 		WithViewType(query.ViewSenders).
-		WithStats(standardStats).
+		WithStats(standardStats()).
 		Build()
 
 	terminalHeight := 40
@@ -644,7 +644,7 @@ func TestViewFitsVariousTerminalSizes(t *testing.T) {
 			model := NewBuilder().
 				WithRows(standardRows...).
 				WithViewType(query.ViewSenders).
-				WithStats(standardStats).
+				WithStats(standardStats()).
 				Build()
 
 			model = resizeModel(t, model, size.width, size.height)
@@ -676,7 +676,7 @@ func TestViewDuringSpinnerAnimation(t *testing.T) {
 	model := NewBuilder().
 		WithRows(rows...).
 		WithViewType(query.ViewSenders).
-		WithStats(standardStats).
+		WithStats(standardStats()).
 		WithLoading(true).
 		Build()
 
@@ -710,7 +710,7 @@ func TestViewLineByLineAnalysis(t *testing.T) {
 	model := NewBuilder().
 		WithRows(standardRows...).
 		WithViewType(query.ViewSenders).
-		WithStats(standardStats).
+		WithStats(standardStats()).
 		Build()
 
 	terminalWidth := 100

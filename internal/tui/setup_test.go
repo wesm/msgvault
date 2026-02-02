@@ -307,9 +307,13 @@ var (
 		{Key: "bob@example.com", Count: 50, TotalSize: 250000},
 	}
 
-	// standardStats provides the common stats object (1000 msgs, ~5MB, 50 attachments).
-	standardStats = &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}
 )
+
+// standardStats returns a fresh stats object (1000 msgs, ~5MB, 50 attachments)
+// for each call, preventing cross-test state leakage.
+func standardStats() *query.TotalStats {
+	return &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}
+}
 
 // newTestModel creates a Model with common test defaults.
 // The returned model has standard width/height and is ready for testing.
