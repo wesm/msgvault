@@ -30,9 +30,21 @@ func (f *fakeT) Fatalf(format string, args ...any) {
 	f.fatalMsg = fmt.Sprintf(format, args...)
 	panic(fatalSentinel{f.fatalMsg})
 }
+func (f *fakeT) Fatal(args ...any) {
+	f.failed = true
+	f.fatalMsg = fmt.Sprint(args...)
+	panic(fatalSentinel{f.fatalMsg})
+}
+func (f *fakeT) FailNow() {
+	f.failed = true
+	panic(fatalSentinel{})
+}
+func (f *fakeT) Skip(args ...any) {
+	panic(fatalSentinel{fmt.Sprint(args...)})
+}
 
-// expectFatal calls fn and returns true if it triggered fakeT.Fatalf.
-func expectFatal(ft *fakeT, fn func()) bool {
+// expectFatal calls fn and recovers if it triggered a fakeT fatal/skip.
+func expectFatal(ft *fakeT, fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			if _, ok := r.(fatalSentinel); !ok {
@@ -41,10 +53,6 @@ func expectFatal(ft *fakeT, fn func()) bool {
 		}
 	}()
 	fn()
-	return false // no fatal occurred
-	// unreachable after panic, but if Fatalf fired the deferred
-	// recover runs and the function returns the zero value (false);
-	// callers should check ft.failed instead.
 }
 
 func TestAddLabel_ValidName(t *testing.T) {
