@@ -197,26 +197,35 @@ func TestRateLimiter_Acquire_ContextTimeout(t *testing.T) {
 	rl.refillRate = 0.001
 	rl.mu.Unlock()
 
-	// Use a deadline relative to the mock clock's current time
-	deadline := clk.Now().Add(50 * time.Millisecond)
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	// Use context.WithCancel and cancel via the mock clock to avoid
+	// mixing real-time deadlines with mock clock advancement.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Schedule cancellation when the mock clock advances past 50ms
+	go func() {
+		<-clk.After(50 * time.Millisecond)
+		cancel()
+	}()
 
 	done := make(chan error, 1)
 	go func() {
 		done <- rl.Acquire(ctx, OpMessagesBatchDelete)
 	}()
 
-	// Advance mock clock past the deadline so the context expires
+	// Allow goroutines to register their mock clock timers
+	time.Sleep(50 * time.Millisecond)
+
+	// Advance mock clock past the cancel point
 	clk.Advance(100 * time.Millisecond)
 
 	select {
 	case err := <-done:
-		if err != context.DeadlineExceeded {
-			t.Errorf("Acquire() = %v, want context.DeadlineExceeded", err)
+		if err != context.Canceled {
+			t.Errorf("Acquire() = %v, want context.Canceled", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("Acquire() did not return after deadline exceeded")
+		t.Fatal("Acquire() did not return after context cancelled")
 	}
 }
 
@@ -412,4 +421,34 @@ func TestRateLimiter_Acquire_WaitsForThrottle(t *testing.T) {
 	case <-time.After(1 * time.Second):
 		t.Fatal("Acquire() did not complete after advancing clock past throttle")
 	}
+}
+
+func TestRateLimiter_NilClock(t *testing.T) {
+	// A zero-value RateLimiter (nil clock) should not panic on any public method.
+	rl := &RateLimiter{
+		tokens:         DefaultCapacity,
+		capacity:       DefaultCapacity,
+		refillRate:     DefaultRefillRate,
+		baseRefillRate: DefaultRefillRate,
+	}
+
+	// Available should work and return a sane value.
+	if avail := rl.Available(); avail <= 0 {
+		t.Errorf("Available() with nil clock = %v, want > 0", avail)
+	}
+
+	// TryAcquire should succeed when tokens are available.
+	if !rl.TryAcquire(OpProfile) {
+		t.Error("TryAcquire(OpProfile) with nil clock should succeed")
+	}
+
+	// Acquire should succeed immediately when tokens are available.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := rl.Acquire(ctx, OpProfile); err != nil {
+		t.Errorf("Acquire(OpProfile) with nil clock error = %v", err)
+	}
+
+	// Throttle should not panic.
+	rl.Throttle(10 * time.Millisecond)
 }
