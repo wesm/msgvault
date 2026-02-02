@@ -238,6 +238,7 @@ func (b *TestDataBuilder) AddAttachment(messageID, size int64, filename string) 
 			return
 		}
 	}
+	b.t.Fatalf("AddAttachment: message ID %d not found; add the message before attaching files", messageID)
 }
 
 // SetEmptyAttachments marks the attachments table as empty (schema only).
