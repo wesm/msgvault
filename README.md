@@ -8,11 +8,11 @@
 
 > **Pre-alpha software.** APIs, storage format, and CLI flags may change without notice. Back up your data.
 
-Archive a lifetime of email and chat. Analytics and search in milliseconds. Query with AI, entirely offline.
+Archive a lifetime of email. Analytics and search in milliseconds, entirely offline.
 
 ## Why msgvault?
 
-Your messages are yours. Decades of correspondence, attachments, and history shouldn't be locked behind a web interface or an API. msgvault downloads a complete local copy and then everything runs offline. Search, analytics, and AI chat all work against local data with no network access required.
+Your messages are yours. Decades of correspondence, attachments, and history shouldn't be locked behind a web interface or an API. msgvault downloads a complete local copy and then everything runs offline. Search, analytics, and the MCP server all work against local data with no network access required.
 
 Currently supports Gmail, with WhatsApp and other messaging platforms planned.
 
