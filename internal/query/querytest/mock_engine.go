@@ -23,7 +23,7 @@ type MockEngine struct {
 	GmailIDs          []string
 
 	// MessagesBySourceID maps source IDs to message details for GetMessageBySourceID.
-	// When nil, GetMessageBySourceID falls back to searching Messages by source ID.
+	// When nil, GetMessageBySourceID falls back to scanning Messages for a matching SourceMessageID.
 	MessagesBySourceID map[string]*query.MessageDetail
 
 	// Optional overrides — set these to customise behavior per-test.
@@ -89,6 +89,13 @@ func (m *MockEngine) GetMessageBySourceID(ctx context.Context, sourceID string) 
 	}
 	if m.MessagesBySourceID != nil {
 		if msg, ok := m.MessagesBySourceID[sourceID]; ok {
+			return msg, nil
+		}
+		return nil, nil
+	}
+	// Fallback: scan Messages map for matching SourceMessageID.
+	for _, msg := range m.Messages {
+		if msg != nil && msg.SourceMessageID == sourceID {
 			return msg, nil
 		}
 	}
