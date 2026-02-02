@@ -320,34 +320,16 @@ func TestHeaderShowsSelectedAccount(t *testing.T) {
 		).
 		WithAccountFilter(&accountID).Build()
 
-	header := model.headerView()
-	lines := strings.Split(header, "\n")
-
-	if !strings.Contains(lines[0], "bob@gmail.com") {
-		t.Errorf("expected title bar to show selected account 'bob@gmail.com', got: %s", lines[0])
-	}
+	assertHeaderLine(t, model, 0, "bob@gmail.com")
 }
 
 // TestHeaderShowsViewTypeOnLine2 verifies line 2 shows current view type.
 func TestHeaderShowsViewTypeOnLine2(t *testing.T) {
 	model := NewBuilder().WithSize(100, 20).WithViewType(query.ViewSenders).
-		WithStats(&query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}).
+		WithStats(standardStats).
 		Build()
 
-	header := model.headerView()
-	lines := strings.Split(header, "\n")
-
-	if len(lines) < 2 {
-		t.Fatalf("expected 2 header lines, got %d", len(lines))
-	}
-
-	// Line 2 should contain view type and stats
-	if !strings.Contains(lines[1], "Sender") {
-		t.Errorf("expected line 2 to contain view type 'Sender', got: %s", lines[1])
-	}
-	if !strings.Contains(lines[1], "1000 msgs") {
-		t.Errorf("expected line 2 to contain stats '1000 msgs', got: %s", lines[1])
-	}
+	assertHeaderLine(t, model, 1, "Sender", "1000 msgs")
 }
 
 // TestHeaderDrillDownUsesPrefix verifies drill-down uses compact prefix (S: instead of From:).
@@ -358,20 +340,8 @@ func TestHeaderDrillDownUsesPrefix(t *testing.T) {
 	model.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
 	model.filterKey = "alice@example.com"
 
-	header := model.headerView()
-	lines := strings.Split(header, "\n")
-
-	if len(lines) < 2 {
-		t.Fatalf("expected 2 header lines, got %d", len(lines))
-	}
-
-	// Line 2 should use "S:" prefix for sender drill-down, not "From:"
-	if !strings.Contains(lines[1], "S:") {
-		t.Errorf("expected line 2 to use 'S:' prefix for sender drill-down, got: %s", lines[1])
-	}
-	if strings.Contains(lines[1], "From:") {
-		t.Errorf("expected line 2 to NOT use 'From:' for drill-down (should be 'S:'), got: %s", lines[1])
-	}
+	assertHeaderLine(t, model, 1, "S:")
+	assertHeaderLineNot(t, model, 1, "From:")
 }
 
 // TestHeaderSubAggregateShowsDrillContext verifies sub-aggregate shows drill context.
@@ -383,27 +353,7 @@ func TestHeaderSubAggregateShowsDrillContext(t *testing.T) {
 	model.drillViewType = query.ViewSenders
 	model.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
 
-	header := model.headerView()
-	lines := strings.Split(header, "\n")
-
-	if len(lines) < 2 {
-		t.Fatalf("expected 2 header lines, got %d", len(lines))
-	}
-
-	// Line 2 should show "S: alice@example.com (by Recipient)"
-	if !strings.Contains(lines[1], "S:") {
-		t.Errorf("expected line 2 to contain 'S:' prefix, got: %s", lines[1])
-	}
-	if !strings.Contains(lines[1], "alice@example.com") {
-		t.Errorf("expected line 2 to contain drill key 'alice@example.com', got: %s", lines[1])
-	}
-	if !strings.Contains(lines[1], "(by Recipient)") {
-		t.Errorf("expected line 2 to contain '(by Recipient)' sub-group indicator, got: %s", lines[1])
-	}
-	// Should show contextStats
-	if !strings.Contains(lines[1], "100 msgs") {
-		t.Errorf("expected line 2 to show contextStats '100 msgs', got: %s", lines[1])
-	}
+	assertHeaderLine(t, model, 1, "S:", "alice@example.com", "(by Recipient)", "100 msgs")
 }
 
 // TestHeaderWithAttachmentFilter verifies header shows attachment filter indicator.
@@ -411,12 +361,7 @@ func TestHeaderWithAttachmentFilter(t *testing.T) {
 	model := NewBuilder().WithSize(100, 20).Build()
 	model.attachmentFilter = true
 
-	header := model.headerView()
-	lines := strings.Split(header, "\n")
-
-	if !strings.Contains(lines[0], "[Attachments]") {
-		t.Errorf("expected title bar to show '[Attachments]' filter indicator, got: %s", lines[0])
-	}
+	assertHeaderLine(t, model, 0, "[Attachments]")
 }
 
 // TestViewStructureHasTitleBarFirst verifies View() output starts with title bar.
@@ -430,7 +375,7 @@ func TestViewStructureHasTitleBarFirst(t *testing.T) {
 		WithViewType(query.ViewSenders).
 		WithSize(100, 30).
 		WithPageSize(20).
-		WithStats(&query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}).
+		WithStats(standardStats).
 		Build()
 
 	view := model.View()
@@ -463,15 +408,10 @@ func TestViewStructureHasTitleBarFirst(t *testing.T) {
 // when pageSize is calculated via WindowSizeMsg. This catches bugs where header
 // line count changes but pageSize calculation isn't updated.
 func TestViewFitsTerminalHeight(t *testing.T) {
-	rows := []query.AggregateRow{
-		{Key: "alice@example.com", Count: 100, TotalSize: 500000},
-		{Key: "bob@example.com", Count: 50, TotalSize: 250000},
-	}
-
 	model := NewBuilder().
-		WithRows(rows...).
+		WithRows(standardRows...).
 		WithViewType(query.ViewSenders).
-		WithStats(&query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}).
+		WithStats(standardStats).
 		Build()
 
 	// Simulate WindowSizeMsg to trigger pageSize calculation (the real code path)
@@ -497,15 +437,10 @@ func TestViewFitsTerminalHeight(t *testing.T) {
 
 // TestViewFitsTerminalHeightDuringLoading verifies View() output fits during loading state.
 func TestViewFitsTerminalHeightDuringLoading(t *testing.T) {
-	rows := []query.AggregateRow{
-		{Key: "alice@example.com", Count: 100, TotalSize: 500000},
-		{Key: "bob@example.com", Count: 50, TotalSize: 250000},
-	}
-
 	model := NewBuilder().
-		WithRows(rows...).
+		WithRows(standardRows...).
 		WithViewType(query.ViewSenders).
-		WithStats(&query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}).
+		WithStats(standardStats).
 		WithLoading(true).
 		Build()
 
@@ -526,15 +461,10 @@ func TestViewFitsTerminalHeightDuringLoading(t *testing.T) {
 
 // TestViewFitsTerminalHeightWithInlineSearch verifies View() output fits with inline search active.
 func TestViewFitsTerminalHeightWithInlineSearch(t *testing.T) {
-	rows := []query.AggregateRow{
-		{Key: "alice@example.com", Count: 100, TotalSize: 500000},
-		{Key: "bob@example.com", Count: 50, TotalSize: 250000},
-	}
-
 	model := NewBuilder().
-		WithRows(rows...).
+		WithRows(standardRows...).
 		WithViewType(query.ViewSenders).
-		WithStats(&query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}).
+		WithStats(standardStats).
 		Build()
 	model.inlineSearchActive = true // Enable inline search
 
@@ -563,7 +493,7 @@ func TestViewFitsTerminalHeightAtMessageList(t *testing.T) {
 	model := NewBuilder().
 		WithMessages(msgs...).
 		WithLevel(levelMessageList).
-		WithStats(&query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}).
+		WithStats(standardStats).
 		WithContextStats(&query.TotalStats{MessageCount: 2, TotalSize: 3000, AttachmentCount: 0}).
 		Build()
 	model.filterKey = "alice@example.com"
@@ -616,7 +546,7 @@ func TestViewFitsTerminalHeightStartupSequence(t *testing.T) {
 	}
 
 	// Stage 3: After stats load (still loading=true, no data)
-	model.stats = &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}
+	model.stats = standardStats
 
 	view3 := model.View()
 	actualLines3 := countViewLines(view3)
@@ -673,7 +603,7 @@ func TestViewFitsTerminalHeightWithBadData(t *testing.T) {
 	model := NewBuilder().
 		WithRows(rows...).
 		WithViewType(query.ViewSenders).
-		WithStats(&query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}).
+		WithStats(standardStats).
 		Build()
 
 	terminalHeight := 40
@@ -712,15 +642,10 @@ func TestViewFitsVariousTerminalSizes(t *testing.T) {
 
 	for _, size := range sizes {
 		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
-			rows := []query.AggregateRow{
-				{Key: "alice@example.com", Count: 100, TotalSize: 500000},
-				{Key: "bob@example.com", Count: 50, TotalSize: 250000},
-			}
-
 			model := NewBuilder().
-				WithRows(rows...).
+				WithRows(standardRows...).
 				WithViewType(query.ViewSenders).
-				WithStats(&query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}).
+				WithStats(standardStats).
 				Build()
 
 			model = resizeModel(t, model, size.width, size.height)
@@ -752,7 +677,7 @@ func TestViewDuringSpinnerAnimation(t *testing.T) {
 	model := NewBuilder().
 		WithRows(rows...).
 		WithViewType(query.ViewSenders).
-		WithStats(&query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}).
+		WithStats(standardStats).
 		WithLoading(true).
 		Build()
 
@@ -783,15 +708,10 @@ func TestViewDuringSpinnerAnimation(t *testing.T) {
 
 // TestViewLineByLineAnalysis provides detailed line-by-line output for debugging.
 func TestViewLineByLineAnalysis(t *testing.T) {
-	rows := []query.AggregateRow{
-		{Key: "alice@example.com", Count: 100, TotalSize: 500000},
-		{Key: "bob@example.com", Count: 50, TotalSize: 250000},
-	}
-
 	model := NewBuilder().
-		WithRows(rows...).
+		WithRows(standardRows...).
 		WithViewType(query.ViewSenders).
-		WithStats(&query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}).
+		WithStats(standardStats).
 		Build()
 
 	terminalWidth := 100
@@ -895,13 +815,8 @@ func TestFooterShowsTotalUniqueWhenAvailable(t *testing.T) {
 // to showing loaded count when TotalUnique is not set (zero value).
 func TestFooterShowsLoadedCountWhenNoTotalUnique(t *testing.T) {
 	// Set up rows without TotalUnique (zero value)
-	rows := []query.AggregateRow{
-		{Key: "alice@example.com", Count: 100, TotalSize: 500000},
-		{Key: "bob@example.com", Count: 50, TotalSize: 250000},
-	}
-
 	model := NewBuilder().
-		WithRows(rows...).
+		WithRows(standardRows...).
 		WithViewType(query.ViewSenders).
 		WithSize(100, 30).
 		WithPageSize(20).

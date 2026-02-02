@@ -270,6 +270,15 @@ var (
 		{ID: 1, Identifier: "user1@gmail.com"},
 		{ID: 2, Identifier: "user2@gmail.com"},
 	}
+
+	// standardRows provides the common alice/bob pair used in view render tests.
+	standardRows = []query.AggregateRow{
+		{Key: "alice@example.com", Count: 100, TotalSize: 500000},
+		{Key: "bob@example.com", Count: 50, TotalSize: 250000},
+	}
+
+	// standardStats provides the common stats object (1000 msgs, ~5MB, 50 attachments).
+	standardStats = &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}
 )
 
 // newTestModel creates a Model with common test defaults.
@@ -548,6 +557,35 @@ func resizeModel(t *testing.T, m Model, w, h int) Model {
 	t.Helper()
 	newModel, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	return newModel.(Model)
+}
+
+// assertHeaderLine splits the header into lines, checks the line count is sufficient,
+// and asserts that the specified line contains all of the given substrings.
+func assertHeaderLine(t *testing.T, model Model, lineIdx int, wantSubstrings ...string) {
+	t.Helper()
+	header := model.headerView()
+	lines := strings.Split(header, "\n")
+	if lineIdx >= len(lines) {
+		t.Fatalf("header has %d lines, want line %d", len(lines), lineIdx)
+	}
+	for _, want := range wantSubstrings {
+		if !strings.Contains(lines[lineIdx], want) {
+			t.Errorf("header line %d missing %q: %q", lineIdx, want, lines[lineIdx])
+		}
+	}
+}
+
+// assertHeaderLineNot asserts that the specified header line does NOT contain the given substring.
+func assertHeaderLineNot(t *testing.T, model Model, lineIdx int, notWant string) {
+	t.Helper()
+	header := model.headerView()
+	lines := strings.Split(header, "\n")
+	if lineIdx >= len(lines) {
+		t.Fatalf("header has %d lines, want line %d", len(lines), lineIdx)
+	}
+	if strings.Contains(lines[lineIdx], notWant) {
+		t.Errorf("header line %d should not contain %q: %q", lineIdx, notWant, lines[lineIdx])
+	}
 }
 
 // assertState checks level, viewType, and cursor in one call.
