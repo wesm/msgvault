@@ -124,30 +124,49 @@ func TestSanitizeForFilename(t *testing.T) {
 }
 
 func TestGenerateID(t *testing.T) {
-	// Test basic ID generation
-	id := generateID("test batch")
-	if id == "" {
-		t.Error("generateID returned empty string")
+	tests := []struct {
+		name     string
+		desc     string
+		validate func(*testing.T, string)
+	}{
+		{
+			name: "basic ID generation",
+			desc: "test batch",
+			validate: func(t *testing.T, id string) {
+				if id == "" {
+					t.Error("generateID returned empty string")
+				}
+				parts := strings.SplitN(id, "-", 3)
+				if len(parts) < 2 {
+					t.Errorf("expected timestamp-description format, got %q", id)
+				}
+			},
+		},
+		{
+			name: "long description truncated",
+			desc: "this is a very long description that exceeds twenty characters",
+			validate: func(t *testing.T, id string) {
+				if len(id) > 40 {
+					t.Errorf("ID too long: %d chars (%q)", len(id), id)
+				}
+			},
+		},
+		{
+			name: "empty description uses batch",
+			desc: "",
+			validate: func(t *testing.T, id string) {
+				if !strings.HasSuffix(id, "-batch") {
+					t.Errorf("expected -batch suffix, got %q", id)
+				}
+			},
+		},
 	}
 
-	// Should contain timestamp prefix and sanitized description
-	parts := strings.SplitN(id, "-", 3)
-	if len(parts) < 2 {
-		t.Errorf("generateID(%q) = %q, expected timestamp-description format", "test batch", id)
-	}
-
-	// Long description should be truncated
-	longDesc := "this is a very long description that exceeds twenty characters"
-	id = generateID(longDesc)
-	// ID format: YYYYMMDD-HHMMSS-description (max 20 chars for description)
-	if len(id) > 40 { // timestamp (15) + 2 hyphens + 20 chars
-		t.Errorf("generateID with long description too long: %q", id)
-	}
-
-	// Empty description should use "batch"
-	id = generateID("")
-	if !strings.HasSuffix(id, "-batch") {
-		t.Errorf("generateID(\"\") = %q, expected to end with -batch", id)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id := generateID(tc.desc)
+			tc.validate(t, id)
+		})
 	}
 }
 
@@ -253,25 +272,90 @@ func TestLoadManifest_InvalidJSON(t *testing.T) {
 }
 
 func TestManifest_FormatSummary(t *testing.T) {
-	m := newTestManifest(t, "format test", "id1", "id2", "id3")
-	m.Summary = testSummary(3, 5*1024*1024, [2]string{"2024-01-01", "2024-01-31"}, []SenderCount{
-		{Sender: "alice@example.com", Count: 2},
-		{Sender: "bob@example.com", Count: 1},
-	})
+	tests := []struct {
+		name            string
+		setupManifest   func() *Manifest
+		wantContains    []string
+		wantNotContains []string
+	}{
+		{
+			name: "basic summary",
+			setupManifest: func() *Manifest {
+				m := newTestManifest(t, "format test", "id1", "id2", "id3")
+				m.Summary = testSummary(3, 5*1024*1024, [2]string{"2024-01-01", "2024-01-31"}, []SenderCount{
+					{Sender: "alice@example.com", Count: 2},
+					{Sender: "bob@example.com", Count: 1},
+				})
+				return m
+			},
+			wantContains: []string{"pending", "Messages: 3", "5.00 MB", "2024-01-01", "alice@example.com"},
+		},
+		{
+			name: "with execution",
+			setupManifest: func() *Manifest {
+				m := newTestManifest(t, "exec test", "id1")
+				now := time.Now()
+				m.Execution = testExecution(MethodTrash, 10, 2, &now)
+				return m
+			},
+			wantContains: []string{"Execution:", "Method: trash", "Succeeded: 10", "Failed: 2", "Completed:"},
+		},
+		{
+			name: "empty date range",
+			setupManifest: func() *Manifest {
+				m := newTestManifest(t, "empty date test", "id1")
+				m.Summary = testSummary(1, 1024, [2]string{"", ""}, nil)
+				return m
+			},
+			wantNotContains: []string{"Date Range:"},
+		},
+		{
+			name: "nil summary",
+			setupManifest: func() *Manifest {
+				m := newTestManifest(t, "no summary test")
+				m.Summary = nil
+				return m
+			},
+			wantContains:    []string{"Messages: 2"},
+			wantNotContains: []string{"Total Size:"},
+		},
+		{
+			name: "many top senders truncated to 10",
+			setupManifest: func() *Manifest {
+				m := newTestManifest(t, "many senders test", "id1")
+				topSenders := make([]SenderCount, 15)
+				for i := 0; i < 15; i++ {
+					topSenders[i] = SenderCount{
+						Sender: "sender" + string(rune('a'+i)) + "@example.com",
+						Count:  100 - i,
+					}
+				}
+				m.Summary = testSummary(15, 1024, [2]string{"2024-01-01", "2024-01-31"}, topSenders)
+				return m
+			},
+			wantContains:    []string{"sendera@example.com", "senderj@example.com"},
+			wantNotContains: []string{"senderk@example.com"},
+		},
+		{
+			name: "execution without completed time",
+			setupManifest: func() *Manifest {
+				m := newTestManifest(t, "no completed test", "id1")
+				m.Execution = testExecution(MethodDelete, 5, 0, nil)
+				return m
+			},
+			wantContains:    []string{"Execution:", "Method: delete"},
+			wantNotContains: []string{"Completed:"},
+		},
+	}
 
-	summary := m.FormatSummary()
-
-	assertSummaryContains(t, summary, m.ID, "pending", "Messages: 3", "5.00 MB", "2024-01-01", "alice@example.com")
-}
-
-func TestManifest_FormatSummary_WithExecution(t *testing.T) {
-	m := newTestManifest(t, "exec test", "id1")
-	now := time.Now()
-	m.Execution = testExecution(MethodTrash, 10, 2, &now)
-
-	summary := m.FormatSummary()
-
-	assertSummaryContains(t, summary, "Execution:", "Method: trash", "Succeeded: 10", "Failed: 2", "Completed:")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := tc.setupManifest()
+			got := m.FormatSummary()
+			assertSummaryContains(t, got, tc.wantContains...)
+			assertSummaryNotContains(t, got, tc.wantNotContains...)
+		})
+	}
 }
 
 func TestNewManager(t *testing.T) {
@@ -521,60 +605,6 @@ func TestMethod_Values(t *testing.T) {
 	if MethodDelete != "delete" {
 		t.Errorf("MethodDelete = %q", MethodDelete)
 	}
-}
-
-// TestManifest_FormatSummary_EmptyDateRange tests FormatSummary with empty date range.
-func TestManifest_FormatSummary_EmptyDateRange(t *testing.T) {
-	m := newTestManifest(t, "empty date test", "id1")
-	m.Summary = testSummary(1, 1024, [2]string{"", ""}, nil)
-
-	summary := m.FormatSummary()
-
-	assertSummaryNotContains(t, summary, "Date Range:")
-}
-
-// TestManifest_FormatSummary_NoSummary tests FormatSummary with nil Summary.
-func TestManifest_FormatSummary_NoSummary(t *testing.T) {
-	m := newTestManifest(t, "no summary test")
-	m.Summary = nil
-
-	summary := m.FormatSummary()
-
-	assertSummaryContains(t, summary, "Messages: 2")
-	assertSummaryNotContains(t, summary, "Total Size:")
-}
-
-// TestManifest_FormatSummary_ManyTopSenders tests FormatSummary with >10 top senders.
-func TestManifest_FormatSummary_ManyTopSenders(t *testing.T) {
-	m := newTestManifest(t, "many senders test", "id1")
-
-	// Create 15 top senders
-	topSenders := make([]SenderCount, 15)
-	for i := 0; i < 15; i++ {
-		topSenders[i] = SenderCount{
-			Sender: "sender" + string(rune('a'+i)) + "@example.com",
-			Count:  100 - i,
-		}
-	}
-
-	m.Summary = testSummary(15, 1024, [2]string{"2024-01-01", "2024-01-31"}, topSenders)
-
-	summary := m.FormatSummary()
-
-	// Should only include first 10 senders
-	assertSummaryContains(t, summary, "sendera@example.com", "senderj@example.com")
-	assertSummaryNotContains(t, summary, "senderk@example.com")
-}
-
-// TestManifest_FormatSummary_ExecutionNoCompletedAt tests execution without completion time.
-func TestManifest_FormatSummary_ExecutionNoCompletedAt(t *testing.T) {
-	m := newTestManifest(t, "no completed test", "id1")
-	m.Execution = testExecution(MethodDelete, 5, 0, nil)
-
-	summary := m.FormatSummary()
-
-	assertSummaryContains(t, summary, "Execution:", "Method: delete")
-	assertSummaryNotContains(t, summary, "Completed:")
 }
 
 // TestManager_SaveManifest_UnknownStatus tests saving with an unknown status.
