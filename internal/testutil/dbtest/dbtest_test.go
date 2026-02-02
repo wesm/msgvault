@@ -46,7 +46,7 @@ func TestAddMessage_MismatchedSourceID(t *testing.T) {
 	fakeTDB := &TestDB{
 		DB:            tdb.DB,
 		T:             ft,
-		nextMessageID: 1000,
+		nextMessageID: tdb.nextMessageID,
 	}
 
 	var caught bool
@@ -78,7 +78,7 @@ func TestAddMessage_MissingConversation(t *testing.T) {
 	fakeTDB := &TestDB{
 		DB:            tdb.DB,
 		T:             ft,
-		nextMessageID: 2000,
+		nextMessageID: tdb.nextMessageID,
 	}
 
 	var caught bool
