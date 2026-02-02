@@ -22,8 +22,12 @@ type TestEnv struct {
 	Context context.Context
 }
 
-func newTestEnv(t *testing.T, opts ...*Options) *TestEnv {
+func newTestEnv(t *testing.T, opt ...*Options) *TestEnv {
 	t.Helper()
+
+	if len(opt) > 1 {
+		t.Fatalf("newTestEnv: at most one *Options allowed, got %d", len(opt))
+	}
 
 	tmpDir, err := os.MkdirTemp("", "msgvault-test-*")
 	if err != nil {
@@ -49,15 +53,15 @@ func newTestEnv(t *testing.T, opts ...*Options) *TestEnv {
 		HistoryID:     1000,
 	}
 
-	var opt *Options
-	if len(opts) > 0 {
-		opt = opts[0]
+	var o *Options
+	if len(opt) > 0 {
+		o = opt[0]
 	}
 
 	return &TestEnv{
 		Store:   st,
 		Mock:    mock,
-		Syncer:  New(mock, st, opt),
+		Syncer:  New(mock, st, o),
 		TmpDir:  tmpDir,
 		Context: context.Background(),
 	}
