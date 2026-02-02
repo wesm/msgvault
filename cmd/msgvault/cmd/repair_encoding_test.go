@@ -2,8 +2,8 @@ package cmd
 
 import (
 	"testing"
-	"unicode/utf8"
 
+	"github.com/wesm/msgvault/internal/testutil"
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/japanese"
 	"golang.org/x/text/encoding/korean"
@@ -12,6 +12,7 @@ import (
 )
 
 func TestDetectAndDecode_Windows1252(t *testing.T) {
+	enc := testutil.EncodedSamples
 	// Windows-1252 specific characters: smart quotes (0x91-0x94), en/em dash (0x96, 0x97)
 	tests := []struct {
 		name     string
@@ -20,27 +21,27 @@ func TestDetectAndDecode_Windows1252(t *testing.T) {
 	}{
 		{
 			name:     "smart single quote (apostrophe)",
-			input:    []byte("Rand\x92s Opponent"), // 0x92 = right single quote U+2019
+			input:    enc.Win1252_SmartQuoteRight,
 			expected: "Rand\u2019s Opponent",
 		},
 		{
 			name:     "en dash",
-			input:    []byte("Limited Time Only \x96 50 Percent"), // 0x96 = en dash U+2013
+			input:    []byte("Limited Time Only \x96 50 Percent"), // different text than fixture
 			expected: "Limited Time Only \u2013 50 Percent",
 		},
 		{
 			name:     "em dash",
-			input:    []byte("Costco Travel\x97Exclusive"), // 0x97 = em dash U+2014
+			input:    []byte("Costco Travel\x97Exclusive"), // different text than fixture
 			expected: "Costco Travel\u2014Exclusive",
 		},
 		{
 			name:     "trademark symbol",
-			input:    []byte("Craftsman\xae Tools"), // 0xAE = ®
+			input:    []byte("Craftsman\xae Tools"),
 			expected: "Craftsman® Tools",
 		},
 		{
 			name:     "registered trademark in Windows-1252",
-			input:    []byte("Windows\xae 7"), // 0xAE = ®
+			input:    []byte("Windows\xae 7"),
 			expected: "Windows® 7",
 		},
 	}
@@ -54,15 +55,13 @@ func TestDetectAndDecode_Windows1252(t *testing.T) {
 			if result != tt.expected {
 				t.Errorf("detectAndDecode() = %q, want %q", result, tt.expected)
 			}
-			if !utf8.ValidString(result) {
-				t.Errorf("detectAndDecode() result is not valid UTF-8")
-			}
+			testutil.AssertValidUTF8(t, result)
 		})
 	}
 }
 
 func TestDetectAndDecode_Latin1(t *testing.T) {
-	// ISO-8859-1 (Latin-1) characters
+	enc := testutil.EncodedSamples
 	tests := []struct {
 		name     string
 		input    []byte
@@ -70,22 +69,22 @@ func TestDetectAndDecode_Latin1(t *testing.T) {
 	}{
 		{
 			name:     "o with acute accent",
-			input:    []byte("Mir\xf3 - Picasso"), // 0xF3 = ó
+			input:    enc.Latin1_OAcute,
 			expected: "Miró - Picasso",
 		},
 		{
 			name:     "c with cedilla",
-			input:    []byte("Gar\xe7on"), // 0xE7 = ç
+			input:    enc.Latin1_CCedilla,
 			expected: "Garçon",
 		},
 		{
 			name:     "u with umlaut",
-			input:    []byte("M\xfcnchen"), // 0xFC = ü
+			input:    enc.Latin1_UUmlaut,
 			expected: "München",
 		},
 		{
 			name:     "n with tilde",
-			input:    []byte("Espa\xf1a"), // 0xF1 = ñ
+			input:    enc.Latin1_NTilde,
 			expected: "España",
 		},
 	}
@@ -99,37 +98,21 @@ func TestDetectAndDecode_Latin1(t *testing.T) {
 			if result != tt.expected {
 				t.Errorf("detectAndDecode() = %q, want %q", result, tt.expected)
 			}
-			if !utf8.ValidString(result) {
-				t.Errorf("detectAndDecode() result is not valid UTF-8")
-			}
+			testutil.AssertValidUTF8(t, result)
 		})
 	}
 }
 
 func TestDetectAndDecode_AsianEncodings(t *testing.T) {
-	// For short Asian text samples, automatic charset detection is ambiguous
-	// since the same bytes can be valid in multiple encodings.
-	// The key requirement is that the output is valid UTF-8.
+	enc := testutil.EncodedSamples
 	tests := []struct {
 		name  string
 		input []byte
 	}{
-		{
-			name:  "Shift-JIS Japanese",
-			input: []byte{0x82, 0xb1, 0x82, 0xf1, 0x82, 0xc9, 0x82, 0xbf, 0x82, 0xcd}, // "こんにちは"
-		},
-		{
-			name:  "GBK Simplified Chinese",
-			input: []byte{0xc4, 0xe3, 0xba, 0xc3}, // "你好"
-		},
-		{
-			name:  "Big5 Traditional Chinese",
-			input: []byte{0xa9, 0x6f, 0xa6, 0x6e}, // "你好"
-		},
-		{
-			name:  "EUC-KR Korean",
-			input: []byte{0xbe, 0xc8, 0xb3, 0xe7}, // "안녕"
-		},
+		{"Shift-JIS Japanese", enc.ShiftJIS_Konnichiwa},
+		{"GBK Simplified Chinese", enc.GBK_Nihao},
+		{"Big5 Traditional Chinese", enc.Big5_Nihao},
+		{"EUC-KR Korean", enc.EUCKR_Annyeong},
 	}
 
 	for _, tt := range tests {
@@ -138,10 +121,7 @@ func TestDetectAndDecode_AsianEncodings(t *testing.T) {
 			if err != nil {
 				t.Fatalf("detectAndDecode() error = %v", err)
 			}
-			if !utf8.ValidString(result) {
-				t.Errorf("detectAndDecode() result is not valid UTF-8: %q", result)
-			}
-			// Result should not be empty
+			testutil.AssertValidUTF8(t, result)
 			if len(result) == 0 {
 				t.Errorf("detectAndDecode() returned empty string")
 			}
@@ -209,17 +189,17 @@ func TestSanitizeUTF8(t *testing.T) {
 		{
 			name:     "invalid byte replaced",
 			input:    "Hello\x80World",
-			expected: "Hello�World",
+			expected: "Hello\ufffdWorld",
 		},
 		{
 			name:     "multiple invalid bytes",
 			input:    "Test\x80\x81\x82String",
-			expected: "Test���String",
+			expected: "Test\ufffd\ufffd\ufffdString",
 		},
 		{
 			name:     "truncated UTF-8 sequence",
 			input:    "Hello\xc3", // Incomplete UTF-8 sequence
-			expected: "Hello�",
+			expected: "Hello\ufffd",
 		},
 	}
 
@@ -229,10 +209,7 @@ func TestSanitizeUTF8(t *testing.T) {
 			if result != tt.expected {
 				t.Errorf("sanitizeUTF8(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
-			if !utf8.ValidString(result) {
-				t.Errorf("sanitizeUTF8() result is not valid UTF-8")
-			}
+			testutil.AssertValidUTF8(t, result)
 		})
 	}
 }
-
