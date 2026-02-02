@@ -232,7 +232,7 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyCol
 			SELECT 1 FROM mr mr_to
 			JOIN p p_to ON p_to.id = mr_to.participant_id
 			WHERE mr_to.message_id = msg.id
-			  AND mr_to.recipient_type IN ('to', 'cc')
+			  AND mr_to.recipient_type IN ('to', 'cc', 'bcc')
 			  AND p_to.email_address ILIKE ? ESCAPE '\'
 		)`)
 		args = append(args, toPattern)
@@ -309,7 +309,7 @@ func (e *DuckDBEngine) buildStatsSearchConditions(searchQuery string, groupBy Vi
 				SELECT 1 FROM mr mr_rs
 				JOIN p p_rs ON p_rs.id = mr_rs.participant_id
 				WHERE mr_rs.message_id = msg.id
-				  AND mr_rs.recipient_type IN ('to', 'cc')
+				  AND mr_rs.recipient_type IN ('to', 'cc', 'bcc')
 				  AND (p_rs.email_address ILIKE ? ESCAPE '\' OR p_rs.display_name ILIKE ? ESCAPE '\')
 			)`)
 			args = append(args, termPattern, termPattern)
@@ -489,7 +489,7 @@ func (e *DuckDBEngine) AggregateBySenderName(ctx context.Context, opts Aggregate
 }
 
 // AggregateByRecipient groups messages by recipient email.
-// Includes to, cc recipients (bcc not exported to Parquet for privacy).
+// Includes to, cc, and bcc recipients.
 func (e *DuckDBEngine) AggregateByRecipient(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
 	where, args := e.buildWhereClause(opts, "p.email_address", "p.display_name")
 
@@ -498,7 +498,7 @@ func (e *DuckDBEngine) AggregateByRecipient(ctx context.Context, opts AggregateO
 		limit = 100
 	}
 
-	// Join messages -> message_recipients (to/cc) -> participants for recipient email
+	// Join messages -> message_recipients (to/cc/bcc) -> participants for recipient email
 	query := fmt.Sprintf(`
 		WITH %s
 		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
@@ -511,7 +511,7 @@ func (e *DuckDBEngine) AggregateByRecipient(ctx context.Context, opts AggregateO
 				CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
 				COUNT(*) OVER() as total_unique
 			FROM msg
-			JOIN mr ON mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc')
+			JOIN mr ON mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc', 'bcc')
 			JOIN p ON p.id = mr.participant_id
 			LEFT JOIN att ON att.message_id = msg.id
 			WHERE %s AND p.email_address IS NOT NULL
@@ -548,7 +548,7 @@ func (e *DuckDBEngine) AggregateByRecipientName(ctx context.Context, opts Aggreg
 				CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
 				COUNT(*) OVER() as total_unique
 			FROM msg
-			JOIN mr ON mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc')
+			JOIN mr ON mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc', 'bcc')
 			JOIN p ON p.id = mr.participant_id
 			LEFT JOIN att ON att.message_id = msg.id
 			WHERE %s AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) IS NOT NULL
@@ -759,12 +759,12 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.message_id = msg.id
-			  AND mr.recipient_type IN ('to', 'cc')
+			  AND mr.recipient_type IN ('to', 'cc', 'bcc')
 			  AND p.email_address = ?
 		)`)
 		args = append(args, filter.Recipient)
 	} else if filter.MatchEmptyRecipient {
-		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM mr WHERE mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc'))")
+		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM mr WHERE mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc', 'bcc'))")
 	}
 
 	// Recipient name filter - use EXISTS subquery (becomes semi-join)
@@ -773,7 +773,7 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.message_id = msg.id
-			  AND mr.recipient_type IN ('to', 'cc')
+			  AND mr.recipient_type IN ('to', 'cc', 'bcc')
 			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) = ?
 		)`)
 		args = append(args, filter.RecipientName)
@@ -782,7 +782,7 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.message_id = msg.id
-			  AND mr.recipient_type IN ('to', 'cc')
+			  AND mr.recipient_type IN ('to', 'cc', 'bcc')
 			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) IS NOT NULL
 		)`)
 	}
@@ -961,7 +961,7 @@ func (e *DuckDBEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 					CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
 					COUNT(*) OVER() as total_unique
 				FROM msg
-				JOIN mr mr_agg ON mr_agg.message_id = msg.id AND mr_agg.recipient_type IN ('to', 'cc')
+				JOIN mr mr_agg ON mr_agg.message_id = msg.id AND mr_agg.recipient_type IN ('to', 'cc', 'bcc')
 				JOIN p p_agg ON p_agg.id = mr_agg.participant_id
 				LEFT JOIN att ON att.message_id = msg.id
 				WHERE %s AND p_agg.email_address IS NOT NULL
@@ -984,7 +984,7 @@ func (e *DuckDBEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 					CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
 					COUNT(*) OVER() as total_unique
 				FROM msg
-				JOIN mr mr_agg ON mr_agg.message_id = msg.id AND mr_agg.recipient_type IN ('to', 'cc')
+				JOIN mr mr_agg ON mr_agg.message_id = msg.id AND mr_agg.recipient_type IN ('to', 'cc', 'bcc')
 				JOIN p p_agg ON p_agg.id = mr_agg.participant_id
 				LEFT JOIN att ON att.message_id = msg.id
 				WHERE %s AND COALESCE(NULLIF(TRIM(p_agg.display_name), ''), p_agg.email_address) IS NOT NULL
@@ -1879,7 +1879,7 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.message_id = msg.id
-			  AND mr.recipient_type IN ('to', 'cc')
+			  AND mr.recipient_type IN ('to', 'cc', 'bcc')
 			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) = ?
 		)`)
 		args = append(args, filter.RecipientName)
@@ -2217,7 +2217,7 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 			conditions = append(conditions, `EXISTS (
 				SELECT 1 FROM mr
 				JOIN p ON p.id = mr.participant_id
-				WHERE mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc')
+				WHERE mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc', 'bcc')
 				AND p.email_address ILIKE ? ESCAPE '\'
 			)`)
 			args = append(args, "%"+escapeILIKE(addr)+"%")

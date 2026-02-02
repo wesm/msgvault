@@ -1915,7 +1915,7 @@ func TestBuildWhereClause_SearchOperators(t *testing.T) {
 		{
 			name:        "to operator",
 			searchQuery: "to:bob",
-			wantClauses: []string{"recipient_type IN ('to', 'cc')", "email_address ILIKE"},
+			wantClauses: []string{"recipient_type IN ('to', 'cc', 'bcc')", "email_address ILIKE"},
 		},
 		{
 			name:        "subject operator",

@@ -225,7 +225,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 			`)
 		} else if filter.Recipient == "" && !filter.MatchEmptyRecipient {
 			joins = append(joins, `
-				JOIN message_recipients mr_filter_to ON mr_filter_to.message_id = m.id AND mr_filter_to.recipient_type IN ('to', 'cc')
+				JOIN message_recipients mr_filter_to ON mr_filter_to.message_id = m.id AND mr_filter_to.recipient_type IN ('to', 'cc', 'bcc')
 				JOIN participants p_filter_to ON p_filter_to.id = mr_filter_to.participant_id
 			`)
 		}
@@ -236,7 +236,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 			SELECT 1 FROM message_recipients mr_rn
 			JOIN participants p_rn ON p_rn.id = mr_rn.participant_id
 			WHERE mr_rn.message_id = m.id
-			  AND mr_rn.recipient_type IN ('to', 'cc')
+			  AND mr_rn.recipient_type IN ('to', 'cc', 'bcc')
 			  AND COALESCE(NULLIF(TRIM(p_rn.display_name), ''), p_rn.email_address) IS NOT NULL
 		)`)
 	}
@@ -430,7 +430,7 @@ func (e *SQLiteEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 					COALESCE(SUM(att.att_count), 0) as attachment_count,
 					COUNT(*) OVER() as total_unique
 				FROM messages m
-				JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type IN ('to', 'cc')
+				JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type IN ('to', 'cc', 'bcc')
 				JOIN participants p ON p.id = mr.participant_id
 				LEFT JOIN (
 					SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
@@ -686,7 +686,7 @@ func (e *SQLiteEngine) AggregateByRecipientName(ctx context.Context, opts Aggreg
 				COALESCE(SUM(att.att_count), 0) as attachment_count,
 				COUNT(*) OVER() as total_unique
 			FROM messages m
-			JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type IN ('to', 'cc')
+			JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type IN ('to', 'cc', 'bcc')
 			JOIN participants p ON p.id = mr.participant_id
 			LEFT JOIN (
 				SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
@@ -949,7 +949,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 			`)
 		} else if filter.Recipient == "" && !filter.MatchEmptyRecipient {
 			joins = append(joins, `
-				JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type IN ('to', 'cc')
+				JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type IN ('to', 'cc', 'bcc')
 				JOIN participants p_to ON p_to.id = mr_to.participant_id
 			`)
 		}
@@ -960,7 +960,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 			SELECT 1 FROM message_recipients mr_rn
 			JOIN participants p_rn ON p_rn.id = mr_rn.participant_id
 			WHERE mr_rn.message_id = m.id
-			  AND mr_rn.recipient_type IN ('to', 'cc')
+			  AND mr_rn.recipient_type IN ('to', 'cc', 'bcc')
 			  AND COALESCE(NULLIF(TRIM(p_rn.display_name), ''), p_rn.email_address) IS NOT NULL
 		)`)
 	}
@@ -1575,7 +1575,7 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 			// have a standalone MatchEmptyRecipient handler, so mr_to may
 			// not exist yet.
 			joins = append(joins, `
-				JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type IN ('to', 'cc')
+				JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type IN ('to', 'cc', 'bcc')
 				JOIN participants p_to ON p_to.id = mr_to.participant_id
 			`)
 		}
