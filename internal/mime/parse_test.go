@@ -1,59 +1,19 @@
 package mime
 
 import (
-	"sort"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/jhillyerd/enmime"
+	testemail "github.com/wesm/msgvault/internal/testutil/email"
 )
 
-// emailOptions configures a raw RFC 2822 email message for testing.
-type emailOptions struct {
-	From        string
-	To          string
-	Subject     string
-	ContentType string
-	Body        string
-	Headers     map[string]string
-}
+// emailOptions is an alias for testemail.Options for local convenience.
+type emailOptions = testemail.Options
 
-// makeRawEmail constructs an RFC 2822 compliant raw message with correct \r\n line endings.
+// makeRawEmail delegates to testemail.MakeRaw.
 func makeRawEmail(opts emailOptions) []byte {
-	var b strings.Builder
-
-	if opts.From == "" {
-		opts.From = "sender@example.com"
-	}
-	if opts.To == "" {
-		opts.To = "recipient@example.com"
-	}
-	if opts.Subject == "" {
-		opts.Subject = "Test"
-	}
-
-	b.WriteString("From: " + opts.From + "\r\n")
-	b.WriteString("To: " + opts.To + "\r\n")
-	b.WriteString("Subject: " + opts.Subject + "\r\n")
-
-	if opts.ContentType != "" {
-		b.WriteString("Content-Type: " + opts.ContentType + "\r\n")
-	}
-
-	keys := make([]string, 0, len(opts.Headers))
-	for k := range opts.Headers {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		b.WriteString(k + ": " + opts.Headers[k] + "\r\n")
-	}
-
-	b.WriteString("\r\n")
-	b.WriteString(opts.Body)
-
-	return []byte(b.String())
+	return testemail.MakeRaw(opts)
 }
 
 // mustParse calls Parse and fails the test on error.
@@ -80,18 +40,10 @@ func assertSubject(t *testing.T, msg *Message, want string) {
 	}
 }
 
-// assertStringSliceEqual compares two string slices with a descriptive label.
+// assertStringSliceEqual delegates to testemail.AssertStringSliceEqual.
 func assertStringSliceEqual(t *testing.T, got, want []string, label string) {
 	t.Helper()
-	if len(got) != len(want) {
-		t.Errorf("%s: got %v (len %d), want %v (len %d)", label, got, len(got), want, len(want))
-		return
-	}
-	for i := range got {
-		if got[i] != want[i] {
-			t.Errorf("%s[%d] = %q, want %q", label, i, got[i], want[i])
-		}
-	}
+	testemail.AssertStringSliceEqual(t, got, want, label)
 }
 
 // assertParseDateOK checks that parseDate succeeds and returns a non-zero time.
