@@ -441,8 +441,6 @@ func TestDKeyAutoSelectsCurrentRow(t *testing.T) {
 }
 
 // TestDKeyWithExistingSelection verifies 'd' key uses existing selection when present.
-
-// TestDKeyWithExistingSelection verifies 'd' key uses existing selection when present.
 func TestDKeyWithExistingSelection(t *testing.T) {
 	model := NewBuilder().
 		WithRows(
@@ -478,8 +476,6 @@ func TestDKeyWithExistingSelection(t *testing.T) {
 		t.Errorf("expected modalDeleteConfirm, got %v", m.modal)
 	}
 }
-
-// TestMessageListDKeyAutoSelectsCurrentMessage verifies 'd' in message list auto-selects.
 
 // TestMessageListDKeyAutoSelectsCurrentMessage verifies 'd' in message list auto-selects.
 func TestMessageListDKeyAutoSelectsCurrentMessage(t *testing.T) {

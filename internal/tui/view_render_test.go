@@ -52,8 +52,6 @@ func TestContextStatsDisplayedInHeader(t *testing.T) {
 }
 
 // TestContextStatsShowsAttachmentCountInHeader verifies header shows attachment count when drilled down.
-
-// TestContextStatsShowsAttachmentCountInHeader verifies header shows attachment count when drilled down.
 func TestContextStatsShowsAttachmentCountInHeader(t *testing.T) {
 	model := NewBuilder().WithSize(120, 20).WithLevel(levelMessageList).
 		WithStats(&query.TotalStats{MessageCount: 10000, TotalSize: 50000000, AttachmentCount: 500}).
@@ -72,8 +70,6 @@ func TestContextStatsShowsAttachmentCountInHeader(t *testing.T) {
 }
 
 // TestContextStatsShowsZeroAttachmentCount verifies header shows "0 attchs" when count is 0.
-
-// TestContextStatsShowsZeroAttachmentCount verifies header shows "0 attchs" when count is 0.
 func TestContextStatsShowsZeroAttachmentCount(t *testing.T) {
 	model := NewBuilder().WithSize(120, 20).WithLevel(levelMessageList).
 		WithStats(&query.TotalStats{MessageCount: 10000, TotalSize: 50000000, AttachmentCount: 500}).
@@ -87,8 +83,6 @@ func TestContextStatsShowsZeroAttachmentCount(t *testing.T) {
 		t.Errorf("header should contain '0 attchs' when AttachmentCount is 0, got: %s", header)
 	}
 }
-
-// TestPositionShowsTotalFromContextStats verifies footer shows "N of M" when total > loaded.
 
 // TestPositionShowsTotalFromContextStats verifies footer shows "N of M" when total > loaded.
 func TestPositionShowsTotalFromContextStats(t *testing.T) {
@@ -117,8 +111,6 @@ func TestPositionShowsTotalFromContextStats(t *testing.T) {
 }
 
 // TestPositionShowsLoadedCountWhenAllLoaded verifies footer shows "N/M" when all loaded.
-
-// TestPositionShowsLoadedCountWhenAllLoaded verifies footer shows "N/M" when all loaded.
 func TestPositionShowsLoadedCountWhenAllLoaded(t *testing.T) {
 	messages := make([]query.MessageSummary, 50)
 	for i := range messages {
@@ -139,8 +131,6 @@ func TestPositionShowsLoadedCountWhenAllLoaded(t *testing.T) {
 		t.Errorf("expected footer to contain '25/50', got: %s", footer)
 	}
 }
-
-// TestPositionShowsLoadedCountWhenNoContextStats verifies footer falls back to loaded count.
 
 // TestPositionShowsLoadedCountWhenNoContextStats verifies footer falls back to loaded count.
 func TestPositionShowsLoadedCountWhenNoContextStats(t *testing.T) {
@@ -226,8 +216,6 @@ func TestPositionUsesGlobalStatsForAllMessagesView(t *testing.T) {
 }
 
 // TestHelpModalOpensWithQuestionMark verifies '?' opens the help modal.
-
-// TestHelpModalOpensWithQuestionMark verifies '?' opens the help modal.
 func TestHelpModalOpensWithQuestionMark(t *testing.T) {
 	model := NewBuilder().Build()
 
@@ -241,8 +229,6 @@ func TestHelpModalOpensWithQuestionMark(t *testing.T) {
 }
 
 // TestHelpModalClosesOnAnyKey verifies help modal closes on any key.
-
-// TestHelpModalClosesOnAnyKey verifies help modal closes on any key.
 func TestHelpModalClosesOnAnyKey(t *testing.T) {
 	model := NewBuilder().WithModal(modalHelp).Build()
 
@@ -254,8 +240,6 @@ func TestHelpModalClosesOnAnyKey(t *testing.T) {
 		t.Errorf("expected modalNone after pressing key in help, got %v", m.modal)
 	}
 }
-
-// TestVKeyReversesSortOrder verifies 'v' reverses sort direction.
 
 // TestVKeyReversesSortOrder verifies 'v' reverses sort direction.
 func TestVKeyReversesSortOrder(t *testing.T) {
@@ -363,8 +347,6 @@ func TestHeaderShowsTitleBar(t *testing.T) {
 }
 
 // TestHeaderShowsSelectedAccount verifies header shows selected account name.
-
-// TestHeaderShowsSelectedAccount verifies header shows selected account name.
 func TestHeaderShowsSelectedAccount(t *testing.T) {
 	accountID := int64(2)
 	model := NewBuilder().WithSize(100, 20).
@@ -381,8 +363,6 @@ func TestHeaderShowsSelectedAccount(t *testing.T) {
 		t.Errorf("expected title bar to show selected account 'bob@gmail.com', got: %s", lines[0])
 	}
 }
-
-// TestHeaderShowsViewTypeOnLine2 verifies line 2 shows current view type.
 
 // TestHeaderShowsViewTypeOnLine2 verifies line 2 shows current view type.
 func TestHeaderShowsViewTypeOnLine2(t *testing.T) {
@@ -407,8 +387,6 @@ func TestHeaderShowsViewTypeOnLine2(t *testing.T) {
 }
 
 // TestHeaderDrillDownUsesPrefix verifies drill-down uses compact prefix (S: instead of From:).
-
-// TestHeaderDrillDownUsesPrefix verifies drill-down uses compact prefix (S: instead of From:).
 func TestHeaderDrillDownUsesPrefix(t *testing.T) {
 	model := NewBuilder().WithSize(100, 20).
 		WithLevel(levelMessageList).WithViewType(query.ViewRecipients).Build()
@@ -431,8 +409,6 @@ func TestHeaderDrillDownUsesPrefix(t *testing.T) {
 		t.Errorf("expected line 2 to NOT use 'From:' for drill-down (should be 'S:'), got: %s", lines[1])
 	}
 }
-
-// TestHeaderSubAggregateShowsDrillContext verifies sub-aggregate shows drill context.
 
 // TestHeaderSubAggregateShowsDrillContext verifies sub-aggregate shows drill context.
 func TestHeaderSubAggregateShowsDrillContext(t *testing.T) {
@@ -467,8 +443,6 @@ func TestHeaderSubAggregateShowsDrillContext(t *testing.T) {
 }
 
 // TestHeaderWithAttachmentFilter verifies header shows attachment filter indicator.
-
-// TestHeaderWithAttachmentFilter verifies header shows attachment filter indicator.
 func TestHeaderWithAttachmentFilter(t *testing.T) {
 	model := NewBuilder().WithSize(100, 20).Build()
 	model.attachmentFilter = true
@@ -480,8 +454,6 @@ func TestHeaderWithAttachmentFilter(t *testing.T) {
 		t.Errorf("expected title bar to show '[Attachments]' filter indicator, got: %s", lines[0])
 	}
 }
-
-// TestViewStructureHasTitleBarFirst verifies View() output starts with title bar.
 
 // TestViewStructureHasTitleBarFirst verifies View() output starts with title bar.
 func TestViewStructureHasTitleBarFirst(t *testing.T) {
@@ -564,8 +536,6 @@ func TestViewFitsTerminalHeight(t *testing.T) {
 }
 
 // TestViewFitsTerminalHeightDuringLoading verifies View() output fits during loading state.
-
-// TestViewFitsTerminalHeightDuringLoading verifies View() output fits during loading state.
 func TestViewFitsTerminalHeightDuringLoading(t *testing.T) {
 	rows := []query.AggregateRow{
 		{Key: "alice@example.com", Count: 100, TotalSize: 500000},
@@ -595,8 +565,6 @@ func TestViewFitsTerminalHeightDuringLoading(t *testing.T) {
 }
 
 // TestViewFitsTerminalHeightWithInlineSearch verifies View() output fits with inline search active.
-
-// TestViewFitsTerminalHeightWithInlineSearch verifies View() output fits with inline search active.
 func TestViewFitsTerminalHeightWithInlineSearch(t *testing.T) {
 	rows := []query.AggregateRow{
 		{Key: "alice@example.com", Count: 100, TotalSize: 500000},
@@ -624,8 +592,6 @@ func TestViewFitsTerminalHeightWithInlineSearch(t *testing.T) {
 		t.Errorf("First line should be title bar, got: %q", lines[0])
 	}
 }
-
-// TestViewFitsTerminalHeightAtMessageList verifies View() output fits at message list level.
 
 // TestViewFitsTerminalHeightAtMessageList verifies View() output fits at message list level.
 func TestViewFitsTerminalHeightAtMessageList(t *testing.T) {
@@ -729,8 +695,6 @@ func TestViewFitsTerminalHeightStartupSequence(t *testing.T) {
 }
 
 // truncateTestString truncates a string for test output display.
-
-// truncateTestString truncates a string for test output display.
 func truncateTestString(s string, max int) string {
 	if len(s) <= max {
 		return s
@@ -777,8 +741,6 @@ func TestViewFitsTerminalHeightWithBadData(t *testing.T) {
 		}
 	}
 }
-
-// TestViewFitsVariousTerminalSizes tests that View fits for common terminal sizes.
 
 // TestViewFitsVariousTerminalSizes tests that View fits for common terminal sizes.
 func TestViewFitsVariousTerminalSizes(t *testing.T) {
@@ -828,8 +790,6 @@ func TestViewFitsVariousTerminalSizes(t *testing.T) {
 }
 
 // TestViewDuringSpinnerAnimation verifies line count during spinner animation.
-
-// TestViewDuringSpinnerAnimation verifies line count during spinner animation.
 func TestViewDuringSpinnerAnimation(t *testing.T) {
 	rows := []query.AggregateRow{
 		{Key: "alice@example.com", Count: 100, TotalSize: 500000},
@@ -866,8 +826,6 @@ func TestViewDuringSpinnerAnimation(t *testing.T) {
 		}
 	}
 }
-
-// TestViewLineByLineAnalysis provides detailed line-by-line output for debugging.
 
 // TestViewLineByLineAnalysis provides detailed line-by-line output for debugging.
 func TestViewLineByLineAnalysis(t *testing.T) {
@@ -1011,8 +969,6 @@ func TestFooterShowsLoadedCountWhenNoTotalUnique(t *testing.T) {
 		t.Errorf("Footer should show '1/2' when TotalUnique is not set, got: %q", footer)
 	}
 }
-
-// TestViewTypePrefixFallback verifies viewTypePrefix handles all ViewType values.
 
 // TestViewTypePrefixFallback verifies viewTypePrefix handles all ViewType values.
 func TestViewTypePrefixFallback(t *testing.T) {
@@ -1320,8 +1276,6 @@ func TestHeaderUpdateNoticeUnicode(t *testing.T) {
 		t.Errorf("header line 1 width %d exceeds terminal width 100", lineWidth)
 	}
 }
-
-// TestHeaderUpdateNoticeNarrowTerminal verifies update notice is omitted when terminal is too narrow.
 
 // TestHeaderUpdateNoticeNarrowTerminal verifies update notice is omitted when terminal is too narrow.
 func TestHeaderUpdateNoticeNarrowTerminal(t *testing.T) {

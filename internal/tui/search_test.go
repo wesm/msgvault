@@ -30,8 +30,6 @@ func TestSearchModalOpen(t *testing.T) {
 }
 
 // TestSearchResultsDisplay verifies search results are displayed.
-
-// TestSearchResultsDisplay verifies search results are displayed.
 func TestSearchResultsDisplay(t *testing.T) {
 	model := NewBuilder().WithPageSize(10).WithSize(100, 20).Build()
 	model.searchQuery = "test query"
@@ -62,8 +60,6 @@ func TestSearchResultsDisplay(t *testing.T) {
 }
 
 // TestSearchResultsStale verifies stale search results are ignored.
-
-// TestSearchResultsStale verifies stale search results are ignored.
 func TestSearchResultsStale(t *testing.T) {
 	model := NewBuilder().WithPageSize(10).WithSize(100, 20).Build()
 	model.searchRequestID = 2 // Current request is 2
@@ -84,8 +80,6 @@ func TestSearchResultsStale(t *testing.T) {
 		t.Errorf("expected 0 messages (stale ignored), got %d", len(m.messages))
 	}
 }
-
-// TestInlineSearchTabToggleAtMessageList verifies Tab toggles mode and triggers search at message list level.
 
 // TestInlineSearchTabToggleAtMessageList verifies Tab toggles mode and triggers search at message list level.
 func TestInlineSearchTabToggleAtMessageList(t *testing.T) {
@@ -126,8 +120,6 @@ func TestInlineSearchTabToggleAtMessageList(t *testing.T) {
 }
 
 // TestInlineSearchTabToggleNoQueryNoSearch verifies Tab with empty query doesn't trigger search.
-
-// TestInlineSearchTabToggleNoQueryNoSearch verifies Tab with empty query doesn't trigger search.
 func TestInlineSearchTabToggleNoQueryNoSearch(t *testing.T) {
 	model := NewBuilder().WithPageSize(10).WithSize(100, 20).
 		WithLevel(levelMessageList).WithLoading(false).Build()
@@ -156,8 +148,6 @@ func TestInlineSearchTabToggleNoQueryNoSearch(t *testing.T) {
 }
 
 // TestInlineSearchTabAtAggregateLevel verifies Tab has no effect at aggregate level.
-
-// TestInlineSearchTabAtAggregateLevel verifies Tab has no effect at aggregate level.
 func TestInlineSearchTabAtAggregateLevel(t *testing.T) {
 	model := NewBuilder().WithPageSize(10).WithSize(100, 20).Build()
 	model.inlineSearchActive = true
@@ -178,8 +168,6 @@ func TestInlineSearchTabAtAggregateLevel(t *testing.T) {
 		t.Error("expected no command when Tab pressed at aggregate level")
 	}
 }
-
-// TestInlineSearchTabToggleBackToFast verifies Tab toggles back from Deep to Fast.
 
 // TestInlineSearchTabToggleBackToFast verifies Tab toggles back from Deep to Fast.
 func TestInlineSearchTabToggleBackToFast(t *testing.T) {
@@ -203,8 +191,6 @@ func TestInlineSearchTabToggleBackToFast(t *testing.T) {
 		t.Error("expected search command when toggling back to Fast")
 	}
 }
-
-// TestSpinnerAppearsInViewWhenLoading verifies spinner character appears in rendered view.
 
 // TestSpinnerAppearsInViewWhenLoading verifies spinner character appears in rendered view.
 func TestSpinnerAppearsInViewWhenLoading(t *testing.T) {
@@ -244,8 +230,6 @@ func TestSpinnerAppearsInViewWhenLoading(t *testing.T) {
 }
 
 // TestSearchBackClears verifies going back clears search state.
-
-// TestSearchBackClears verifies going back clears search state.
 func TestSearchBackClears(t *testing.T) {
 	model := NewBuilder().WithPageSize(10).WithSize(100, 20).
 		WithLevel(levelMessageList).Build()
@@ -264,8 +248,6 @@ func TestSearchBackClears(t *testing.T) {
 		t.Errorf("expected empty searchFilter after goBack, got %v", m.searchFilter)
 	}
 }
-
-// TestSearchFromSubAggregate verifies search from sub-aggregate view.
 
 // TestSearchFromSubAggregate verifies search from sub-aggregate view.
 func TestSearchFromSubAggregate(t *testing.T) {
@@ -288,8 +270,6 @@ func TestSearchFromSubAggregate(t *testing.T) {
 		t.Error("expected textinput command")
 	}
 }
-
-// TestSearchFromMessageList verifies search from message list view.
 
 // TestSearchFromMessageList verifies search from message list view.
 func TestSearchFromMessageList(t *testing.T) {
@@ -337,8 +317,6 @@ func TestSearchSetsContextStats(t *testing.T) {
 }
 
 // TestSearchZeroResultsClearsContextStats verifies contextStats is set to zero on empty search.
-
-// TestSearchZeroResultsClearsContextStats verifies contextStats is set to zero on empty search.
 func TestSearchZeroResultsClearsContextStats(t *testing.T) {
 	model := NewBuilder().
 		WithContextStats(&query.TotalStats{MessageCount: 500}).
@@ -363,8 +341,6 @@ func TestSearchZeroResultsClearsContextStats(t *testing.T) {
 		t.Errorf("expected contextStats.MessageCount=0 for zero results, got %d", m.contextStats.MessageCount)
 	}
 }
-
-// TestSearchPaginationUpdatesContextStats verifies contextStats updates on append when total unknown.
 
 // TestSearchPaginationUpdatesContextStats verifies contextStats updates on append when total unknown.
 func TestSearchPaginationUpdatesContextStats(t *testing.T) {

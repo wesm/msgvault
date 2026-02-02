@@ -211,10 +211,17 @@ func (b *TestModelBuilder) Build() Model {
 	return model
 }
 
-// sendKey sends a key message to the model and returns the updated concrete Model
+// sendKey sends a key message to the model and returns the updated concrete Model.
 func sendKey(t *testing.T, m Model, k tea.KeyMsg) (Model, tea.Cmd) {
 	t.Helper()
 	newM, cmd := m.Update(k)
+	return newM.(Model), cmd
+}
+
+// sendMsg sends any tea.Msg through Update and returns the concrete Model.
+func sendMsg(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
+	t.Helper()
+	newM, cmd := m.Update(msg)
 	return newM.(Model), cmd
 }
 
@@ -447,6 +454,27 @@ func resizeModel(t *testing.T, m Model, w, h int) Model {
 	t.Helper()
 	newModel, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	return newModel.(Model)
+}
+
+// assertState checks level, viewType, and cursor in one call.
+func assertState(t *testing.T, m Model, level viewLevel, view query.ViewType, cursor int) {
+	t.Helper()
+	if m.level != level {
+		t.Errorf("want level %v, got %v", level, m.level)
+	}
+	if m.viewType != view {
+		t.Errorf("want viewType %v, got %v", view, m.viewType)
+	}
+	if m.cursor != cursor {
+		t.Errorf("want cursor %d, got %d", cursor, m.cursor)
+	}
+}
+
+// drillDown presses Enter on the current cursor item and returns the updated Model.
+func drillDown(t *testing.T, m Model) Model {
+	t.Helper()
+	m, _ = sendKey(t, m, keyEnter())
+	return m
 }
 
 // =============================================================================

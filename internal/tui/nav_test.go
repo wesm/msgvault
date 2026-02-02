@@ -24,8 +24,7 @@ func TestStaleAsyncResponsesIgnored(t *testing.T) {
 		requestID: 3, // Old request ID
 	}
 
-	newModel, _ := model.Update(staleMsg)
-	m := newModel.(Model)
+	m, _ := sendMsg(t, model, staleMsg)
 
 	// Stale response should be ignored - messages should be unchanged (empty)
 	if len(m.messages) != 0 {
@@ -38,8 +37,7 @@ func TestStaleAsyncResponsesIgnored(t *testing.T) {
 		requestID: 5, // Current request ID
 	}
 
-	newModel, _ = m.Update(validMsg)
-	m = newModel.(Model)
+	m, _ = sendMsg(t, m, validMsg)
 
 	// Valid response should be processed
 	if len(m.messages) != 1 {
@@ -65,8 +63,7 @@ func TestStaleDetailResponsesIgnored(t *testing.T) {
 		requestID: 8, // Old request ID
 	}
 
-	newModel, _ := model.Update(staleMsg)
-	m := newModel.(Model)
+	m, _ := sendMsg(t, model, staleMsg)
 
 	// Stale response should be ignored
 	if m.messageDetail != nil {
@@ -79,8 +76,7 @@ func TestStaleDetailResponsesIgnored(t *testing.T) {
 		requestID: 10, // Current request ID
 	}
 
-	newModel, _ = m.Update(validMsg)
-	m = newModel.(Model)
+	m, _ = sendMsg(t, m, validMsg)
 
 	// Valid response should be processed
 	if m.messageDetail == nil {
@@ -168,9 +164,7 @@ func TestResizeRecalculatesDetailLineCount(t *testing.T) {
 	initialLineCount := model.detailLineCount
 
 	// Simulate window resize to narrower width (should wrap more)
-	resizeMsg := tea.WindowSizeMsg{Width: 40, Height: 20}
-	newModel, _ := model.Update(resizeMsg)
-	m := newModel.(Model)
+	m, _ := sendMsg(t, model, tea.WindowSizeMsg{Width: 40, Height: 20})
 
 	// Line count should be recalculated (narrower width = more wrapping = more lines)
 	if m.detailLineCount == initialLineCount && m.width != 80 {
@@ -620,8 +614,6 @@ func TestGKeyCyclesViewType(t *testing.T) {
 }
 
 // TestGKeyCyclesViewTypeFullCycle verifies 'g' cycles through all view types.
-
-// TestGKeyCyclesViewTypeFullCycle verifies 'g' cycles through all view types.
 func TestGKeyCyclesViewTypeFullCycle(t *testing.T) {
 	model := NewBuilder().
 		WithRows(query.AggregateRow{Key: "test", Count: 10}).
@@ -647,8 +639,6 @@ func TestGKeyCyclesViewTypeFullCycle(t *testing.T) {
 		}
 	}
 }
-
-// TestGKeyInSubAggregate verifies 'g' cycles view types in sub-aggregate view.
 
 // TestGKeyInSubAggregate verifies 'g' cycles view types in sub-aggregate view.
 func TestGKeyInSubAggregate(t *testing.T) {
@@ -868,8 +858,6 @@ func TestNextSubGroupViewFromRecipientNamesKeepsDomains(t *testing.T) {
 }
 
 // TestNextSubGroupViewFromDomainsGoesToLabels verifies the standard chain continues.
-
-// TestNextSubGroupViewFromDomainsGoesToLabels verifies the standard chain continues.
 func TestNextSubGroupViewFromDomainsGoesToLabels(t *testing.T) {
 	model := NewBuilder().
 		WithMessages(
@@ -887,8 +875,6 @@ func TestNextSubGroupViewFromDomainsGoesToLabels(t *testing.T) {
 		t.Errorf("expected sub-group from Domains to be Labels, got %v", m.viewType)
 	}
 }
-
-// TestGKeyInMessageListNoDrillFilter verifies 'g' goes back to aggregates when no drill filter.
 
 // TestGKeyInMessageListNoDrillFilter verifies 'g' goes back to aggregates when no drill filter.
 func TestGKeyInMessageListNoDrillFilter(t *testing.T) {
@@ -938,8 +924,6 @@ func (st *statsTracker) install(eng *querytest.MockEngine) {
 		return &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}, nil
 	}
 }
-
-// TestStatsUpdateOnDrillDown verifies stats are reloaded when drilling into a subgroup.
 
 // TestStatsUpdateOnDrillDown verifies stats are reloaded when drilling into a subgroup.
 func TestStatsUpdateOnDrillDown(t *testing.T) {
@@ -1025,8 +1009,6 @@ func TestTabCyclesViewTypeAtAggregates(t *testing.T) {
 }
 
 // TestHomeKeyGoesToTop verifies 'home' key goes to top (separate from 'g').
-
-// TestHomeKeyGoesToTop verifies 'home' key goes to top (separate from 'g').
 func TestHomeKeyGoesToTop(t *testing.T) {
 	model := NewBuilder().
 		WithRows(
@@ -1048,8 +1030,6 @@ func TestHomeKeyGoesToTop(t *testing.T) {
 		t.Errorf("expected scrollOffset=0 after 'home', got %d", m.scrollOffset)
 	}
 }
-
-// TestContextStatsSetOnDrillDown verifies contextStats is set from selected row.
 
 // TestContextStatsSetOnDrillDown verifies contextStats is set from selected row.
 func TestContextStatsSetOnDrillDown(t *testing.T) {
@@ -1090,8 +1070,6 @@ func TestContextStatsSetOnDrillDown(t *testing.T) {
 }
 
 // TestContextStatsClearedOnGoBack verifies contextStats is cleared when going back to aggregates.
-
-// TestContextStatsClearedOnGoBack verifies contextStats is cleared when going back to aggregates.
 func TestContextStatsClearedOnGoBack(t *testing.T) {
 	model := NewBuilder().
 		WithRows(query.AggregateRow{Key: "alice@example.com", Count: 100, TotalSize: 500000}).
@@ -1100,7 +1078,7 @@ func TestContextStatsClearedOnGoBack(t *testing.T) {
 		WithViewType(query.ViewSenders).Build()
 
 	// Drill down
-	m := applyAggregateKey(t, model, keyEnter())
+	m := drillDown(t, model)
 
 	if m.contextStats == nil {
 		t.Fatal("expected contextStats to be set after drill-down")
@@ -1115,8 +1093,6 @@ func TestContextStatsClearedOnGoBack(t *testing.T) {
 		t.Error("expected contextStats=nil after going back to aggregates")
 	}
 }
-
-// TestContextStatsRestoredOnGoBackToSubAggregate verifies contextStats is restored when going back.
 
 // TestContextStatsRestoredOnGoBackToSubAggregate verifies contextStats is restored when going back.
 func TestContextStatsRestoredOnGoBackToSubAggregate(t *testing.T) {
@@ -1196,8 +1172,7 @@ func TestViewTypeRestoredAfterEscFromSubAggregate(t *testing.T) {
 	model.scrollOffset = 0
 
 	// Press Tab to go to sub-aggregate (changes viewType)
-	newModel, _ := model.Update(keyTab())
-	m := newModel.(Model)
+	m, _ := sendKey(t, model, keyTab())
 
 	if m.level != levelDrillDown {
 		t.Fatalf("expected levelDrillDown, got %v", m.level)
@@ -1237,8 +1212,7 @@ func TestCursorScrollPreservedAfterGoBack(t *testing.T) {
 	model.scrollOffset = 3
 
 	// Drill down to message list (saves breadcrumb with cached rows)
-	newModel, _ := model.Update(keyEnter())
-	m := newModel.(Model)
+	m, _ := sendKey(t, model, keyEnter())
 
 	if m.level != levelMessageList {
 		t.Fatalf("expected levelMessageList, got %v", m.level)
@@ -1281,8 +1255,6 @@ func TestCursorScrollPreservedAfterGoBack(t *testing.T) {
 }
 
 // TestGoBackClearsError verifies that goBack clears any stale error.
-
-// TestGoBackClearsError verifies that goBack clears any stale error.
 func TestGoBackClearsError(t *testing.T) {
 	model := NewBuilder().WithLevel(levelMessageList).Build()
 	model.err = fmt.Errorf("some previous error")
@@ -1321,8 +1293,7 @@ func TestDrillFilterPreservedAfterMessageDetail(t *testing.T) {
 	model.filterKey = "bob@example.com"
 
 	// Press Enter to go to message detail
-	newModel, _ := model.Update(keyEnter())
-	m := newModel.(Model)
+	m, _ := sendKey(t, model, keyEnter())
 
 	if m.level != levelMessageDetail {
 		t.Fatalf("expected levelMessageDetail, got %v", m.level)
@@ -1382,8 +1353,7 @@ func TestDetailNavigationPrevNext(t *testing.T) {
 	model.cursor = 1
 
 	// Press right arrow to go to next message in list (higher index)
-	newModel, cmd := model.Update(keyRight())
-	m := newModel.(Model)
+	m, cmd := sendKey(t, model, keyRight())
 
 	if m.detailMessageIndex != 2 {
 		t.Errorf("expected detailMessageIndex=2 after right, got %d", m.detailMessageIndex)
@@ -1401,8 +1371,7 @@ func TestDetailNavigationPrevNext(t *testing.T) {
 	// Press left arrow to go to previous message in list (lower index)
 	m.detailMessageIndex = 2
 	m.cursor = 2
-	newModel, cmd = m.Update(keyLeft())
-	m = newModel.(Model)
+	m, cmd = sendKey(t, m, keyLeft())
 
 	if m.detailMessageIndex != 1 {
 		t.Errorf("expected detailMessageIndex=1 after left, got %d", m.detailMessageIndex)
@@ -1416,10 +1385,6 @@ func TestDetailNavigationPrevNext(t *testing.T) {
 }
 
 // TestDetailNavigationAtBoundary verifies flash message at first/last message.
-// TestDetailNavigationAtBoundary verifies flash message at first/last message.
-
-// TestDetailNavigationAtBoundary verifies flash message at first/last message.
-// TestDetailNavigationAtBoundary verifies flash message at first/last message.
 func TestDetailNavigationAtBoundary(t *testing.T) {
 	model := NewBuilder().
 		WithMessages(
@@ -1431,8 +1396,7 @@ func TestDetailNavigationAtBoundary(t *testing.T) {
 	model.detailMessageIndex = 0 // At first message
 
 	// Press left arrow at first message - should show flash
-	newModel, cmd := model.Update(keyLeft())
-	m := newModel.(Model)
+	m, cmd := sendKey(t, model, keyLeft())
 
 	if m.detailMessageIndex != 0 {
 		t.Errorf("expected detailMessageIndex=0 (unchanged), got %d", m.detailMessageIndex)
@@ -1451,8 +1415,7 @@ func TestDetailNavigationAtBoundary(t *testing.T) {
 	m.messageDetail = &query.MessageDetail{ID: 2, Subject: "Second message"}
 
 	// Press right arrow at last message - should show flash
-	newModel, cmd = m.Update(keyRight())
-	m = newModel.(Model)
+	m, cmd = sendKey(t, m, keyRight())
 
 	if m.detailMessageIndex != 1 {
 		t.Errorf("expected detailMessageIndex=1 (unchanged), got %d", m.detailMessageIndex)
@@ -1483,8 +1446,7 @@ func TestDetailNavigationHLKeys(t *testing.T) {
 	model.cursor = 1
 
 	// Press 'l' to go to next message in list (higher index)
-	newModel, _ := model.Update(key('l'))
-	m := newModel.(Model)
+	m, _ := sendKey(t, model, key('l'))
 
 	if m.detailMessageIndex != 2 {
 		t.Errorf("expected detailMessageIndex=2 after 'l', got %d", m.detailMessageIndex)
@@ -1493,15 +1455,12 @@ func TestDetailNavigationHLKeys(t *testing.T) {
 	// Reset and press 'h' to go to previous message in list (lower index)
 	m.detailMessageIndex = 1
 	m.cursor = 1
-	newModel, _ = m.Update(key('h'))
-	m = newModel.(Model)
+	m, _ = sendKey(t, m, key('h'))
 
 	if m.detailMessageIndex != 0 {
 		t.Errorf("expected detailMessageIndex=0 after 'h', got %d", m.detailMessageIndex)
 	}
 }
-
-// TestDetailNavigationEmptyList verifies navigation with empty message list.
 
 // TestDetailNavigationEmptyList verifies navigation with empty message list.
 func TestDetailNavigationEmptyList(t *testing.T) {
@@ -1524,8 +1483,6 @@ func TestDetailNavigationEmptyList(t *testing.T) {
 		t.Errorf("expected flashMessage='No messages loaded', got %q", m.flashMessage)
 	}
 }
-
-// TestDetailNavigationOutOfBoundsIndex verifies clamping of stale index.
 
 // TestDetailNavigationOutOfBoundsIndex verifies clamping of stale index.
 func TestDetailNavigationOutOfBoundsIndex(t *testing.T) {
@@ -1626,8 +1583,7 @@ func TestDetailNavigationFromThreadView(t *testing.T) {
 	model.messageDetail = &query.MessageDetail{ID: 101, Subject: "Thread msg 2"}
 
 	// Press right arrow - should navigate within threadMessages
-	newModel, cmd := model.Update(keyRight())
-	m := newModel.(Model)
+	m, cmd := sendKey(t, model, keyRight())
 
 	if m.detailMessageIndex != 2 {
 		t.Errorf("expected detailMessageIndex=2 after right, got %d", m.detailMessageIndex)
@@ -1649,8 +1605,7 @@ func TestDetailNavigationFromThreadView(t *testing.T) {
 	// Press right again - now cursor should be at index 3 and scroll offset should adjust
 	m.detailMessageIndex = 2
 	m.threadCursor = 2
-	newModel, _ = m.Update(keyRight())
-	m = newModel.(Model)
+	m, _ = sendKey(t, m, keyRight())
 
 	if m.detailMessageIndex != 3 {
 		t.Errorf("expected detailMessageIndex=3 after right, got %d", m.detailMessageIndex)
@@ -1665,8 +1620,7 @@ func TestDetailNavigationFromThreadView(t *testing.T) {
 	}
 
 	// Press left arrow - should navigate back
-	newModel, _ = m.Update(keyLeft())
-	m = newModel.(Model)
+	m, _ = sendKey(t, m, keyLeft())
 
 	if m.detailMessageIndex != 2 {
 		t.Errorf("expected detailMessageIndex=2 after left, got %d", m.detailMessageIndex)
@@ -1679,8 +1633,7 @@ func TestDetailNavigationFromThreadView(t *testing.T) {
 	m.detailMessageIndex = 1
 	m.threadCursor = 1
 	m.threadScrollOffset = 1 // Scroll offset is still 1 from before
-	newModel, _ = m.Update(keyLeft())
-	m = newModel.(Model)
+	m, _ = sendKey(t, m, keyLeft())
 
 	if m.detailMessageIndex != 0 {
 		t.Errorf("expected detailMessageIndex=0 after left, got %d", m.detailMessageIndex)
@@ -1711,8 +1664,7 @@ func TestScrollClampingAfterResize(t *testing.T) {
 	model.pageSize = 25 // Bigger page means lower max scroll
 
 	// Press down - should clamp first, then check boundary
-	newModel, _ := model.Update(keyDown())
-	m := newModel.(Model)
+	m, _ := sendKey(t, model, keyDown())
 
 	// detailScroll should be clamped to max (50 - 27 = 23 for detailPageSize)
 	maxScroll := model.detailLineCount - m.detailPageSize()
@@ -1982,7 +1934,7 @@ func TestTopLevelTimeDrillDown_AllGranularities(t *testing.T) {
 
 			m := applyAggregateKey(t, model, keyEnter())
 
-			assertLevel(t, m, levelMessageList)
+			assertState(t, m, levelMessageList, query.ViewTime, 0)
 
 			if m.drillFilter.TimePeriod != tt.key {
 				t.Errorf("drillFilter.TimePeriod = %q, want %q", m.drillFilter.TimePeriod, tt.key)
@@ -2230,8 +2182,6 @@ func TestSenderNamesDrillDownEmptyKey(t *testing.T) {
 }
 
 // TestSenderNamesDrillFilterKey verifies drillFilterKey returns the SenderName.
-
-// TestSenderNamesDrillFilterKey verifies drillFilterKey returns the SenderName.
 func TestSenderNamesDrillFilterKey(t *testing.T) {
 	model := NewBuilder().
 		WithRows(query.AggregateRow{Key: "test", Count: 1}).
@@ -2251,8 +2201,6 @@ func TestSenderNamesDrillFilterKey(t *testing.T) {
 		t.Errorf("expected '(empty)' for MatchEmptySenderName, got %q", key)
 	}
 }
-
-// TestSenderNamesBreadcrumbPrefix verifies the "N:" prefix in breadcrumbs.
 
 // TestSenderNamesBreadcrumbPrefix verifies the "N:" prefix in breadcrumbs.
 func TestSenderNamesBreadcrumbPrefix(t *testing.T) {
@@ -2355,8 +2303,7 @@ func TestSenderNamesBreadcrumbRoundTrip(t *testing.T) {
 	model.drillViewType = query.ViewSenderNames
 
 	// Press Enter to go to message detail
-	newModel, _ := model.Update(keyEnter())
-	m := newModel.(Model)
+	m, _ := sendKey(t, model, keyEnter())
 
 	if m.level != levelMessageDetail {
 		t.Fatalf("expected levelMessageDetail, got %v", m.level)
@@ -2565,8 +2512,7 @@ func TestRecipientNamesBreadcrumbRoundTrip(t *testing.T) {
 	model.drillViewType = query.ViewRecipientNames
 
 	// Press Enter to go to message detail
-	newModel, _ := model.Update(keyEnter())
-	m := newModel.(Model)
+	m, _ := sendKey(t, model, keyEnter())
 
 	if m.level != levelMessageDetail {
 		t.Fatalf("expected levelMessageDetail, got %v", m.level)
