@@ -12,7 +12,7 @@ LDFLAGS := -X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=$(VERSION) \
 
 LDFLAGS_RELEASE := $(LDFLAGS) -s -w
 
-.PHONY: build build-release install clean test test-v fmt lint tidy shootout run-shootout help
+.PHONY: build build-release install clean test test-v fmt lint tidy shootout run-shootout setup-hooks help
 
 # Build the binary (debug)
 build:
@@ -62,6 +62,11 @@ lint:
 	@which golangci-lint > /dev/null || (echo "Install golangci-lint: https://golangci-lint.run/usage/install/" && exit 1)
 	golangci-lint run ./...
 
+# Enable pre-commit hook (fmt + lint)
+setup-hooks:
+	git config core.hooksPath .githooks
+	@echo "Pre-commit hook enabled (.githooks/pre-commit)"
+
 # Tidy dependencies
 tidy:
 	go mod tidy
@@ -87,6 +92,7 @@ help:
 	@echo "  fmt            - Format code"
 	@echo "  lint           - Run linter"
 	@echo "  tidy           - Tidy go.mod"
+	@echo "  setup-hooks    - Enable pre-commit hook (fmt + lint)"
 	@echo "  clean          - Remove build artifacts"
 	@echo ""
 	@echo "  shootout       - Build MIME shootout tool"

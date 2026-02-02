@@ -1,26 +1,15 @@
 package sync
 
 import (
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/store"
+	testemail "github.com/wesm/msgvault/internal/testutil/email"
 )
-
-// Sample MIME message for testing
-var testMIME = []byte(`From: sender@example.com
-To: recipient@example.com
-Subject: Test Message
-Date: Mon, 01 Jan 2024 12:00:00 +0000
-Content-Type: text/plain; charset="utf-8"
-
-This is a test message body.
-`)
 
 func TestFullSync(t *testing.T) {
 	env := newTestEnv(t)
@@ -52,16 +41,8 @@ func TestFullSyncResume(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Create mock with pagination
-	env.Mock.Profile.MessagesTotal = 4
 	env.Mock.Profile.HistoryID = 12345
-	env.Mock.AddMessage("msg1", testMIME, []string{"INBOX"})
-	env.Mock.AddMessage("msg2", testMIME, []string{"INBOX"})
-	env.Mock.AddMessage("msg3", testMIME, []string{"INBOX"})
-	env.Mock.AddMessage("msg4", testMIME, []string{"INBOX"})
-	env.Mock.MessagePages = [][]string{
-		{"msg1", "msg2"},
-		{"msg3", "msg4"},
-	}
+	seedPagedMessages(env, 4, 2, "msg")
 
 	summary1 := runFullSync(t, env)
 	assertSummary(t, summary1, 4, -1, -1, -1)
@@ -96,42 +77,26 @@ func TestFullSyncWithErrors(t *testing.T) {
 func TestMIMEParsing(t *testing.T) {
 	env := newTestEnv(t)
 
-	complexMIME := []byte(`From: "John Doe" <john@example.com>
-To: "Jane Smith" <jane@example.com>, bob@example.com
-Cc: cc@example.com
-Subject: Re: Meeting Notes
-Date: Tue, 15 Jan 2024 14:30:00 -0500
-Message-ID: <msg123@example.com>
-In-Reply-To: <msg122@example.com>
-Content-Type: multipart/mixed; boundary="boundary123"
-
---boundary123
-Content-Type: text/plain; charset="utf-8"
-
-Hello,
-
-This is the message body.
-
-Best regards,
-John
-
---boundary123
-Content-Type: application/pdf; name="document.pdf"
-Content-Disposition: attachment; filename="document.pdf"
-Content-Transfer-Encoding: base64
-
-JVBERi0xLjQKJeLjz9MKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRv
-Ymo=
---boundary123--
-`)
+	pdfData := []byte{0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a, 0x31, 0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a, 0x0a, 0x3c, 0x3c, 0x2f, 0x54, 0x79, 0x70, 0x65, 0x2f, 0x43, 0x61, 0x74, 0x61, 0x6c, 0x6f, 0x67, 0x2f, 0x50, 0x61, 0x67, 0x65, 0x73, 0x20, 0x32, 0x20, 0x30, 0x20, 0x52, 0x3e, 0x3e, 0x0a, 0x65, 0x6e, 0x64, 0x6f, 0x62, 0x6a}
+	complexMIME := testemail.NewMessage().
+		From(`"John Doe" <john@example.com>`).
+		To(`"Jane Smith" <jane@example.com>, bob@example.com`).
+		Cc("cc@example.com").
+		Subject("Re: Meeting Notes").
+		Date("Tue, 15 Jan 2024 14:30:00 -0500").
+		Header("Message-ID", "<msg123@example.com>").
+		Header("In-Reply-To", "<msg122@example.com>").
+		Body("Hello,\n\nThis is the message body.\n\nBest regards,\nJohn\n").
+		WithAttachment("document.pdf", "application/pdf", pdfData).
+		Bytes()
 
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12345
 	env.Mock.AddMessage("complex1", complexMIME, []string{"INBOX"})
 
-	opts := DefaultOptions()
-	opts.AttachmentsDir = filepath.Join(env.TmpDir, "attachments")
-	env.Syncer = New(env.Mock, env.Store, opts)
+	env.SetOptions(t, func(o *Options) {
+		o.AttachmentsDir = filepath.Join(env.TmpDir, "attachments")
+	})
 
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, 1, -1, -1, -1)
@@ -173,9 +138,9 @@ func TestFullSyncNoResume(t *testing.T) {
 	env := newTestEnv(t)
 	seedMessages(env, 2, 12345, "msg1", "msg2")
 
-	opts := DefaultOptions()
-	opts.NoResume = true
-	env.Syncer = New(env.Mock, env.Store, opts)
+	env.SetOptions(t, func(o *Options) {
+		o.NoResume = true
+	})
 
 	summary := runFullSync(t, env)
 	if summary.WasResumed {
@@ -200,9 +165,9 @@ func TestFullSyncWithQuery(t *testing.T) {
 	env := newTestEnv(t)
 	seedMessages(env, 2, 12345, "msg1", "msg2")
 
-	opts := DefaultOptions()
-	opts.Query = "before:2024/06/01"
-	env.Syncer = New(env.Mock, env.Store, opts)
+	env.SetOptions(t, func(o *Options) {
+		o.Query = "before:2024/06/01"
+	})
 
 	summary := runFullSync(t, env)
 
@@ -214,17 +179,8 @@ func TestFullSyncWithQuery(t *testing.T) {
 
 func TestFullSyncPagination(t *testing.T) {
 	env := newTestEnv(t)
-	env.Mock.Profile.MessagesTotal = 6
 	env.Mock.Profile.HistoryID = 12345
-
-	for i := 1; i <= 6; i++ {
-		env.Mock.AddMessage(fmt.Sprintf("msg%d", i), testMIME, []string{"INBOX"})
-	}
-	env.Mock.MessagePages = [][]string{
-		{"msg1", "msg2"},
-		{"msg3", "msg4"},
-		{"msg5", "msg6"},
-	}
+	seedPagedMessages(env, 6, 2, "msg")
 
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, 6, -1, -1, -1)
@@ -292,19 +248,10 @@ func TestIncrementalSyncWithChanges(t *testing.T) {
 	env.Mock.AddMessage("new-msg-1", testMIME, []string{"INBOX"})
 	env.Mock.AddMessage("new-msg-2", testMIME, []string{"INBOX"})
 
-	env.Mock.HistoryRecords = []gmail.HistoryRecord{
-		{
-			MessagesAdded: []gmail.HistoryMessage{
-				{Message: gmail.MessageID{ID: "new-msg-1", ThreadID: "thread_new-msg-1"}},
-			},
-		},
-		{
-			MessagesAdded: []gmail.HistoryMessage{
-				{Message: gmail.MessageID{ID: "new-msg-2", ThreadID: "thread_new-msg-2"}},
-			},
-		},
-	}
-	env.Mock.HistoryID = 12350
+	env.SetHistory(12350,
+		historyAdded("new-msg-1"),
+		historyAdded("new-msg-2"),
+	)
 
 	summary := runIncrementalSync(t, env)
 	assertSummary(t, summary, 2, -1, -1, -1)
@@ -317,37 +264,14 @@ func TestIncrementalSyncWithDeletions(t *testing.T) {
 	runFullSync(t, env)
 
 	// Now simulate deletion via incremental
-	env.Mock.Profile.HistoryID = 12350
-	env.Mock.HistoryRecords = []gmail.HistoryRecord{
-		{
-			MessagesDeleted: []gmail.HistoryMessage{
-				{Message: gmail.MessageID{ID: "msg1", ThreadID: "thread_msg1"}},
-			},
-		},
-	}
-	env.Mock.HistoryID = 12350
+	env.SetHistory(12350, historyDeleted("msg1"))
 
 	summary := runIncrementalSync(t, env)
 	assertSummary(t, summary, -1, -1, -1, 1)
 
 	// Verify deletion was persisted
-	var deletedAt sql.NullTime
-	err := env.Store.DB().QueryRow(env.Store.Rebind("SELECT deleted_from_source_at FROM messages WHERE source_message_id = ?"), "msg1").Scan(&deletedAt)
-	if err != nil {
-		t.Fatalf("query deleted_from_source_at: %v", err)
-	}
-	if !deletedAt.Valid {
-		t.Error("msg1 should have deleted_from_source_at set after incremental sync with deletion")
-	}
-
-	// Verify msg2 is NOT marked as deleted
-	err = env.Store.DB().QueryRow(env.Store.Rebind("SELECT deleted_from_source_at FROM messages WHERE source_message_id = ?"), "msg2").Scan(&deletedAt)
-	if err != nil {
-		t.Fatalf("query deleted_from_source_at for msg2: %v", err)
-	}
-	if deletedAt.Valid {
-		t.Error("msg2 should NOT have deleted_from_source_at set")
-	}
+	assertDeletedFromSource(t, env.Store, "msg1", true)
+	assertDeletedFromSource(t, env.Store, "msg2", false)
 }
 
 func TestIncrementalSyncHistoryExpired(t *testing.T) {
@@ -384,18 +308,7 @@ func TestIncrementalSyncWithLabelAdded(t *testing.T) {
 	runFullSync(t, env)
 
 	// Now simulate label addition via incremental
-	env.Mock.Profile.HistoryID = 12350
-	env.Mock.HistoryRecords = []gmail.HistoryRecord{
-		{
-			LabelsAdded: []gmail.HistoryLabelChange{
-				{
-					Message:  gmail.MessageID{ID: "msg1", ThreadID: "thread_msg1"},
-					LabelIDs: []string{"STARRED"},
-				},
-			},
-		},
-	}
-	env.Mock.HistoryID = 12350
+	env.SetHistory(12350, historyLabelAdded("msg1", "STARRED"))
 	env.Mock.Messages["msg1"].LabelIDs = []string{"INBOX", "STARRED"}
 
 	summary := runIncrementalSync(t, env)
@@ -411,18 +324,7 @@ func TestIncrementalSyncWithLabelRemoved(t *testing.T) {
 	runFullSync(t, env)
 
 	// Now simulate label removal via incremental
-	env.Mock.Profile.HistoryID = 12350
-	env.Mock.HistoryRecords = []gmail.HistoryRecord{
-		{
-			LabelsRemoved: []gmail.HistoryLabelChange{
-				{
-					Message:  gmail.MessageID{ID: "msg1", ThreadID: "thread_msg1"},
-					LabelIDs: []string{"STARRED"},
-				},
-			},
-		},
-	}
-	env.Mock.HistoryID = 12350
+	env.SetHistory(12350, historyLabelRemoved("msg1", "STARRED"))
 	env.Mock.Messages["msg1"].LabelIDs = []string{"INBOX"}
 
 	summary := runIncrementalSync(t, env)
@@ -443,17 +345,7 @@ func TestIncrementalSyncLabelAddedToNewMessage(t *testing.T) {
 	env.Mock.Profile.HistoryID = 12350
 	env.Mock.AddMessage("new-msg", testMIME, []string{"INBOX", "STARRED"})
 
-	env.Mock.HistoryRecords = []gmail.HistoryRecord{
-		{
-			LabelsAdded: []gmail.HistoryLabelChange{
-				{
-					Message:  gmail.MessageID{ID: "new-msg", ThreadID: "thread_new-msg"},
-					LabelIDs: []string{"STARRED"},
-				},
-			},
-		},
-	}
-	env.Mock.HistoryID = 12350
+	env.SetHistory(12350, historyLabelAdded("new-msg", "STARRED"))
 
 	_, err := env.Syncer.Incremental(env.Context, testEmail)
 	if err != nil {
@@ -470,42 +362,11 @@ func TestIncrementalSyncLabelRemovedFromMissingMessage(t *testing.T) {
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12350
 
-	env.Mock.HistoryRecords = []gmail.HistoryRecord{
-		{
-			LabelsRemoved: []gmail.HistoryLabelChange{
-				{
-					Message:  gmail.MessageID{ID: "unknown-msg", ThreadID: "thread_unknown"},
-					LabelIDs: []string{"STARRED"},
-				},
-			},
-		},
-	}
-	env.Mock.HistoryID = 12350
+	env.SetHistory(12350, historyLabelRemoved("unknown-msg", "STARRED"))
 
 	summary := runIncrementalSync(t, env)
 	assertSummary(t, summary, 0, -1, -1, -1)
 }
-
-// MIME message with attachment for testing
-var testMIMEWithAttachment = []byte(`From: sender@example.com
-To: recipient@example.com
-Subject: Test with Attachment
-Date: Mon, 01 Jan 2024 12:00:00 +0000
-MIME-Version: 1.0
-Content-Type: multipart/mixed; boundary="boundary123"
-
---boundary123
-Content-Type: text/plain; charset="utf-8"
-
-This is the message body.
---boundary123
-Content-Type: application/octet-stream; name="test.bin"
-Content-Disposition: attachment; filename="test.bin"
-Content-Transfer-Encoding: base64
-
-SGVsbG8gV29ybGQh
---boundary123--
-`)
 
 func TestFullSyncWithAttachment(t *testing.T) {
 	env := newTestEnv(t)
@@ -528,25 +389,11 @@ func TestFullSyncWithAttachment(t *testing.T) {
 func TestFullSyncWithEmptyAttachment(t *testing.T) {
 	env := newTestEnv(t)
 
-	emptyAttachMIME := []byte(`From: sender@example.com
-To: recipient@example.com
-Subject: Empty Attachment
-Date: Mon, 01 Jan 2024 12:00:00 +0000
-MIME-Version: 1.0
-Content-Type: multipart/mixed; boundary="boundary123"
-
---boundary123
-Content-Type: text/plain; charset="utf-8"
-
-Body text.
---boundary123
-Content-Type: application/octet-stream; name="empty.bin"
-Content-Disposition: attachment; filename="empty.bin"
-Content-Transfer-Encoding: base64
-
-
---boundary123--
-`)
+	emptyAttachMIME := testemail.NewMessage().
+		Subject("Empty Attachment").
+		Body("Body text.").
+		WithAttachment("empty.bin", "application/octet-stream", nil).
+		Bytes()
 
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12345
@@ -575,15 +422,6 @@ func TestFullSyncAttachmentDeduplication(t *testing.T) {
 	}
 }
 
-// MIME message with no subject
-var testMIMENoSubject = []byte(`From: sender@example.com
-To: recipient@example.com
-Date: Mon, 01 Jan 2024 12:00:00 +0000
-Content-Type: text/plain; charset="utf-8"
-
-Message with no subject line.
-`)
-
 func TestFullSyncNoSubject(t *testing.T) {
 	env := newTestEnv(t)
 	env.Mock.Profile.MessagesTotal = 1
@@ -593,18 +431,6 @@ func TestFullSyncNoSubject(t *testing.T) {
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, 1, -1, -1, -1)
 }
-
-// MIME message with multiple recipients (CC and BCC)
-var testMIMEMultipleRecipients = []byte(`From: sender@example.com
-To: to1@example.com, to2@example.com
-Cc: cc1@example.com
-Bcc: bcc1@example.com
-Subject: Multiple Recipients
-Date: Mon, 01 Jan 2024 12:00:00 +0000
-Content-Type: text/plain; charset="utf-8"
-
-Message with multiple recipients.
-`)
 
 func TestFullSyncMultipleRecipients(t *testing.T) {
 	env := newTestEnv(t)
@@ -633,33 +459,9 @@ func TestFullSyncWithMIMEParseError(t *testing.T) {
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, 2, 0, -1, -1)
 
-	// Verify the bad message was stored with placeholder content in message_bodies
-	var bodyText string
-	err := env.Store.DB().QueryRow(`
-		SELECT mb.body_text FROM message_bodies mb
-		JOIN messages m ON m.id = mb.message_id
-		WHERE m.source_message_id = 'msg-bad'
-	`).Scan(&bodyText)
-	if err != nil {
-		t.Fatalf("query bad message: %v", err)
-	}
-	if !strings.Contains(bodyText, "MIME parsing failed") {
-		t.Errorf("expected placeholder body with error message, got: %s", bodyText)
-	}
-
-	// Verify raw MIME was preserved
-	var rawData []byte
-	err = env.Store.DB().QueryRow(`
-		SELECT raw_data FROM message_raw mr
-		JOIN messages m ON m.id = mr.message_id
-		WHERE m.source_message_id = 'msg-bad'
-	`).Scan(&rawData)
-	if err != nil {
-		t.Fatalf("query raw data: %v", err)
-	}
-	if len(rawData) == 0 {
-		t.Error("expected raw MIME data to be preserved")
-	}
+	// Verify the bad message was stored with placeholder content
+	assertBodyContains(t, env.Store, "msg-bad", "MIME parsing failed")
+	assertRawDataExists(t, env.Store, "msg-bad")
 }
 
 func TestFullSyncMessageFetchError(t *testing.T) {
@@ -690,16 +492,8 @@ func TestIncrementalSyncLabelsError(t *testing.T) {
 
 func TestFullSyncResumeWithCursor(t *testing.T) {
 	env := newTestEnv(t)
-	env.Mock.Profile.MessagesTotal = 4
 	env.Mock.Profile.HistoryID = 12345
-	env.Mock.MessagePages = [][]string{
-		{"msg1", "msg2"},
-		{"msg3", "msg4"},
-	}
-	env.Mock.AddMessage("msg1", testMIME, []string{"INBOX"})
-	env.Mock.AddMessage("msg2", testMIME, []string{"INBOX"})
-	env.Mock.AddMessage("msg3", testMIME, []string{"INBOX"})
-	env.Mock.AddMessage("msg4", testMIME, []string{"INBOX"})
+	seedPagedMessages(env, 4, 2, "msg")
 
 	source := env.MustCreateSource(t)
 
@@ -748,15 +542,11 @@ func TestFullSyncResumeWithCursor(t *testing.T) {
 func TestFullSyncHTMLOnlyMessage(t *testing.T) {
 	env := newTestEnv(t)
 
-	htmlOnlyMIME := []byte(`From: sender@example.com
-To: recipient@example.com
-Subject: HTML Only
-Date: Mon, 01 Jan 2024 12:00:00 +0000
-MIME-Version: 1.0
-Content-Type: text/html; charset="utf-8"
-
-<html><body><p>This is HTML only content.</p></body></html>
-`)
+	htmlOnlyMIME := testemail.NewMessage().
+		Subject("HTML Only").
+		ContentType(`text/html; charset="utf-8"`).
+		Body("<html><body><p>This is HTML only content.</p></body></html>").
+		Bytes()
 
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12345
@@ -765,18 +555,6 @@ Content-Type: text/html; charset="utf-8"
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, 1, -1, -1, -1)
 }
-
-// MIME message with duplicate recipients across To/Cc/Bcc
-var testMIMEDuplicateRecipients = []byte(`From: sender@example.com
-To: duplicate@example.com, other@example.com, "Duplicate Person" <duplicate@example.com>
-Cc: cc-dup@example.com, "CC Duplicate" <cc-dup@example.com>
-Bcc: bcc-dup@example.com, bcc-dup@example.com
-Subject: Duplicate Recipients
-Date: Mon, 01 Jan 2024 12:00:00 +0000
-Content-Type: text/plain; charset="utf-8"
-
-Message with duplicate recipients in To, Cc, and Bcc fields.
-`)
 
 func TestFullSyncDuplicateRecipients(t *testing.T) {
 	env := newTestEnv(t)
@@ -788,89 +566,24 @@ func TestFullSyncDuplicateRecipients(t *testing.T) {
 	assertSummary(t, summary, 1, 0, -1, -1)
 	assertMessageCount(t, env.Store, 1)
 
-	// Verify To recipients are deduplicated: duplicate@example.com appears twice, other once = 2 unique
-	var toCount int
-	err := env.Store.DB().QueryRow(env.Store.Rebind(`
-		SELECT COUNT(*) FROM message_recipients mr
-		JOIN messages m ON mr.message_id = m.id
-		WHERE m.source_message_id = ? AND mr.recipient_type = 'to'
-	`), "msg-dup-recip").Scan(&toCount)
-	if err != nil {
-		t.Fatalf("query To recipient count: %v", err)
-	}
-	if toCount != 2 {
-		t.Errorf("expected 2 unique To recipients, got %d", toCount)
-	}
+	// Verify recipients are deduplicated
+	assertRecipientCount(t, env.Store, "msg-dup-recip", "to", 2)
+	assertRecipientCount(t, env.Store, "msg-dup-recip", "cc", 1)
+	assertRecipientCount(t, env.Store, "msg-dup-recip", "bcc", 1)
 
-	// Verify Cc recipients are deduplicated: cc-dup@example.com appears twice = 1 unique
-	var ccCount int
-	err = env.Store.DB().QueryRow(env.Store.Rebind(`
-		SELECT COUNT(*) FROM message_recipients mr
-		JOIN messages m ON mr.message_id = m.id
-		WHERE m.source_message_id = ? AND mr.recipient_type = 'cc'
-	`), "msg-dup-recip").Scan(&ccCount)
-	if err != nil {
-		t.Fatalf("query Cc recipient count: %v", err)
-	}
-	if ccCount != 1 {
-		t.Errorf("expected 1 unique Cc recipient, got %d", ccCount)
-	}
-
-	// Verify Bcc recipients are deduplicated: bcc-dup@example.com appears twice = 1 unique
-	var bccCount int
-	err = env.Store.DB().QueryRow(env.Store.Rebind(`
-		SELECT COUNT(*) FROM message_recipients mr
-		JOIN messages m ON mr.message_id = m.id
-		WHERE m.source_message_id = ? AND mr.recipient_type = 'bcc'
-	`), "msg-dup-recip").Scan(&bccCount)
-	if err != nil {
-		t.Fatalf("query Bcc recipient count: %v", err)
-	}
-	if bccCount != 1 {
-		t.Errorf("expected 1 unique Bcc recipient, got %d", bccCount)
-	}
-
-	// Verify display name preference: duplicate@example.com should prefer "Duplicate Person"
-	var displayName string
-	err = env.Store.DB().QueryRow(env.Store.Rebind(`
-		SELECT mr.display_name FROM message_recipients mr
-		JOIN messages m ON mr.message_id = m.id
-		JOIN participants p ON mr.participant_id = p.id
-		WHERE m.source_message_id = ? AND mr.recipient_type = 'to' AND p.email_address = ?
-	`), "msg-dup-recip", "duplicate@example.com").Scan(&displayName)
-	if err != nil {
-		t.Fatalf("query display name: %v", err)
-	}
-	if displayName != "Duplicate Person" {
-		t.Errorf("expected display name 'Duplicate Person' (non-empty preferred), got %q", displayName)
-	}
-
-	// Verify Cc display name preference
-	err = env.Store.DB().QueryRow(env.Store.Rebind(`
-		SELECT mr.display_name FROM message_recipients mr
-		JOIN messages m ON mr.message_id = m.id
-		JOIN participants p ON mr.participant_id = p.id
-		WHERE m.source_message_id = ? AND mr.recipient_type = 'cc' AND p.email_address = ?
-	`), "msg-dup-recip", "cc-dup@example.com").Scan(&displayName)
-	if err != nil {
-		t.Fatalf("query Cc display name: %v", err)
-	}
-	if displayName != "CC Duplicate" {
-		t.Errorf("expected Cc display name 'CC Duplicate' (non-empty preferred), got %q", displayName)
-	}
+	// Verify display name preference: non-empty name preferred
+	assertDisplayName(t, env.Store, "msg-dup-recip", "to", "duplicate@example.com", "Duplicate Person")
+	assertDisplayName(t, env.Store, "msg-dup-recip", "cc", "cc-dup@example.com", "CC Duplicate")
 }
 
 func TestFullSyncDateFallbackToInternalDate(t *testing.T) {
 	env := newTestEnv(t)
 
-	badDateMIME := []byte(`From: sender@example.com
-To: recipient@example.com
-Subject: Bad Date
-Date: This is not a valid date
-Content-Type: text/plain; charset="utf-8"
-
-Message with invalid date header.
-`)
+	badDateMIME := testemail.NewMessage().
+		Subject("Bad Date").
+		Date("This is not a valid date").
+		Body("Message with invalid date header.").
+		Bytes()
 
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12345
@@ -885,26 +598,7 @@ Message with invalid date header.
 
 	runFullSync(t, env)
 
-	var sentAt, internalDate string
-	err := env.Store.DB().QueryRow(env.Store.Rebind(`
-		SELECT sent_at, internal_date FROM messages WHERE source_message_id = ?
-	`), "msg-bad-date").Scan(&sentAt, &internalDate)
-	if err != nil {
-		t.Fatalf("query message: %v", err)
-	}
-
-	if sentAt == "" {
-		t.Errorf("SentAt should not be empty (should fallback to InternalDate)")
-	}
-	if internalDate == "" {
-		t.Errorf("InternalDate should not be empty")
-	}
-	if sentAt != internalDate {
-		t.Errorf("SentAt (%q) should equal InternalDate (%q) when Date header is unparseable", sentAt, internalDate)
-	}
-	if !strings.Contains(sentAt, "2024-01-15") || !strings.Contains(sentAt, "12:00:00") {
-		t.Errorf("SentAt = %q, expected to contain 2024-01-15 12:00:00", sentAt)
-	}
+	assertDateFallback(t, env.Store, "msg-bad-date", "2024-01-15", "12:00:00")
 }
 
 func TestFullSyncEmptyRawMIME(t *testing.T) {
@@ -943,18 +637,7 @@ func TestFullSyncEmptyThreadID(t *testing.T) {
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, 1, 0, -1, -1)
 
-	var threadSourceID string
-	err := env.Store.DB().QueryRow(env.Store.Rebind(`
-		SELECT c.source_conversation_id FROM conversations c
-		JOIN messages m ON m.conversation_id = c.id
-		WHERE m.source_message_id = ?
-	`), "msg-no-thread").Scan(&threadSourceID)
-	if err != nil {
-		t.Fatalf("query thread: %v", err)
-	}
-	if threadSourceID != "msg-no-thread" {
-		t.Errorf("expected thread source_conversation_id = 'msg-no-thread' (fallback), got %q", threadSourceID)
-	}
+	assertThreadSourceID(t, env.Store, "msg-no-thread", "msg-no-thread")
 }
 
 func TestFullSyncListEmptyThreadIDRawPresent(t *testing.T) {
@@ -977,16 +660,5 @@ func TestFullSyncListEmptyThreadIDRawPresent(t *testing.T) {
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, 1, 0, -1, -1)
 
-	var threadSourceID string
-	err := env.Store.DB().QueryRow(env.Store.Rebind(`
-		SELECT c.source_conversation_id FROM conversations c
-		JOIN messages m ON m.conversation_id = c.id
-		WHERE m.source_message_id = ?
-	`), "msg-list-empty").Scan(&threadSourceID)
-	if err != nil {
-		t.Fatalf("query thread: %v", err)
-	}
-	if threadSourceID != "actual-thread-from-raw" {
-		t.Errorf("expected thread source_conversation_id = 'actual-thread-from-raw' (from raw), got %q", threadSourceID)
-	}
+	assertThreadSourceID(t, env.Store, "msg-list-empty", "actual-thread-from-raw")
 }

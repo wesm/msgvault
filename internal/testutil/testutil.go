@@ -2,9 +2,14 @@
 package testutil
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"compress/gzip"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/store"
@@ -184,4 +189,124 @@ func MustNoErr(t *testing.T, err error, msg string) {
 	if err != nil {
 		t.Fatalf("%s: %v", msg, err)
 	}
+}
+
+// PathTraversalCase describes a single path traversal test vector.
+type PathTraversalCase struct{ Name, Path string }
+
+// PathTraversalCases returns a fresh slice of path traversal attack vectors for
+// testing path sanitization logic. The returned cases include OS-appropriate
+// absolute path variants so Windows UNC/drive-letter paths are also covered.
+func PathTraversalCases() []PathTraversalCase {
+	cases := []PathTraversalCase{
+		{"rooted path", string(filepath.Separator) + "rooted" + string(filepath.Separator) + "path.txt"},
+		{"escape dot dot", "../escape.txt"},
+		{"escape dot dot nested", "subdir/../../escape.txt"},
+		{"escape just dot dot", ".."},
+	}
+	// OS-appropriate absolute paths
+	if runtime.GOOS == "windows" {
+		cases = append(cases,
+			PathTraversalCase{"absolute drive path", `C:\Windows\system32`},
+			PathTraversalCase{"UNC path", `\\server\share\file.txt`},
+		)
+	} else {
+		cases = append(cases, PathTraversalCase{"absolute path", "/abs/path"})
+	}
+	// Forward-slash absolute paths are accepted by Windows APIs too.
+	if runtime.GOOS == "windows" {
+		cases = append(cases, PathTraversalCase{"forward-slash absolute path", "/abs/path"})
+	}
+	return cases
+}
+
+// WriteAndVerifyFile writes content to a file, asserts it exists, and verifies
+// its content matches. Returns the full path to the written file.
+func WriteAndVerifyFile(t *testing.T, dir, rel string, content []byte) string {
+	t.Helper()
+	path := WriteFile(t, dir, rel, content)
+	MustExist(t, path)
+	AssertFileContent(t, path, string(content))
+	return path
+}
+
+// ArchiveEntry describes a single entry in a tar.gz archive for testing.
+type ArchiveEntry struct {
+	Name     string
+	Content  string
+	TypeFlag byte
+	LinkName string
+	Mode     int64
+}
+
+// CreateTarGz creates a tar.gz archive at path containing the given entries.
+func CreateTarGz(t *testing.T, path string, entries []ArchiveEntry) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	gzw := gzip.NewWriter(f)
+	defer gzw.Close()
+	tw := tar.NewWriter(gzw)
+	defer tw.Close()
+
+	for _, e := range entries {
+		mode := e.Mode
+		if mode == 0 {
+			mode = 0644
+		}
+		h := &tar.Header{
+			Name:     e.Name,
+			Mode:     mode,
+			Size:     int64(len(e.Content)),
+			Typeflag: e.TypeFlag,
+			Linkname: e.LinkName,
+		}
+		if err := tw.WriteHeader(h); err != nil {
+			t.Fatal(err)
+		}
+		if len(e.Content) > 0 {
+			if _, err := tw.Write([]byte(e.Content)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+// CreateTempZip creates a zip file in a temporary directory containing the
+// provided entries (filename -> content). Returns the path to the zip file.
+func CreateTempZip(t *testing.T, entries map[string]string) string {
+	t.Helper()
+
+	zipPath := filepath.Join(t.TempDir(), "test.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatalf("create zip file: %v", err)
+	}
+	defer f.Close()
+
+	w := zip.NewWriter(f)
+	keys := make([]string, 0, len(entries))
+	for name := range entries {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	for _, name := range keys {
+		content := entries[name]
+		fw, err := w.Create(name)
+		if err != nil {
+			t.Fatalf("create zip entry %s: %v", name, err)
+		}
+		if _, err := fw.Write([]byte(content)); err != nil {
+			t.Fatalf("write zip entry %s: %v", name, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close zip writer: %v", err)
+	}
+
+	return zipPath
 }

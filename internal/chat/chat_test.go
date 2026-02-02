@@ -9,8 +9,19 @@ import (
 	"time"
 
 	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/query/querytest"
 	"github.com/wesm/msgvault/internal/search"
+	"github.com/wesm/msgvault/internal/testutil"
 )
+
+func mockLLMResponse(t *testing.T, plan queryPlan) string {
+	t.Helper()
+	b, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("failed to marshal query plan: %v", err)
+	}
+	return string(b)
+}
 
 func TestExtractJSON(t *testing.T) {
 	tests := []struct {
@@ -163,94 +174,27 @@ func TestFormatContext(t *testing.T) {
 	})
 }
 
-// stubLLM is a test double for LLMClient.
-type stubLLM struct {
-	chatResp    string
-	chatErr     error
-	streamResp  string
-	streamErr   error
-}
-
-func (s *stubLLM) Chat(_ context.Context, _ []Message) (string, error) {
-	return s.chatResp, s.chatErr
-}
-
-func (s *stubLLM) ChatStream(_ context.Context, _ []Message, onToken func(string)) error {
-	if s.streamErr != nil {
-		return s.streamErr
-	}
-	onToken(s.streamResp)
-	return nil
-}
-
-// stubEngine implements the minimal query.Engine methods used by chat.
-type stubEngine struct {
-	searchFastResults []query.MessageSummary
-	searchResults     []query.MessageSummary
-	messages          map[int64]*query.MessageDetail
-}
-
-func (e *stubEngine) SearchFast(_ context.Context, _ *search.Query, _ query.MessageFilter, _, _ int) ([]query.MessageSummary, error) {
-	return e.searchFastResults, nil
-}
-
-func (e *stubEngine) Search(_ context.Context, _ *search.Query, _, _ int) ([]query.MessageSummary, error) {
-	return e.searchResults, nil
-}
-
-func (e *stubEngine) GetMessage(_ context.Context, id int64) (*query.MessageDetail, error) {
-	if m, ok := e.messages[id]; ok {
-		return m, nil
-	}
-	return nil, fmt.Errorf("not found")
-}
-
-// Unused interface methods — return zero values.
-func (e *stubEngine) AggregateBySender(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
-func (e *stubEngine) AggregateBySenderName(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
-func (e *stubEngine) AggregateByRecipient(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
-func (e *stubEngine) AggregateByRecipientName(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
-func (e *stubEngine) AggregateByDomain(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
-func (e *stubEngine) AggregateByLabel(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
-func (e *stubEngine) AggregateByTime(context.Context, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
-func (e *stubEngine) SubAggregate(context.Context, query.MessageFilter, query.ViewType, query.AggregateOptions) ([]query.AggregateRow, error) { return nil, nil }
-func (e *stubEngine) ListMessages(context.Context, query.MessageFilter) ([]query.MessageSummary, error) { return nil, nil }
-func (e *stubEngine) GetMessageBySourceID(context.Context, string) (*query.MessageDetail, error) { return nil, nil }
-func (e *stubEngine) SearchFastCount(context.Context, *search.Query, query.MessageFilter) (int64, error) { return 0, nil }
-func (e *stubEngine) GetAttachment(context.Context, int64) (*query.AttachmentInfo, error) { return nil, nil }
-func (e *stubEngine) GetGmailIDsByFilter(context.Context, query.MessageFilter) ([]string, error) { return nil, nil }
-func (e *stubEngine) ListAccounts(context.Context) ([]query.AccountInfo, error) { return nil, nil }
-func (e *stubEngine) GetTotalStats(context.Context, query.StatsOptions) (*query.TotalStats, error) { return nil, nil }
-func (e *stubEngine) Close() error { return nil }
-
 func TestSessionAsk(t *testing.T) {
-	planJSON, _ := json.Marshal(queryPlan{
-		SearchText: "budget",
-		From:       "alice",
-		Reasoning:  "test query",
-	})
+	detail := testutil.NewMessageDetail(1).
+		WithSubject("Q1 Budget").
+		WithFrom(query.Address{Email: "alice@example.com", Name: "Alice"}).
+		WithTo(query.Address{Email: "me@example.com"}).
+		WithSentAt(time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)).
+		WithBodyText("Here is the budget report.").
+		WithLabels("INBOX").
+		BuildPtr()
 
-	eng := &stubEngine{
-		searchFastResults: []query.MessageSummary{{ID: 1}},
-		messages: map[int64]*query.MessageDetail{
-			1: {
-				ID:       1,
-				Subject:  "Q1 Budget",
-				From:     []query.Address{{Email: "alice@example.com", Name: "Alice"}},
-				To:       []query.Address{{Email: "me@example.com"}},
-				SentAt:   time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC),
-				BodyText: "Here is the budget report.",
-				Labels:   []string{"INBOX"},
-			},
-		},
+	eng := &querytest.MockEngine{
+		SearchFastResults: []query.MessageSummary{{ID: 1}},
+		Messages:          map[int64]*query.MessageDetail{1: detail},
 	}
 
 	llm := &stubLLM{
-		chatResp:   string(planJSON),
+		chatResp:   mockLLMResponse(t, queryPlan{SearchText: "budget", From: "alice", Reasoning: "test query"}),
 		streamResp: "Based on the retrieved email, Alice sent you a budget report.",
 	}
 
-	session := NewSession(eng, llm, Config{MaxResults: 10, MaxBodyLen: 500})
+	session := newTestSession(eng, llm)
 
 	err := session.Ask(context.Background(), "What did Alice send about the budget?")
 	if err != nil {
@@ -263,10 +207,9 @@ func TestSessionAsk(t *testing.T) {
 }
 
 func TestSessionAsk_LLMError(t *testing.T) {
-	eng := &stubEngine{}
 	llm := &stubLLM{chatErr: fmt.Errorf("connection refused")}
+	session := newTestSession(nil, llm)
 
-	session := NewSession(eng, llm, Config{MaxResults: 10})
 	err := session.Ask(context.Background(), "test")
 	if err == nil {
 		t.Fatal("expected error")
@@ -277,21 +220,19 @@ func TestSessionAsk_LLMError(t *testing.T) {
 }
 
 func TestSessionAsk_CancelledContext(t *testing.T) {
-	// A pre-cancelled context should cause Ask to fail without appending
-	// an assistant response to history.
-	planJSON, _ := json.Marshal(queryPlan{SearchText: "test", Reasoning: "r"})
-	eng := &stubEngine{
-		searchFastResults: []query.MessageSummary{{ID: 1}},
-		messages: map[int64]*query.MessageDetail{
-			1: {ID: 1, Subject: "S", From: []query.Address{{Email: "a@b.com"}}, SentAt: time.Now()},
+	eng := &querytest.MockEngine{
+		SearchFastResults: []query.MessageSummary{{ID: 1}},
+		Messages: map[int64]*query.MessageDetail{
+			1: testutil.NewMessageDetail(1).WithSubject("S").
+				WithFrom(query.Address{Email: "a@b.com"}).BuildPtr(),
 		},
 	}
 	llm := &stubLLM{
-		chatResp:  string(planJSON),
+		chatResp:  mockLLMResponse(t, queryPlan{SearchText: "test", Reasoning: "r"}),
 		streamErr: context.Canceled,
 	}
 
-	session := NewSession(eng, llm, Config{MaxResults: 5})
+	session := newTestSession(eng, llm)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancel
@@ -301,7 +242,6 @@ func TestSessionAsk_CancelledContext(t *testing.T) {
 		t.Fatal("expected error from cancelled context")
 	}
 
-	// History should have the user message but no assistant response.
 	for _, m := range session.history {
 		if m.Role == "assistant" {
 			t.Error("cancelled request should not append assistant to history")

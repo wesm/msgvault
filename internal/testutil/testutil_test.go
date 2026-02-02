@@ -41,39 +41,33 @@ var validRelativePaths = []string{
 	"simple.txt",
 	"subdir/file.txt",
 	"a/b/c/deep.txt",
+	"file-with-dots.test.txt",
+	"./current.txt",
 }
 
-// writeAndVerify writes a file and asserts it exists, returning the path.
-func writeAndVerify(t *testing.T, dir, rel string, content []byte) string {
+// writeFileAndAssertExists writes a file and asserts it exists, returning the path.
+func writeFileAndAssertExists(t *testing.T, dir, rel string, content []byte) string {
 	t.Helper()
 	path := WriteFile(t, dir, rel, content)
 	MustExist(t, path)
 	return path
 }
 
-// assertFileWritten writes a file, asserts it exists, and verifies its content.
-func assertFileWritten(t *testing.T, dir, rel string, content []byte) string {
-	t.Helper()
-	path := writeAndVerify(t, dir, rel, content)
-	AssertFileContent(t, path, string(content))
-	return path
-}
-
-func TestWriteAndReadFile(t *testing.T) {
+func TestWriteFileAndReadBack(t *testing.T) {
 	dir := TempDir(t)
-	assertFileWritten(t, dir, "test.txt", []byte("hello world"))
+	WriteAndVerifyFile(t, dir, "test.txt", []byte("hello world"))
 }
 
 func TestWriteFileSubdir(t *testing.T) {
 	dir := TempDir(t)
 
-	writeAndVerify(t, dir, "subdir/nested/test.txt", []byte("nested content"))
+	writeFileAndAssertExists(t, dir, "subdir/nested/test.txt", []byte("nested content"))
 	MustExist(t, filepath.Join(dir, "subdir", "nested"))
 }
 
 func TestMustExist(t *testing.T) {
 	dir := TempDir(t)
-	writeAndVerify(t, dir, "exists.txt", []byte("data"))
+	writeFileAndAssertExists(t, dir, "exists.txt", []byte("data"))
 	MustExist(t, dir)
 }
 
@@ -87,70 +81,40 @@ func TestMustNotExist(t *testing.T) {
 func TestValidateRelativePath(t *testing.T) {
 	dir := TempDir(t)
 
-	// Use filepath.Abs to get a platform-appropriate absolute path
-	absPath, err := filepath.Abs("/some/path.txt")
-	if err != nil {
-		t.Fatalf("failed to get absolute path: %v", err)
-	}
-
-	tests := []struct {
-		name    string
-		path    string
-		wantErr bool
-	}{
-		{
-			name:    "absolute path",
-			path:    absPath,
-			wantErr: true,
-		},
-		{
-			name:    "rooted path",
-			path:    string(filepath.Separator) + "rooted" + string(filepath.Separator) + "path.txt",
-			wantErr: true,
-		},
-		{
-			name:    "escape dot dot",
-			path:    "../escape.txt",
-			wantErr: true,
-		},
-		{
-			name:    "escape dot dot nested",
-			path:    "subdir/../../escape.txt",
-			wantErr: true,
-		},
-		{
-			name:    "escape just dot dot",
-			path:    "..",
-			wantErr: true,
-		},
-		{
-			name:    "valid with dots",
-			path:    "file-with-dots.test.txt",
-			wantErr: false,
-		},
-		{
-			name:    "valid current dir",
-			path:    "./current.txt",
-			wantErr: false,
-		},
-	}
-
-	// Add shared valid paths to the table
-	for _, p := range validRelativePaths {
-		tests = append(tests, struct {
-			name    string
-			path    string
-			wantErr bool
-		}{name: "valid " + p, path: p, wantErr: false})
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateRelativePath(dir, tt.path)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validateRelativePath() error = %v, wantErr %v", err, tt.wantErr)
+	// Invalid paths from shared fixture
+	for _, tt := range PathTraversalCases() {
+		t.Run(tt.Name, func(t *testing.T) {
+			if err := validateRelativePath(dir, tt.Path); err == nil {
+				t.Errorf("validateRelativePath(%q) expected error, got nil", tt.Path)
 			}
 		})
+	}
+
+	// Valid paths from shared fixture
+	for _, path := range validRelativePaths {
+		t.Run("valid "+path, func(t *testing.T) {
+			if err := validateRelativePath(dir, path); err != nil {
+				t.Errorf("validateRelativePath(%q) unexpected error: %v", path, err)
+			}
+		})
+	}
+}
+
+func TestPathTraversalCasesReturnsFreshSlice(t *testing.T) {
+	a := PathTraversalCases()
+	b := PathTraversalCases()
+
+	// Mutate the first slice and verify the second is unaffected.
+	if len(a) == 0 {
+		t.Fatal("PathTraversalCases() returned empty slice")
+	}
+	if len(b) == 0 {
+		t.Fatal("PathTraversalCases() returned empty slice on second call")
+	}
+	original := b[0].Name
+	a[0].Name = "MUTATED"
+	if b[0].Name != original {
+		t.Errorf("PathTraversalCases() returned shared slice: mutating one affected the other")
 	}
 }
 
@@ -159,7 +123,7 @@ func TestWriteFileWithValidPaths(t *testing.T) {
 
 	for _, name := range validRelativePaths {
 		t.Run(name, func(t *testing.T) {
-			writeAndVerify(t, dir, name, []byte("data"))
+			writeFileAndAssertExists(t, dir, name, []byte("data"))
 		})
 	}
 }

@@ -7,22 +7,37 @@ import (
 
 	"github.com/wesm/msgvault/internal/deletion"
 	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/query/querytest"
+	"github.com/wesm/msgvault/internal/testutil"
 )
 
-func testActionController(t *testing.T, engine *mockEngine) (*ActionController, string) {
+// ControllerTestEnv encapsulates common setup for ActionController tests.
+type ControllerTestEnv struct {
+	Ctrl *ActionController
+	Dir  string
+	Mgr  *deletion.Manager
+}
+
+// NewControllerTestEnv creates a ControllerTestEnv with a temporary directory
+// and deletion manager wired to the given engine.
+func NewControllerTestEnv(t *testing.T, engine *querytest.MockEngine) *ControllerTestEnv {
 	t.Helper()
 	dir := t.TempDir()
 	mgr, err := deletion.NewManager(filepath.Join(dir, "deletions"))
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	return NewActionController(engine, dir, mgr), dir
+	return &ControllerTestEnv{
+		Ctrl: NewActionController(engine, dir, mgr),
+		Dir:  dir,
+		Mgr:  mgr,
+	}
 }
 
 func newTestController(t *testing.T, gmailIDs ...string) *ActionController {
 	t.Helper()
-	ctrl, _ := testActionController(t, &mockEngine{gmailIDs: gmailIDs})
-	return ctrl
+	env := NewControllerTestEnv(t, &querytest.MockEngine{GmailIDs: gmailIDs})
+	return env.Ctrl
 }
 
 type stageArgs struct {
@@ -37,9 +52,6 @@ type stageArgs struct {
 func stageForDeletion(t *testing.T, ctrl *ActionController, args stageArgs) *deletion.Manifest {
 	t.Helper()
 	view := args.view
-	if view == 0 {
-		view = query.ViewSenders
-	}
 	manifest, err := ctrl.StageForDeletion(
 		args.aggregates, args.selection, view, args.accountID, args.accounts,
 		view, "", query.TimeYear, args.messages,
@@ -50,48 +62,22 @@ func stageForDeletion(t *testing.T, ctrl *ActionController, args stageArgs) *del
 	return manifest
 }
 
-func stringSet(keys ...string) map[string]bool {
-	m := make(map[string]bool, len(keys))
-	for _, k := range keys {
-		m[k] = true
-	}
-	return m
-}
-
-func idSet(ids ...int64) map[int64]bool {
-	m := make(map[int64]bool, len(ids))
-	for _, id := range ids {
-		m[id] = true
-	}
-	return m
-}
-
-func msgSummaries(sourceIDs ...string) []query.MessageSummary {
-	out := make([]query.MessageSummary, len(sourceIDs))
-	for i, sid := range sourceIDs {
-		out[i] = query.MessageSummary{ID: int64(i + 1), SourceMessageID: sid}
-	}
-	return out
-}
-
-func assertSingleFilter(t *testing.T, got []string, want string, label string) {
-	t.Helper()
-	if len(got) != 1 || got[0] != want {
-		t.Errorf("expected %s [%s], got %v", label, want, got)
-	}
+func msgSummary(id int64, sourceID string) query.MessageSummary {
+	return query.MessageSummary{ID: id, SourceMessageID: sourceID}
 }
 
 func TestStageForDeletion_FromAggregateSelection(t *testing.T) {
 	ctrl := newTestController(t, "gid1", "gid2", "gid3")
 
 	manifest := stageForDeletion(t, ctrl, stageArgs{
-		aggregates: stringSet("alice@example.com"),
+		aggregates: testutil.StringSet("alice@example.com"),
+		view:       query.ViewSenders,
 	})
 
 	if len(manifest.GmailIDs) != 3 {
 		t.Errorf("expected 3 gmail IDs, got %d", len(manifest.GmailIDs))
 	}
-	assertSingleFilter(t, manifest.Filters.Senders, "alice@example.com", "senders")
+	testutil.AssertStrings(t, manifest.Filters.Senders, "alice@example.com")
 	if manifest.CreatedBy != "tui" {
 		t.Errorf("expected createdBy 'tui', got %q", manifest.CreatedBy)
 	}
@@ -100,10 +86,15 @@ func TestStageForDeletion_FromAggregateSelection(t *testing.T) {
 func TestStageForDeletion_FromMessageSelection(t *testing.T) {
 	ctrl := newTestController(t)
 
-	messages := msgSummaries("gid_a", "gid_b", "gid_c")
+	messages := []query.MessageSummary{
+		msgSummary(10, "gid_a"),
+		msgSummary(20, "gid_b"),
+		msgSummary(30, "gid_c"),
+	}
 
 	manifest := stageForDeletion(t, ctrl, stageArgs{
-		selection: idSet(1, 3),
+		selection: testutil.IDSet(10, 30),
+		view:      query.ViewSenders,
 		messages:  messages,
 	})
 
@@ -131,16 +122,11 @@ func TestStageForDeletion_NoSelection(t *testing.T) {
 func TestStageForDeletion_MultipleAggregates_DeterministicFilter(t *testing.T) {
 	ctrl := newTestController(t, "gid1")
 
-	agg := stringSet("charlie@example.com", "alice@example.com", "bob@example.com")
+	agg := testutil.StringSet("charlie@example.com", "alice@example.com", "bob@example.com")
 
 	for i := 0; i < 10; i++ {
-		manifest := stageForDeletion(t, ctrl, stageArgs{aggregates: agg})
-		if len(manifest.Filters.Senders) != 3 ||
-			manifest.Filters.Senders[0] != "alice@example.com" ||
-			manifest.Filters.Senders[1] != "bob@example.com" ||
-			manifest.Filters.Senders[2] != "charlie@example.com" {
-			t.Fatalf("iteration %d: expected sorted senders [alice bob charlie], got %v", i, manifest.Filters.Senders)
-		}
+		manifest := stageForDeletion(t, ctrl, stageArgs{aggregates: agg, view: query.ViewSenders})
+		testutil.AssertStrings(t, manifest.Filters.Senders, "alice@example.com", "bob@example.com", "charlie@example.com")
 	}
 }
 
@@ -152,16 +138,16 @@ func TestStageForDeletion_ViewTypes(t *testing.T) {
 		check    func(t *testing.T, f deletion.Filters)
 	}{
 		{"senders", query.ViewSenders, "a@b.com", func(t *testing.T, f deletion.Filters) {
-			assertSingleFilter(t, f.Senders, "a@b.com", "senders")
+			testutil.AssertStrings(t, f.Senders, "a@b.com")
 		}},
 		{"recipients", query.ViewRecipients, "c@d.com", func(t *testing.T, f deletion.Filters) {
-			assertSingleFilter(t, f.Recipients, "c@d.com", "recipients")
+			testutil.AssertStrings(t, f.Recipients, "c@d.com")
 		}},
 		{"domains", query.ViewDomains, "example.com", func(t *testing.T, f deletion.Filters) {
-			assertSingleFilter(t, f.SenderDomains, "example.com", "sender_domains")
+			testutil.AssertStrings(t, f.SenderDomains, "example.com")
 		}},
 		{"labels", query.ViewLabels, "INBOX", func(t *testing.T, f deletion.Filters) {
-			assertSingleFilter(t, f.Labels, "INBOX", "labels")
+			testutil.AssertStrings(t, f.Labels, "INBOX")
 		}},
 	}
 
@@ -170,7 +156,7 @@ func TestStageForDeletion_ViewTypes(t *testing.T) {
 			ctrl := newTestController(t, "gid1")
 
 			manifest := stageForDeletion(t, ctrl, stageArgs{
-				aggregates: stringSet(tt.key),
+				aggregates: testutil.StringSet(tt.key),
 				view:       tt.viewType,
 			})
 			tt.check(t, manifest.Filters)
@@ -187,7 +173,8 @@ func TestStageForDeletion_AccountFilter(t *testing.T) {
 	}
 
 	manifest := stageForDeletion(t, ctrl, stageArgs{
-		aggregates: stringSet("sender@x.com"),
+		aggregates: testutil.StringSet("sender@x.com"),
+		view:       query.ViewSenders,
 		accountID:  &accountID,
 		accounts:   accounts,
 	})

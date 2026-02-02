@@ -2,14 +2,18 @@ package update
 
 import (
 	"archive/tar"
-	"compress/gzip"
-	"os"
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/wesm/msgvault/internal/testutil"
 )
 
+const testHash64 = "abc123def456789012345678901234567890123456789012345678901234abcd"
+
 func TestSanitizeTarPath(t *testing.T) {
+	t.Parallel()
 	destDir := t.TempDir()
 
 	tests := []struct {
@@ -31,6 +35,7 @@ func TestSanitizeTarPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if tt.skipOnWin && runtime.GOOS == "windows" {
 				t.Skip("Unix-style absolute path not applicable on Windows")
 			}
@@ -42,57 +47,14 @@ func TestSanitizeTarPath(t *testing.T) {
 	}
 }
 
-type archiveEntry struct {
-	Name     string
-	Content  string
-	TypeFlag byte
-	LinkName string
-	Mode     int64
-}
-
-func createTestArchive(t *testing.T, path string, entries []archiveEntry) {
-	t.Helper()
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-
-	gzw := gzip.NewWriter(f)
-	defer gzw.Close()
-	tw := tar.NewWriter(gzw)
-	defer tw.Close()
-
-	for _, e := range entries {
-		mode := e.Mode
-		if mode == 0 {
-			mode = 0644
-		}
-		h := &tar.Header{
-			Name:     e.Name,
-			Mode:     mode,
-			Size:     int64(len(e.Content)),
-			Typeflag: e.TypeFlag,
-			Linkname: e.LinkName,
-		}
-		if err := tw.WriteHeader(h); err != nil {
-			t.Fatal(err)
-		}
-		if len(e.Content) > 0 {
-			if _, err := tw.Write([]byte(e.Content)); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-}
-
 func TestExtractTarGzPathTraversal(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	archivePath := filepath.Join(tmpDir, "malicious.tar.gz")
 	extractDir := filepath.Join(tmpDir, "extract")
 	outsideFile := filepath.Join(tmpDir, "pwned")
 
-	createTestArchive(t, archivePath, []archiveEntry{
+	testutil.CreateTarGz(t, archivePath, []testutil.ArchiveEntry{
 		{Name: "../pwned", Content: "owned"},
 	})
 
@@ -101,17 +63,16 @@ func TestExtractTarGzPathTraversal(t *testing.T) {
 		t.Error("extractTarGz should fail with path traversal attempt")
 	}
 
-	if _, err := os.Stat(outsideFile); !os.IsNotExist(err) {
-		t.Error("Malicious file was created outside extract dir")
-	}
+	testutil.MustNotExist(t, outsideFile)
 }
 
 func TestExtractTarGzSymlinkSkipped(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	archivePath := filepath.Join(tmpDir, "symlink.tar.gz")
 	extractDir := filepath.Join(tmpDir, "extract")
 
-	createTestArchive(t, archivePath, []archiveEntry{
+	testutil.CreateTarGz(t, archivePath, []testutil.ArchiveEntry{
 		{Name: "evil-link", TypeFlag: tar.TypeSymlink, LinkName: "/etc/passwd"},
 		{Name: "normal.txt", Content: "test"},
 	})
@@ -120,16 +81,16 @@ func TestExtractTarGzSymlinkSkipped(t *testing.T) {
 		t.Fatalf("extractTarGz failed: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(extractDir, "normal.txt")); err != nil {
-		t.Error("Normal file should have been extracted")
-	}
-
-	if _, err := os.Lstat(filepath.Join(extractDir, "evil-link")); !os.IsNotExist(err) {
-		t.Error("Symlink should have been skipped")
-	}
+	testutil.MustExist(t, filepath.Join(extractDir, "normal.txt"))
+	testutil.MustNotExist(t, filepath.Join(extractDir, "evil-link"))
 }
 
 func TestExtractChecksum(t *testing.T) {
+	t.Parallel()
+
+	hashAAAA := "abc123def456789012345678901234567890123456789012345678901234aaaa"
+	hashBBBB := "abc123def456789012345678901234567890123456789012345678901234bbbb"
+
 	tests := []struct {
 		name      string
 		body      string
@@ -138,25 +99,25 @@ func TestExtractChecksum(t *testing.T) {
 	}{
 		{
 			name:      "standard sha256sum format",
-			body:      "abc123def456789012345678901234567890123456789012345678901234abcd  msgvault_darwin_arm64.tar.gz",
+			body:      fmt.Sprintf("%s  msgvault_darwin_arm64.tar.gz", testHash64),
 			assetName: "msgvault_darwin_arm64.tar.gz",
-			want:      "abc123def456789012345678901234567890123456789012345678901234abcd",
+			want:      testHash64,
 		},
 		{
 			name:      "uppercase checksum",
 			body:      "ABC123DEF456789012345678901234567890123456789012345678901234ABCD  msgvault_linux_amd64.tar.gz",
 			assetName: "msgvault_linux_amd64.tar.gz",
-			want:      "abc123def456789012345678901234567890123456789012345678901234abcd",
+			want:      testHash64,
 		},
 		{
 			name:      "multiline with target in middle",
-			body:      "abc123def456789012345678901234567890123456789012345678901234aaaa  msgvault_linux_amd64.tar.gz\nabc123def456789012345678901234567890123456789012345678901234bbbb  msgvault_darwin_arm64.tar.gz",
+			body:      fmt.Sprintf("%s  msgvault_linux_amd64.tar.gz\n%s  msgvault_darwin_arm64.tar.gz", hashAAAA, hashBBBB),
 			assetName: "msgvault_darwin_arm64.tar.gz",
-			want:      "abc123def456789012345678901234567890123456789012345678901234bbbb",
+			want:      hashBBBB,
 		},
 		{
 			name:      "no match",
-			body:      "abc123def456789012345678901234567890123456789012345678901234abcd  msgvault_linux_amd64.tar.gz",
+			body:      fmt.Sprintf("%s  msgvault_linux_amd64.tar.gz", testHash64),
 			assetName: "msgvault_darwin_arm64.tar.gz",
 			want:      "",
 		},
@@ -168,32 +129,33 @@ func TestExtractChecksum(t *testing.T) {
 		},
 		{
 			name:      "substring filename should not match",
-			body:      "abc123def456789012345678901234567890123456789012345678901234abcd  msgvault_darwin_arm64.tar.gz.sig",
+			body:      fmt.Sprintf("%s  msgvault_darwin_arm64.tar.gz.sig", testHash64),
 			assetName: "msgvault_darwin_arm64.tar.gz",
 			want:      "",
 		},
 		{
 			name:      "exact match with superset also present",
-			body:      "abc123def456789012345678901234567890123456789012345678901234aaaa  msgvault_darwin_arm64.tar.gz.sig\nabc123def456789012345678901234567890123456789012345678901234bbbb  msgvault_darwin_arm64.tar.gz",
+			body:      fmt.Sprintf("%s  msgvault_darwin_arm64.tar.gz.sig\n%s  msgvault_darwin_arm64.tar.gz", hashAAAA, hashBBBB),
 			assetName: "msgvault_darwin_arm64.tar.gz",
-			want:      "abc123def456789012345678901234567890123456789012345678901234bbbb",
+			want:      hashBBBB,
 		},
 		{
 			name:      "binary mode star prefix",
-			body:      "abc123def456789012345678901234567890123456789012345678901234abcd *msgvault_darwin_arm64.tar.gz",
+			body:      fmt.Sprintf("%s *msgvault_darwin_arm64.tar.gz", testHash64),
 			assetName: "msgvault_darwin_arm64.tar.gz",
-			want:      "abc123def456789012345678901234567890123456789012345678901234abcd",
+			want:      testHash64,
 		},
 		{
 			name:      "trailing comment ignored",
-			body:      "abc123def456789012345678901234567890123456789012345678901234abcd  msgvault_darwin_arm64.tar.gz  # some comment",
+			body:      fmt.Sprintf("%s  msgvault_darwin_arm64.tar.gz  # some comment", testHash64),
 			assetName: "msgvault_darwin_arm64.tar.gz",
-			want:      "abc123def456789012345678901234567890123456789012345678901234abcd",
+			want:      testHash64,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := extractChecksum(tt.body, tt.assetName)
 			if got != tt.want {
 				t.Errorf("extractChecksum() = %q, want %q", got, tt.want)
@@ -203,6 +165,7 @@ func TestExtractChecksum(t *testing.T) {
 }
 
 func TestExtractBaseSemver(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		version string
 		want    string
@@ -225,6 +188,7 @@ func TestExtractBaseSemver(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.version, func(t *testing.T) {
+			t.Parallel()
 			got := extractBaseSemver(tt.version)
 			if got != tt.want {
 				t.Errorf("extractBaseSemver(%q) = %q, want %q", tt.version, got, tt.want)
@@ -234,6 +198,7 @@ func TestExtractBaseSemver(t *testing.T) {
 }
 
 func TestIsDevBuildVersion(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		version string
 		want    bool
@@ -252,6 +217,7 @@ func TestIsDevBuildVersion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.version, func(t *testing.T) {
+			t.Parallel()
 			got := isDevBuildVersion(tt.version)
 			if got != tt.want {
 				t.Errorf("isDevBuildVersion(%q) = %v, want %v", tt.version, got, tt.want)
@@ -261,41 +227,44 @@ func TestIsDevBuildVersion(t *testing.T) {
 }
 
 func TestIsNewer(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
-		v1, v2 string
-		want   bool
+		name       string
+		v1, v2     string
+		want       bool
 	}{
-		{"1.0.0", "0.9.0", true},
-		{"1.1.0", "1.0.0", true},
-		{"1.0.1", "1.0.0", true},
-		{"2.0.0", "1.9.9", true},
-		{"1.0.0", "1.0.0", false},
-		{"0.9.0", "1.0.0", false},
-		{"v1.0.0", "v0.9.0", true},
-		{"0.4.2", "88be010", false},
-		{"0.4.2", "dev", false},
-		{"badversion", "0.4.0", false},
-		{"0.4.0", "0.4.0-5-gabcdef", false},
-		{"0.5.0", "0.4.0-5-gabcdef", true},
-		{"0.4.1", "0.4.0-5-gabcdef", true},
-		{"0.3.0", "0.4.0-5-gabcdef", false},
-		{"0.5.0", "0.4.0-rc1", true},
-		{"0.4.0", "0.4.0-rc1", true},  // release > prerelease of same version
-		{"0.4.0-rc1", "0.4.0", false}, // prerelease is not newer than release
-		{"0.4.0-rc2", "0.4.0-rc1", true},    // rc2 > rc1
-		{"0.4.0-rc10", "0.4.0-rc2", true},   // numeric comparison: 10 > 2
-		{"0.4.0-rc2", "0.4.0-rc10", false},  // numeric comparison: 2 < 10
-		{"0.4.0-beta10", "0.4.0-beta2", true}, // beta10 > beta2
-		{"0.4.0-rc1", "0.4.0-beta1", true},  // rc > beta lexicographically
-		{"0.4.0-alpha1", "0.4.0-beta1", false}, // alpha < beta
-		{"0.4.0-rc.2", "0.4.0-rc.1", true},    // dotted prerelease
-		{"0.4.0-1", "0.4.0-rc1", false},       // numeric segment < non-numeric (semver rule)
-		{"0.4.0-rc1", "0.4.0-1", true},        // non-numeric > numeric
-		{"0.4.0-beta1", "0.3.9", true},        // prerelease of higher base > lower release
+		{"major version bump", "1.0.0", "0.9.0", true},
+		{"minor version bump", "1.1.0", "1.0.0", true},
+		{"patch version bump", "1.0.1", "1.0.0", true},
+		{"major boundary crossing", "2.0.0", "1.9.9", true},
+		{"same version not newer", "1.0.0", "1.0.0", false},
+		{"older version not newer", "0.9.0", "1.0.0", false},
+		{"v prefix handled", "v1.0.0", "v0.9.0", true},
+		{"release vs non-semver hash", "0.4.2", "88be010", false},
+		{"release vs dev string", "0.4.2", "dev", false},
+		{"bad version not newer", "badversion", "0.4.0", false},
+		{"same base as dev build not newer", "0.4.0", "0.4.0-5-gabcdef", false},
+		{"higher minor than dev build", "0.5.0", "0.4.0-5-gabcdef", true},
+		{"higher patch than dev build", "0.4.1", "0.4.0-5-gabcdef", true},
+		{"lower version than dev build", "0.3.0", "0.4.0-5-gabcdef", false},
+		{"higher minor than prerelease", "0.5.0", "0.4.0-rc1", true},
+		{"release newer than its prerelease", "0.4.0", "0.4.0-rc1", true},
+		{"prerelease not newer than release", "0.4.0-rc1", "0.4.0", false},
+		{"rc2 newer than rc1", "0.4.0-rc2", "0.4.0-rc1", true},
+		{"numeric prerelease comparison rc10 vs rc2", "0.4.0-rc10", "0.4.0-rc2", true},
+		{"numeric prerelease comparison rc2 vs rc10", "0.4.0-rc2", "0.4.0-rc10", false},
+		{"numeric prerelease beta10 vs beta2", "0.4.0-beta10", "0.4.0-beta2", true},
+		{"rc newer than beta lexicographically", "0.4.0-rc1", "0.4.0-beta1", true},
+		{"alpha older than beta", "0.4.0-alpha1", "0.4.0-beta1", false},
+		{"dotted prerelease comparison", "0.4.0-rc.2", "0.4.0-rc.1", true},
+		{"numeric segment less than non-numeric", "0.4.0-1", "0.4.0-rc1", false},
+		{"non-numeric greater than numeric", "0.4.0-rc1", "0.4.0-1", true},
+		{"prerelease of higher base beats lower release", "0.4.0-beta1", "0.3.9", true},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.v1+"_vs_"+tt.v2, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := isNewer(tt.v1, tt.v2)
 			if got != tt.want {
 				t.Errorf("isNewer(%q, %q) = %v, want %v", tt.v1, tt.v2, got, tt.want)
@@ -305,6 +274,7 @@ func TestIsNewer(t *testing.T) {
 }
 
 func TestFindAssets(t *testing.T) {
+	t.Parallel()
 	assets := []Asset{
 		{Name: "msgvault_linux_amd64.tar.gz", Size: 1000, BrowserDownloadURL: "https://example.com/linux_amd64"},
 		{Name: "msgvault_darwin_arm64.tar.gz", Size: 2000, BrowserDownloadURL: "https://example.com/darwin_arm64"},
@@ -335,15 +305,16 @@ func TestFindAssets(t *testing.T) {
 			wantChecksumsURL: "https://example.com/checksums",
 		},
 		{
-			name:         "asset not found",
-			assetName:    "msgvault_freebsd_amd64.tar.gz",
-			wantAssetNil: true,
+			name:             "asset not found",
+			assetName:        "msgvault_freebsd_amd64.tar.gz",
+			wantAssetNil:     true,
 			wantChecksumsURL: "https://example.com/checksums",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			asset, checksums := findAssets(assets, tt.assetName)
 
 			if tt.wantAssetNil {
@@ -373,6 +344,7 @@ func TestFindAssets(t *testing.T) {
 }
 
 func TestFormatSize(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		bytes int64
 		want  string
@@ -386,6 +358,7 @@ func TestFormatSize(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
+			t.Parallel()
 			got := FormatSize(tt.bytes)
 			if got != tt.want {
 				t.Errorf("FormatSize(%d) = %q, want %q", tt.bytes, got, tt.want)

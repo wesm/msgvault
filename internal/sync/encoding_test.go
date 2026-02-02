@@ -1,9 +1,9 @@
 package sync
 
 import (
-	"strings"
 	"testing"
-	"unicode/utf8"
+
+	"github.com/wesm/msgvault/internal/testutil"
 )
 
 // encodingCase defines a test case for encoding conversion functions.
@@ -11,24 +11,6 @@ type encodingCase struct {
 	name     string
 	input    []byte
 	expected string
-}
-
-// assertValidUTF8 asserts that the given string is valid UTF-8.
-func assertValidUTF8(t *testing.T, s string) {
-	t.Helper()
-	if !utf8.ValidString(s) {
-		t.Errorf("result is not valid UTF-8: %q", s)
-	}
-}
-
-// assertContainsAll asserts that got contains every substring in subs.
-func assertContainsAll(t *testing.T, got string, subs []string) {
-	t.Helper()
-	for _, substr := range subs {
-		if !strings.Contains(got, substr) {
-			t.Errorf("result %q should contain %q", got, substr)
-		}
-	}
 }
 
 // runEncodingTests runs table-driven tests that call ensureUTF8 on byte input
@@ -40,74 +22,68 @@ func runEncodingTests(t *testing.T, tests []encodingCase) {
 			if result != tt.expected {
 				t.Errorf("got %q, want %q", result, tt.expected)
 			}
-			assertValidUTF8(t, result)
+			testutil.AssertValidUTF8(t, result)
 		})
 	}
 }
 
 func TestEnsureUTF8_AlreadyValid(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-	}{
-		{"ASCII", "Hello, World!"},
-		{"UTF-8 Chinese", "你好世界"},
-		{"UTF-8 Japanese", "こんにちは"},
-		{"UTF-8 Korean", "안녕하세요"},
-		{"UTF-8 Cyrillic", "Привет мир"},
-		{"UTF-8 mixed", "Hello 世界! Привет!"},
-		{"UTF-8 emoji", "Hello 👋 World 🌍"},
-		{"empty string", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := ensureUTF8(tt.input)
-			if result != tt.input {
-				t.Errorf("ensureUTF8(%q) = %q, want unchanged", tt.input, result)
-			}
-		})
-	}
+	runEncodingTests(t, []encodingCase{
+		{"ASCII", []byte("Hello, World!"), "Hello, World!"},
+		{"UTF-8 Chinese", []byte("你好世界"), "你好世界"},
+		{"UTF-8 Japanese", []byte("こんにちは"), "こんにちは"},
+		{"UTF-8 Korean", []byte("안녕하세요"), "안녕하세요"},
+		{"UTF-8 Cyrillic", []byte("Привет мир"), "Привет мир"},
+		{"UTF-8 mixed", []byte("Hello 世界! Привет!"), "Hello 世界! Привет!"},
+		{"UTF-8 emoji", []byte("Hello 👋 World 🌍"), "Hello 👋 World 🌍"},
+		{"empty string", []byte(""), ""},
+	})
 }
 
 func TestEnsureUTF8_Windows1252(t *testing.T) {
+	enc := testutil.EncodedSamples()
 	runEncodingTests(t, []encodingCase{
-		{"smart single quote (right)", []byte("Rand\x92s Opponent"), "Rand\u2019s Opponent"},
-		{"en dash", []byte("2020 \x96 2024"), "2020 \u2013 2024"},
-		{"em dash", []byte("Hello\x97World"), "Hello\u2014World"},
-		{"left double quote", []byte("\x93Hello\x94"), "\u201cHello\u201d"},
-		{"trademark", []byte("Brand\x99"), "Brand\u2122"},
-		{"bullet", []byte("\x95 Item"), "\u2022 Item"},
-		{"euro sign", []byte("Price: \x80100"), "Price: \u20ac100"},
+		{"smart single quote (right)", enc.Win1252_SmartQuoteRight, "Rand\u2019s Opponent"},
+		{"en dash", enc.Win1252_EnDash, "2020 \u2013 2024"},
+		{"em dash", enc.Win1252_EmDash, "Hello\u2014World"},
+		{"left double quote", enc.Win1252_DoubleQuotes, "\u201cHello\u201d"},
+		{"trademark", enc.Win1252_Trademark, "Brand\u2122"},
+		{"bullet", enc.Win1252_Bullet, "\u2022 Item"},
+		{"euro sign", enc.Win1252_Euro, "Price: \u20ac100"},
 	})
 }
 
 func TestEnsureUTF8_Latin1(t *testing.T) {
+	enc := testutil.EncodedSamples()
 	runEncodingTests(t, []encodingCase{
-		{"o with acute", []byte("Mir\xf3 - Picasso"), "Miró - Picasso"},
-		{"c with cedilla", []byte("Gar\xe7on"), "Garçon"},
-		{"u with umlaut", []byte("M\xfcnchen"), "München"},
-		{"n with tilde", []byte("Espa\xf1a"), "España"},
-		{"registered trademark", []byte("Laguiole.com \xae"), "Laguiole.com ®"},
-		{"degree symbol", []byte("25\xb0C"), "25°C"},
+		{"o with acute", enc.Latin1_OAcute, "Miró - Picasso"},
+		{"c with cedilla", enc.Latin1_CCedilla, "Garçon"},
+		{"u with umlaut", enc.Latin1_UUmlaut, "München"},
+		{"n with tilde", enc.Latin1_NTilde, "España"},
+		{"registered trademark", enc.Latin1_Registered, "Laguiole.com ®"},
+		{"degree symbol", enc.Latin1_Degree, "25°C"},
 	})
 }
 
 func TestEnsureUTF8_AsianEncodings(t *testing.T) {
+	// ensureUTF8 relies on chardet heuristics without charset hints. Short
+	// byte sequences from CJK encodings are typically misidentified, so we
+	// can only assert valid UTF-8 output (not exact decoded strings).
+	enc := testutil.EncodedSamples()
 	tests := []struct {
 		name  string
 		input []byte
 	}{
-		{"Shift-JIS Japanese", []byte{0x82, 0xb1, 0x82, 0xf1, 0x82, 0xc9, 0x82, 0xbf, 0x82, 0xcd}},
-		{"GBK Simplified Chinese", []byte{0xc4, 0xe3, 0xba, 0xc3}},
-		{"Big5 Traditional Chinese", []byte{0xa9, 0x6f, 0xa6, 0x6e}},
-		{"EUC-KR Korean", []byte{0xbe, 0xc8, 0xb3, 0xe7}},
+		{"Shift-JIS Japanese", enc.ShiftJIS_Konnichiwa},
+		{"GBK Simplified Chinese", enc.GBK_Nihao},
+		{"Big5 Traditional Chinese", enc.Big5_Nihao},
+		{"EUC-KR Korean", enc.EUCKR_Annyeong},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := ensureUTF8(string(tt.input))
-			assertValidUTF8(t, result)
+			testutil.AssertValidUTF8(t, result)
 			if len(result) == 0 {
 				t.Errorf("result is empty")
 			}
@@ -136,8 +112,8 @@ func TestEnsureUTF8_MixedContent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := ensureUTF8(string(tt.input))
-			assertValidUTF8(t, result)
-			assertContainsAll(t, result, tt.contains)
+			testutil.AssertValidUTF8(t, result)
+			testutil.AssertContainsAll(t, result, tt.contains)
 		})
 	}
 }
@@ -161,7 +137,7 @@ func TestSanitizeUTF8(t *testing.T) {
 			if result != tt.expected {
 				t.Errorf("sanitizeUTF8(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
-			assertValidUTF8(t, result)
+			testutil.AssertValidUTF8(t, result)
 		})
 	}
 }
