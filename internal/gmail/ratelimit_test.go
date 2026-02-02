@@ -113,6 +113,47 @@ func getThrottledUntil(rl *RateLimiter) time.Time {
 	return rl.throttledUntil
 }
 
+// rlFixture encapsulates the mock clock and rate limiter for test setup.
+type rlFixture struct {
+	clk *mockClock
+	rl  *RateLimiter
+}
+
+func newRLFixture() *rlFixture {
+	clk := newMockClock()
+	return &rlFixture{
+		clk: clk,
+		rl:  newTestLimiterWithClock(clk),
+	}
+}
+
+// drain sets tokens to zero.
+func (f *rlFixture) drain() {
+	setTokens(f.rl, 0)
+}
+
+// assertAvailable checks the current available tokens.
+func (f *rlFixture) assertAvailable(t *testing.T, expected float64) {
+	t.Helper()
+	if got := f.rl.Available(); got != expected {
+		t.Errorf("Available() = %v, want %v", got, expected)
+	}
+}
+
+// acquireAsync runs Acquire in a background goroutine and returns a channel
+// that receives the result. It waits for the goroutine to register a timer
+// on the mock clock before returning.
+func (f *rlFixture) acquireAsync(t *testing.T, ctx context.Context, op Operation) <-chan error {
+	t.Helper()
+	timersBefore := f.clk.TimerCount()
+	ch := make(chan error, 1)
+	go func() {
+		ch <- f.rl.Acquire(ctx, op)
+	}()
+	waitForTimers(t, f.clk, timersBefore+1)
+	return ch
+}
+
 func TestOperationCost(t *testing.T) {
 	tests := []struct {
 		op   Operation
@@ -168,55 +209,50 @@ func TestNewRateLimiter_ScaledQPS(t *testing.T) {
 }
 
 func TestRateLimiter_TryAcquire(t *testing.T) {
-	clk := newMockClock()
-	rl := newTestLimiterWithClock(clk)
+	f := newRLFixture()
 
-	if !rl.TryAcquire(OpProfile) {
+	if !f.rl.TryAcquire(OpProfile) {
 		t.Error("TryAcquire(OpProfile) should succeed when bucket is full")
 	}
 
-	// Drain via direct state manipulation
-	setTokens(rl, 0)
+	f.drain()
 
-	if rl.TryAcquire(OpMessagesBatchDelete) {
+	if f.rl.TryAcquire(OpMessagesBatchDelete) {
 		t.Error("TryAcquire(OpMessagesBatchDelete) should fail when bucket is empty")
 	}
 }
 
 func TestRateLimiter_Acquire_Success(t *testing.T) {
-	clk := newMockClock()
-	rl := newTestLimiterWithClock(clk)
+	f := newRLFixture()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	err := rl.Acquire(ctx, OpProfile)
+	err := f.rl.Acquire(ctx, OpProfile)
 	if err != nil {
 		t.Errorf("Acquire() error = %v", err)
 	}
 }
 
 func TestRateLimiter_Acquire_ContextCancelled(t *testing.T) {
-	clk := newMockClock()
-	rl := newTestLimiterWithClock(clk)
-	setTokens(rl, 0)
+	f := newRLFixture()
+	f.drain()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := rl.Acquire(ctx, OpMessagesGet)
+	err := f.rl.Acquire(ctx, OpMessagesGet)
 	if err != context.Canceled {
 		t.Errorf("Acquire() with cancelled context = %v, want context.Canceled", err)
 	}
 }
 
 func TestRateLimiter_Acquire_ContextTimeout(t *testing.T) {
-	clk := newMockClock()
-	rl := newTestLimiterWithClock(clk)
-	setTokens(rl, 0)
+	f := newRLFixture()
+	f.drain()
 	// Set a very slow refill so tokens won't accumulate
-	rl.mu.Lock()
-	rl.refillRate = 0.001
-	rl.mu.Unlock()
+	f.rl.mu.Lock()
+	f.rl.refillRate = 0.001
+	f.rl.mu.Unlock()
 
 	// Use context.WithCancel and cancel via the mock clock to avoid
 	// mixing real-time deadlines with mock clock advancement.
@@ -225,21 +261,15 @@ func TestRateLimiter_Acquire_ContextTimeout(t *testing.T) {
 
 	// Schedule cancellation when the mock clock advances past 50ms
 	go func() {
-		<-clk.After(50 * time.Millisecond)
+		<-f.clk.After(50 * time.Millisecond)
 		cancel()
 	}()
+	waitForTimers(t, f.clk, 1)
 
-	done := make(chan error, 1)
-	go func() {
-		done <- rl.Acquire(ctx, OpMessagesBatchDelete)
-	}()
-
-	// Wait for both goroutines to register their mock clock timers
-	// (cancel goroutine's clk.After + Acquire's internal clk.After)
-	waitForTimers(t, clk, 2)
+	done := f.acquireAsync(t, ctx, OpMessagesBatchDelete)
 
 	// Advance mock clock past the cancel point
-	clk.Advance(100 * time.Millisecond)
+	f.clk.Advance(100 * time.Millisecond)
 
 	select {
 	case err := <-done:
@@ -252,40 +282,25 @@ func TestRateLimiter_Acquire_ContextTimeout(t *testing.T) {
 }
 
 func TestRateLimiter_Refill(t *testing.T) {
-	clk := newMockClock()
-	rl := newTestLimiterWithClock(clk)
-	setTokens(rl, 0)
+	f := newRLFixture()
+	f.drain()
 
-	initial := rl.Available()
-	if initial != 0 {
-		t.Fatalf("expected 0 tokens, got %v", initial)
-	}
+	f.assertAvailable(t, 0)
 
 	// Advance clock by 1 second: should refill 250 tokens
-	clk.Advance(1 * time.Second)
+	f.clk.Advance(1 * time.Second)
 
-	after := rl.Available()
-	if after != DefaultCapacity {
-		t.Errorf("Available() after 1s = %v, want %v", after, float64(DefaultCapacity))
-	}
+	f.assertAvailable(t, DefaultCapacity)
 }
 
 func TestRateLimiter_Available(t *testing.T) {
-	clk := newMockClock()
-	rl := newTestLimiterWithClock(clk)
+	f := newRLFixture()
 
-	initial := rl.Available()
-	if initial != DefaultCapacity {
-		t.Errorf("Available() = %v, want %v", initial, float64(DefaultCapacity))
-	}
+	f.assertAvailable(t, DefaultCapacity)
 
-	rl.TryAcquire(OpMessagesGet) // cost 5
+	f.rl.TryAcquire(OpMessagesGet) // cost 5
 
-	after := rl.Available()
-	expected := float64(DefaultCapacity - 5)
-	if after != expected {
-		t.Errorf("Available() after acquire = %v, want %v", after, expected)
-	}
+	f.assertAvailable(t, float64(DefaultCapacity-5))
 }
 
 func TestRateLimiter_Concurrent(t *testing.T) {
@@ -317,13 +332,12 @@ func TestRateLimiter_Concurrent(t *testing.T) {
 }
 
 func TestRateLimiter_CapacityLimit(t *testing.T) {
-	clk := newMockClock()
-	rl := newTestLimiterWithClock(clk)
+	f := newRLFixture()
 
 	// Advance time significantly — tokens should still be capped
-	clk.Advance(10 * time.Second)
+	f.clk.Advance(10 * time.Second)
 
-	avail := rl.Available()
+	avail := f.rl.Available()
 	if avail > float64(DefaultCapacity) {
 		t.Errorf("Available() = %v, should not exceed capacity %v", avail, DefaultCapacity)
 	}
@@ -331,54 +345,47 @@ func TestRateLimiter_CapacityLimit(t *testing.T) {
 
 func TestRateLimiter_Throttle(t *testing.T) {
 	t.Run("DrainsTokensAndBlocksRefill", func(t *testing.T) {
-		clk := newMockClock()
-		rl := newTestLimiterWithClock(clk)
+		f := newRLFixture()
 
-		rl.Throttle(100 * time.Millisecond)
+		f.rl.Throttle(100 * time.Millisecond)
 
-		if got := rl.Available(); got != 0 {
-			t.Errorf("Available() after Throttle = %v, want 0", got)
-		}
+		f.assertAvailable(t, 0)
 
 		// Advance 50ms (still within throttle) — tokens should remain 0
-		clk.Advance(50 * time.Millisecond)
-		if got := rl.Available(); got != 0 {
-			t.Errorf("Available() during throttle = %v, want 0", got)
-		}
+		f.clk.Advance(50 * time.Millisecond)
+		f.assertAvailable(t, 0)
 
 		// Advance past throttle expiry
-		clk.Advance(60 * time.Millisecond)
-		if got := rl.Available(); got <= 0 {
+		f.clk.Advance(60 * time.Millisecond)
+		if got := f.rl.Available(); got <= 0 {
 			t.Errorf("Available() after throttle expiry = %v, expected > 0", got)
 		}
 	})
 
 	t.Run("RecoverRate", func(t *testing.T) {
-		clk := newMockClock()
-		rl := newTestLimiterWithClock(clk)
+		f := newRLFixture()
 
-		rl.Throttle(10 * time.Millisecond)
+		f.rl.Throttle(10 * time.Millisecond)
 
-		if got := getRefillRate(rl); got != DefaultRefillRate*0.5 {
+		if got := getRefillRate(f.rl); got != DefaultRefillRate*0.5 {
 			t.Errorf("refillRate after Throttle = %v, want %v", got, DefaultRefillRate*0.5)
 		}
 
-		rl.RecoverRate()
+		f.rl.RecoverRate()
 
-		if got := getRefillRate(rl); got != DefaultRefillRate {
+		if got := getRefillRate(f.rl); got != DefaultRefillRate {
 			t.Errorf("refillRate after RecoverRate = %v, want %v", got, DefaultRefillRate)
 		}
 	})
 
 	t.Run("DoesNotShortenBackoff", func(t *testing.T) {
-		clk := newMockClock()
-		rl := newTestLimiterWithClock(clk)
+		f := newRLFixture()
 
-		rl.Throttle(200 * time.Millisecond)
-		first := getThrottledUntil(rl)
+		f.rl.Throttle(200 * time.Millisecond)
+		first := getThrottledUntil(f.rl)
 
-		rl.Throttle(50 * time.Millisecond)
-		second := getThrottledUntil(rl)
+		f.rl.Throttle(50 * time.Millisecond)
+		second := getThrottledUntil(f.rl)
 
 		if second.Before(first) {
 			t.Errorf("Throttle shortened existing backoff: first=%v, second=%v", first, second)
@@ -386,15 +393,14 @@ func TestRateLimiter_Throttle(t *testing.T) {
 	})
 
 	t.Run("ExtendsBackoff", func(t *testing.T) {
-		clk := newMockClock()
-		rl := newTestLimiterWithClock(clk)
+		f := newRLFixture()
 
-		rl.Throttle(50 * time.Millisecond)
-		first := getThrottledUntil(rl)
+		f.rl.Throttle(50 * time.Millisecond)
+		first := getThrottledUntil(f.rl)
 
-		clk.Advance(30 * time.Millisecond)
-		rl.Throttle(50 * time.Millisecond)
-		second := getThrottledUntil(rl)
+		f.clk.Advance(30 * time.Millisecond)
+		f.rl.Throttle(50 * time.Millisecond)
+		second := getThrottledUntil(f.rl)
 
 		if !second.After(first) {
 			t.Errorf("Throttle did not extend backoff: first=%v, second=%v", first, second)
@@ -402,38 +408,32 @@ func TestRateLimiter_Throttle(t *testing.T) {
 	})
 
 	t.Run("AutoRecoverRate", func(t *testing.T) {
-		clk := newMockClock()
-		rl := newTestLimiterWithClock(clk)
+		f := newRLFixture()
 
-		rl.Throttle(50 * time.Millisecond)
+		f.rl.Throttle(50 * time.Millisecond)
 
-		if got := getRefillRate(rl); got != DefaultRefillRate*0.5 {
+		if got := getRefillRate(f.rl); got != DefaultRefillRate*0.5 {
 			t.Errorf("refillRate after Throttle = %v, want %v", got, DefaultRefillRate*0.5)
 		}
 
-		clk.Advance(100 * time.Millisecond)
-		rl.Available() // triggers refill and auto-recovery
+		f.clk.Advance(100 * time.Millisecond)
+		f.rl.Available() // triggers refill and auto-recovery
 
-		if got := getRefillRate(rl); got != DefaultRefillRate {
+		if got := getRefillRate(f.rl); got != DefaultRefillRate {
 			t.Errorf("refillRate after throttle expiry = %v, want %v", got, DefaultRefillRate)
 		}
 	})
 }
 
 func TestRateLimiter_Acquire_WaitsForThrottle(t *testing.T) {
-	clk := newMockClock()
-	rl := newTestLimiterWithClock(clk)
+	f := newRLFixture()
 
-	rl.Throttle(100 * time.Millisecond)
+	f.rl.Throttle(100 * time.Millisecond)
 
-	ctx := context.Background()
-	done := make(chan error, 1)
-	go func() {
-		done <- rl.Acquire(ctx, OpProfile)
-	}()
+	done := f.acquireAsync(t, context.Background(), OpProfile)
 
 	// Advance past throttle — Acquire should complete
-	clk.Advance(150 * time.Millisecond)
+	f.clk.Advance(150 * time.Millisecond)
 
 	select {
 	case err := <-done:
