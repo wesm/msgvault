@@ -78,10 +78,19 @@ func (b *MessageBuilder) Body(v string) *MessageBuilder { b.body = v; return b }
 func (b *MessageBuilder) Header(key, value string) *MessageBuilder {
 	for i, k := range b.headerKeys {
 		if strings.EqualFold(k, key) {
+			b.headerKeys[i] = key
 			b.headerVals[i] = value
 			return b
 		}
 	}
+	b.headerKeys = append(b.headerKeys, key)
+	b.headerVals = append(b.headerVals, value)
+	return b
+}
+
+// HeaderAppend adds a header without deduplication, allowing multiple lines
+// with the same key (e.g., multiple Received headers).
+func (b *MessageBuilder) HeaderAppend(key, value string) *MessageBuilder {
 	b.headerKeys = append(b.headerKeys, key)
 	b.headerVals = append(b.headerVals, value)
 	return b

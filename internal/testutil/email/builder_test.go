@@ -99,3 +99,36 @@ func TestHeaderOverwrite(t *testing.T) {
 		t.Errorf("expected overwritten value 'second', got:\n%s", got)
 	}
 }
+
+func TestHeaderCaseInsensitiveOverwrite(t *testing.T) {
+	got := string(NewMessage().
+		Header("X-Custom", "first").
+		Header("x-custom", "second").
+		Bytes())
+
+	// Case-insensitive dedup should produce exactly one header line.
+	count := 0
+	for _, line := range strings.Split(got, "\n") {
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "x-custom:") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly one x-custom header (case-insensitive), got %d:\n%s", count, got)
+	}
+	if !strings.Contains(got, "x-custom: second") {
+		t.Errorf("expected latest value with latest casing, got:\n%s", got)
+	}
+}
+
+func TestHeaderAppendAllowsDuplicates(t *testing.T) {
+	got := string(NewMessage().
+		HeaderAppend("Received", "from server1").
+		HeaderAppend("Received", "from server2").
+		Bytes())
+
+	if strings.Count(got, "Received:") != 2 {
+		t.Errorf("expected two Received headers, got:\n%s", got)
+	}
+}
