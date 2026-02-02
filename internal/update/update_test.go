@@ -3,6 +3,7 @@ package update
 import (
 	"archive/tar"
 	"fmt"
+        "os"
 	"path/filepath"
 	"runtime"
 	"testing"
