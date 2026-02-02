@@ -53,17 +53,9 @@ func writeFileAndAssertExists(t *testing.T, dir, rel string, content []byte) str
 	return path
 }
 
-// writeFileAndAssertContent writes a file, asserts it exists, and verifies its content.
-func writeFileAndAssertContent(t *testing.T, dir, rel string, content []byte) string {
-	t.Helper()
-	path := writeFileAndAssertExists(t, dir, rel, content)
-	AssertFileContent(t, path, string(content))
-	return path
-}
-
 func TestWriteFileAndReadBack(t *testing.T) {
 	dir := TempDir(t)
-	writeFileAndAssertContent(t, dir, "test.txt", []byte("hello world"))
+	WriteAndVerifyFile(t, dir, "test.txt", []byte("hello world"))
 }
 
 func TestWriteFileSubdir(t *testing.T) {
@@ -89,27 +81,11 @@ func TestMustNotExist(t *testing.T) {
 func TestValidateRelativePath(t *testing.T) {
 	dir := TempDir(t)
 
-	// Use filepath.Abs to get a platform-appropriate absolute path
-	absPath, err := filepath.Abs("/some/path.txt")
-	if err != nil {
-		t.Fatalf("failed to get absolute path: %v", err)
-	}
-
-	// Invalid paths that must be rejected
-	invalidCases := []struct {
-		name string
-		path string
-	}{
-		{name: "absolute path", path: absPath},
-		{name: "rooted path", path: string(filepath.Separator) + "rooted" + string(filepath.Separator) + "path.txt"},
-		{name: "escape dot dot", path: "../escape.txt"},
-		{name: "escape dot dot nested", path: "subdir/../../escape.txt"},
-		{name: "escape just dot dot", path: ".."},
-	}
-	for _, tt := range invalidCases {
-		t.Run(tt.name, func(t *testing.T) {
-			if err := validateRelativePath(dir, tt.path); err == nil {
-				t.Errorf("validateRelativePath(%q) expected error, got nil", tt.path)
+	// Invalid paths from shared fixture
+	for _, tt := range PathTraversalCases {
+		t.Run(tt.Name, func(t *testing.T) {
+			if err := validateRelativePath(dir, tt.Path); err == nil {
+				t.Errorf("validateRelativePath(%q) expected error, got nil", tt.Path)
 			}
 		})
 	}

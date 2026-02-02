@@ -187,6 +187,26 @@ func MustNoErr(t *testing.T, err error, msg string) {
 	}
 }
 
+// PathTraversalCases is a shared fixture of path traversal attack vectors for
+// testing path sanitization logic across packages.
+var PathTraversalCases = []struct{ Name, Path string }{
+	{"absolute path", "/abs/path"},
+	{"rooted path", string(filepath.Separator) + "rooted" + string(filepath.Separator) + "path.txt"},
+	{"escape dot dot", "../escape.txt"},
+	{"escape dot dot nested", "subdir/../../escape.txt"},
+	{"escape just dot dot", ".."},
+}
+
+// WriteAndVerifyFile writes content to a file, asserts it exists, and verifies
+// its content matches. Returns the full path to the written file.
+func WriteAndVerifyFile(t *testing.T, dir, rel string, content []byte) string {
+	t.Helper()
+	path := WriteFile(t, dir, rel, content)
+	MustExist(t, path)
+	AssertFileContent(t, path, string(content))
+	return path
+}
+
 // CreateTempZip creates a zip file in a temporary directory containing the
 // provided entries (filename -> content). Returns the path to the zip file.
 func CreateTempZip(t *testing.T, entries map[string]string) string {
