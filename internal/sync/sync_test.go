@@ -8,6 +8,7 @@ import (
 
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/store"
+	testemail "github.com/wesm/msgvault/internal/testutil/email"
 )
 
 func TestFullSync(t *testing.T) {
@@ -84,34 +85,18 @@ func TestFullSyncWithErrors(t *testing.T) {
 func TestMIMEParsing(t *testing.T) {
 	env := newTestEnv(t)
 
-	complexMIME := []byte(`From: "John Doe" <john@example.com>
-To: "Jane Smith" <jane@example.com>, bob@example.com
-Cc: cc@example.com
-Subject: Re: Meeting Notes
-Date: Tue, 15 Jan 2024 14:30:00 -0500
-Message-ID: <msg123@example.com>
-In-Reply-To: <msg122@example.com>
-Content-Type: multipart/mixed; boundary="boundary123"
-
---boundary123
-Content-Type: text/plain; charset="utf-8"
-
-Hello,
-
-This is the message body.
-
-Best regards,
-John
-
---boundary123
-Content-Type: application/pdf; name="document.pdf"
-Content-Disposition: attachment; filename="document.pdf"
-Content-Transfer-Encoding: base64
-
-JVBERi0xLjQKJeLjz9MKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRv
-Ymo=
---boundary123--
-`)
+	pdfData := []byte{0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a, 0x31, 0x20, 0x30, 0x20, 0x6f, 0x62, 0x6a, 0x0a, 0x3c, 0x3c, 0x2f, 0x54, 0x79, 0x70, 0x65, 0x2f, 0x43, 0x61, 0x74, 0x61, 0x6c, 0x6f, 0x67, 0x2f, 0x50, 0x61, 0x67, 0x65, 0x73, 0x20, 0x32, 0x20, 0x30, 0x20, 0x52, 0x3e, 0x3e, 0x0a, 0x65, 0x6e, 0x64, 0x6f, 0x62, 0x6a}
+	complexMIME := testemail.NewMessage().
+		From(`"John Doe" <john@example.com>`).
+		To(`"Jane Smith" <jane@example.com>, bob@example.com`).
+		Cc("cc@example.com").
+		Subject("Re: Meeting Notes").
+		Date("Tue, 15 Jan 2024 14:30:00 -0500").
+		Header("Message-ID", "<msg123@example.com>").
+		Header("In-Reply-To", "<msg122@example.com>").
+		Body("Hello,\n\nThis is the message body.\n\nBest regards,\nJohn\n").
+		WithAttachment("document.pdf", "application/pdf", pdfData).
+		Bytes()
 
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12345
@@ -480,25 +465,11 @@ func TestFullSyncWithAttachment(t *testing.T) {
 func TestFullSyncWithEmptyAttachment(t *testing.T) {
 	env := newTestEnv(t)
 
-	emptyAttachMIME := []byte(`From: sender@example.com
-To: recipient@example.com
-Subject: Empty Attachment
-Date: Mon, 01 Jan 2024 12:00:00 +0000
-MIME-Version: 1.0
-Content-Type: multipart/mixed; boundary="boundary123"
-
---boundary123
-Content-Type: text/plain; charset="utf-8"
-
-Body text.
---boundary123
-Content-Type: application/octet-stream; name="empty.bin"
-Content-Disposition: attachment; filename="empty.bin"
-Content-Transfer-Encoding: base64
-
-
---boundary123--
-`)
+	emptyAttachMIME := testemail.NewMessage().
+		Subject("Empty Attachment").
+		Body("Body text.").
+		WithAttachment("empty.bin", "application/octet-stream", nil).
+		Bytes()
 
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12345
@@ -655,15 +626,11 @@ func TestFullSyncResumeWithCursor(t *testing.T) {
 func TestFullSyncHTMLOnlyMessage(t *testing.T) {
 	env := newTestEnv(t)
 
-	htmlOnlyMIME := []byte(`From: sender@example.com
-To: recipient@example.com
-Subject: HTML Only
-Date: Mon, 01 Jan 2024 12:00:00 +0000
-MIME-Version: 1.0
-Content-Type: text/html; charset="utf-8"
-
-<html><body><p>This is HTML only content.</p></body></html>
-`)
+	htmlOnlyMIME := testemail.NewMessage().
+		Subject("HTML Only").
+		ContentType(`text/html; charset="utf-8"`).
+		Body("<html><body><p>This is HTML only content.</p></body></html>").
+		Bytes()
 
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12345
@@ -696,14 +663,11 @@ func TestFullSyncDuplicateRecipients(t *testing.T) {
 func TestFullSyncDateFallbackToInternalDate(t *testing.T) {
 	env := newTestEnv(t)
 
-	badDateMIME := []byte(`From: sender@example.com
-To: recipient@example.com
-Subject: Bad Date
-Date: This is not a valid date
-Content-Type: text/plain; charset="utf-8"
-
-Message with invalid date header.
-`)
+	badDateMIME := testemail.NewMessage().
+		Subject("Bad Date").
+		Date("This is not a valid date").
+		Body("Message with invalid date header.").
+		Bytes()
 
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12345
