@@ -1,57 +1,11 @@
 package search
 
 import (
-	"reflect"
 	"testing"
 	"time"
+
+	"github.com/wesm/msgvault/internal/testutil/ptr"
 )
-
-func utcDate(y int, m time.Month, d int) time.Time {
-	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
-}
-
-func boolPtr(v bool) *bool    { return &v }
-func i64Ptr(v int64) *int64   { return &v }
-func timePtr(v time.Time) *time.Time { return &v }
-
-// assertQueryEqual compares two Query structs field by field, treating nil
-// slices and empty slices as equivalent.
-func assertQueryEqual(t *testing.T, got, want Query) {
-	t.Helper()
-
-	stringsEqual := func(field string, g, w []string) {
-		if len(g) == 0 && len(w) == 0 {
-			return
-		}
-		if !reflect.DeepEqual(g, w) {
-			t.Errorf("%s: got %v, want %v", field, g, w)
-		}
-	}
-
-	stringsEqual("TextTerms", got.TextTerms, want.TextTerms)
-	stringsEqual("FromAddrs", got.FromAddrs, want.FromAddrs)
-	stringsEqual("ToAddrs", got.ToAddrs, want.ToAddrs)
-	stringsEqual("CcAddrs", got.CcAddrs, want.CcAddrs)
-	stringsEqual("BccAddrs", got.BccAddrs, want.BccAddrs)
-	stringsEqual("SubjectTerms", got.SubjectTerms, want.SubjectTerms)
-	stringsEqual("Labels", got.Labels, want.Labels)
-
-	if !reflect.DeepEqual(got.HasAttachment, want.HasAttachment) {
-		t.Errorf("HasAttachment: got %v, want %v", got.HasAttachment, want.HasAttachment)
-	}
-	if !reflect.DeepEqual(got.BeforeDate, want.BeforeDate) {
-		t.Errorf("BeforeDate: got %v, want %v", got.BeforeDate, want.BeforeDate)
-	}
-	if !reflect.DeepEqual(got.AfterDate, want.AfterDate) {
-		t.Errorf("AfterDate: got %v, want %v", got.AfterDate, want.AfterDate)
-	}
-	if !reflect.DeepEqual(got.LargerThan, want.LargerThan) {
-		t.Errorf("LargerThan: got %v, want %v", got.LargerThan, want.LargerThan)
-	}
-	if !reflect.DeepEqual(got.SmallerThan, want.SmallerThan) {
-		t.Errorf("SmallerThan: got %v, want %v", got.SmallerThan, want.SmallerThan)
-	}
-}
 
 func TestParse(t *testing.T) {
 	tests := []struct {
@@ -183,7 +137,7 @@ func TestParse(t *testing.T) {
 		{
 			name:  "has attachment",
 			query: "has:attachment",
-			want:  Query{HasAttachment: boolPtr(true)},
+			want:  Query{HasAttachment: ptr.Bool(true)},
 		},
 
 		// Dates
@@ -191,8 +145,8 @@ func TestParse(t *testing.T) {
 			name:  "after and before dates",
 			query: "after:2024-01-15 before:2024-06-30",
 			want: Query{
-				AfterDate:  timePtr(utcDate(2024, 1, 15)),
-				BeforeDate: timePtr(utcDate(2024, 6, 30)),
+				AfterDate:  ptr.Time(ptr.Date(2024, 1, 15)),
+				BeforeDate: ptr.Time(ptr.Date(2024, 6, 30)),
 			},
 		},
 
@@ -200,17 +154,17 @@ func TestParse(t *testing.T) {
 		{
 			name:  "larger than 5M",
 			query: "larger:5M",
-			want:  Query{LargerThan: i64Ptr(5 * 1024 * 1024)},
+			want:  Query{LargerThan: ptr.Int64(5 * 1024 * 1024)},
 		},
 		{
 			name:  "smaller than 100K",
 			query: "smaller:100K",
-			want:  Query{SmallerThan: i64Ptr(100 * 1024)},
+			want:  Query{SmallerThan: ptr.Int64(100 * 1024)},
 		},
 		{
 			name:  "larger than 1G",
 			query: "larger:1G",
-			want:  Query{LargerThan: i64Ptr(1024 * 1024 * 1024)},
+			want:  Query{LargerThan: ptr.Int64(1024 * 1024 * 1024)},
 		},
 
 		// Complex Query
@@ -222,8 +176,8 @@ func TestParse(t *testing.T) {
 				ToAddrs:       []string{"bob@example.com"},
 				SubjectTerms:  []string{"meeting"},
 				TextTerms:     []string{"project report"},
-				HasAttachment: boolPtr(true),
-				AfterDate:     timePtr(utcDate(2024, 1, 1)),
+				HasAttachment: ptr.Bool(true),
+				AfterDate:     ptr.Time(ptr.Date(2024, 1, 1)),
 			},
 		},
 	}

@@ -4,9 +4,9 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/wesm/msgvault/internal/search"
+	"github.com/wesm/msgvault/internal/testutil/ptr"
 )
 
 func TestSearch_WithoutFTS(t *testing.T) {
@@ -32,16 +32,15 @@ func TestSearch_LabelFilter(t *testing.T) {
 
 func TestSearch_DateRangeFilter(t *testing.T) {
 	env := newTestEnv(t)
-	after := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
-	before := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	after := ptr.Date(2024, 2, 1)
+	before := ptr.Date(2024, 3, 1)
 	q := &search.Query{AfterDate: &after, BeforeDate: &before}
 	assertSearchCount(t, env, q, 2)
 }
 
 func TestSearch_HasAttachment(t *testing.T) {
 	env := newTestEnv(t)
-	hasAtt := true
-	q := &search.Query{HasAttachment: &hasAtt}
+	q := &search.Query{HasAttachment: ptr.Bool(true)}
 	results := assertSearchCount(t, env, q, 2)
 	assertAllResults(t, results, "HasAttachments=true", func(m MessageSummary) bool {
 		return m.HasAttachments
@@ -60,7 +59,7 @@ func TestSearch_CombinedFilters(t *testing.T) {
 func TestSearch_SizeFilter(t *testing.T) {
 	env := newTestEnv(t)
 	largerThan := int64(2500)
-	q := &search.Query{LargerThan: &largerThan}
+	q := &search.Query{LargerThan: ptr.Int64(largerThan)}
 	results := assertSearchCount(t, env, q, 1)
 	assertAllResults(t, results, "SizeEstimate>2500", func(m MessageSummary) bool {
 		return m.SizeEstimate > largerThan
