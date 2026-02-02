@@ -37,9 +37,6 @@ type stageArgs struct {
 func stageForDeletion(t *testing.T, ctrl *ActionController, args stageArgs) *deletion.Manifest {
 	t.Helper()
 	view := args.view
-	if view == 0 {
-		view = query.ViewSenders
-	}
 	manifest, err := ctrl.StageForDeletion(
 		args.aggregates, args.selection, view, args.accountID, args.accounts,
 		view, "", query.TimeYear, args.messages,
@@ -66,18 +63,20 @@ func idSet(ids ...int64) map[int64]bool {
 	return m
 }
 
-func msgSummaries(sourceIDs ...string) []query.MessageSummary {
-	out := make([]query.MessageSummary, len(sourceIDs))
-	for i, sid := range sourceIDs {
-		out[i] = query.MessageSummary{ID: int64(i + 1), SourceMessageID: sid}
-	}
-	return out
+func msgSummary(id int64, sourceID string) query.MessageSummary {
+	return query.MessageSummary{ID: id, SourceMessageID: sourceID}
 }
 
-func assertSingleFilter(t *testing.T, got []string, want string, label string) {
+func assertStrings(t *testing.T, got []string, want ...string) {
 	t.Helper()
-	if len(got) != 1 || got[0] != want {
-		t.Errorf("expected %s [%s], got %v", label, want, got)
+	if len(got) != len(want) {
+		t.Errorf("got len %d, want %d: %v", len(got), len(want), got)
+		return
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("at index %d: got %q, want %q", i, got[i], want[i])
+		}
 	}
 }
 
@@ -86,12 +85,13 @@ func TestStageForDeletion_FromAggregateSelection(t *testing.T) {
 
 	manifest := stageForDeletion(t, ctrl, stageArgs{
 		aggregates: stringSet("alice@example.com"),
+		view:       query.ViewSenders,
 	})
 
 	if len(manifest.GmailIDs) != 3 {
 		t.Errorf("expected 3 gmail IDs, got %d", len(manifest.GmailIDs))
 	}
-	assertSingleFilter(t, manifest.Filters.Senders, "alice@example.com", "senders")
+	assertStrings(t, manifest.Filters.Senders, "alice@example.com")
 	if manifest.CreatedBy != "tui" {
 		t.Errorf("expected createdBy 'tui', got %q", manifest.CreatedBy)
 	}
@@ -100,10 +100,15 @@ func TestStageForDeletion_FromAggregateSelection(t *testing.T) {
 func TestStageForDeletion_FromMessageSelection(t *testing.T) {
 	ctrl := newTestController(t)
 
-	messages := msgSummaries("gid_a", "gid_b", "gid_c")
+	messages := []query.MessageSummary{
+		msgSummary(10, "gid_a"),
+		msgSummary(20, "gid_b"),
+		msgSummary(30, "gid_c"),
+	}
 
 	manifest := stageForDeletion(t, ctrl, stageArgs{
-		selection: idSet(1, 3),
+		selection: idSet(10, 30),
+		view:      query.ViewSenders,
 		messages:  messages,
 	})
 
@@ -134,13 +139,8 @@ func TestStageForDeletion_MultipleAggregates_DeterministicFilter(t *testing.T) {
 	agg := stringSet("charlie@example.com", "alice@example.com", "bob@example.com")
 
 	for i := 0; i < 10; i++ {
-		manifest := stageForDeletion(t, ctrl, stageArgs{aggregates: agg})
-		if len(manifest.Filters.Senders) != 3 ||
-			manifest.Filters.Senders[0] != "alice@example.com" ||
-			manifest.Filters.Senders[1] != "bob@example.com" ||
-			manifest.Filters.Senders[2] != "charlie@example.com" {
-			t.Fatalf("iteration %d: expected sorted senders [alice bob charlie], got %v", i, manifest.Filters.Senders)
-		}
+		manifest := stageForDeletion(t, ctrl, stageArgs{aggregates: agg, view: query.ViewSenders})
+		assertStrings(t, manifest.Filters.Senders, "alice@example.com", "bob@example.com", "charlie@example.com")
 	}
 }
 
@@ -152,16 +152,16 @@ func TestStageForDeletion_ViewTypes(t *testing.T) {
 		check    func(t *testing.T, f deletion.Filters)
 	}{
 		{"senders", query.ViewSenders, "a@b.com", func(t *testing.T, f deletion.Filters) {
-			assertSingleFilter(t, f.Senders, "a@b.com", "senders")
+			assertStrings(t, f.Senders, "a@b.com")
 		}},
 		{"recipients", query.ViewRecipients, "c@d.com", func(t *testing.T, f deletion.Filters) {
-			assertSingleFilter(t, f.Recipients, "c@d.com", "recipients")
+			assertStrings(t, f.Recipients, "c@d.com")
 		}},
 		{"domains", query.ViewDomains, "example.com", func(t *testing.T, f deletion.Filters) {
-			assertSingleFilter(t, f.SenderDomains, "example.com", "sender_domains")
+			assertStrings(t, f.SenderDomains, "example.com")
 		}},
 		{"labels", query.ViewLabels, "INBOX", func(t *testing.T, f deletion.Filters) {
-			assertSingleFilter(t, f.Labels, "INBOX", "labels")
+			assertStrings(t, f.Labels, "INBOX")
 		}},
 	}
 
@@ -188,6 +188,7 @@ func TestStageForDeletion_AccountFilter(t *testing.T) {
 
 	manifest := stageForDeletion(t, ctrl, stageArgs{
 		aggregates: stringSet("sender@x.com"),
+		view:       query.ViewSenders,
 		accountID:  &accountID,
 		accounts:   accounts,
 	})
