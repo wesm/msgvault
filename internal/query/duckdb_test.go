@@ -15,28 +15,14 @@ import (
 // It registers cleanup via t.Cleanup so callers don't need defer.
 func newParquetEngine(t *testing.T) *DuckDBEngine {
 	t.Helper()
-	analyticsDir, cleanup := setupTestParquet(t)
-	t.Cleanup(cleanup)
-	engine, err := NewDuckDBEngine(analyticsDir, "", nil)
-	if err != nil {
-		t.Fatalf("NewDuckDBEngine: %v", err)
-	}
-	t.Cleanup(func() { engine.Close() })
-	return engine
+	return buildStandardTestData(t).BuildEngine()
 }
 
 // newEmptyBucketsEngine creates a DuckDBEngine backed by Parquet test data
 // that includes messages with empty senders, recipients, domains, and labels.
 func newEmptyBucketsEngine(t *testing.T) *DuckDBEngine {
 	t.Helper()
-	analyticsDir, cleanup := setupTestParquetWithEmptyBuckets(t)
-	t.Cleanup(cleanup)
-	engine, err := NewDuckDBEngine(analyticsDir, "", nil)
-	if err != nil {
-		t.Fatalf("NewDuckDBEngine: %v", err)
-	}
-	t.Cleanup(func() { engine.Close() })
-	return engine
+	return buildEmptyBucketsTestData(t).BuildEngine()
 }
 
 // newSQLiteEngine creates a DuckDBEngine backed by the standard SQLite test data.
@@ -144,76 +130,54 @@ func assertSubjects(t *testing.T, messages []MessageSummary, want ...string) {
 	}
 }
 
-// setupTestParquet creates a temp directory with normalized Parquet test data.
-// Returns the analytics directory path and a cleanup function.
-// Creates separate Parquet files for: messages, sources, participants,
-// message_recipients, labels, message_labels, attachments.
-func setupTestParquet(t *testing.T) (string, func()) {
+// buildStandardTestData creates a TestDataBuilder with the standard test data set:
+// 1 source, 4 participants, 5 messages, 3 labels, and 3 attachments.
+func buildStandardTestData(t *testing.T) *TestDataBuilder {
 	t.Helper()
+	b := NewTestDataBuilder(t)
 
-	return newParquetBuilder(t).
-		addTable("messages", "messages/year=2024", "data.parquet", messagesCols, `
-			-- id, source_id, source_message_id, conversation_id, subject, snippet, sent_at, size_estimate, has_attachments, deleted_from_source_at, year, month
-			(1::BIGINT, 1::BIGINT, 'msg1', 101::BIGINT, 'Hello World', 'Preview 1', TIMESTAMP '2024-01-15 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1),
-			(2::BIGINT, 1::BIGINT, 'msg2', 101::BIGINT, 'Re: Hello', 'Preview 2', TIMESTAMP '2024-01-16 11:00:00', 2000::BIGINT, true, NULL::TIMESTAMP, 2024, 1),
-			(3::BIGINT, 1::BIGINT, 'msg3', 102::BIGINT, 'Follow up', 'Preview 3', TIMESTAMP '2024-02-01 09:00:00', 1500::BIGINT, false, NULL::TIMESTAMP, 2024, 2),
-			(4::BIGINT, 1::BIGINT, 'msg4', 103::BIGINT, 'Question', 'Preview 4', TIMESTAMP '2024-02-15 14:00:00', 3000::BIGINT, true, NULL::TIMESTAMP, 2024, 2),
-			(5::BIGINT, 1::BIGINT, 'msg5', 104::BIGINT, 'Final', 'Preview 5', TIMESTAMP '2024-03-01 16:00:00', 500::BIGINT, false, NULL::TIMESTAMP, 2024, 3)
-		`).
-		addTable("sources", "sources", "sources.parquet", sourcesCols, `
-			(1::BIGINT, 'test@gmail.com')
-		`).
-		addTable("participants", "participants", "participants.parquet", participantsCols, `
-			(1::BIGINT, 'alice@example.com', 'example.com', 'Alice'),
-			(2::BIGINT, 'bob@company.org', 'company.org', 'Bob'),
-			(3::BIGINT, 'carol@example.com', 'example.com', 'Carol'),
-			(4::BIGINT, 'dan@other.net', 'other.net', 'Dan')
-		`).
-		addTable("message_recipients", "message_recipients", "message_recipients.parquet", messageRecipientsCols, `
-			-- msg1: from alice, to bob+carol
-			(1::BIGINT, 1::BIGINT, 'from', 'Alice'),
-			(1::BIGINT, 2::BIGINT, 'to', 'Bob'),
-			(1::BIGINT, 3::BIGINT, 'to', 'Carol'),
-			-- msg2: from alice, to bob, cc dan
-			(2::BIGINT, 1::BIGINT, 'from', 'Alice'),
-			(2::BIGINT, 2::BIGINT, 'to', 'Bob'),
-			(2::BIGINT, 4::BIGINT, 'cc', 'Dan'),
-			-- msg3: from alice, to bob
-			(3::BIGINT, 1::BIGINT, 'from', 'Alice'),
-			(3::BIGINT, 2::BIGINT, 'to', 'Bob'),
-			-- msg4: from bob, to alice
-			(4::BIGINT, 2::BIGINT, 'from', 'Bob'),
-			(4::BIGINT, 1::BIGINT, 'to', 'Alice'),
-			-- msg5: from bob, to alice
-			(5::BIGINT, 2::BIGINT, 'from', 'Bob'),
-			(5::BIGINT, 1::BIGINT, 'to', 'Alice')
-		`).
-		addTable("labels", "labels", "labels.parquet", labelsCols, `
-			(1::BIGINT, 'INBOX'),
-			(2::BIGINT, 'Work'),
-			(3::BIGINT, 'IMPORTANT')
-		`).
-		addTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `
-			-- msg1: INBOX, Work
-			(1::BIGINT, 1::BIGINT),
-			(1::BIGINT, 2::BIGINT),
-			-- msg2: INBOX, IMPORTANT
-			(2::BIGINT, 1::BIGINT),
-			(2::BIGINT, 3::BIGINT),
-			-- msg3: INBOX
-			(3::BIGINT, 1::BIGINT),
-			-- msg4: INBOX, Work
-			(4::BIGINT, 1::BIGINT),
-			(4::BIGINT, 2::BIGINT),
-			-- msg5: INBOX
-			(5::BIGINT, 1::BIGINT)
-		`).
-		addTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `
-			(2::BIGINT, 10000::BIGINT, 'document.pdf'),
-			(2::BIGINT, 5000::BIGINT, 'image.png'),
-			(4::BIGINT, 20000::BIGINT, 'report.xlsx')
-		`).
-		build()
+	// Source
+	b.AddSource("test@gmail.com")
+
+	// Participants: alice(1), bob(2), carol(3), dan(4)
+	b.AddParticipant("alice@example.com", "example.com", "Alice")
+	b.AddParticipant("bob@company.org", "company.org", "Bob")
+	b.AddParticipant("carol@example.com", "example.com", "Carol")
+	b.AddParticipant("dan@other.net", "other.net", "Dan")
+
+	// Messages
+	convAB := int64(101) // shared conversation for msg1+msg2
+	msg1 := b.AddMessage(MessageOpt{Subject: "Hello World", SentAt: makeDate(2024, 1, 15), SizeEstimate: 1000, ConversationID: convAB})
+	msg2 := b.AddMessage(MessageOpt{Subject: "Re: Hello", SentAt: makeDate(2024, 1, 16), SizeEstimate: 2000, HasAttachments: true, ConversationID: convAB})
+	msg3 := b.AddMessage(MessageOpt{Subject: "Follow up", SentAt: makeDate(2024, 2, 1), SizeEstimate: 1500, ConversationID: 102})
+	msg4 := b.AddMessage(MessageOpt{Subject: "Question", SentAt: makeDate(2024, 2, 15), SizeEstimate: 3000, HasAttachments: true, ConversationID: 103})
+	msg5 := b.AddMessage(MessageOpt{Subject: "Final", SentAt: makeDate(2024, 3, 1), SizeEstimate: 500, ConversationID: 104})
+
+	// Recipients
+	b.AddFrom(msg1, 1, "Alice"); b.AddTo(msg1, 2, "Bob"); b.AddTo(msg1, 3, "Carol")
+	b.AddFrom(msg2, 1, "Alice"); b.AddTo(msg2, 2, "Bob"); b.AddCc(msg2, 4, "Dan")
+	b.AddFrom(msg3, 1, "Alice"); b.AddTo(msg3, 2, "Bob")
+	b.AddFrom(msg4, 2, "Bob");   b.AddTo(msg4, 1, "Alice")
+	b.AddFrom(msg5, 2, "Bob");   b.AddTo(msg5, 1, "Alice")
+
+	// Labels: INBOX(1), Work(2), IMPORTANT(3)
+	inbox := b.AddLabel("INBOX")
+	work := b.AddLabel("Work")
+	important := b.AddLabel("IMPORTANT")
+
+	// Message labels
+	b.AddMessageLabel(msg1, inbox); b.AddMessageLabel(msg1, work)
+	b.AddMessageLabel(msg2, inbox); b.AddMessageLabel(msg2, important)
+	b.AddMessageLabel(msg3, inbox)
+	b.AddMessageLabel(msg4, inbox); b.AddMessageLabel(msg4, work)
+	b.AddMessageLabel(msg5, inbox)
+
+	// Attachments
+	b.AddAttachment(msg2, 10000, "document.pdf")
+	b.AddAttachment(msg2, 5000, "image.png")
+	b.AddAttachment(msg4, 20000, "report.xlsx")
+
+	return b
 }
 
 // TestDuckDBEngine_SQLiteEngineReuse verifies that DuckDBEngine reuses a single
@@ -1386,62 +1350,51 @@ func TestDuckDBEngine_GetGmailIDsByFilter(t *testing.T) {
 	}
 }
 
-// setupTestParquetWithEmptyBuckets creates test Parquet data including messages with
+// buildEmptyBucketsTestData creates a TestDataBuilder with messages that have
 // empty senders, recipients, domains, and labels for testing MatchEmpty* filters.
-// Returns the analytics directory path and a cleanup function.
-func setupTestParquetWithEmptyBuckets(t *testing.T) (string, func()) {
+func buildEmptyBucketsTestData(t *testing.T) *TestDataBuilder {
 	t.Helper()
+	b := NewTestDataBuilder(t)
 
-	return newParquetBuilder(t).
-		addTable("messages", "messages/year=2024", "data.parquet", messagesCols, `
-			(1::BIGINT, 1::BIGINT, 'msg1', 101::BIGINT, 'Normal 1', 'Preview 1', TIMESTAMP '2024-01-15 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1),
-			(2::BIGINT, 1::BIGINT, 'msg2', 102::BIGINT, 'Normal 2', 'Preview 2', TIMESTAMP '2024-01-16 11:00:00', 2000::BIGINT, false, NULL::TIMESTAMP, 2024, 1),
-			(3::BIGINT, 1::BIGINT, 'msg3', 103::BIGINT, 'No Sender', 'Preview 3', TIMESTAMP '2024-01-17 09:00:00', 1500::BIGINT, false, NULL::TIMESTAMP, 2024, 1),
-			(4::BIGINT, 1::BIGINT, 'msg4', 104::BIGINT, 'No Recipients', 'Preview 4', TIMESTAMP '2024-01-18 14:00:00', 3000::BIGINT, false, NULL::TIMESTAMP, 2024, 1),
-			(5::BIGINT, 1::BIGINT, 'msg5', 105::BIGINT, 'No Labels', 'Preview 5', TIMESTAMP '2024-01-19 16:00:00', 500::BIGINT, false, NULL::TIMESTAMP, 2024, 1),
-			(6::BIGINT, 1::BIGINT, 'msg6', 106::BIGINT, 'Empty Domain', 'Preview 6', TIMESTAMP '2024-01-20 16:00:00', 600::BIGINT, false, NULL::TIMESTAMP, 2024, 1)
-		`).
-		addTable("sources", "sources", "sources.parquet", sourcesCols, `
-			(1::BIGINT, 'test@gmail.com')
-		`).
-		addTable("participants", "participants", "participants.parquet", participantsCols, `
-			(1::BIGINT, 'alice@example.com', 'example.com', 'Alice'),
-			(2::BIGINT, 'bob@company.org', 'company.org', 'Bob'),
-			(3::BIGINT, 'nodomain', '', 'No Domain')
-		`).
-		addTable("message_recipients", "message_recipients", "message_recipients.parquet", messageRecipientsCols, `
-			-- msg1: from alice, to bob
-			(1::BIGINT, 1::BIGINT, 'from', 'Alice'),
-			(1::BIGINT, 2::BIGINT, 'to', 'Bob'),
-			-- msg2: from bob, to alice
-			(2::BIGINT, 2::BIGINT, 'from', 'Bob'),
-			(2::BIGINT, 1::BIGINT, 'to', 'Alice'),
-			-- msg3: to bob only (no sender)
-			(3::BIGINT, 2::BIGINT, 'to', 'Bob'),
-			-- msg4: from alice only (no recipients)
-			(4::BIGINT, 1::BIGINT, 'from', 'Alice'),
-			-- msg5: from alice, to bob (normal, but no labels)
-			(5::BIGINT, 1::BIGINT, 'from', 'Alice'),
-			(5::BIGINT, 2::BIGINT, 'to', 'Bob'),
-			-- msg6: from nodomain, to bob (empty domain sender)
-			(6::BIGINT, 3::BIGINT, 'from', 'No Domain'),
-			(6::BIGINT, 2::BIGINT, 'to', 'Bob')
-		`).
-		addTable("labels", "labels", "labels.parquet", labelsCols, `
-			(1::BIGINT, 'INBOX'),
-			(2::BIGINT, 'Work')
-		`).
-		addTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `
-			(1::BIGINT, 1::BIGINT),
-			(2::BIGINT, 2::BIGINT),
-			(3::BIGINT, 1::BIGINT),
-			(4::BIGINT, 1::BIGINT),
-			(6::BIGINT, 1::BIGINT)
-		`).
-		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `
-			(0::BIGINT, 0::BIGINT, '')
-		`).
-		build()
+	// Source
+	b.AddSource("test@gmail.com")
+
+	// Participants: alice(1), bob(2), nodomain(3)
+	alice := b.AddParticipant("alice@example.com", "example.com", "Alice")
+	bob := b.AddParticipant("bob@company.org", "company.org", "Bob")
+	nodomain := b.AddParticipant("nodomain", "", "No Domain")
+
+	// Messages
+	msg1 := b.AddMessage(MessageOpt{Subject: "Normal 1", SentAt: makeDate(2024, 1, 15), SizeEstimate: 1000})
+	msg2 := b.AddMessage(MessageOpt{Subject: "Normal 2", SentAt: makeDate(2024, 1, 16), SizeEstimate: 2000})
+	msg3 := b.AddMessage(MessageOpt{Subject: "No Sender", SentAt: makeDate(2024, 1, 17), SizeEstimate: 1500})
+	msg4 := b.AddMessage(MessageOpt{Subject: "No Recipients", SentAt: makeDate(2024, 1, 18), SizeEstimate: 3000})
+	msg5 := b.AddMessage(MessageOpt{Subject: "No Labels", SentAt: makeDate(2024, 1, 19), SizeEstimate: 500})
+	msg6 := b.AddMessage(MessageOpt{Subject: "Empty Domain", SentAt: makeDate(2024, 1, 20), SizeEstimate: 600})
+
+	// Recipients
+	b.AddFrom(msg1, alice, "Alice"); b.AddTo(msg1, bob, "Bob")
+	b.AddFrom(msg2, bob, "Bob");     b.AddTo(msg2, alice, "Alice")
+	b.AddTo(msg3, bob, "Bob") // no sender
+	b.AddFrom(msg4, alice, "Alice")  // no recipients
+	b.AddFrom(msg5, alice, "Alice"); b.AddTo(msg5, bob, "Bob") // no labels
+	b.AddFrom(msg6, nodomain, "No Domain"); b.AddTo(msg6, bob, "Bob") // empty domain
+
+	// Labels: INBOX(1), Work(2)
+	inbox := b.AddLabel("INBOX")
+	work := b.AddLabel("Work")
+
+	// Message labels (msg5 intentionally has none)
+	b.AddMessageLabel(msg1, inbox)
+	b.AddMessageLabel(msg2, work)
+	b.AddMessageLabel(msg3, inbox)
+	b.AddMessageLabel(msg4, inbox)
+	b.AddMessageLabel(msg6, inbox)
+
+	// No attachments
+	b.SetEmptyAttachments()
+
+	return b
 }
 
 // TestDuckDBEngine_ListMessages_MatchEmptySender verifies that MatchEmptySender

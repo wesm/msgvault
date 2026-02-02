@@ -12,6 +12,368 @@ import (
 	_ "github.com/marcboeker/go-duckdb"
 )
 
+// ---------------------------------------------------------------------------
+// Typed fixture structs
+// ---------------------------------------------------------------------------
+
+// MessageFixture defines a message row for Parquet test data.
+type MessageFixture struct {
+	ID               int64
+	SourceID         int64
+	SourceMessageID  string
+	ConversationID   int64
+	Subject          string
+	Snippet          string
+	SentAt           time.Time
+	SizeEstimate     int64
+	HasAttachments   bool
+	DeletedAt        *time.Time // nil = NULL
+	Year             int
+	Month            int
+}
+
+// SourceFixture defines a source row for Parquet test data.
+type SourceFixture struct {
+	ID           int64
+	AccountEmail string
+}
+
+// ParticipantFixture defines a participant row for Parquet test data.
+type ParticipantFixture struct {
+	ID          int64
+	Email       string
+	Domain      string
+	DisplayName string
+}
+
+// RecipientFixture defines a message_recipients row for Parquet test data.
+type RecipientFixture struct {
+	MessageID     int64
+	ParticipantID int64
+	Type          string // "from", "to", "cc", "bcc"
+	DisplayName   string
+}
+
+// LabelFixture defines a label row for Parquet test data.
+type LabelFixture struct {
+	ID   int64
+	Name string
+}
+
+// MessageLabelFixture defines a message_labels row for Parquet test data.
+type MessageLabelFixture struct {
+	MessageID int64
+	LabelID   int64
+}
+
+// AttachmentFixture defines an attachment row for Parquet test data.
+type AttachmentFixture struct {
+	MessageID int64
+	Size      int64
+	Filename  string
+}
+
+// ---------------------------------------------------------------------------
+// TestDataBuilder: typed builder that generates Parquet test data
+// ---------------------------------------------------------------------------
+
+// TestDataBuilder accumulates typed fixture data and generates Parquet files.
+type TestDataBuilder struct {
+	t           *testing.T
+	nextMsgID   int64
+	nextSrcID   int64
+	nextPartID  int64
+	nextLabelID int64
+	nextConvID  int64
+
+	sources     []SourceFixture
+	messages    []MessageFixture
+	participants []ParticipantFixture
+	recipients  []RecipientFixture
+	labels      []LabelFixture
+	msgLabels   []MessageLabelFixture
+	attachments []AttachmentFixture
+
+	emptyAttachments bool // if true, write empty attachments file
+}
+
+// NewTestDataBuilder creates a new typed test data builder.
+func NewTestDataBuilder(t *testing.T) *TestDataBuilder {
+	t.Helper()
+	return &TestDataBuilder{
+		t:          t,
+		nextMsgID:  1,
+		nextSrcID:  1,
+		nextPartID: 1,
+		nextLabelID: 1,
+		nextConvID: 200,
+	}
+}
+
+// AddSource adds a source and returns its ID.
+func (b *TestDataBuilder) AddSource(email string) int64 {
+	id := b.nextSrcID
+	b.nextSrcID++
+	b.sources = append(b.sources, SourceFixture{ID: id, AccountEmail: email})
+	return id
+}
+
+// AddParticipant adds a participant and returns its ID.
+func (b *TestDataBuilder) AddParticipant(email, domain, displayName string) int64 {
+	id := b.nextPartID
+	b.nextPartID++
+	b.participants = append(b.participants, ParticipantFixture{
+		ID: id, Email: email, Domain: domain, DisplayName: displayName,
+	})
+	return id
+}
+
+// AddLabel adds a label and returns its ID.
+func (b *TestDataBuilder) AddLabel(name string) int64 {
+	id := b.nextLabelID
+	b.nextLabelID++
+	b.labels = append(b.labels, LabelFixture{ID: id, Name: name})
+	return id
+}
+
+// MessageOpt configures a message to add.
+type MessageOpt struct {
+	Subject        string
+	Snippet        string
+	SentAt         time.Time
+	SizeEstimate   int64
+	HasAttachments bool
+	DeletedAt      *time.Time
+	SourceID       int64 // defaults to 1
+	ConversationID int64 // 0 = auto-assign
+}
+
+// AddMessage adds a message and returns its ID.
+func (b *TestDataBuilder) AddMessage(opt MessageOpt) int64 {
+	id := b.nextMsgID
+	b.nextMsgID++
+
+	srcID := opt.SourceID
+	if srcID == 0 {
+		srcID = 1
+	}
+	convID := opt.ConversationID
+	if convID == 0 {
+		convID = b.nextConvID
+		b.nextConvID++
+	}
+	sentAt := opt.SentAt
+	if sentAt.IsZero() {
+		sentAt = time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+	}
+	snippet := opt.Snippet
+	if snippet == "" {
+		snippet = fmt.Sprintf("Preview %d", id)
+	}
+
+	b.messages = append(b.messages, MessageFixture{
+		ID:              id,
+		SourceID:        srcID,
+		SourceMessageID: fmt.Sprintf("msg%d", id),
+		ConversationID:  convID,
+		Subject:         opt.Subject,
+		Snippet:         snippet,
+		SentAt:          sentAt,
+		SizeEstimate:    opt.SizeEstimate,
+		HasAttachments:  opt.HasAttachments,
+		DeletedAt:       opt.DeletedAt,
+		Year:            sentAt.Year(),
+		Month:           int(sentAt.Month()),
+	})
+	return id
+}
+
+// AddRecipient adds a message_recipients row.
+func (b *TestDataBuilder) AddRecipient(messageID, participantID int64, recipientType, displayName string) {
+	b.recipients = append(b.recipients, RecipientFixture{
+		MessageID: messageID, ParticipantID: participantID,
+		Type: recipientType, DisplayName: displayName,
+	})
+}
+
+// AddFrom is shorthand for AddRecipient with type "from".
+func (b *TestDataBuilder) AddFrom(messageID, participantID int64, displayName string) {
+	b.AddRecipient(messageID, participantID, "from", displayName)
+}
+
+// AddTo is shorthand for AddRecipient with type "to".
+func (b *TestDataBuilder) AddTo(messageID, participantID int64, displayName string) {
+	b.AddRecipient(messageID, participantID, "to", displayName)
+}
+
+// AddCc is shorthand for AddRecipient with type "cc".
+func (b *TestDataBuilder) AddCc(messageID, participantID int64, displayName string) {
+	b.AddRecipient(messageID, participantID, "cc", displayName)
+}
+
+// AddMessageLabel associates a message with a label.
+func (b *TestDataBuilder) AddMessageLabel(messageID, labelID int64) {
+	b.msgLabels = append(b.msgLabels, MessageLabelFixture{
+		MessageID: messageID, LabelID: labelID,
+	})
+}
+
+// AddAttachment adds an attachment row.
+func (b *TestDataBuilder) AddAttachment(messageID, size int64, filename string) {
+	b.attachments = append(b.attachments, AttachmentFixture{
+		MessageID: messageID, Size: size, Filename: filename,
+	})
+}
+
+// SetEmptyAttachments marks the attachments table as empty (schema only).
+func (b *TestDataBuilder) SetEmptyAttachments() {
+	b.emptyAttachments = true
+}
+
+// ---------------------------------------------------------------------------
+// SQL generation
+// ---------------------------------------------------------------------------
+
+func sqlStr(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+func (b *TestDataBuilder) sourcesSQL() string {
+	var rows []string
+	for _, s := range b.sources {
+		rows = append(rows, fmt.Sprintf("(%d::BIGINT, %s)", s.ID, sqlStr(s.AccountEmail)))
+	}
+	return strings.Join(rows, ",\n")
+}
+
+func (b *TestDataBuilder) participantsSQL() string {
+	var rows []string
+	for _, p := range b.participants {
+		rows = append(rows, fmt.Sprintf("(%d::BIGINT, %s, %s, %s)",
+			p.ID, sqlStr(p.Email), sqlStr(p.Domain), sqlStr(p.DisplayName)))
+	}
+	return strings.Join(rows, ",\n")
+}
+
+func (b *TestDataBuilder) recipientsSQL() string {
+	var rows []string
+	for _, r := range b.recipients {
+		rows = append(rows, fmt.Sprintf("(%d::BIGINT, %d::BIGINT, %s, %s)",
+			r.MessageID, r.ParticipantID, sqlStr(r.Type), sqlStr(r.DisplayName)))
+	}
+	return strings.Join(rows, ",\n")
+}
+
+func (b *TestDataBuilder) labelsSQL() string {
+	var rows []string
+	for _, l := range b.labels {
+		rows = append(rows, fmt.Sprintf("(%d::BIGINT, %s)", l.ID, sqlStr(l.Name)))
+	}
+	return strings.Join(rows, ",\n")
+}
+
+func (b *TestDataBuilder) messageLabelsSQL() string {
+	var rows []string
+	for _, ml := range b.msgLabels {
+		rows = append(rows, fmt.Sprintf("(%d::BIGINT, %d::BIGINT)", ml.MessageID, ml.LabelID))
+	}
+	return strings.Join(rows, ",\n")
+}
+
+func (b *TestDataBuilder) attachmentsSQL() string {
+	var rows []string
+	for _, a := range b.attachments {
+		rows = append(rows, fmt.Sprintf("(%d::BIGINT, %d::BIGINT, %s)",
+			a.MessageID, a.Size, sqlStr(a.Filename)))
+	}
+	return strings.Join(rows, ",\n")
+}
+
+// ---------------------------------------------------------------------------
+// Build: generate Parquet files
+// ---------------------------------------------------------------------------
+
+// column definitions (coupled to SQL generation methods above)
+const (
+	messagesCols          = "id, source_id, source_message_id, conversation_id, subject, snippet, sent_at, size_estimate, has_attachments, deleted_from_source_at, year, month"
+	sourcesCols           = "id, account_email"
+	participantsCols      = "id, email_address, domain, display_name"
+	messageRecipientsCols = "message_id, participant_id, recipient_type, display_name"
+	labelsCols            = "id, name"
+	messageLabelsCols     = "message_id, label_id"
+	attachmentsCols       = "message_id, size, filename"
+)
+
+// Build generates Parquet files from the accumulated data and returns the
+// analytics directory path and a cleanup function.
+func (b *TestDataBuilder) Build() (string, func()) {
+	b.t.Helper()
+
+	// Group messages by year for partitioning.
+	byYear := map[int][]MessageFixture{}
+	for _, m := range b.messages {
+		byYear[m.Year] = append(byYear[m.Year], m)
+	}
+
+	pb := newParquetBuilder(b.t)
+
+	// Add message partitions.
+	for year, msgs := range byYear {
+		var rows []string
+		for _, m := range msgs {
+			deletedAt := "NULL::TIMESTAMP"
+			if m.DeletedAt != nil {
+				deletedAt = fmt.Sprintf("TIMESTAMP '%s'", m.DeletedAt.Format("2006-01-02 15:04:05"))
+			}
+			rows = append(rows, fmt.Sprintf("(%d::BIGINT, %d::BIGINT, %s, %d::BIGINT, %s, %s, TIMESTAMP '%s', %d::BIGINT, %v, %s, %d, %d)",
+				m.ID, m.SourceID, sqlStr(m.SourceMessageID), m.ConversationID,
+				sqlStr(m.Subject), sqlStr(m.Snippet),
+				m.SentAt.Format("2006-01-02 15:04:05"), m.SizeEstimate,
+				m.HasAttachments, deletedAt, m.Year, m.Month,
+			))
+		}
+		pb.addTable("messages",
+			fmt.Sprintf("messages/year=%d", year), "data.parquet",
+			messagesCols, strings.Join(rows, ",\n"))
+	}
+
+	pb.addTable("sources", "sources", "sources.parquet", sourcesCols, b.sourcesSQL())
+	pb.addTable("participants", "participants", "participants.parquet", participantsCols, b.participantsSQL())
+	pb.addTable("message_recipients", "message_recipients", "message_recipients.parquet", messageRecipientsCols, b.recipientsSQL())
+	pb.addTable("labels", "labels", "labels.parquet", labelsCols, b.labelsSQL())
+	pb.addTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, b.messageLabelsSQL())
+
+	if b.emptyAttachments {
+		pb.addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols,
+			"(0::BIGINT, 0::BIGINT, '')")
+	} else if len(b.attachments) > 0 {
+		pb.addTable("attachments", "attachments", "attachments.parquet", attachmentsCols, b.attachmentsSQL())
+	} else {
+		pb.addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols,
+			"(0::BIGINT, 0::BIGINT, '')")
+	}
+
+	return pb.build()
+}
+
+// BuildEngine generates Parquet files and returns a DuckDBEngine.
+// Cleanup is registered via t.Cleanup.
+func (b *TestDataBuilder) BuildEngine() *DuckDBEngine {
+	b.t.Helper()
+	analyticsDir, cleanup := b.Build()
+	b.t.Cleanup(cleanup)
+	engine, err := NewDuckDBEngine(analyticsDir, "", nil)
+	if err != nil {
+		b.t.Fatalf("NewDuckDBEngine: %v", err)
+	}
+	b.t.Cleanup(func() { engine.Close() })
+	return engine
+}
+
+// ---------------------------------------------------------------------------
+// Low-level Parquet builder (unchanged)
+// ---------------------------------------------------------------------------
+
 // parquetTable defines a table to be written as a Parquet file.
 type parquetTable struct {
 	name    string // e.g. "messages", "sources"
@@ -132,16 +494,9 @@ func writeTableParquet(t *testing.T, db *sql.DB, path, columns, values string, e
 	}
 }
 
-// Common column definitions for Parquet tables.
-const (
-	messagesCols          = "id, source_id, source_message_id, conversation_id, subject, snippet, sent_at, size_estimate, has_attachments, deleted_from_source_at, year, month"
-	sourcesCols           = "id, account_email"
-	participantsCols      = "id, email_address, domain, display_name"
-	messageRecipientsCols = "message_id, participant_id, recipient_type, display_name"
-	labelsCols            = "id, name"
-	messageLabelsCols     = "message_id, label_id"
-	attachmentsCols       = "message_id, size, filename"
-)
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
 
 // createEngineFromBuilder builds Parquet files from the builder and returns a
 // DuckDBEngine. Cleanup is registered via t.Cleanup.
