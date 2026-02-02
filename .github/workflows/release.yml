@@ -156,8 +156,47 @@ jobs:
           name: msgvault-darwin-${{ matrix.goarch }}
           path: dist/*.tar.gz
 
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        shell: pwsh
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '1'
+        run: |
+          $VERSION = "${{ github.ref_name }}".TrimStart("v")
+
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $LDFLAGS = "-s -w -X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=v${VERSION}"
+          go build -tags fts5 -trimpath -ldflags="$LDFLAGS" -o dist/msgvault.exe ./cmd/msgvault
+          if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+
+          # Smoke test
+          Write-Host "--- Smoke test ---"
+          $SMOKE_OUT = & dist/msgvault.exe version 2>&1 | Out-String
+          Write-Host $SMOKE_OUT
+          if ($SMOKE_OUT -notmatch "v${VERSION}") { throw "FATAL: version output doesn't match tag" }
+
+          # Package as zip
+          $ARCHIVE = "msgvault_${VERSION}_windows_amd64.zip"
+          Compress-Archive -Path dist/msgvault.exe -DestinationPath "dist/$ARCHIVE"
+          Remove-Item dist/msgvault.exe
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: msgvault-windows-amd64
+          path: dist/*.zip
+
   release:
-    needs: [build-linux, build-darwin]
+    needs: [build-linux, build-darwin, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -191,10 +230,21 @@ jobs:
             echo "  OK"
           done
 
+          for archive in artifacts/*.zip; do
+            [ -e "$archive" ] || continue
+            echo "Checking $archive..."
+            tmpdir=$(mktemp -d)
+            unzip -q "$archive" -d "$tmpdir"
+            test -f "$tmpdir/msgvault.exe" || { echo "FATAL: msgvault.exe missing from $archive"; exit 1; }
+            file "$tmpdir/msgvault.exe"
+            rm -rf "$tmpdir"
+            echo "  OK"
+          done
+
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum *.tar.gz > SHA256SUMS
+          sha256sum *.tar.gz *.zip > SHA256SUMS
           cat SHA256SUMS
 
       - name: Get tag message
@@ -226,6 +276,7 @@ jobs:
         with:
           files: |
             artifacts/*.tar.gz
+            artifacts/*.zip
             artifacts/SHA256SUMS
           body: ${{ steps.tag_message.outputs.has_body == 'true' && steps.tag_message.outputs.body || '' }}
           generate_release_notes: ${{ steps.tag_message.outputs.has_body != 'true' }}
