@@ -262,11 +262,31 @@ func TestStore_UpsertMessage(t *testing.T) {
 				t.Error("message ID should be non-zero")
 			}
 
-			// Update (same source_message_id) should return same ID
+			// Update: mutate fields and upsert again
+			msg.Subject = sql.NullString{String: "Updated Subject", Valid: true}
+			msg.Snippet = sql.NullString{String: "Updated snippet", Valid: true}
+			msg.HasAttachments = !msg.HasAttachments
 			msgID2, err := st.UpsertMessage(msg)
 			testutil.MustNoErr(t, err, "UpsertMessage update")
 			if msgID2 != msgID {
 				t.Errorf("update ID = %d, want %d", msgID2, msgID)
+			}
+
+			// Verify updated fields are persisted
+			var gotSubject, gotSnippet string
+			var gotHasAttach bool
+			err = st.DB().QueryRow(
+				`SELECT subject, snippet, has_attachments FROM messages WHERE id = ?`, msgID,
+			).Scan(&gotSubject, &gotSnippet, &gotHasAttach)
+			testutil.MustNoErr(t, err, "query updated message")
+			if gotSubject != "Updated Subject" {
+				t.Errorf("subject = %q, want %q", gotSubject, "Updated Subject")
+			}
+			if gotSnippet != "Updated snippet" {
+				t.Errorf("snippet = %q, want %q", gotSnippet, "Updated snippet")
+			}
+			if gotHasAttach != msg.HasAttachments {
+				t.Errorf("has_attachments = %v, want %v", gotHasAttach, msg.HasAttachments)
 			}
 
 			// Verify stats show exactly one message
