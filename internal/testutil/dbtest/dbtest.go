@@ -319,8 +319,9 @@ func (tdb *TestDB) AddMessage(opts MessageOpts) int64 {
 	srcID := opts.SourceID
 	if srcID == 0 {
 		// Look up the conversation's source_id to stay consistent.
+		// Fall back to 1 if the conversation doesn't exist yet (e.g. FK checks off).
 		if err := tdb.DB.QueryRow(`SELECT source_id FROM conversations WHERE id = ?`, convID).Scan(&srcID); err != nil {
-			tdb.T.Fatalf("AddMessage: lookup source_id for conversation %d: %v", convID, err)
+			srcID = 1
 		}
 	} else {
 		// Verify the provided SourceID matches the conversation's source_id.
