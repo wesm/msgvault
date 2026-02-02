@@ -10,10 +10,10 @@ import (
 
 func TestAttachments(t *testing.T) {
 	tests := []struct {
-		name           string
-		inputs         []query.AttachmentInfo
-		wantErr        bool
-		wantInResult   string
+		name            string
+		inputs          []query.AttachmentInfo
+		wantErr         bool
+		wantInResult    string
 		wantAllInResult []string
 	}{
 		{
@@ -59,7 +59,7 @@ func TestAttachments(t *testing.T) {
 			if tt.wantInResult != "" && !strings.Contains(result.Result, tt.wantInResult) {
 				t.Errorf("Attachments() result = %q, want substring %q", result.Result, tt.wantInResult)
 			}
-		for _, want := range tt.wantAllInResult {
+			for _, want := range tt.wantAllInResult {
 				if !strings.Contains(result.Result, want) {
 					t.Errorf("Attachments() result = %q, want substring %q", result.Result, want)
 				}
