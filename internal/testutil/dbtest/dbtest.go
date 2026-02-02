@@ -5,6 +5,7 @@ package dbtest
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -321,7 +322,11 @@ func (tdb *TestDB) AddMessage(opts MessageOpts) int64 {
 		// Look up the conversation's source_id to stay consistent.
 		// Fall back to 1 if the conversation doesn't exist yet (e.g. FK checks off).
 		if err := tdb.DB.QueryRow(`SELECT source_id FROM conversations WHERE id = ?`, convID).Scan(&srcID); err != nil {
-			srcID = 1
+			if errors.Is(err, sql.ErrNoRows) {
+				srcID = 1
+			} else {
+				tdb.T.Fatalf("AddMessage: lookup source_id for conversation %d: %v", convID, err)
+			}
 		}
 	} else {
 		// Verify the provided SourceID matches the conversation's source_id.
