@@ -63,7 +63,7 @@ See the **[Setup Guide](https://msgvault.io/guides/oauth-setup/)** for step-by-s
 | `init-db` | Create the database |
 | `add-account EMAIL` | Authorize a Gmail account (use `--headless` for servers) |
 | `sync-full EMAIL` | Full sync (`--limit N`, `--after`/`--before` for date ranges) |
-| `sync-incremental EMAIL` | Sync only new/changed messages |
+| `sync EMAIL` | Sync only new/changed messages |
 | `tui` | Launch the interactive TUI (`--account` to filter) |
 | `search QUERY` | Search messages (`--json` for machine output) |
 | `mcp` | Start the MCP server for AI assistant integration |

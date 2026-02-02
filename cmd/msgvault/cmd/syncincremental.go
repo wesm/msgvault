@@ -17,8 +17,9 @@ import (
 )
 
 var syncIncrementalCmd = &cobra.Command{
-	Use:   "sync-incremental <email>",
-	Short: "Perform an incremental sync of a Gmail account",
+	Use:     "sync <email>",
+	Aliases: []string{"sync-incremental"},
+	Short:   "Sync new and changed messages from a Gmail account",
 	Long: `Perform an incremental synchronization using the Gmail History API.
 
 This is faster than a full sync as it only fetches changes since the last sync.
@@ -27,7 +28,7 @@ Requires a prior full sync to establish the history ID baseline.
 If history is too old (Gmail returns 404), falls back to suggesting a full sync.
 
 Examples:
-  msgvault sync-incremental you@gmail.com`,
+  msgvault sync you@gmail.com`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		email := args[0]
