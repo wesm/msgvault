@@ -11,6 +11,7 @@ permissions:
 jobs:
   build-linux:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - goarch: amd64
@@ -26,7 +27,7 @@ jobs:
     steps:
       - name: Install build tools
         run: |
-          dnf install -y gcc gcc-c++ make git tar gzip file
+          dnf install -y gcc gcc-c++ make git tar gzip file libstdc++-static
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -44,6 +45,7 @@ jobs:
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '1'
+          CGO_LDFLAGS: '-lstdc++ -lm'
         run: |
           export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
           VERSION=${GITHUB_REF#refs/tags/v}
