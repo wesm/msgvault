@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -29,35 +30,21 @@ func forceColorProfile(t *testing.T) {
 	})
 }
 
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
 func stripANSI(s string) string {
-	// Simple ANSI stripper for test assertions
-	var out strings.Builder
-	inEsc := false
-	for _, r := range s {
-		if r == '\x1b' {
-			inEsc = true
-			continue
-		}
-		if inEsc {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-				inEsc = false
-			}
-			continue
-		}
-		out.WriteRune(r)
-	}
-	return out.String()
+	return ansiPattern.ReplaceAllString(s, "")
 }
 
 // assertHighlight checks that applyHighlight produces the expected plain text
 // (after stripping ANSI) and, when wantANSI is true, that the raw output
 // contains ANSI escape sequences.
-func assertHighlight(t *testing.T, text string, terms []string, wantText string, wantANSI bool) {
+func assertHighlight(t *testing.T, text string, terms []string, wantANSI bool) {
 	t.Helper()
 	result := applyHighlight(text, terms)
 	stripped := stripANSI(result)
-	if stripped != wantText {
-		t.Errorf("text content mismatch:\n  got:  %q\n  want: %q", stripped, wantText)
+	if stripped != text {
+		t.Errorf("text content mismatch:\n  got:  %q\n  want: %q", stripped, text)
 	}
 	if wantANSI {
 		if !strings.Contains(result, ansiStart) {
@@ -81,30 +68,29 @@ func TestApplyHighlight(t *testing.T) {
 		name     string
 		text     string
 		terms    []string
-		wantText string
 		wantANSI bool
 	}{
-		{"no terms", "hello world", nil, "hello world", false},
-		{"single match", "hello world", []string{"world"}, "hello world", true},
-		{"case insensitive", "Hello World", []string{"hello"}, "Hello World", true},
-		{"multiple terms", "hello world foo", []string{"hello", "foo"}, "hello world foo", true},
-		{"overlapping matches", "abcdef", []string{"abcd", "cdef"}, "abcdef", true},
-		{"adjacent matches", "aabb", []string{"aa", "bb"}, "aabb", true},
-		{"nested matches", "abcdef", []string{"abcdef", "cd"}, "abcdef", true},
-		{"no match", "hello world", []string{"xyz"}, "hello world", false},
-		{"unicode text", "café résumé", []string{"café"}, "café résumé", true},
-		{"unicode case folding", "Ünïcödé", []string{"ünïcödé"}, "Ünïcödé", true},
-		{"empty text", "", []string{"hello"}, "", false},
-		{"empty term filtered", "hello", []string{""}, "hello", false},
-		{"CJK characters", "hello 世界 world", []string{"世界"}, "hello 世界 world", true},
-		{"repeated matches", "ababab", []string{"ab"}, "ababab", true},
+		{"no terms", "hello world", nil, false},
+		{"single match", "hello world", []string{"world"}, true},
+		{"case insensitive", "Hello World", []string{"hello"}, true},
+		{"multiple terms", "hello world foo", []string{"hello", "foo"}, true},
+		{"overlapping matches", "abcdef", []string{"abcd", "cdef"}, true},
+		{"adjacent matches", "aabb", []string{"aa", "bb"}, true},
+		{"nested matches", "abcdef", []string{"abcdef", "cd"}, true},
+		{"no match", "hello world", []string{"xyz"}, false},
+		{"unicode text", "café résumé", []string{"café"}, true},
+		{"unicode case folding", "Ünïcödé", []string{"ünïcödé"}, true},
+		{"empty text", "", []string{"hello"}, false},
+		{"empty term filtered", "hello", []string{""}, false},
+		{"CJK characters", "hello 世界 world", []string{"世界"}, true},
+		{"repeated matches", "ababab", []string{"ab"}, true},
 	}
 
 	forceColorProfile(t)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertHighlight(t, tt.text, tt.terms, tt.wantText, tt.wantANSI)
+			assertHighlight(t, tt.text, tt.terms, tt.wantANSI)
 		})
 	}
 }
