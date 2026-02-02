@@ -7,11 +7,13 @@ import (
 	"time"
 )
 
-// fatalSentinel is panicked by fakeT.Fatalf to halt execution like real Fatalf.
+// fatalSentinel is panicked by fakeT to halt execution, mimicking
+// testing.TB methods that call runtime.Goexit (Fatal, Fatalf, FailNow,
+// Skip, Skipf, SkipNow). Recovered by expectFatal.
 type fatalSentinel struct{ msg string }
 
 // fakeT wraps a real testing.TB so that un-overridden methods delegate safely,
-// while intercepting Fatalf calls via a panic sentinel.
+// while intercepting all fail/skip methods via a panic sentinel.
 type fakeT struct {
 	testing.TB // delegate to a real TB for methods we don't override
 	failed     bool
@@ -37,10 +39,23 @@ func (f *fakeT) Fatal(args ...any) {
 }
 func (f *fakeT) FailNow() {
 	f.failed = true
+	f.fatalMsg = ""
 	panic(fatalSentinel{})
 }
 func (f *fakeT) Skip(args ...any) {
-	panic(fatalSentinel{fmt.Sprint(args...)})
+	f.failed = true
+	f.fatalMsg = fmt.Sprint(args...)
+	panic(fatalSentinel{f.fatalMsg})
+}
+func (f *fakeT) Skipf(format string, args ...any) {
+	f.failed = true
+	f.fatalMsg = fmt.Sprintf(format, args...)
+	panic(fatalSentinel{f.fatalMsg})
+}
+func (f *fakeT) SkipNow() {
+	f.failed = true
+	f.fatalMsg = ""
+	panic(fatalSentinel{})
 }
 
 // expectFatal calls fn and recovers if it triggered a fakeT fatal/skip.
