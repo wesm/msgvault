@@ -29,34 +29,112 @@ func createTestManifest(t *testing.T, mgr *Manager, desc string) *Manifest {
 	return m
 }
 
-// newTestManifest creates a Manifest with sensible defaults for testing.
+// ManifestBuilder provides a fluent API for constructing Manifest test fixtures.
+type ManifestBuilder struct {
+	t *testing.T
+	m *Manifest
+}
+
+// BuildManifest starts building a Manifest with sensible defaults.
 // If no IDs are provided, defaults to {"id1", "id2"}.
-func newTestManifest(t *testing.T, desc string, ids ...string) *Manifest {
+func BuildManifest(t *testing.T, desc string, ids ...string) *ManifestBuilder {
 	t.Helper()
 	if len(ids) == 0 {
 		ids = []string{"id1", "id2"}
 	}
-	return NewManifest(desc, ids)
+	return &ManifestBuilder{t: t, m: NewManifest(desc, ids)}
 }
 
-// testSummary creates a Summary with common defaults for testing.
-func testSummary(count int, sizeBytes int64, dateRange [2]string, topSenders []SenderCount) *Summary {
-	return &Summary{
+// WithFilters sets sender and after-date filters.
+func (b *ManifestBuilder) WithFilters(senders []string, after string) *ManifestBuilder {
+	b.m.Filters = Filters{Senders: senders, After: after}
+	return b
+}
+
+// WithSummary sets the manifest summary.
+func (b *ManifestBuilder) WithSummary(count int, sizeBytes int64, dateRange [2]string, topSenders []SenderCount) *ManifestBuilder {
+	b.m.Summary = &Summary{
 		MessageCount:   count,
 		TotalSizeBytes: sizeBytes,
 		DateRange:      dateRange,
 		TopSenders:     topSenders,
 	}
+	return b
 }
 
-// testExecution creates an Execution with the given parameters for testing.
-func testExecution(method Method, succeeded, failed int, completedAt *time.Time) *Execution {
-	return &Execution{
+// WithExecution sets the manifest execution details.
+func (b *ManifestBuilder) WithExecution(method Method, succeeded, failed int, completedAt *time.Time) *ManifestBuilder {
+	b.m.Execution = &Execution{
 		StartedAt:   time.Now().Add(-time.Hour),
 		CompletedAt: completedAt,
 		Method:      method,
 		Succeeded:   succeeded,
 		Failed:      failed,
+	}
+	return b
+}
+
+// WithStatus sets the manifest status.
+func (b *ManifestBuilder) WithStatus(s Status) *ManifestBuilder {
+	b.m.Status = s
+	return b
+}
+
+// Build returns the constructed Manifest.
+func (b *ManifestBuilder) Build() *Manifest {
+	return b.m
+}
+
+// AssertManifestEqual compares two manifests on their key fields, ignoring timestamps.
+func AssertManifestEqual(t *testing.T, got, want *Manifest) {
+	t.Helper()
+	if got.Description != want.Description {
+		t.Errorf("Description: got %q, want %q", got.Description, want.Description)
+	}
+	if !slices.Equal(got.GmailIDs, want.GmailIDs) {
+		t.Errorf("GmailIDs: got %v, want %v", got.GmailIDs, want.GmailIDs)
+	}
+	if got.Status != want.Status {
+		t.Errorf("Status: got %q, want %q", got.Status, want.Status)
+	}
+	if !slices.Equal(got.Filters.Senders, want.Filters.Senders) {
+		t.Errorf("Filters.Senders: got %v, want %v", got.Filters.Senders, want.Filters.Senders)
+	}
+	if got.Filters.After != want.Filters.After {
+		t.Errorf("Filters.After: got %q, want %q", got.Filters.After, want.Filters.After)
+	}
+	if want.Summary != nil {
+		if got.Summary == nil {
+			t.Fatal("Summary: got nil, want non-nil")
+		}
+		if got.Summary.MessageCount != want.Summary.MessageCount {
+			t.Errorf("Summary.MessageCount: got %d, want %d", got.Summary.MessageCount, want.Summary.MessageCount)
+		}
+		if got.Summary.TotalSizeBytes != want.Summary.TotalSizeBytes {
+			t.Errorf("Summary.TotalSizeBytes: got %d, want %d", got.Summary.TotalSizeBytes, want.Summary.TotalSizeBytes)
+		}
+	}
+}
+
+// AssertManifestInState verifies that a manifest file exists in the expected state directory.
+func AssertManifestInState(t *testing.T, mgr *Manager, id string, state Status) {
+	t.Helper()
+	var dir string
+	switch state {
+	case StatusPending:
+		dir = mgr.PendingDir()
+	case StatusInProgress:
+		dir = mgr.InProgressDir()
+	case StatusCompleted:
+		dir = mgr.CompletedDir()
+	case StatusFailed:
+		dir = mgr.FailedDir()
+	default:
+		t.Fatalf("unknown state %q", state)
+	}
+	path := filepath.Join(dir, id+".json")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Errorf("manifest %q not found in %s directory", id, state)
 	}
 }
 
@@ -202,14 +280,12 @@ func TestManifest_SaveAndLoad(t *testing.T) {
 	path := filepath.Join(tmpDir, "test-manifest.json")
 
 	// Create and save manifest
-	m := newTestManifest(t, "save test")
-	m.Filters = Filters{
-		Senders: []string{"test@example.com"},
-		After:   "2024-01-01",
-	}
-	m.Summary = testSummary(2, 1024, [2]string{"2024-01-01", "2024-01-15"}, []SenderCount{
-		{Sender: "test@example.com", Count: 2},
-	})
+	m := BuildManifest(t, "save test").
+		WithFilters([]string{"test@example.com"}, "2024-01-01").
+		WithSummary(2, 1024, [2]string{"2024-01-01", "2024-01-15"}, []SenderCount{
+			{Sender: "test@example.com", Count: 2},
+		}).
+		Build()
 
 	if err := m.Save(path); err != nil {
 		t.Fatalf("Save() error = %v", err)
@@ -221,28 +297,14 @@ func TestManifest_SaveAndLoad(t *testing.T) {
 		t.Fatalf("LoadManifest() error = %v", err)
 	}
 
-	if loaded.Description != m.Description {
-		t.Errorf("Description = %q, want %q", loaded.Description, m.Description)
-	}
-	if !slices.Equal(loaded.GmailIDs, m.GmailIDs) {
-		t.Errorf("GmailIDs = %v, want %v", loaded.GmailIDs, m.GmailIDs)
-	}
-	if !slices.Equal(loaded.Filters.Senders, m.Filters.Senders) {
-		t.Errorf("Filters.Senders = %v, want %v", loaded.Filters.Senders, m.Filters.Senders)
-	}
-	if loaded.Summary == nil {
-		t.Fatal("Summary is nil after load")
-	}
-	if loaded.Summary.MessageCount != 2 {
-		t.Errorf("Summary.MessageCount = %d, want 2", loaded.Summary.MessageCount)
-	}
+	AssertManifestEqual(t, loaded, m)
 }
 
 func TestManifest_Save_CreatesDirectories(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "subdir", "nested", "manifest.json")
 
-	m := newTestManifest(t, "nested test", "id1")
+	m := BuildManifest(t, "nested test", "id1").Build()
 	if err := m.Save(path); err != nil {
 		t.Fatalf("Save() with nested path error = %v", err)
 	}
@@ -281,40 +343,35 @@ func TestManifest_FormatSummary(t *testing.T) {
 		{
 			name: "basic summary",
 			setupManifest: func(t *testing.T) *Manifest {
-				m := newTestManifest(t, "format test", "id1", "id2", "id3")
-				m.Summary = testSummary(3, 5*1024*1024, [2]string{"2024-01-01", "2024-01-31"}, []SenderCount{
-					{Sender: "alice@example.com", Count: 2},
-					{Sender: "bob@example.com", Count: 1},
-				})
-				return m
+				return BuildManifest(t, "format test", "id1", "id2", "id3").
+					WithSummary(3, 5*1024*1024, [2]string{"2024-01-01", "2024-01-31"}, []SenderCount{
+						{Sender: "alice@example.com", Count: 2},
+						{Sender: "bob@example.com", Count: 1},
+					}).Build()
 			},
 			wantContains: []string{"pending", "Messages: 3", "5.00 MB", "2024-01-01", "alice@example.com"},
 		},
 		{
 			name: "with execution",
 			setupManifest: func(t *testing.T) *Manifest {
-				m := newTestManifest(t, "exec test", "id1")
 				now := time.Now()
-				m.Execution = testExecution(MethodTrash, 10, 2, &now)
-				return m
+				return BuildManifest(t, "exec test", "id1").
+					WithExecution(MethodTrash, 10, 2, &now).Build()
 			},
 			wantContains: []string{"Execution:", "Method: trash", "Succeeded: 10", "Failed: 2", "Completed:"},
 		},
 		{
 			name: "empty date range",
 			setupManifest: func(t *testing.T) *Manifest {
-				m := newTestManifest(t, "empty date test", "id1")
-				m.Summary = testSummary(1, 1024, [2]string{"", ""}, nil)
-				return m
+				return BuildManifest(t, "empty date test", "id1").
+					WithSummary(1, 1024, [2]string{"", ""}, nil).Build()
 			},
 			wantNotContains: []string{"Date Range:"},
 		},
 		{
 			name: "nil summary",
 			setupManifest: func(t *testing.T) *Manifest {
-				m := newTestManifest(t, "no summary test")
-				m.Summary = nil
-				return m
+				return BuildManifest(t, "no summary test").Build()
 			},
 			wantContains:    []string{"Messages: 2"},
 			wantNotContains: []string{"Total Size:"},
@@ -322,7 +379,6 @@ func TestManifest_FormatSummary(t *testing.T) {
 		{
 			name: "many top senders truncated to 10",
 			setupManifest: func(t *testing.T) *Manifest {
-				m := newTestManifest(t, "many senders test", "id1")
 				topSenders := make([]SenderCount, 15)
 				for i := 0; i < 15; i++ {
 					topSenders[i] = SenderCount{
@@ -330,8 +386,8 @@ func TestManifest_FormatSummary(t *testing.T) {
 						Count:  100 - i,
 					}
 				}
-				m.Summary = testSummary(15, 1024, [2]string{"2024-01-01", "2024-01-31"}, topSenders)
-				return m
+				return BuildManifest(t, "many senders test", "id1").
+					WithSummary(15, 1024, [2]string{"2024-01-01", "2024-01-31"}, topSenders).Build()
 			},
 			wantContains:    []string{"sendera@example.com", "senderj@example.com"},
 			wantNotContains: []string{"senderk@example.com"},
@@ -339,9 +395,8 @@ func TestManifest_FormatSummary(t *testing.T) {
 		{
 			name: "execution without completed time",
 			setupManifest: func(t *testing.T) *Manifest {
-				m := newTestManifest(t, "no completed test", "id1")
-				m.Execution = testExecution(MethodDelete, 5, 0, nil)
-				return m
+				return BuildManifest(t, "no completed test", "id1").
+					WithExecution(MethodDelete, 5, 0, nil).Build()
 			},
 			wantContains:    []string{"Execution:", "Method: delete"},
 			wantNotContains: []string{"Completed:"},
@@ -445,9 +500,7 @@ func TestManager_GetManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetManifest() error = %v", err)
 	}
-	if loaded.Description != m.Description {
-		t.Errorf("GetManifest() returned Description = %q, want %q", loaded.Description, m.Description)
-	}
+	AssertManifestEqual(t, loaded, m)
 	if path == "" {
 		t.Error("GetManifest() returned empty path")
 	}
@@ -476,10 +529,7 @@ func TestManager_MoveManifest(t *testing.T) {
 		t.Fatalf("MoveManifest(pending->in_progress) error = %v", err)
 	}
 
-	// Verify it's in in_progress
-	assertListCount(t, mgr.ListInProgress, 1)
-
-	// Verify it's not in pending
+	AssertManifestInState(t, mgr, m.ID, StatusInProgress)
 	assertListCount(t, mgr.ListPending, 0)
 
 	// Move in_progress -> completed
@@ -487,7 +537,7 @@ func TestManager_MoveManifest(t *testing.T) {
 		t.Fatalf("MoveManifest(in_progress->completed) error = %v", err)
 	}
 
-	assertListCount(t, mgr.ListCompleted, 1)
+	AssertManifestInState(t, mgr, m.ID, StatusCompleted)
 }
 
 func TestManager_MoveManifest_ToFailed(t *testing.T) {
@@ -503,7 +553,7 @@ func TestManager_MoveManifest_ToFailed(t *testing.T) {
 		t.Fatalf("MoveManifest(in_progress->failed) error = %v", err)
 	}
 
-	assertListCount(t, mgr.ListFailed, 1)
+	AssertManifestInState(t, mgr, m.ID, StatusFailed)
 }
 
 func TestManager_MoveManifest_InvalidTransitions(t *testing.T) {
