@@ -29,7 +29,7 @@ Example:
 
 		// Validate config
 		if cfg.OAuth.ClientSecrets == "" {
-			return fmt.Errorf("oauth.client_secrets not configured in config.toml")
+			return errOAuthNotConfigured()
 		}
 
 		// Initialize database (in case it's new)
@@ -47,7 +47,7 @@ Example:
 		// Create OAuth manager
 		oauthMgr, err := oauth.NewManager(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger)
 		if err != nil {
-			return fmt.Errorf("create oauth manager: %w", err)
+			return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
 		}
 
 		// Check if already authorized

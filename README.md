@@ -46,15 +46,15 @@ make install
 
 ## Quick Start
 
+> **Prerequisites:** You need a Google Cloud OAuth credential before adding an account.
+> Follow the **[OAuth Setup Guide](https://msgvault.io/guides/oauth-setup/)** to create one (~5 minutes).
+
 ```bash
 msgvault init-db
 msgvault add-account you@gmail.com          # opens browser for OAuth
 msgvault sync-full you@gmail.com --limit 100
 msgvault tui
 ```
-
-OAuth requires a Google Cloud project with the Gmail API enabled.
-See the **[Setup Guide](https://msgvault.io/guides/oauth-setup/)** for step-by-step instructions.
 
 ## Commands
 

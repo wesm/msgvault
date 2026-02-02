@@ -212,7 +212,7 @@ Examples:
 
 		// Validate config
 		if cfg.OAuth.ClientSecrets == "" {
-			return fmt.Errorf("oauth.client_secrets not configured in config.toml")
+			return errOAuthNotConfigured()
 		}
 
 		// Collect unique accounts from manifests
@@ -280,7 +280,7 @@ Examples:
 		// Create OAuth manager with appropriate scopes
 		oauthMgr, err := oauth.NewManagerWithScopes(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger, scopes)
 		if err != nil {
-			return fmt.Errorf("create oauth manager: %w", err)
+			return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
 		}
 
 		tokenSource, err := oauthMgr.TokenSource(ctx, account)

@@ -35,7 +35,7 @@ Examples:
 
 		// Validate config
 		if cfg.OAuth.ClientSecrets == "" {
-			return fmt.Errorf("oauth.client_secrets not configured in config.toml")
+			return errOAuthNotConfigured()
 		}
 
 		// Open database
@@ -65,7 +65,7 @@ Examples:
 		// Create OAuth manager and get token source
 		oauthMgr, err := oauth.NewManager(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger)
 		if err != nil {
-			return fmt.Errorf("create oauth manager: %w", err)
+			return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
 		}
 
 		// Set up context with cancellation

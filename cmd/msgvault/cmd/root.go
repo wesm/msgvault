@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -52,6 +53,29 @@ in a single binary.`,
 
 func Execute() error {
 	return rootCmd.Execute()
+}
+
+// oauthSetupHint is the common help text for OAuth configuration issues.
+const oauthSetupHint = `
+To use msgvault, you need a Google Cloud OAuth credential:
+  1. Follow the setup guide: https://msgvault.io/guides/oauth-setup/
+  2. Download the client_secret.json file
+  3. Add to your config.toml:
+       [oauth]
+       client_secrets = "/path/to/client_secret.json"`
+
+// errOAuthNotConfigured returns a helpful error when OAuth client secrets are missing.
+func errOAuthNotConfigured() error {
+	return fmt.Errorf("OAuth client secrets not configured." + oauthSetupHint)
+}
+
+// wrapOAuthError wraps an oauth/client-secrets error with setup instructions
+// if the root cause is a missing or unreadable secrets file.
+func wrapOAuthError(err error) error {
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("OAuth client secrets file not found." + oauthSetupHint)
+	}
+	return err
 }
 
 func init() {
