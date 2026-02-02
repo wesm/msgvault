@@ -1080,9 +1080,7 @@ func TestContextStatsRestoredOnGoBackToSubAggregate(t *testing.T) {
 		{Key: "domain2.com", Count: 40, TotalSize: 200000},
 	}
 	m2.loading = false
-	if m2.level != levelDrillDown {
-		t.Fatalf("expected levelDrillDown after Tab, got %v", m2.level)
-	}
+	assertLevel(t, m2, levelDrillDown)
 	// contextStats should still be the same (alice's stats)
 	if m2.contextStats != originalContextStats {
 		t.Errorf("contextStats should be preserved after Tab")
@@ -1090,9 +1088,7 @@ func TestContextStatsRestoredOnGoBackToSubAggregate(t *testing.T) {
 
 	// Step 3: Drill down from sub-aggregate to message list (contextStats overwritten)
 	m3 := applyAggregateKey(t, m2, keyEnter())
-	if m3.level != levelMessageList {
-		t.Fatalf("expected levelMessageList after Enter, got %v", m3.level)
-	}
+	assertLevel(t, m3, levelMessageList)
 	// contextStats should now be domain1's stats (60)
 	if m3.contextStats == nil || m3.contextStats.MessageCount != 60 {
 		t.Errorf("expected contextStats.MessageCount=60 for domain1, got %v", m3.contextStats)
@@ -1101,9 +1097,7 @@ func TestContextStatsRestoredOnGoBackToSubAggregate(t *testing.T) {
 	// Step 4: Go back to sub-aggregate (contextStats should be restored to alice's stats)
 	newModel4, _ := m3.goBack()
 	m4 := newModel4.(Model)
-	if m4.level != levelDrillDown {
-		t.Fatalf("expected levelDrillDown after goBack, got %v", m4.level)
-	}
+	assertLevel(t, m4, levelDrillDown)
 	// contextStats should be restored from breadcrumb
 	if m4.contextStats == nil {
 		t.Error("expected contextStats to be restored after goBack")
@@ -1138,9 +1132,7 @@ func TestViewTypeRestoredAfterEscFromSubAggregate(t *testing.T) {
 	newModel2, _ := m.goBack()
 	m2 := newModel2.(Model)
 
-	if m2.level != levelMessageList {
-		t.Fatalf("expected levelMessageList after Esc, got %v", m2.level)
-	}
+	assertLevel(t, m2, levelMessageList)
 	// viewType should be restored to ViewSenders
 	if m2.viewType != query.ViewSenders {
 		t.Errorf("expected ViewSenders after going back, got %v", m2.viewType)
@@ -1256,9 +1248,7 @@ func TestDrillFilterPreservedAfterMessageDetail(t *testing.T) {
 	newModel2, _ := m.goBack()
 	m2 := newModel2.(Model)
 
-	if m2.level != levelMessageList {
-		t.Fatalf("expected levelMessageList after Esc, got %v", m2.level)
-	}
+	assertLevel(t, m2, levelMessageList)
 
 	// drillFilter should be restored
 	if m2.drillFilter.Sender != "alice@example.com" {
@@ -1762,9 +1752,7 @@ func TestSubAggregateDrillDownPreservesSelection(t *testing.T) {
 	// Step 1: Drill down from top-level to message list (Enter on alice)
 	model.cursor = 0
 	m1 := applyAggregateKey(t, model, keyEnter())
-	if m1.level != levelMessageList {
-		t.Fatalf("expected levelMessageList, got %v", m1.level)
-	}
+	assertLevel(t, m1, levelMessageList)
 
 	// Step 2: Go to sub-aggregate view (Tab)
 	m1.rows = []query.AggregateRow{
@@ -1773,9 +1761,7 @@ func TestSubAggregateDrillDownPreservesSelection(t *testing.T) {
 	}
 	m1.loading = false
 	m2 := applyMessageListKey(t, m1, keyTab())
-	if m2.level != levelDrillDown {
-		t.Fatalf("expected levelDrillDown, got %v", m2.level)
-	}
+	assertLevel(t, m2, levelDrillDown)
 
 	// Step 3: Select an aggregate in sub-aggregate view, then drill down with Enter
 	m2.rows = []query.AggregateRow{
@@ -1787,9 +1773,7 @@ func TestSubAggregateDrillDownPreservesSelection(t *testing.T) {
 	m2.cursor = 0
 
 	m3 := applyAggregateKey(t, m2, keyEnter())
-	if m3.level != levelMessageList {
-		t.Fatalf("expected levelMessageList after sub-agg Enter, got %v", m3.level)
-	}
+	assertLevel(t, m3, levelMessageList)
 
 	// The selection should NOT have been cleared by the sub-aggregate Enter
 	if len(m3.selection.aggregateKeys) == 0 {
@@ -2166,9 +2150,7 @@ func TestSubAggregateFromSenderNames(t *testing.T) {
 	newModel2, _ := m.handleMessageListKeys(keyTab())
 	m2 := newModel2.(Model)
 
-	if m2.level != levelDrillDown {
-		t.Fatalf("expected levelDrillDown, got %v", m2.level)
-	}
+	assertLevel(t, m2, levelDrillDown)
 	// Should skip SenderNames (the drill view type) and go to Recipients
 	if m2.viewType != query.ViewRecipients {
 		t.Errorf("expected ViewRecipients (skipping SenderNames), got %v", m2.viewType)
@@ -2373,9 +2355,7 @@ func TestSubAggregateFromRecipientNames(t *testing.T) {
 	newModel2, _ := m.handleMessageListKeys(keyTab())
 	m2 := newModel2.(Model)
 
-	if m2.level != levelDrillDown {
-		t.Fatalf("expected levelDrillDown, got %v", m2.level)
-	}
+	assertLevel(t, m2, levelDrillDown)
 	// nextSubGroupView(RecipientNames) = Domains
 	if m2.viewType != query.ViewDomains {
 		t.Errorf("expected ViewDomains (nextSubGroupView from RecipientNames), got %v", m2.viewType)
@@ -2427,9 +2407,7 @@ func TestRecipientNamesBreadcrumbRoundTrip(t *testing.T) {
 	newModel2, _ := m.goBack()
 	m2 := newModel2.(Model)
 
-	if m2.level != levelMessageList {
-		t.Errorf("expected levelMessageList after goBack, got %v", m2.level)
-	}
+	assertLevel(t, m2, levelMessageList)
 	if m2.drillFilter.RecipientName != "Bob Jones" {
 		t.Errorf("expected RecipientName preserved after goBack, got %q", m2.drillFilter.RecipientName)
 	}
