@@ -128,8 +128,12 @@ func (b *TestDataBuilder) AddParticipant(email, domain, displayName string) int6
 	return id
 }
 
-// AddLabel adds a label and returns its ID.
+// AddLabel adds a label and returns its ID. Name must be non-empty.
 func (b *TestDataBuilder) AddLabel(name string) int64 {
+	b.t.Helper()
+	if name == "" {
+		b.t.Fatalf("AddLabel: name is required")
+	}
 	id := b.nextLabelID
 	b.nextLabelID++
 	b.labels = append(b.labels, LabelFixture{ID: id, Name: name})
@@ -155,7 +159,10 @@ func (b *TestDataBuilder) AddMessage(opt MessageOpt) int64 {
 
 	srcID := opt.SourceID
 	if srcID == 0 {
-		srcID = 1
+		if len(b.sources) == 0 {
+			b.t.Fatalf("AddMessage: no sources added; call AddSource before AddMessage or set SourceID explicitly")
+		}
+		srcID = b.sources[0].ID
 	}
 	convID := opt.ConversationID
 	if convID == 0 {
@@ -218,11 +225,19 @@ func (b *TestDataBuilder) AddMessageLabel(messageID, labelID int64) {
 	})
 }
 
-// AddAttachment adds an attachment row.
+// AddAttachment adds an attachment row and sets HasAttachments on the related message.
 func (b *TestDataBuilder) AddAttachment(messageID, size int64, filename string) {
+	b.t.Helper()
 	b.attachments = append(b.attachments, AttachmentFixture{
 		MessageID: messageID, Size: size, Filename: filename,
 	})
+	// Ensure the related message has HasAttachments set to true.
+	for i := range b.messages {
+		if b.messages[i].ID == messageID {
+			b.messages[i].HasAttachments = true
+			return
+		}
+	}
 }
 
 // SetEmptyAttachments marks the attachments table as empty (schema only).
@@ -337,11 +352,25 @@ func (b *TestDataBuilder) Build() (string, func()) {
 			messagesCols, strings.Join(rows, ",\n"))
 	}
 
-	pb.addTable("sources", "sources", "sources.parquet", sourcesCols, b.sourcesSQL())
-	pb.addTable("participants", "participants", "participants.parquet", participantsCols, b.participantsSQL())
-	pb.addTable("message_recipients", "message_recipients", "message_recipients.parquet", messageRecipientsCols, b.recipientsSQL())
-	pb.addTable("labels", "labels", "labels.parquet", labelsCols, b.labelsSQL())
-	pb.addTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, b.messageLabelsSQL())
+	// For each auxiliary table, write an empty-schema file if no rows exist,
+	// otherwise write the actual data. This avoids invalid empty VALUES lists.
+	auxTables := []struct {
+		name, subdir, file, cols, dummy, sql string
+		empty                                bool
+	}{
+		{"sources", "sources", "sources.parquet", sourcesCols, "(0::BIGINT, '')", b.sourcesSQL(), len(b.sources) == 0},
+		{"participants", "participants", "participants.parquet", participantsCols, "(0::BIGINT, '', '', '')", b.participantsSQL(), len(b.participants) == 0},
+		{"message_recipients", "message_recipients", "message_recipients.parquet", messageRecipientsCols, "(0::BIGINT, 0::BIGINT, '', '')", b.recipientsSQL(), len(b.recipients) == 0},
+		{"labels", "labels", "labels.parquet", labelsCols, "(0::BIGINT, '')", b.labelsSQL(), len(b.labels) == 0},
+		{"message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, "(0::BIGINT, 0::BIGINT)", b.messageLabelsSQL(), len(b.msgLabels) == 0},
+	}
+	for _, a := range auxTables {
+		if a.empty {
+			pb.addEmptyTable(a.name, a.subdir, a.file, a.cols, a.dummy)
+		} else {
+			pb.addTable(a.name, a.subdir, a.file, a.cols, a.sql)
+		}
+	}
 
 	if b.emptyAttachments {
 		pb.addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols,
