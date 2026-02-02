@@ -2,6 +2,8 @@ package query
 
 import (
 	"testing"
+
+	"github.com/wesm/msgvault/internal/testutil/dbtest"
 )
 
 func TestListMessages(t *testing.T) {
@@ -157,11 +159,11 @@ func TestGetTotalStats(t *testing.T) {
 func TestGetTotalStatsWithSourceID(t *testing.T) {
 	env := newTestEnv(t)
 
-	src2 := env.AddSource(sourceOpts{Identifier: "other@gmail.com", DisplayName: "Other Account"})
-	env.AddLabel(labelOpts{SourceID: src2, SourceLabelID: "INBOX", Name: "INBOX", Type: "system"})
-	env.AddLabel(labelOpts{SourceID: src2, SourceLabelID: "personal", Name: "Personal"})
-	conv2 := env.AddConversation(conversationOpts{SourceID: src2, Title: "Other Thread"})
-	env.AddMessage(messageOpts{
+	src2 := env.AddSource(dbtest.SourceOpts{Identifier: "other@gmail.com", DisplayName: "Other Account"})
+	env.AddLabel(dbtest.LabelOpts{SourceID: src2, SourceLabelID: "INBOX", Name: "INBOX", Type: "system"})
+	env.AddLabel(dbtest.LabelOpts{SourceID: src2, SourceLabelID: "personal", Name: "Personal"})
+	conv2 := env.AddConversation(dbtest.ConversationOpts{SourceID: src2, Title: "Other Thread"})
+	env.AddMessage(dbtest.MessageOpts{
 		SourceID:       src2,
 		ConversationID: conv2,
 		Subject:        "Other msg",
@@ -373,10 +375,10 @@ func TestListMessages_MatchEmptySenderName(t *testing.T) {
 func TestMatchEmptySenderName_MixedFromRecipients(t *testing.T) {
 	env := newTestEnv(t)
 
-	nullID := env.AddParticipant(participantOpts{Email: nil, DisplayName: nil, Domain: ""})
-	env.AddMessage(messageOpts{Subject: "Mixed From", SentAt: "2024-06-01 10:00:00", FromID: 1})
+	nullID := env.AddParticipant(dbtest.ParticipantOpts{Email: nil, DisplayName: nil, Domain: ""})
+	env.AddMessage(dbtest.MessageOpts{Subject: "Mixed From", SentAt: "2024-06-01 10:00:00", FromID: 1})
 	// Add a second 'from' with null participant
-	lastMsgID := env.nextMessageID - 1
+	lastMsgID := env.LastMessageID()
 	_, err := env.DB.Exec(`INSERT INTO message_recipients (message_id, participant_id, recipient_type) VALUES (?, ?, 'from')`, lastMsgID, nullID)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
@@ -409,7 +411,7 @@ func TestMatchEmptySenderName_CombinedWithDomain(t *testing.T) {
 func TestListMessages_MatchEmptySenderName_NotExists(t *testing.T) {
 	env := newTestEnv(t)
 
-	env.AddMessage(messageOpts{Subject: "Ghost Message", SentAt: "2024-06-01 10:00:00"})
+	env.AddMessage(dbtest.MessageOpts{Subject: "Ghost Message", SentAt: "2024-06-01 10:00:00"})
 
 	filter := MessageFilter{MatchEmptySenderName: true}
 	messages := env.MustListMessages(filter)
@@ -445,8 +447,8 @@ func TestGetGmailIDsByFilter_SenderName(t *testing.T) {
 func TestListMessages_ConversationIDFilter(t *testing.T) {
 	env := newTestEnv(t)
 
-	conv2 := env.AddConversation(conversationOpts{SourceID: 1, Title: "Second Thread"})
-	env.AddMessage(messageOpts{
+	conv2 := env.AddConversation(dbtest.ConversationOpts{SourceID: 1, Title: "Second Thread"})
+	env.AddMessage(dbtest.MessageOpts{
 		ConversationID: conv2,
 		Subject:        "Thread 2 Message 1",
 		SentAt:         "2024-04-01 10:00:00",
@@ -454,7 +456,7 @@ func TestListMessages_ConversationIDFilter(t *testing.T) {
 		FromID:         1, // Alice
 		ToIDs:          []int64{2}, // Bob
 	})
-	env.AddMessage(messageOpts{
+	env.AddMessage(dbtest.MessageOpts{
 		ConversationID: conv2,
 		Subject:        "Thread 2 Message 2",
 		SentAt:         "2024-04-02 11:00:00",
