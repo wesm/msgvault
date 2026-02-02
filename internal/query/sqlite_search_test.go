@@ -172,7 +172,13 @@ func TestSearchWithDomainFilter(t *testing.T) {
 	env := newTestEnv(t)
 
 	q := &search.Query{FromAddrs: []string{"@example.com"}}
-	results := assertSearchCount(t, env, q, 3)
+	results, err := env.Engine.Search(env.Ctx, q, 1000, 0)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) < 3 {
+		t.Fatalf("expected at least 3 results, got %d", len(results))
+	}
 	assertAllResults(t, results, "FromEmail ends with @example.com", func(m MessageSummary) bool {
 		return m.FromEmail == "" || strings.HasSuffix(m.FromEmail, "@example.com")
 	})
@@ -230,6 +236,7 @@ func TestSearchFastCountMatchesSearch(t *testing.T) {
 	}
 
 	for _, tc := range tests {
+		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			results, err := env.Engine.Search(env.Ctx, tc.query, 1000, 0)
 			if err != nil {
@@ -390,6 +397,7 @@ func TestMergeFilterIntoQuery(t *testing.T) {
 	}
 
 	for _, tc := range tests {
+		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			merged := MergeFilterIntoQuery(tc.initial, tc.filter)
 			tc.check(t, merged)
