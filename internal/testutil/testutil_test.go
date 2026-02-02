@@ -41,6 +41,8 @@ var validRelativePaths = []string{
 	"simple.txt",
 	"subdir/file.txt",
 	"a/b/c/deep.txt",
+	"file-with-dots.test.txt",
+	"./current.txt",
 }
 
 // writeFileAndAssertExists writes a file and asserts it exists, returning the path.
@@ -59,7 +61,7 @@ func writeFileAndAssertContent(t *testing.T, dir, rel string, content []byte) st
 	return path
 }
 
-func TestWriteAndReadFile(t *testing.T) {
+func TestWriteFileAndReadBack(t *testing.T) {
 	dir := TempDir(t)
 	writeFileAndAssertContent(t, dir, "test.txt", []byte("hello world"))
 }
@@ -93,62 +95,30 @@ func TestValidateRelativePath(t *testing.T) {
 		t.Fatalf("failed to get absolute path: %v", err)
 	}
 
-	// Edge cases and invalid paths
-	cases := []struct {
-		name    string
-		path    string
-		wantErr bool
+	// Invalid paths that must be rejected
+	invalidCases := []struct {
+		name string
+		path string
 	}{
-		{
-			name:    "absolute path",
-			path:    absPath,
-			wantErr: true,
-		},
-		{
-			name:    "rooted path",
-			path:    string(filepath.Separator) + "rooted" + string(filepath.Separator) + "path.txt",
-			wantErr: true,
-		},
-		{
-			name:    "escape dot dot",
-			path:    "../escape.txt",
-			wantErr: true,
-		},
-		{
-			name:    "escape dot dot nested",
-			path:    "subdir/../../escape.txt",
-			wantErr: true,
-		},
-		{
-			name:    "escape just dot dot",
-			path:    "..",
-			wantErr: true,
-		},
-		{
-			name:    "valid with dots",
-			path:    "file-with-dots.test.txt",
-			wantErr: false,
-		},
-		{
-			name:    "valid current dir",
-			path:    "./current.txt",
-			wantErr: false,
-		},
+		{name: "absolute path", path: absPath},
+		{name: "rooted path", path: string(filepath.Separator) + "rooted" + string(filepath.Separator) + "path.txt"},
+		{name: "escape dot dot", path: "../escape.txt"},
+		{name: "escape dot dot nested", path: "subdir/../../escape.txt"},
+		{name: "escape just dot dot", path: ".."},
 	}
-	for _, tt := range cases {
+	for _, tt := range invalidCases {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateRelativePath(dir, tt.path)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validateRelativePath() error = %v, wantErr %v", err, tt.wantErr)
+			if err := validateRelativePath(dir, tt.path); err == nil {
+				t.Errorf("validateRelativePath(%q) expected error, got nil", tt.path)
 			}
 		})
 	}
 
-	// Shared valid paths fixture
+	// Valid paths from shared fixture
 	for _, path := range validRelativePaths {
 		t.Run("valid "+path, func(t *testing.T) {
 			if err := validateRelativePath(dir, path); err != nil {
-				t.Errorf("validateRelativePath() unexpected error: %v", err)
+				t.Errorf("validateRelativePath(%q) unexpected error: %v", path, err)
 			}
 		})
 	}
