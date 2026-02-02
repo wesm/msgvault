@@ -10,12 +10,16 @@ import (
 // fatalSentinel is panicked by fakeT.Fatalf to halt execution like real Fatalf.
 type fatalSentinel struct{ msg string }
 
-// fakeT is a minimal testing.TB implementation that captures Fatalf calls
-// by panicking with a sentinel value, allowing tests to verify fatal guards.
+// fakeT wraps a real testing.TB so that un-overridden methods delegate safely,
+// while intercepting Fatalf calls via a panic sentinel.
 type fakeT struct {
-	testing.TB // embed to satisfy the interface; unused methods will panic
+	testing.TB // delegate to a real TB for methods we don't override
 	failed     bool
 	fatalMsg   string
+}
+
+func newFakeT(t testing.TB) *fakeT {
+	return &fakeT{TB: t}
 }
 
 func (f *fakeT) Helper()                          {}
@@ -37,7 +41,10 @@ func expectFatal(ft *fakeT, fn func()) bool {
 		}
 	}()
 	fn()
-	return false
+	return false // no fatal occurred
+	// unreachable after panic, but if Fatalf fired the deferred
+	// recover runs and the function returns the zero value (false);
+	// callers should check ft.failed instead.
 }
 
 func TestAddLabel_ValidName(t *testing.T) {
@@ -66,7 +73,7 @@ func TestAddMessage_ExplicitSourceID_BypassesCheck(t *testing.T) {
 
 func TestAddMessage_FailsWithoutSources(t *testing.T) {
 	// When no sources exist and SourceID is 0, AddMessage should fatal.
-	ft := &fakeT{}
+	ft := newFakeT(t)
 	expectFatal(ft, func() {
 		b := NewTestDataBuilder(ft)
 		b.AddMessage(MessageOpt{Subject: "test"}) // SourceID defaults to 0
@@ -78,7 +85,7 @@ func TestAddMessage_FailsWithoutSources(t *testing.T) {
 
 func TestAddAttachment_FailsWithMissingMessage(t *testing.T) {
 	// AddAttachment should fatal when the message ID doesn't exist.
-	ft := &fakeT{}
+	ft := newFakeT(t)
 	expectFatal(ft, func() {
 		b := NewTestDataBuilder(ft)
 		b.AddSource("a@test.com")
