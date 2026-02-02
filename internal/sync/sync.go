@@ -626,7 +626,7 @@ func (s *Syncer) storeAttachment(messageID int64, att *mime.Attachment) error {
 
 	// Write file if it doesn't exist (deduplication)
 	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-		if err := os.WriteFile(fullPath, att.Content, 0644); err != nil {
+		if err := os.WriteFile(fullPath, att.Content, 0600); err != nil {
 			return err
 		}
 	}
