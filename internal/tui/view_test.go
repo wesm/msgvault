@@ -30,7 +30,7 @@ func forceColorProfile(t *testing.T) {
 	})
 }
 
-var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
 func stripANSI(s string) string {
 	return ansiPattern.ReplaceAllString(s, "")
