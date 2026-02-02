@@ -141,16 +141,33 @@ func (f *rlFixture) assertAvailable(t *testing.T, expected float64) {
 }
 
 // acquireAsync runs Acquire in a background goroutine and returns a channel
-// that receives the result. It waits for the goroutine to register a timer
-// on the mock clock before returning.
+// that receives the result. It waits for the goroutine to either register a
+// timer on the mock clock or complete immediately (e.g., tokens available or
+// context already canceled).
 func (f *rlFixture) acquireAsync(t *testing.T, ctx context.Context, op Operation) <-chan error {
 	t.Helper()
 	timersBefore := f.clk.TimerCount()
 	ch := make(chan error, 1)
+	done := make(chan struct{})
 	go func() {
 		ch <- f.rl.Acquire(ctx, op)
+		close(done)
 	}()
-	waitForTimers(t, f.clk, timersBefore+1)
+	// Poll until either a new timer appears (Acquire is waiting) or the
+	// goroutine completes (Acquire returned immediately).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if f.clk.TimerCount() > timersBefore {
+			return ch
+		}
+		select {
+		case <-done:
+			return ch
+		default:
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("acquireAsync: timed out waiting for timer or completion")
 	return ch
 }
 
