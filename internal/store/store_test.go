@@ -139,9 +139,7 @@ func TestStore_GetStats_Empty(t *testing.T) {
 	st := testutil.NewTestStore(t)
 
 	stats, err := st.GetStats()
-	if err != nil {
-		t.Fatalf("GetStats() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "GetStats()")
 
 	if stats.MessageCount != 0 {
 		t.Errorf("MessageCount = %d, want 0", stats.MessageCount)
@@ -154,9 +152,7 @@ st := testutil.NewTestStore(t)
 
 	// Create source
 	source, err := st.GetOrCreateSource("gmail", "test@example.com")
-	if err != nil {
-		t.Fatalf("GetOrCreateSource() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "GetOrCreateSource()")
 
 	if source.ID == 0 {
 		t.Error("source ID should be non-zero")
@@ -170,9 +166,7 @@ st := testutil.NewTestStore(t)
 
 	// Get same source again (should return existing)
 	source2, err := st.GetOrCreateSource("gmail", "test@example.com")
-	if err != nil {
-		t.Fatalf("GetOrCreateSource() second call error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "GetOrCreateSource() second call")
 
 	if source2.ID != source.ID {
 		t.Errorf("second call ID = %d, want %d", source2.ID, source.ID)
@@ -184,15 +178,11 @@ func TestStore_Source_UpdateSyncCursor(t *testing.T) {
 st, source, _ := setupStore(t)
 
 	err := st.UpdateSourceSyncCursor(source.ID, "12345")
-	if err != nil {
-		t.Fatalf("UpdateSourceSyncCursor() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "UpdateSourceSyncCursor()")
 
 	// Verify cursor was updated
 	updated, err := st.GetSourceByIdentifier("test@example.com")
-	if err != nil {
-		t.Fatalf("GetSourceByIdentifier() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "GetSourceByIdentifier()")
 
 	if !updated.SyncCursor.Valid || updated.SyncCursor.String != "12345" {
 		t.Errorf("SyncCursor = %v, want 12345", updated.SyncCursor)
@@ -205,9 +195,7 @@ st, source, _ := setupStore(t)
 
 	// Create conversation
 	convID, err := st.EnsureConversation(source.ID, "thread-123", "Test Thread")
-	if err != nil {
-		t.Fatalf("EnsureConversation() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "EnsureConversation()")
 
 	if convID == 0 {
 		t.Error("conversation ID should be non-zero")
@@ -215,9 +203,7 @@ st, source, _ := setupStore(t)
 
 	// Get same conversation (should return existing)
 	convID2, err := st.EnsureConversation(source.ID, "thread-123", "Test Thread")
-	if err != nil {
-		t.Fatalf("EnsureConversation() second call error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "EnsureConversation() second call")
 
 	if convID2 != convID {
 		t.Errorf("second call ID = %d, want %d", convID2, convID)
@@ -240,9 +226,7 @@ st, source, convID := setupStore(t)
 
 	// Insert
 	msgID, err := st.UpsertMessage(msg)
-	if err != nil {
-		t.Fatalf("UpsertMessage() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "UpsertMessage()")
 
 	if msgID == 0 {
 		t.Error("message ID should be non-zero")
@@ -251,9 +235,7 @@ st, source, convID := setupStore(t)
 	// Update (same source_message_id)
 	msg.Subject = sql.NullString{String: "Updated Subject", Valid: true}
 	msgID2, err := st.UpsertMessage(msg)
-	if err != nil {
-		t.Fatalf("UpsertMessage() update error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "UpsertMessage() update")
 
 	if msgID2 != msgID {
 		t.Errorf("update ID = %d, want %d", msgID2, msgID)
@@ -280,9 +262,7 @@ st, source, convID := setupStore(t)
 	// Check which exist
 	checkIDs := []string{"msg-1", "msg-2", "msg-4", "msg-5"}
 	existing, err := st.MessageExistsBatch(source.ID, checkIDs)
-	if err != nil {
-		t.Fatalf("MessageExistsBatch() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "MessageExistsBatch()")
 
 	if len(existing) != 2 {
 		t.Errorf("len(existing) = %d, want 2", len(existing))
@@ -306,15 +286,11 @@ st, source, convID := setupStore(t)
 
 	// Store raw data
 	err := st.UpsertMessageRaw(msgID, sampleRawMessage)
-	if err != nil {
-		t.Fatalf("UpsertMessageRaw() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "UpsertMessageRaw()")
 
 	// Retrieve raw data
 	retrieved, err := st.GetMessageRaw(msgID)
-	if err != nil {
-		t.Fatalf("GetMessageRaw() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "GetMessageRaw()")
 
 	if string(retrieved) != string(sampleRawMessage) {
 		t.Errorf("retrieved data = %q, want %q", retrieved, sampleRawMessage)
@@ -327,9 +303,7 @@ st := testutil.NewTestStore(t)
 
 	// Create participant
 	pid, err := st.EnsureParticipant("alice@example.com", "Alice Smith", "example.com")
-	if err != nil {
-		t.Fatalf("EnsureParticipant() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "EnsureParticipant()")
 
 	if pid == 0 {
 		t.Error("participant ID should be non-zero")
@@ -337,9 +311,7 @@ st := testutil.NewTestStore(t)
 
 	// Get same participant
 	pid2, err := st.EnsureParticipant("alice@example.com", "Alice", "example.com")
-	if err != nil {
-		t.Fatalf("EnsureParticipant() second call error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "EnsureParticipant() second call")
 
 	if pid2 != pid {
 		t.Errorf("second call ID = %d, want %d", pid2, pid)
@@ -357,9 +329,7 @@ st := testutil.NewTestStore(t)
 	}
 
 	result, err := st.EnsureParticipantsBatch(addresses)
-	if err != nil {
-		t.Fatalf("EnsureParticipantsBatch() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "EnsureParticipantsBatch()")
 
 	if len(result) != 2 {
 		t.Errorf("len(result) = %d, want 2", len(result))
@@ -378,9 +348,7 @@ st, source, _ := setupStore(t)
 
 	// Create label
 	lid, err := st.EnsureLabel(source.ID, "INBOX", "Inbox", "system")
-	if err != nil {
-		t.Fatalf("EnsureLabel() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "EnsureLabel()")
 
 	if lid == 0 {
 		t.Error("label ID should be non-zero")
@@ -388,9 +356,7 @@ st, source, _ := setupStore(t)
 
 	// Get same label
 	lid2, err := st.EnsureLabel(source.ID, "INBOX", "Inbox", "system")
-	if err != nil {
-		t.Fatalf("EnsureLabel() second call error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "EnsureLabel() second call")
 
 	if lid2 != lid {
 		t.Errorf("second call ID = %d, want %d", lid2, lid)
@@ -408,9 +374,7 @@ st, source, _ := setupStore(t)
 	}
 
 	result, err := st.EnsureLabelsBatch(source.ID, labels)
-	if err != nil {
-		t.Fatalf("EnsureLabelsBatch() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "EnsureLabelsBatch()")
 
 	if len(result) != 3 {
 		t.Errorf("len(result) = %d, want 3", len(result))
@@ -436,17 +400,13 @@ st, source, convID := setupStore(t)
 
 	// Set labels
 	err := st.ReplaceMessageLabels(msgID, []int64{labels["INBOX"], labels["STARRED"]})
-	if err != nil {
-		t.Fatalf("ReplaceMessageLabels() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "ReplaceMessageLabels()")
 
 	assertMessageLabelsCount(t, st, msgID, 2)
 
 	// Replace with different labels
 	err = st.ReplaceMessageLabels(msgID, []int64{labels["SENT"]})
-	if err != nil {
-		t.Fatalf("ReplaceMessageLabels() replace error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "ReplaceMessageLabels() replace")
 
 	assertMessageLabelsCount(t, st, msgID, 1)
 
@@ -470,17 +430,13 @@ st, source, convID := setupStore(t)
 
 	// Set recipients
 	err := st.ReplaceMessageRecipients(msgID, "to", []int64{pid1, pid2}, []string{"Alice", "Bob"})
-	if err != nil {
-		t.Fatalf("ReplaceMessageRecipients() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "ReplaceMessageRecipients()")
 
 	assertRecipientsCount(t, st, msgID, "to", 2)
 
 	// Replace recipients
 	err = st.ReplaceMessageRecipients(msgID, "to", []int64{pid1}, []string{"Alice"})
-	if err != nil {
-		t.Fatalf("ReplaceMessageRecipients() replace error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "ReplaceMessageRecipients() replace")
 
 	assertRecipientsCount(t, st, msgID, "to", 1)
 
@@ -508,9 +464,7 @@ st, source, convID := setupStore(t)
 	}
 
 	err = st.MarkMessageDeleted(source.ID, "msg-1")
-	if err != nil {
-		t.Fatalf("MarkMessageDeleted() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "MarkMessageDeleted()")
 
 	// Verify deleted flag is now set
 	err = st.DB().QueryRow(st.Rebind("SELECT deleted_from_source_at FROM messages WHERE id = ?"), msgID).Scan(&deletedAt)
@@ -534,15 +488,11 @@ st, source, convID := setupStore(t)
 	testutil.MustNoErr(t, err, "UpsertMessage")
 
 	err = st.UpsertAttachment(msgID, "document.pdf", "application/pdf", "/path/to/file", "abc123hash", 1024)
-	if err != nil {
-		t.Fatalf("UpsertAttachment() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "UpsertAttachment()")
 
 	// Upsert same attachment (should not error, dedupe by content_hash)
 	err = st.UpsertAttachment(msgID, "document.pdf", "application/pdf", "/path/to/file", "abc123hash", 1024)
-	if err != nil {
-		t.Fatalf("UpsertAttachment() duplicate error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "UpsertAttachment() duplicate")
 
 	stats, err := st.GetStats()
 	testutil.MustNoErr(t, err, "GetStats")
@@ -574,9 +524,7 @@ st, source, _ := setupStore(t)
 	}
 
 	err := st.UpdateSyncCheckpoint(syncID, cp)
-	if err != nil {
-		t.Fatalf("UpdateSyncCheckpoint() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "UpdateSyncCheckpoint()")
 
 	// Verify checkpoint was saved
 	assertActiveSync(t, st, source.ID, syncID, "running")
@@ -592,17 +540,13 @@ st, source, _ := setupStore(t)
 	syncID := startSync(t, st, source.ID)
 
 	err := st.CompleteSync(syncID, "history-12345")
-	if err != nil {
-		t.Fatalf("CompleteSync() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "CompleteSync()")
 
 	assertNoActiveSync(t, st, source.ID)
 
 	// Should have a successful sync
 	lastSync, err := st.GetLastSuccessfulSync(source.ID)
-	if err != nil {
-		t.Fatalf("GetLastSuccessfulSync() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "GetLastSuccessfulSync()")
 	if lastSync == nil {
 		t.Fatal("expected last successful sync, got nil")
 	}
@@ -618,9 +562,7 @@ st, source, _ := setupStore(t)
 	syncID := startSync(t, st, source.ID)
 
 	err := st.FailSync(syncID, "network error")
-	if err != nil {
-		t.Fatalf("FailSync() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "FailSync()")
 
 	assertNoActiveSync(t, st, source.ID)
 
@@ -644,21 +586,15 @@ st, source, convID := setupStore(t)
 
 	// Mark as deleted (trash)
 	err := st.MarkMessageDeletedByGmailID(false, "gmail-msg-123")
-	if err != nil {
-		t.Fatalf("MarkMessageDeletedByGmailID(trash) error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "MarkMessageDeletedByGmailID(trash)")
 
 	// Mark as permanently deleted
 	err = st.MarkMessageDeletedByGmailID(true, "gmail-msg-123")
-	if err != nil {
-		t.Fatalf("MarkMessageDeletedByGmailID(permanent) error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "MarkMessageDeletedByGmailID(permanent)")
 
 	// Non-existent message should not error (no rows affected is OK)
 	err = st.MarkMessageDeletedByGmailID(true, "nonexistent-id")
-	if err != nil {
-		t.Fatalf("MarkMessageDeletedByGmailID(nonexistent) error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "MarkMessageDeletedByGmailID(nonexistent)")
 }
 
 func TestStore_GetMessageRaw_NotFound(t *testing.T) {
@@ -672,56 +608,58 @@ st := testutil.NewTestStore(t)
 	}
 }
 
-func TestStore_UpsertMessage_AllFields(t *testing.T) {
-
-st, source, convID := setupStore(t)
-
+func TestStore_UpsertMessage_Variations(t *testing.T) {
 	now := time.Now()
-	msg := &store.Message{
-		ConversationID:  convID,
-		SourceID:        source.ID,
-		SourceMessageID: "msg-all-fields",
-		MessageType:     "email",
-		Subject:         sql.NullString{String: "Full Subject", Valid: true},
-		Snippet:         sql.NullString{String: "Preview snippet", Valid: true},
-		SizeEstimate:    2048,
-		SentAt:          sql.NullTime{Time: now, Valid: true},
-		ReceivedAt:      sql.NullTime{Time: now.Add(time.Second), Valid: true},
-		InternalDate:    sql.NullTime{Time: now, Valid: true},
-		HasAttachments:  true,
-		AttachmentCount: 2,
-		IsFromMe:        true,
+
+	tests := []struct {
+		name string
+		msg  func(sourceID, convID int64) *store.Message
+	}{
+		{
+			name: "AllFields",
+			msg: func(sourceID, convID int64) *store.Message {
+				return &store.Message{
+					ConversationID:  convID,
+					SourceID:        sourceID,
+					SourceMessageID: "msg-all-fields",
+					MessageType:     "email",
+					Subject:         sql.NullString{String: "Full Subject", Valid: true},
+					Snippet:         sql.NullString{String: "Preview snippet", Valid: true},
+					SizeEstimate:    2048,
+					SentAt:          sql.NullTime{Time: now, Valid: true},
+					ReceivedAt:      sql.NullTime{Time: now.Add(time.Second), Valid: true},
+					InternalDate:    sql.NullTime{Time: now, Valid: true},
+					HasAttachments:  true,
+					AttachmentCount: 2,
+					IsFromMe:        true,
+				}
+			},
+		},
+		{
+			name: "MinimalFields",
+			msg: func(sourceID, convID int64) *store.Message {
+				return &store.Message{
+					ConversationID:  convID,
+					SourceID:        sourceID,
+					SourceMessageID: "msg-minimal",
+					MessageType:     "email",
+				}
+			},
+		},
 	}
 
-	msgID, err := st.UpsertMessage(msg)
-	if err != nil {
-		t.Fatalf("UpsertMessage() error = %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st, source, convID := setupStore(t)
+			msg := tt.msg(source.ID, convID)
 
-	if msgID == 0 {
-		t.Error("message ID should be non-zero")
-	}
-}
+			msgID, err := st.UpsertMessage(msg)
+			testutil.MustNoErr(t, err, "UpsertMessage")
 
-func TestStore_UpsertMessage_MinimalFields(t *testing.T) {
-
-st, source, convID := setupStore(t)
-
-	// Only required fields, no optional fields
-	msg := &store.Message{
-		ConversationID:  convID,
-		SourceID:        source.ID,
-		SourceMessageID: "msg-minimal",
-		MessageType:     "email",
-	}
-
-	msgID, err := st.UpsertMessage(msg)
-	if err != nil {
-		t.Fatalf("UpsertMessage() error = %v", err)
-	}
-
-	if msgID == 0 {
-		t.Error("message ID should be non-zero")
+			if msgID == 0 {
+				t.Error("message ID should be non-zero")
+			}
+		})
 	}
 }
 
@@ -734,16 +672,12 @@ st, source, convID := setupStore(t)
 	// Insert raw data
 	rawData1 := []byte("Original raw content")
 	err := st.UpsertMessageRaw(msgID, rawData1)
-	if err != nil {
-		t.Fatalf("UpsertMessageRaw() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "UpsertMessageRaw()")
 
 	// Update with new raw data
 	rawData2 := []byte("Updated raw content that is different")
 	err = st.UpsertMessageRaw(msgID, rawData2)
-	if err != nil {
-		t.Fatalf("UpsertMessageRaw() update error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "UpsertMessageRaw() update")
 
 	// Verify updated data
 	retrieved, err := st.GetMessageRaw(msgID)
@@ -762,16 +696,12 @@ func TestStore_UpsertMessageBody(t *testing.T) {
 		sql.NullString{String: "hello text", Valid: true},
 		sql.NullString{String: "<p>hello html</p>", Valid: true},
 	)
-	if err != nil {
-		t.Fatalf("UpsertMessageBody() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "UpsertMessageBody()")
 
 	// Verify via direct query
 	var bodyText, bodyHTML sql.NullString
 	err = st.DB().QueryRow("SELECT body_text, body_html FROM message_bodies WHERE message_id = ?", msgID).Scan(&bodyText, &bodyHTML)
-	if err != nil {
-		t.Fatalf("query message_bodies: %v", err)
-	}
+	testutil.MustNoErr(t, err, "query message_bodies")
 	if bodyText.String != "hello text" {
 		t.Errorf("body_text = %q, want %q", bodyText.String, "hello text")
 	}
@@ -784,13 +714,9 @@ func TestStore_UpsertMessageBody(t *testing.T) {
 		sql.NullString{String: "updated text", Valid: true},
 		sql.NullString{},
 	)
-	if err != nil {
-		t.Fatalf("UpsertMessageBody() update error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "UpsertMessageBody() update")
 	err = st.DB().QueryRow("SELECT body_text, body_html FROM message_bodies WHERE message_id = ?", msgID).Scan(&bodyText, &bodyHTML)
-	if err != nil {
-		t.Fatalf("query after update: %v", err)
-	}
+	testutil.MustNoErr(t, err, "query after update")
 	if bodyText.String != "updated text" {
 		t.Errorf("after update: body_text = %q, want %q", bodyText.String, "updated text")
 	}
@@ -806,9 +732,7 @@ st, source, _ := setupStore(t)
 
 	// Check with empty list
 	result, err := st.MessageExistsBatch(source.ID, []string{})
-	if err != nil {
-		t.Fatalf("MessageExistsBatch(empty) error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "MessageExistsBatch(empty)")
 	if len(result) != 0 {
 		t.Errorf("len(result) = %d, want 0", len(result))
 	}
@@ -833,9 +757,7 @@ st, source, convID := setupStore(t)
 
 	// Replace with empty list (remove all labels)
 	err = st.ReplaceMessageLabels(msgID, []int64{})
-	if err != nil {
-		t.Fatalf("ReplaceMessageLabels(empty) error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "ReplaceMessageLabels(empty)")
 
 	assertMessageLabelsCount(t, st, msgID, 0)
 }
@@ -856,9 +778,7 @@ st, source, convID := setupStore(t)
 
 	// Replace with empty list
 	err = st.ReplaceMessageRecipients(msgID, "to", []int64{}, []string{})
-	if err != nil {
-		t.Fatalf("ReplaceMessageRecipients(empty) error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "ReplaceMessageRecipients(empty)")
 
 	assertRecipientsCount(t, st, msgID, "to", 0)
 }
@@ -876,9 +796,7 @@ st, source, _ := setupStore(t)
 
 	// No successful sync yet
 	lastSync, err := st.GetLastSuccessfulSync(source.ID)
-	if err != nil {
-		t.Fatalf("GetLastSuccessfulSync() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "GetLastSuccessfulSync()")
 	if lastSync != nil {
 		t.Errorf("expected nil last sync, got %+v", lastSync)
 	}
@@ -889,9 +807,7 @@ func TestStore_GetSourceByIdentifier_NotFound(t *testing.T) {
 st := testutil.NewTestStore(t)
 
 	source, err := st.GetSourceByIdentifier("nonexistent@example.com")
-	if err != nil {
-		t.Fatalf("GetSourceByIdentifier() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "GetSourceByIdentifier()")
 	if source != nil {
 		t.Errorf("expected nil source, got %+v", source)
 	}
@@ -905,9 +821,7 @@ st, source, convID := setupStore(t)
 	createMessages(t, st, source.ID, convID, 5)
 
 	stats, err := st.GetStats()
-	if err != nil {
-		t.Fatalf("GetStats() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "GetStats()")
 
 	if stats.MessageCount != 5 {
 		t.Errorf("MessageCount = %d, want 5", stats.MessageCount)
@@ -923,9 +837,7 @@ st, source, convID := setupStore(t)
 
 	// Initially zero
 	count, err := st.CountMessagesForSource(source.ID)
-	if err != nil {
-		t.Fatalf("CountMessagesForSource() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "CountMessagesForSource()")
 	if count != 0 {
 		t.Errorf("count = %d, want 0", count)
 	}
@@ -934,9 +846,7 @@ st, source, convID := setupStore(t)
 	createMessages(t, st, source.ID, convID, 3)
 
 	count, err = st.CountMessagesForSource(source.ID)
-	if err != nil {
-		t.Fatalf("CountMessagesForSource() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "CountMessagesForSource()")
 	if count != 3 {
 		t.Errorf("count = %d, want 3", count)
 	}
@@ -946,9 +856,7 @@ st, source, convID := setupStore(t)
 	testutil.MustNoErr(t, err, "MarkMessageDeleted")
 
 	count, err = st.CountMessagesForSource(source.ID)
-	if err != nil {
-		t.Fatalf("CountMessagesForSource() after delete error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "CountMessagesForSource() after delete")
 	if count != 2 {
 		t.Errorf("count after delete = %d, want 2", count)
 	}
@@ -960,9 +868,7 @@ st, source, convID := setupStore(t)
 
 	// Initially zero
 	count, err := st.CountMessagesWithRaw(source.ID)
-	if err != nil {
-		t.Fatalf("CountMessagesWithRaw() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "CountMessagesWithRaw()")
 	if count != 0 {
 		t.Errorf("count = %d, want 0", count)
 	}
@@ -979,9 +885,7 @@ st, source, convID := setupStore(t)
 	}
 
 	count, err = st.CountMessagesWithRaw(source.ID)
-	if err != nil {
-		t.Fatalf("CountMessagesWithRaw() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "CountMessagesWithRaw()")
 	if count != 2 {
 		t.Errorf("count = %d, want 2", count)
 	}
@@ -993,9 +897,7 @@ st, source, convID := setupStore(t)
 
 	// Empty source
 	ids, err := st.GetRandomMessageIDs(source.ID, 5)
-	if err != nil {
-		t.Fatalf("GetRandomMessageIDs(empty) error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "GetRandomMessageIDs(empty)")
 	if len(ids) != 0 {
 		t.Errorf("len(ids) = %d, want 0 for empty source", len(ids))
 	}
@@ -1009,9 +911,7 @@ st, source, convID := setupStore(t)
 
 	// Sample fewer than available
 	ids, err = st.GetRandomMessageIDs(source.ID, 5)
-	if err != nil {
-		t.Fatalf("GetRandomMessageIDs() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "GetRandomMessageIDs()")
 	if len(ids) != 5 {
 		t.Errorf("len(ids) = %d, want 5", len(ids))
 	}
@@ -1034,9 +934,7 @@ st, source, convID := setupStore(t)
 
 	// Sample more than available - should return all
 	ids, err = st.GetRandomMessageIDs(source.ID, 20)
-	if err != nil {
-		t.Fatalf("GetRandomMessageIDs(more than available) error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "GetRandomMessageIDs(more than available)")
 	if len(ids) != 10 {
 		t.Errorf("len(ids) = %d, want 10", len(ids))
 	}
@@ -1057,9 +955,7 @@ st, source, convID := setupStore(t)
 
 	// Should only return 3 (non-deleted) messages
 	ids, err := st.GetRandomMessageIDs(source.ID, 10)
-	if err != nil {
-		t.Fatalf("GetRandomMessageIDs() error = %v", err)
-	}
+	testutil.MustNoErr(t, err, "GetRandomMessageIDs()")
 	if len(ids) != 3 {
 		t.Errorf("len(ids) = %d, want 3 (5 total - 2 deleted)", len(ids))
 	}
