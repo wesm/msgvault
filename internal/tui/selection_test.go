@@ -30,13 +30,13 @@ func TestSelectionToggle(t *testing.T) {
 }
 
 func TestSelectAllVisible(t *testing.T) {
-	rows := []query.AggregateRow{
-		makeRow("row1", 10), makeRow("row2", 9), makeRow("row3", 8),
-		makeRow("row4", 7), makeRow("row5", 6), makeRow("row6", 5),
-	}
-	model := newTestModelWithRows(rows)
-	model.pageSize = 3 // Only 3 rows visible
-	model.scrollOffset = 0
+	model := NewBuilder().
+		WithRows(
+			makeRow("row1", 10), makeRow("row2", 9), makeRow("row3", 8),
+			makeRow("row4", 7), makeRow("row5", 6), makeRow("row6", 5),
+		).
+		WithPageSize(3).
+		Build()
 
 	model = applyAggregateKey(t, model, key('S'))
 
@@ -50,12 +50,13 @@ func TestSelectAllVisible(t *testing.T) {
 }
 
 func TestSelectAllVisibleWithScroll(t *testing.T) {
-	rows := []query.AggregateRow{
-		makeRow("row1", 10), makeRow("row2", 9), makeRow("row3", 8),
-		makeRow("row4", 7), makeRow("row5", 6), makeRow("row6", 5),
-	}
-	model := newTestModelWithRows(rows)
-	model.pageSize = 3
+	model := NewBuilder().
+		WithRows(
+			makeRow("row1", 10), makeRow("row2", 9), makeRow("row3", 8),
+			makeRow("row4", 7), makeRow("row5", 6), makeRow("row6", 5),
+		).
+		WithPageSize(3).
+		Build()
 	model.scrollOffset = 2 // Scrolled down, showing row3-row5
 
 	model = applyAggregateKey(t, model, key('S'))

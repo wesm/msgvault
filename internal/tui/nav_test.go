@@ -356,9 +356,7 @@ func TestSubGroupingNavigation(t *testing.T) {
 	newModel, cmd := model.handleAggregateKeys(keyEnter())
 	m := newModel.(Model)
 
-	if m.level != levelMessageList {
-		t.Errorf("expected levelMessageList, got %v", m.level)
-	}
+	assertLevel(t, m, levelMessageList)
 	if !m.hasDrillFilter() {
 		t.Error("expected drillFilter to be set")
 	}
@@ -382,9 +380,7 @@ func TestSubGroupingNavigation(t *testing.T) {
 	newModel, cmd = m.handleMessageListKeys(keyTab())
 	m = newModel.(Model)
 
-	if m.level != levelDrillDown {
-		t.Errorf("expected levelDrillDown after Tab, got %v", m.level)
-	}
+	assertLevel(t, m, levelDrillDown)
 	// Default sub-group after drilling from Senders should be Recipients (skips redundant SenderNames)
 	if m.viewType != query.ViewRecipients {
 		t.Errorf("expected viewType = ViewRecipients for sub-grouping, got %v", m.viewType)
@@ -410,9 +406,7 @@ func TestSubGroupingNavigation(t *testing.T) {
 	m.rows = rows
 	m = applyAggregateKey(t, m, keyEsc())
 
-	if m.level != levelMessageList {
-		t.Errorf("expected levelMessageList after Esc from sub-aggregate, got %v", m.level)
-	}
+	assertLevel(t, m, levelMessageList)
 	// Drill filter should still be set (we're still viewing alice's messages)
 	if !m.hasDrillFilter() {
 		t.Error("expected drillFilter to still be set in message list")
@@ -426,9 +420,7 @@ func TestSubGroupingNavigation(t *testing.T) {
 	m.messages = msgs
 	m = applyMessageListKey(t, m, keyEsc())
 
-	if m.level != levelAggregates {
-		t.Errorf("expected levelAggregates after Esc from message list, got %v", m.level)
-	}
+	assertLevel(t, m, levelAggregates)
 	if m.hasDrillFilter() {
 		t.Error("expected drillFilter to be cleared after going back to aggregates")
 	}
@@ -563,9 +555,7 @@ func TestSubAggregateDrillDown(t *testing.T) {
 	newModel, cmd := model.handleAggregateKeys(keyEnter())
 	m := newModel.(Model)
 
-	if m.level != levelMessageList {
-		t.Errorf("expected levelMessageList, got %v", m.level)
-	}
+	assertLevel(t, m, levelMessageList)
 	// Drill filter should now include both sender and recipient
 	if m.drillFilter.Sender != "alice@example.com" {
 		t.Errorf("expected drillFilter.Sender = alice@example.com, got %s", m.drillFilter.Sender)
@@ -680,9 +670,7 @@ func TestGKeyInMessageListWithDrillFilter(t *testing.T) {
 	// Press 'g' - should switch to sub-aggregate view
 	m := applyMessageListKey(t, model, key('g'))
 
-	if m.level != levelDrillDown {
-		t.Errorf("expected level=levelDrillDown after 'g' with drill filter, got %v", m.level)
-	}
+	assertLevel(t, m, levelDrillDown)
 	// ViewType should be next logical view (Recipients after Senders, skipping SenderNames)
 	if m.viewType != query.ViewRecipients {
 		t.Errorf("expected viewType=Recipients after 'g', got %v", m.viewType)
@@ -705,9 +693,7 @@ func TestTKeyInMessageListJumpsToTimeSubGroup(t *testing.T) {
 
 	m := applyMessageListKey(t, model, key('t'))
 
-	if m.level != levelDrillDown {
-		t.Errorf("expected level=levelDrillDown after 't', got %v", m.level)
-	}
+	assertLevel(t, m, levelDrillDown)
 	if m.viewType != query.ViewTime {
 		t.Errorf("expected viewType=ViewTime after 't', got %v", m.viewType)
 	}
@@ -728,9 +714,7 @@ func TestTKeyInMessageListFromTimeDrillIsNoop(t *testing.T) {
 
 	m := applyMessageListKey(t, model, key('t'))
 
-	if m.level != levelMessageList {
-		t.Errorf("expected level unchanged at levelMessageList, got %v", m.level)
-	}
+	assertLevel(t, m, levelMessageList)
 	if m.loading {
 		t.Error("expected loading=false (no-op)")
 	}
@@ -748,9 +732,7 @@ func TestTKeyInMessageListNoDrillFilterIsNoop(t *testing.T) {
 
 	m := applyMessageListKey(t, model, key('t'))
 
-	if m.level != levelMessageList {
-		t.Errorf("expected level unchanged at levelMessageList, got %v", m.level)
-	}
+	assertLevel(t, m, levelMessageList)
 }
 
 // TestNextSubGroupViewSkipsSenderNames verifies that drilling from Senders
@@ -870,9 +852,7 @@ func TestGKeyInMessageListNoDrillFilter(t *testing.T) {
 	m := applyMessageListKey(t, model, key('g'))
 
 	// Should transition to aggregate level
-	if m.level != levelAggregates {
-		t.Errorf("expected level=levelAggregates after 'g' with no drill filter, got %v", m.level)
-	}
+	assertLevel(t, m, levelAggregates)
 	// Cursor and scroll should reset
 	if m.cursor != 0 {
 		t.Errorf("expected cursor=0 after 'g' with no drill filter, got %d", m.cursor)
@@ -928,9 +908,7 @@ func TestStatsUpdateOnDrillDown(t *testing.T) {
 	m := newModel.(Model)
 
 	// Verify we transitioned to message list
-	if m.level != levelMessageList {
-		t.Errorf("expected levelMessageList after drill-down, got %v", m.level)
-	}
+	assertLevel(t, m, levelMessageList)
 
 	// The stats should be refreshed for the drill-down context
 	// (This test documents expected behavior - implementation will make it pass)
@@ -1150,9 +1128,7 @@ func TestViewTypeRestoredAfterEscFromSubAggregate(t *testing.T) {
 	// Press Tab to go to sub-aggregate (changes viewType)
 	m, _ := sendKey(t, model, keyTab())
 
-	if m.level != levelDrillDown {
-		t.Fatalf("expected levelDrillDown, got %v", m.level)
-	}
+	assertLevel(t, m, levelDrillDown)
 	// viewType should have changed to next sub-group view (Recipients, skipping redundant SenderNames)
 	if m.viewType != query.ViewRecipients {
 		t.Errorf("expected ViewRecipients in sub-aggregate, got %v", m.viewType)
@@ -1183,9 +1159,7 @@ func TestCursorScrollPreservedAfterGoBack(t *testing.T) {
 	// Drill down to message list (saves breadcrumb with cached rows)
 	m, _ := sendKey(t, model, keyEnter())
 
-	if m.level != levelMessageList {
-		t.Fatalf("expected levelMessageList, got %v", m.level)
-	}
+	assertLevel(t, m, levelMessageList)
 
 	// Verify breadcrumb was saved with cached rows
 	if len(m.breadcrumbs) != 1 {
@@ -1261,9 +1235,7 @@ func TestDrillFilterPreservedAfterMessageDetail(t *testing.T) {
 	// Press Enter to go to message detail
 	m, _ := sendKey(t, model, keyEnter())
 
-	if m.level != levelMessageDetail {
-		t.Fatalf("expected levelMessageDetail, got %v", m.level)
-	}
+	assertLevel(t, m, levelMessageDetail)
 
 	// Verify breadcrumb saved drillFilter
 	if len(m.breadcrumbs) == 0 {
@@ -1503,9 +1475,7 @@ func TestDetailNavigationCursorPreservedOnGoBack(t *testing.T) {
 
 	// Cursor should be preserved at position 2 (where we navigated to)
 	// not restored to position 0 (where we entered)
-	if m.level != levelMessageList {
-		t.Errorf("expected levelMessageList, got %v", m.level)
-	}
+	assertLevel(t, m, levelMessageList)
 	if m.cursor != 2 {
 		t.Errorf("expected cursor=2 (preserved from navigation), got %d", m.cursor)
 	}
@@ -1653,9 +1623,7 @@ func TestSubAggregateAKeyJumpsToMessages(t *testing.T) {
 	m := newModel.(Model)
 
 	// Should navigate to message list
-	if m.level != levelMessageList {
-		t.Errorf("expected levelMessageList, got %v", m.level)
-	}
+	assertLevel(t, m, levelMessageList)
 
 	// Should have a command to load messages
 	if cmd == nil {
@@ -1847,9 +1815,7 @@ func TestTopLevelDrillDownClearsSelection(t *testing.T) {
 	model.cursor = 0
 
 	m := applyAggregateKey(t, model, keyEnter())
-	if m.level != levelMessageList {
-		t.Fatalf("expected levelMessageList, got %v", m.level)
-	}
+	assertLevel(t, m, levelMessageList)
 
 	// Selection should be cleared
 	if len(m.selection.aggregateKeys) != 0 {
@@ -2096,9 +2062,7 @@ func TestSenderNamesDrillDown(t *testing.T) {
 	newModel, cmd := model.handleAggregateKeys(keyEnter())
 	m := newModel.(Model)
 
-	if m.level != levelMessageList {
-		t.Errorf("expected levelMessageList, got %v", m.level)
-	}
+	assertLevel(t, m, levelMessageList)
 	if m.drillFilter.SenderName != "Alice Smith" {
 		t.Errorf("expected drillFilter.SenderName='Alice Smith', got %q", m.drillFilter.SenderName)
 	}
@@ -2246,9 +2210,7 @@ func TestSenderNamesBreadcrumbRoundTrip(t *testing.T) {
 	// Press Enter to go to message detail
 	m, _ := sendKey(t, model, keyEnter())
 
-	if m.level != levelMessageDetail {
-		t.Fatalf("expected levelMessageDetail, got %v", m.level)
-	}
+	assertLevel(t, m, levelMessageDetail)
 
 	// Verify breadcrumb saved SenderName
 	if len(m.breadcrumbs) == 0 {
@@ -2289,9 +2251,7 @@ func TestRecipientNamesDrillDown(t *testing.T) {
 	newModel, cmd := model.handleAggregateKeys(keyEnter())
 	m := newModel.(Model)
 
-	if m.level != levelMessageList {
-		t.Errorf("expected levelMessageList, got %v", m.level)
-	}
+	assertLevel(t, m, levelMessageList)
 	if m.drillFilter.RecipientName != "Bob Jones" {
 		t.Errorf("expected drillFilter.RecipientName='Bob Jones', got %q", m.drillFilter.RecipientName)
 	}
@@ -2455,9 +2415,7 @@ func TestRecipientNamesBreadcrumbRoundTrip(t *testing.T) {
 	// Press Enter to go to message detail
 	m, _ := sendKey(t, model, keyEnter())
 
-	if m.level != levelMessageDetail {
-		t.Fatalf("expected levelMessageDetail, got %v", m.level)
-	}
+	assertLevel(t, m, levelMessageDetail)
 
 	// Verify breadcrumb saved RecipientName
 	if len(m.breadcrumbs) == 0 {
