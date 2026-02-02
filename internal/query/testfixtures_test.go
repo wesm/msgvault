@@ -47,15 +47,14 @@ func (b *parquetBuilder) addTable(name, subdir, file, columns, values string) *p
 
 // addEmptyTable adds an empty table (schema only, no rows) to be written as Parquet.
 func (b *parquetBuilder) addEmptyTable(name, subdir, file, columns, dummyValues string) *parquetBuilder {
-	return b.addTable(name, subdir, file, columns, dummyValues).withEmpty()
-}
-
-// withEmpty marks the last added table as empty (schema-only).
-func (b *parquetBuilder) withEmpty() *parquetBuilder {
-	if len(b.tables) == 0 {
-		b.t.Fatal("withEmpty called on builder with no tables")
-	}
-	b.tables[len(b.tables)-1].empty = true
+	b.tables = append(b.tables, parquetTable{
+		name:    name,
+		subdir:  subdir,
+		file:    file,
+		columns: columns,
+		values:  dummyValues,
+		empty:   true,
+	})
 	return b
 }
 
@@ -64,12 +63,29 @@ func (b *parquetBuilder) withEmpty() *parquetBuilder {
 func (b *parquetBuilder) build() (string, func()) {
 	b.t.Helper()
 
+	tmpDir := b.createTempDirs()
+
+	db, err := sql.Open("duckdb", "")
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		b.t.Fatalf("open duckdb: %v", err)
+	}
+	defer db.Close()
+
+	b.writeParquetFiles(db, tmpDir)
+
+	return tmpDir, func() { os.RemoveAll(tmpDir) }
+}
+
+// createTempDirs creates the temp directory and all required subdirectories.
+func (b *parquetBuilder) createTempDirs() string {
+	b.t.Helper()
+
 	tmpDir, err := os.MkdirTemp("", "msgvault-test-parquet-*")
 	if err != nil {
 		b.t.Fatalf("create temp dir: %v", err)
 	}
 
-	// Create all required directories
 	for _, tbl := range b.tables {
 		dir := filepath.Join(tmpDir, tbl.subdir)
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -78,24 +94,17 @@ func (b *parquetBuilder) build() (string, func()) {
 		}
 	}
 
-	// Open DuckDB for data generation
-	db, err := sql.Open("duckdb", "")
-	if err != nil {
-		os.RemoveAll(tmpDir)
-		b.t.Fatalf("open duckdb: %v", err)
-	}
-	defer db.Close()
+	return tmpDir
+}
 
-	// Write each table
+// writeParquetFiles writes all table data to Parquet files.
+func (b *parquetBuilder) writeParquetFiles(db *sql.DB, tmpDir string) {
+	b.t.Helper()
+
 	for _, tbl := range b.tables {
 		path := escapePath(filepath.Join(tmpDir, tbl.subdir, tbl.file))
 		writeTableParquet(b.t, db, path, tbl.columns, tbl.values, tbl.empty)
 	}
-
-	cleanup := func() {
-		os.RemoveAll(tmpDir)
-	}
-	return tmpDir, cleanup
 }
 
 // escapePath normalizes a file path for use in DuckDB SQL strings.
@@ -132,4 +141,3 @@ const (
 	messageLabelsCols     = "message_id, label_id"
 	attachmentsCols       = "message_id, size, filename"
 )
-
