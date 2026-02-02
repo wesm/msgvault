@@ -13,14 +13,15 @@ import (
 	"github.com/wesm/msgvault/internal/testutil"
 )
 
-var msgCounter atomic.Int64
+var globalCounter atomic.Int64
 
 // Fixture holds common test state for store-level tests.
 type Fixture struct {
-	T      *testing.T
-	Store  *store.Store
-	Source *store.Source
-	ConvID int64
+	T          *testing.T
+	Store      *store.Store
+	Source     *store.Source
+	ConvID     int64
+	msgCounter atomic.Int64
 }
 
 // New creates a Fixture with a fresh test database, one source
@@ -176,12 +177,29 @@ type MessageBuilder struct {
 }
 
 // NewMessage creates a builder with sensible defaults.
+// NewMessage creates a builder with sensible defaults. It uses a global counter
+// to generate unique SourceMessageID values; prefer Fixture.NewMessage for
+// per-test deterministic IDs.
 func NewMessage(sourceID, convID int64) *MessageBuilder {
 	return &MessageBuilder{
 		msg: store.Message{
 			ConversationID:  convID,
 			SourceID:        sourceID,
-			SourceMessageID: fmt.Sprintf("test-msg-%d", msgCounter.Add(1)),
+			SourceMessageID: fmt.Sprintf("test-msg-%d", globalCounter.Add(1)),
+			MessageType:     "email",
+			SizeEstimate:    1000,
+		},
+	}
+}
+
+// NewMessage creates a builder using the fixture's per-test counter for
+// deterministic SourceMessageID values (test-msg-1, test-msg-2, ...).
+func (f *Fixture) NewMessage() *MessageBuilder {
+	return &MessageBuilder{
+		msg: store.Message{
+			ConversationID:  f.ConvID,
+			SourceID:        f.Source.ID,
+			SourceMessageID: fmt.Sprintf("test-msg-%d", f.msgCounter.Add(1)),
 			MessageType:     "email",
 			SizeEstimate:    1000,
 		},
