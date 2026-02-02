@@ -325,6 +325,9 @@ func (s *Store) EnsureParticipantsBatch(addresses []mime.Address) (map[string]in
 			result[email] = id
 		}
 		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
 	}
 
 	return result, nil
