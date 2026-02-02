@@ -2,12 +2,12 @@ package update
 
 import (
 	"archive/tar"
-	"compress/gzip"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/wesm/msgvault/internal/testutil"
 )
 
 const testHash64 = "abc123def456789012345678901234567890123456789012345678901234abcd"
@@ -47,50 +47,6 @@ func TestSanitizeTarPath(t *testing.T) {
 	}
 }
 
-type archiveEntry struct {
-	Name     string
-	Content  string
-	TypeFlag byte
-	LinkName string
-	Mode     int64
-}
-
-func createTestArchive(t *testing.T, path string, entries []archiveEntry) {
-	t.Helper()
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-
-	gzw := gzip.NewWriter(f)
-	defer gzw.Close()
-	tw := tar.NewWriter(gzw)
-	defer tw.Close()
-
-	for _, e := range entries {
-		mode := e.Mode
-		if mode == 0 {
-			mode = 0644
-		}
-		h := &tar.Header{
-			Name:     e.Name,
-			Mode:     mode,
-			Size:     int64(len(e.Content)),
-			Typeflag: e.TypeFlag,
-			Linkname: e.LinkName,
-		}
-		if err := tw.WriteHeader(h); err != nil {
-			t.Fatal(err)
-		}
-		if len(e.Content) > 0 {
-			if _, err := tw.Write([]byte(e.Content)); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-}
-
 func TestExtractTarGzPathTraversal(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
@@ -98,7 +54,7 @@ func TestExtractTarGzPathTraversal(t *testing.T) {
 	extractDir := filepath.Join(tmpDir, "extract")
 	outsideFile := filepath.Join(tmpDir, "pwned")
 
-	createTestArchive(t, archivePath, []archiveEntry{
+	testutil.CreateTarGz(t, archivePath, []testutil.ArchiveEntry{
 		{Name: "../pwned", Content: "owned"},
 	})
 
@@ -107,9 +63,7 @@ func TestExtractTarGzPathTraversal(t *testing.T) {
 		t.Error("extractTarGz should fail with path traversal attempt")
 	}
 
-	if _, err := os.Stat(outsideFile); !os.IsNotExist(err) {
-		t.Error("Malicious file was created outside extract dir")
-	}
+	testutil.MustNotExist(t, outsideFile)
 }
 
 func TestExtractTarGzSymlinkSkipped(t *testing.T) {
@@ -118,7 +72,7 @@ func TestExtractTarGzSymlinkSkipped(t *testing.T) {
 	archivePath := filepath.Join(tmpDir, "symlink.tar.gz")
 	extractDir := filepath.Join(tmpDir, "extract")
 
-	createTestArchive(t, archivePath, []archiveEntry{
+	testutil.CreateTarGz(t, archivePath, []testutil.ArchiveEntry{
 		{Name: "evil-link", TypeFlag: tar.TypeSymlink, LinkName: "/etc/passwd"},
 		{Name: "normal.txt", Content: "test"},
 	})
@@ -127,13 +81,8 @@ func TestExtractTarGzSymlinkSkipped(t *testing.T) {
 		t.Fatalf("extractTarGz failed: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(extractDir, "normal.txt")); err != nil {
-		t.Error("Normal file should have been extracted")
-	}
-
-	if _, err := os.Lstat(filepath.Join(extractDir, "evil-link")); !os.IsNotExist(err) {
-		t.Error("Symlink should have been skipped")
-	}
+	testutil.MustExist(t, filepath.Join(extractDir, "normal.txt"))
+	testutil.MustNotExist(t, filepath.Join(extractDir, "evil-link"))
 }
 
 func TestExtractChecksum(t *testing.T) {

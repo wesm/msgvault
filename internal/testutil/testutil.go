@@ -2,7 +2,9 @@
 package testutil
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"compress/gzip"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -205,6 +207,52 @@ func WriteAndVerifyFile(t *testing.T, dir, rel string, content []byte) string {
 	MustExist(t, path)
 	AssertFileContent(t, path, string(content))
 	return path
+}
+
+// ArchiveEntry describes a single entry in a tar.gz archive for testing.
+type ArchiveEntry struct {
+	Name     string
+	Content  string
+	TypeFlag byte
+	LinkName string
+	Mode     int64
+}
+
+// CreateTarGz creates a tar.gz archive at path containing the given entries.
+func CreateTarGz(t *testing.T, path string, entries []ArchiveEntry) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	gzw := gzip.NewWriter(f)
+	defer gzw.Close()
+	tw := tar.NewWriter(gzw)
+	defer tw.Close()
+
+	for _, e := range entries {
+		mode := e.Mode
+		if mode == 0 {
+			mode = 0644
+		}
+		h := &tar.Header{
+			Name:     e.Name,
+			Mode:     mode,
+			Size:     int64(len(e.Content)),
+			Typeflag: e.TypeFlag,
+			Linkname: e.LinkName,
+		}
+		if err := tw.WriteHeader(h); err != nil {
+			t.Fatal(err)
+		}
+		if len(e.Content) > 0 {
+			if _, err := tw.Write([]byte(e.Content)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 }
 
 // CreateTempZip creates a zip file in a temporary directory containing the
