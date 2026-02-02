@@ -63,7 +63,7 @@ jobs:
           export CXX=zigcxx
 
           mkdir -p dist
-          LDFLAGS="-s -w -X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=v${VERSION} -linkmode external -extldflags '-static'"
+          LDFLAGS="-s -w -X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=v${VERSION} -linkmode external -extldflags '-static -lstdc++ -lm'"
           go build -tags fts5 -trimpath -ldflags="$LDFLAGS" -o dist/msgvault ./cmd/msgvault
 
           # Verify the binary is statically linked (fail build if not)
