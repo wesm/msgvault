@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/store"
@@ -268,7 +269,13 @@ func CreateTempZip(t *testing.T, entries map[string]string) string {
 	defer f.Close()
 
 	w := zip.NewWriter(f)
-	for name, content := range entries {
+	keys := make([]string, 0, len(entries))
+	for name := range entries {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	for _, name := range keys {
+		content := entries[name]
 		fw, err := w.Create(name)
 		if err != nil {
 			t.Fatalf("create zip entry %s: %v", name, err)
