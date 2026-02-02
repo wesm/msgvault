@@ -210,6 +210,9 @@ type LabelOpts struct {
 // AddLabel inserts a label and returns its ID.
 func (tdb *TestDB) AddLabel(opts LabelOpts) int64 {
 	tdb.T.Helper()
+	if opts.Name == "" {
+		tdb.T.Fatalf("AddLabel: Name is required")
+	}
 	if opts.SourceID == 0 {
 		opts.SourceID = 1
 	}
@@ -315,7 +318,10 @@ func (tdb *TestDB) AddMessage(opts MessageOpts) int64 {
 	}
 	srcID := opts.SourceID
 	if srcID == 0 {
-		srcID = 1
+		// Look up the conversation's source_id to stay consistent.
+		if err := tdb.DB.QueryRow(`SELECT source_id FROM conversations WHERE id = ?`, convID).Scan(&srcID); err != nil {
+			tdb.T.Fatalf("AddMessage: lookup source_id for conversation %d: %v", convID, err)
+		}
 	}
 
 	_, err := tdb.DB.Exec(
