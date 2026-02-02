@@ -1,26 +1,14 @@
 package sync
 
 import (
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/store"
 )
-
-// Sample MIME message for testing
-var testMIME = []byte(`From: sender@example.com
-To: recipient@example.com
-Subject: Test Message
-Date: Mon, 01 Jan 2024 12:00:00 +0000
-Content-Type: text/plain; charset="utf-8"
-
-This is a test message body.
-`)
 
 func TestFullSync(t *testing.T) {
 	env := newTestEnv(t)
@@ -331,23 +319,8 @@ func TestIncrementalSyncWithDeletions(t *testing.T) {
 	assertSummary(t, summary, -1, -1, -1, 1)
 
 	// Verify deletion was persisted
-	var deletedAt sql.NullTime
-	err := env.Store.DB().QueryRow(env.Store.Rebind("SELECT deleted_from_source_at FROM messages WHERE source_message_id = ?"), "msg1").Scan(&deletedAt)
-	if err != nil {
-		t.Fatalf("query deleted_from_source_at: %v", err)
-	}
-	if !deletedAt.Valid {
-		t.Error("msg1 should have deleted_from_source_at set after incremental sync with deletion")
-	}
-
-	// Verify msg2 is NOT marked as deleted
-	err = env.Store.DB().QueryRow(env.Store.Rebind("SELECT deleted_from_source_at FROM messages WHERE source_message_id = ?"), "msg2").Scan(&deletedAt)
-	if err != nil {
-		t.Fatalf("query deleted_from_source_at for msg2: %v", err)
-	}
-	if deletedAt.Valid {
-		t.Error("msg2 should NOT have deleted_from_source_at set")
-	}
+	assertDeletedFromSource(t, env.Store, "msg1", true)
+	assertDeletedFromSource(t, env.Store, "msg2", false)
 }
 
 func TestIncrementalSyncHistoryExpired(t *testing.T) {
@@ -486,27 +459,6 @@ func TestIncrementalSyncLabelRemovedFromMissingMessage(t *testing.T) {
 	assertSummary(t, summary, 0, -1, -1, -1)
 }
 
-// MIME message with attachment for testing
-var testMIMEWithAttachment = []byte(`From: sender@example.com
-To: recipient@example.com
-Subject: Test with Attachment
-Date: Mon, 01 Jan 2024 12:00:00 +0000
-MIME-Version: 1.0
-Content-Type: multipart/mixed; boundary="boundary123"
-
---boundary123
-Content-Type: text/plain; charset="utf-8"
-
-This is the message body.
---boundary123
-Content-Type: application/octet-stream; name="test.bin"
-Content-Disposition: attachment; filename="test.bin"
-Content-Transfer-Encoding: base64
-
-SGVsbG8gV29ybGQh
---boundary123--
-`)
-
 func TestFullSyncWithAttachment(t *testing.T) {
 	env := newTestEnv(t)
 	env.Mock.Profile.MessagesTotal = 1
@@ -575,15 +527,6 @@ func TestFullSyncAttachmentDeduplication(t *testing.T) {
 	}
 }
 
-// MIME message with no subject
-var testMIMENoSubject = []byte(`From: sender@example.com
-To: recipient@example.com
-Date: Mon, 01 Jan 2024 12:00:00 +0000
-Content-Type: text/plain; charset="utf-8"
-
-Message with no subject line.
-`)
-
 func TestFullSyncNoSubject(t *testing.T) {
 	env := newTestEnv(t)
 	env.Mock.Profile.MessagesTotal = 1
@@ -593,18 +536,6 @@ func TestFullSyncNoSubject(t *testing.T) {
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, 1, -1, -1, -1)
 }
-
-// MIME message with multiple recipients (CC and BCC)
-var testMIMEMultipleRecipients = []byte(`From: sender@example.com
-To: to1@example.com, to2@example.com
-Cc: cc1@example.com
-Bcc: bcc1@example.com
-Subject: Multiple Recipients
-Date: Mon, 01 Jan 2024 12:00:00 +0000
-Content-Type: text/plain; charset="utf-8"
-
-Message with multiple recipients.
-`)
 
 func TestFullSyncMultipleRecipients(t *testing.T) {
 	env := newTestEnv(t)
@@ -633,33 +564,9 @@ func TestFullSyncWithMIMEParseError(t *testing.T) {
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, 2, 0, -1, -1)
 
-	// Verify the bad message was stored with placeholder content in message_bodies
-	var bodyText string
-	err := env.Store.DB().QueryRow(`
-		SELECT mb.body_text FROM message_bodies mb
-		JOIN messages m ON m.id = mb.message_id
-		WHERE m.source_message_id = 'msg-bad'
-	`).Scan(&bodyText)
-	if err != nil {
-		t.Fatalf("query bad message: %v", err)
-	}
-	if !strings.Contains(bodyText, "MIME parsing failed") {
-		t.Errorf("expected placeholder body with error message, got: %s", bodyText)
-	}
-
-	// Verify raw MIME was preserved
-	var rawData []byte
-	err = env.Store.DB().QueryRow(`
-		SELECT raw_data FROM message_raw mr
-		JOIN messages m ON m.id = mr.message_id
-		WHERE m.source_message_id = 'msg-bad'
-	`).Scan(&rawData)
-	if err != nil {
-		t.Fatalf("query raw data: %v", err)
-	}
-	if len(rawData) == 0 {
-		t.Error("expected raw MIME data to be preserved")
-	}
+	// Verify the bad message was stored with placeholder content
+	assertBodyContains(t, env.Store, "msg-bad", "MIME parsing failed")
+	assertRawDataExists(t, env.Store, "msg-bad")
 }
 
 func TestFullSyncMessageFetchError(t *testing.T) {
@@ -766,18 +673,6 @@ Content-Type: text/html; charset="utf-8"
 	assertSummary(t, summary, 1, -1, -1, -1)
 }
 
-// MIME message with duplicate recipients across To/Cc/Bcc
-var testMIMEDuplicateRecipients = []byte(`From: sender@example.com
-To: duplicate@example.com, other@example.com, "Duplicate Person" <duplicate@example.com>
-Cc: cc-dup@example.com, "CC Duplicate" <cc-dup@example.com>
-Bcc: bcc-dup@example.com, bcc-dup@example.com
-Subject: Duplicate Recipients
-Date: Mon, 01 Jan 2024 12:00:00 +0000
-Content-Type: text/plain; charset="utf-8"
-
-Message with duplicate recipients in To, Cc, and Bcc fields.
-`)
-
 func TestFullSyncDuplicateRecipients(t *testing.T) {
 	env := newTestEnv(t)
 	env.Mock.Profile.MessagesTotal = 1
@@ -788,76 +683,14 @@ func TestFullSyncDuplicateRecipients(t *testing.T) {
 	assertSummary(t, summary, 1, 0, -1, -1)
 	assertMessageCount(t, env.Store, 1)
 
-	// Verify To recipients are deduplicated: duplicate@example.com appears twice, other once = 2 unique
-	var toCount int
-	err := env.Store.DB().QueryRow(env.Store.Rebind(`
-		SELECT COUNT(*) FROM message_recipients mr
-		JOIN messages m ON mr.message_id = m.id
-		WHERE m.source_message_id = ? AND mr.recipient_type = 'to'
-	`), "msg-dup-recip").Scan(&toCount)
-	if err != nil {
-		t.Fatalf("query To recipient count: %v", err)
-	}
-	if toCount != 2 {
-		t.Errorf("expected 2 unique To recipients, got %d", toCount)
-	}
+	// Verify recipients are deduplicated
+	assertRecipientCount(t, env.Store, "msg-dup-recip", "to", 2)
+	assertRecipientCount(t, env.Store, "msg-dup-recip", "cc", 1)
+	assertRecipientCount(t, env.Store, "msg-dup-recip", "bcc", 1)
 
-	// Verify Cc recipients are deduplicated: cc-dup@example.com appears twice = 1 unique
-	var ccCount int
-	err = env.Store.DB().QueryRow(env.Store.Rebind(`
-		SELECT COUNT(*) FROM message_recipients mr
-		JOIN messages m ON mr.message_id = m.id
-		WHERE m.source_message_id = ? AND mr.recipient_type = 'cc'
-	`), "msg-dup-recip").Scan(&ccCount)
-	if err != nil {
-		t.Fatalf("query Cc recipient count: %v", err)
-	}
-	if ccCount != 1 {
-		t.Errorf("expected 1 unique Cc recipient, got %d", ccCount)
-	}
-
-	// Verify Bcc recipients are deduplicated: bcc-dup@example.com appears twice = 1 unique
-	var bccCount int
-	err = env.Store.DB().QueryRow(env.Store.Rebind(`
-		SELECT COUNT(*) FROM message_recipients mr
-		JOIN messages m ON mr.message_id = m.id
-		WHERE m.source_message_id = ? AND mr.recipient_type = 'bcc'
-	`), "msg-dup-recip").Scan(&bccCount)
-	if err != nil {
-		t.Fatalf("query Bcc recipient count: %v", err)
-	}
-	if bccCount != 1 {
-		t.Errorf("expected 1 unique Bcc recipient, got %d", bccCount)
-	}
-
-	// Verify display name preference: duplicate@example.com should prefer "Duplicate Person"
-	var displayName string
-	err = env.Store.DB().QueryRow(env.Store.Rebind(`
-		SELECT mr.display_name FROM message_recipients mr
-		JOIN messages m ON mr.message_id = m.id
-		JOIN participants p ON mr.participant_id = p.id
-		WHERE m.source_message_id = ? AND mr.recipient_type = 'to' AND p.email_address = ?
-	`), "msg-dup-recip", "duplicate@example.com").Scan(&displayName)
-	if err != nil {
-		t.Fatalf("query display name: %v", err)
-	}
-	if displayName != "Duplicate Person" {
-		t.Errorf("expected display name 'Duplicate Person' (non-empty preferred), got %q", displayName)
-	}
-
-	// Verify Cc display name preference
-	err = env.Store.DB().QueryRow(env.Store.Rebind(`
-		SELECT mr.display_name FROM message_recipients mr
-		JOIN messages m ON mr.message_id = m.id
-		JOIN participants p ON mr.participant_id = p.id
-		WHERE m.source_message_id = ? AND mr.recipient_type = 'cc' AND p.email_address = ?
-	`), "msg-dup-recip", "cc-dup@example.com").Scan(&displayName)
-	if err != nil {
-		t.Fatalf("query Cc display name: %v", err)
-	}
-	if displayName != "CC Duplicate" {
-		t.Errorf("expected Cc display name 'CC Duplicate' (non-empty preferred), got %q", displayName)
-	}
+	// Verify display name preference: non-empty name preferred
+	assertDisplayName(t, env.Store, "msg-dup-recip", "to", "duplicate@example.com", "Duplicate Person")
+	assertDisplayName(t, env.Store, "msg-dup-recip", "cc", "cc-dup@example.com", "CC Duplicate")
 }
 
 func TestFullSyncDateFallbackToInternalDate(t *testing.T) {
@@ -885,26 +718,7 @@ Message with invalid date header.
 
 	runFullSync(t, env)
 
-	var sentAt, internalDate string
-	err := env.Store.DB().QueryRow(env.Store.Rebind(`
-		SELECT sent_at, internal_date FROM messages WHERE source_message_id = ?
-	`), "msg-bad-date").Scan(&sentAt, &internalDate)
-	if err != nil {
-		t.Fatalf("query message: %v", err)
-	}
-
-	if sentAt == "" {
-		t.Errorf("SentAt should not be empty (should fallback to InternalDate)")
-	}
-	if internalDate == "" {
-		t.Errorf("InternalDate should not be empty")
-	}
-	if sentAt != internalDate {
-		t.Errorf("SentAt (%q) should equal InternalDate (%q) when Date header is unparseable", sentAt, internalDate)
-	}
-	if !strings.Contains(sentAt, "2024-01-15") || !strings.Contains(sentAt, "12:00:00") {
-		t.Errorf("SentAt = %q, expected to contain 2024-01-15 12:00:00", sentAt)
-	}
+	assertDateFallback(t, env.Store, "msg-bad-date", "2024-01-15", "12:00:00")
 }
 
 func TestFullSyncEmptyRawMIME(t *testing.T) {
@@ -943,18 +757,7 @@ func TestFullSyncEmptyThreadID(t *testing.T) {
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, 1, 0, -1, -1)
 
-	var threadSourceID string
-	err := env.Store.DB().QueryRow(env.Store.Rebind(`
-		SELECT c.source_conversation_id FROM conversations c
-		JOIN messages m ON m.conversation_id = c.id
-		WHERE m.source_message_id = ?
-	`), "msg-no-thread").Scan(&threadSourceID)
-	if err != nil {
-		t.Fatalf("query thread: %v", err)
-	}
-	if threadSourceID != "msg-no-thread" {
-		t.Errorf("expected thread source_conversation_id = 'msg-no-thread' (fallback), got %q", threadSourceID)
-	}
+	assertThreadSourceID(t, env.Store, "msg-no-thread", "msg-no-thread")
 }
 
 func TestFullSyncListEmptyThreadIDRawPresent(t *testing.T) {
@@ -977,16 +780,5 @@ func TestFullSyncListEmptyThreadIDRawPresent(t *testing.T) {
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, 1, 0, -1, -1)
 
-	var threadSourceID string
-	err := env.Store.DB().QueryRow(env.Store.Rebind(`
-		SELECT c.source_conversation_id FROM conversations c
-		JOIN messages m ON m.conversation_id = c.id
-		WHERE m.source_message_id = ?
-	`), "msg-list-empty").Scan(&threadSourceID)
-	if err != nil {
-		t.Fatalf("query thread: %v", err)
-	}
-	if threadSourceID != "actual-thread-from-raw" {
-		t.Errorf("expected thread source_conversation_id = 'actual-thread-from-raw' (from raw), got %q", threadSourceID)
-	}
+	assertThreadSourceID(t, env.Store, "msg-list-empty", "actual-thread-from-raw")
 }

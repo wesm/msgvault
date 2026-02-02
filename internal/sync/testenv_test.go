@@ -2,8 +2,10 @@ package sync
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/gmail"
@@ -178,6 +180,132 @@ func withAttachmentsDir(t *testing.T, env *TestEnv) string {
 	opts := &Options{AttachmentsDir: attachDir}
 	env.Syncer = New(env.Mock, env.Store, opts)
 	return attachDir
+}
+
+// assertRecipientCount checks the count of recipients of a given type for a message.
+func assertRecipientCount(t *testing.T, st *store.Store, sourceMessageID, recipType string, want int) {
+	t.Helper()
+	var count int
+	err := st.DB().QueryRow(st.Rebind(`
+		SELECT COUNT(*) FROM message_recipients mr
+		JOIN messages m ON mr.message_id = m.id
+		WHERE m.source_message_id = ? AND mr.recipient_type = ?
+	`), sourceMessageID, recipType).Scan(&count)
+	if err != nil {
+		t.Fatalf("query %s recipient count for %s: %v", recipType, sourceMessageID, err)
+	}
+	if count != want {
+		t.Errorf("expected %d %s recipients for %s, got %d", want, recipType, sourceMessageID, count)
+	}
+}
+
+// assertDisplayName checks the display name for a recipient of a message.
+func assertDisplayName(t *testing.T, st *store.Store, sourceMessageID, recipType, email, want string) {
+	t.Helper()
+	var displayName string
+	err := st.DB().QueryRow(st.Rebind(`
+		SELECT mr.display_name FROM message_recipients mr
+		JOIN messages m ON mr.message_id = m.id
+		JOIN participants p ON mr.participant_id = p.id
+		WHERE m.source_message_id = ? AND mr.recipient_type = ? AND p.email_address = ?
+	`), sourceMessageID, recipType, email).Scan(&displayName)
+	if err != nil {
+		t.Fatalf("query display name for %s/%s/%s: %v", sourceMessageID, recipType, email, err)
+	}
+	if displayName != want {
+		t.Errorf("expected display name %q for %s/%s/%s, got %q", want, sourceMessageID, recipType, email, displayName)
+	}
+}
+
+// assertDeletedFromSource checks whether a message has deleted_from_source_at set.
+func assertDeletedFromSource(t *testing.T, st *store.Store, sourceMessageID string, wantDeleted bool) {
+	t.Helper()
+	var deletedAt sql.NullTime
+	err := st.DB().QueryRow(st.Rebind(
+		"SELECT deleted_from_source_at FROM messages WHERE source_message_id = ?"),
+		sourceMessageID).Scan(&deletedAt)
+	if err != nil {
+		t.Fatalf("query deleted_from_source_at for %s: %v", sourceMessageID, err)
+	}
+	if wantDeleted && !deletedAt.Valid {
+		t.Errorf("%s should have deleted_from_source_at set", sourceMessageID)
+	}
+	if !wantDeleted && deletedAt.Valid {
+		t.Errorf("%s should NOT have deleted_from_source_at set", sourceMessageID)
+	}
+}
+
+// assertBodyContains checks that a message's body_text contains the given substring.
+func assertBodyContains(t *testing.T, st *store.Store, sourceMessageID, substr string) {
+	t.Helper()
+	var bodyText string
+	err := st.DB().QueryRow(`
+		SELECT mb.body_text FROM message_bodies mb
+		JOIN messages m ON m.id = mb.message_id
+		WHERE m.source_message_id = '` + sourceMessageID + `'`).Scan(&bodyText)
+	if err != nil {
+		t.Fatalf("query body for %s: %v", sourceMessageID, err)
+	}
+	if !strings.Contains(bodyText, substr) {
+		t.Errorf("expected body of %s to contain %q, got: %s", sourceMessageID, substr, bodyText)
+	}
+}
+
+// assertRawDataExists checks that raw MIME data exists for a message.
+func assertRawDataExists(t *testing.T, st *store.Store, sourceMessageID string) {
+	t.Helper()
+	var rawData []byte
+	err := st.DB().QueryRow(`
+		SELECT raw_data FROM message_raw mr
+		JOIN messages m ON m.id = mr.message_id
+		WHERE m.source_message_id = '` + sourceMessageID + `'`).Scan(&rawData)
+	if err != nil {
+		t.Fatalf("query raw data for %s: %v", sourceMessageID, err)
+	}
+	if len(rawData) == 0 {
+		t.Errorf("expected raw MIME data to be preserved for %s", sourceMessageID)
+	}
+}
+
+// assertThreadSourceID checks the source_conversation_id for a message's thread.
+func assertThreadSourceID(t *testing.T, st *store.Store, sourceMessageID, wantThreadID string) {
+	t.Helper()
+	var threadSourceID string
+	err := st.DB().QueryRow(st.Rebind(`
+		SELECT c.source_conversation_id FROM conversations c
+		JOIN messages m ON m.conversation_id = c.id
+		WHERE m.source_message_id = ?
+	`), sourceMessageID).Scan(&threadSourceID)
+	if err != nil {
+		t.Fatalf("query thread for %s: %v", sourceMessageID, err)
+	}
+	if threadSourceID != wantThreadID {
+		t.Errorf("expected thread source_conversation_id = %q for %s, got %q", wantThreadID, sourceMessageID, threadSourceID)
+	}
+}
+
+// assertDateFallback checks that sent_at equals internal_date and contains expected substrings.
+func assertDateFallback(t *testing.T, st *store.Store, sourceMessageID, wantDatePart, wantTimePart string) {
+	t.Helper()
+	var sentAt, internalDate string
+	err := st.DB().QueryRow(st.Rebind(
+		"SELECT sent_at, internal_date FROM messages WHERE source_message_id = ?"),
+		sourceMessageID).Scan(&sentAt, &internalDate)
+	if err != nil {
+		t.Fatalf("query dates for %s: %v", sourceMessageID, err)
+	}
+	if sentAt == "" {
+		t.Errorf("%s: sent_at should not be empty", sourceMessageID)
+	}
+	if internalDate == "" {
+		t.Errorf("%s: internal_date should not be empty", sourceMessageID)
+	}
+	if sentAt != internalDate {
+		t.Errorf("%s: sent_at (%q) should equal internal_date (%q)", sourceMessageID, sentAt, internalDate)
+	}
+	if !strings.Contains(sentAt, wantDatePart) || !strings.Contains(sentAt, wantTimePart) {
+		t.Errorf("%s: sent_at = %q, expected to contain %s %s", sourceMessageID, sentAt, wantDatePart, wantTimePart)
+	}
 }
 
 // countFiles counts regular files recursively under dir.
