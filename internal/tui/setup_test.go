@@ -55,7 +55,9 @@ type TestModelBuilder struct {
 	modal         *modalType
 	accountFilter *int64
 	stats         *query.TotalStats
-	contextStats  *query.TotalStats
+	contextStats      *query.TotalStats
+	activeSearchQuery string
+	activeSearchMode  *searchModeKind
 }
 
 func NewBuilder() *TestModelBuilder {
@@ -207,6 +209,12 @@ func (b *TestModelBuilder) Build() Model {
 
 	if b.contextStats != nil {
 		model.contextStats = b.contextStats
+	}
+
+	if b.activeSearchMode != nil {
+		model.inlineSearchActive = true
+		model.searchMode = *b.activeSearchMode
+		model.searchInput.SetValue(b.activeSearchQuery)
 	}
 
 	return model
@@ -530,6 +538,59 @@ func drillDown(t *testing.T, m Model) Model {
 	t.Helper()
 	m, _ = sendKey(t, m, keyEnter())
 	return m
+}
+
+// -----------------------------------------------------------------------------
+// Search Helpers - reduce search test boilerplate
+// -----------------------------------------------------------------------------
+
+// WithActiveSearch configures the builder's model for inline search state.
+func (b *TestModelBuilder) WithActiveSearch(q string, mode searchModeKind) *TestModelBuilder {
+	b.activeSearchQuery = q
+	b.activeSearchMode = &mode
+	return b
+}
+
+// applySearchResults simulates the arrival of search results via Update.
+func applySearchResults(t *testing.T, m Model, reqID uint64, msgs []query.MessageSummary, total int64) Model {
+	t.Helper()
+	msg := searchResultsMsg{
+		messages:   msgs,
+		requestID:  reqID,
+		totalCount: total,
+	}
+	newModel, _ := m.Update(msg)
+	return newModel.(Model)
+}
+
+// applySearchResultsAppend simulates appended (paginated) search results.
+func applySearchResultsAppend(t *testing.T, m Model, reqID uint64, msgs []query.MessageSummary, total int64) Model {
+	t.Helper()
+	msg := searchResultsMsg{
+		messages:   msgs,
+		requestID:  reqID,
+		totalCount: total,
+		append:     true,
+	}
+	newModel, _ := m.Update(msg)
+	return newModel.(Model)
+}
+
+// assertContextStats checks contextStats fields. Use -1 for size or attachments to skip that check.
+func assertContextStats(t *testing.T, m Model, wantCount int, wantSize int64, wantAttach int) {
+	t.Helper()
+	if m.contextStats == nil {
+		t.Fatal("expected contextStats to be set")
+	}
+	if m.contextStats.MessageCount != int64(wantCount) {
+		t.Errorf("got MessageCount=%d, want %d", m.contextStats.MessageCount, wantCount)
+	}
+	if wantSize != -1 && m.contextStats.TotalSize != wantSize {
+		t.Errorf("got TotalSize=%d, want %d", m.contextStats.TotalSize, wantSize)
+	}
+	if wantAttach != -1 && m.contextStats.AttachmentCount != int64(wantAttach) {
+		t.Errorf("got AttachmentCount=%d, want %d", m.contextStats.AttachmentCount, wantAttach)
+	}
 }
 
 // =============================================================================

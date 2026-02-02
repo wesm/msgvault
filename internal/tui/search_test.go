@@ -36,17 +36,10 @@ func TestSearchResultsDisplay(t *testing.T) {
 	model.searchMode = searchModeFast
 	model.searchRequestID = 1
 
-	// Simulate receiving search results
-	results := searchResultsMsg{
-		messages: []query.MessageSummary{
-			{ID: 1, Subject: "Result 1"},
-			{ID: 2, Subject: "Result 2"},
-		},
-		requestID: 1,
-	}
-
-	newModel, _ := model.Update(results)
-	m := newModel.(Model)
+	m := applySearchResults(t, model, 1, []query.MessageSummary{
+		{ID: 1, Subject: "Result 1"},
+		{ID: 2, Subject: "Result 2"},
+	}, 0)
 
 	if m.level != levelMessageList {
 		t.Errorf("expected levelMessageList, got %v", m.level)
@@ -64,16 +57,9 @@ func TestSearchResultsStale(t *testing.T) {
 	model := NewBuilder().WithPageSize(10).WithSize(100, 20).Build()
 	model.searchRequestID = 2 // Current request is 2
 
-	// Simulate receiving stale results (requestID 1)
-	results := searchResultsMsg{
-		messages: []query.MessageSummary{
-			{ID: 1, Subject: "Stale Result"},
-		},
-		requestID: 1, // Stale
-	}
-
-	newModel, _ := model.Update(results)
-	m := newModel.(Model)
+	m := applySearchResults(t, model, 1, []query.MessageSummary{
+		{ID: 1, Subject: "Stale Result"},
+	}, 0)
 
 	// Messages should not be updated (still nil/empty)
 	if len(m.messages) != 0 {
@@ -86,10 +72,8 @@ func TestInlineSearchTabToggleAtMessageList(t *testing.T) {
 	model := NewBuilder().WithPageSize(10).WithSize(100, 20).
 		WithLevel(levelMessageList).
 		WithMessages(query.MessageSummary{ID: 1, Subject: "Existing"}).
+		WithActiveSearch("test query", searchModeFast).
 		Build()
-	model.inlineSearchActive = true
-	model.searchMode = searchModeFast
-	model.searchInput.SetValue("test query")
 
 	// Press Tab to toggle to Deep mode
 	newModel, cmd := model.handleInlineSearchKeys(keyTab())
@@ -122,10 +106,9 @@ func TestInlineSearchTabToggleAtMessageList(t *testing.T) {
 // TestInlineSearchTabToggleNoQueryNoSearch verifies Tab with empty query doesn't trigger search.
 func TestInlineSearchTabToggleNoQueryNoSearch(t *testing.T) {
 	model := NewBuilder().WithPageSize(10).WithSize(100, 20).
-		WithLevel(levelMessageList).WithLoading(false).Build()
-	model.inlineSearchActive = true
-	model.searchMode = searchModeFast
-	model.searchInput.SetValue("") // Empty query
+		WithLevel(levelMessageList).WithLoading(false).
+		WithActiveSearch("", searchModeFast).
+		Build()
 
 	// Press Tab to toggle mode
 	newModel, cmd := model.handleInlineSearchKeys(keyTab())
@@ -149,10 +132,9 @@ func TestInlineSearchTabToggleNoQueryNoSearch(t *testing.T) {
 
 // TestInlineSearchTabAtAggregateLevel verifies Tab has no effect at aggregate level.
 func TestInlineSearchTabAtAggregateLevel(t *testing.T) {
-	model := NewBuilder().WithPageSize(10).WithSize(100, 20).Build()
-	model.inlineSearchActive = true
-	model.searchMode = searchModeFast
-	model.searchInput.SetValue("test query")
+	model := NewBuilder().WithPageSize(10).WithSize(100, 20).
+		WithActiveSearch("test query", searchModeFast).
+		Build()
 
 	// Press Tab - should do nothing at aggregate level
 	newModel, cmd := model.handleInlineSearchKeys(keyTab())
@@ -172,10 +154,9 @@ func TestInlineSearchTabAtAggregateLevel(t *testing.T) {
 // TestInlineSearchTabToggleBackToFast verifies Tab toggles back from Deep to Fast.
 func TestInlineSearchTabToggleBackToFast(t *testing.T) {
 	model := NewBuilder().WithPageSize(10).WithSize(100, 20).
-		WithLevel(levelMessageList).Build()
-	model.inlineSearchActive = true
-	model.searchMode = searchModeDeep // Start in Deep mode
-	model.searchInput.SetValue("test query")
+		WithLevel(levelMessageList).
+		WithActiveSearch("test query", searchModeDeep).
+		Build()
 
 	// Press Tab to toggle back to Fast mode
 	newModel, cmd := model.handleInlineSearchKeys(keyTab())
@@ -297,23 +278,9 @@ func TestSearchSetsContextStats(t *testing.T) {
 	model := NewBuilder().Build()
 	model.searchRequestID = 1
 
-	// Simulate receiving search results
-	msg := searchResultsMsg{
-		messages:   make([]query.MessageSummary, 10),
-		totalCount: 150,
-		requestID:  1,
-		append:     false,
-	}
+	m := applySearchResults(t, model, 1, make([]query.MessageSummary, 10), 150)
 
-	newModel, _ := model.Update(msg)
-	m := newModel.(Model)
-
-	if m.contextStats == nil {
-		t.Error("expected contextStats to be set after search results")
-	}
-	if m.contextStats.MessageCount != 150 {
-		t.Errorf("expected contextStats.MessageCount=150, got %d", m.contextStats.MessageCount)
-	}
+	assertContextStats(t, m, 150, -1, -1)
 }
 
 // TestSearchZeroResultsClearsContextStats verifies contextStats is set to zero on empty search.
@@ -323,23 +290,9 @@ func TestSearchZeroResultsClearsContextStats(t *testing.T) {
 		Build()
 	model.searchRequestID = 1
 
-	// Simulate receiving zero search results
-	msg := searchResultsMsg{
-		messages:   []query.MessageSummary{},
-		totalCount: 0,
-		requestID:  1,
-		append:     false,
-	}
+	m := applySearchResults(t, model, 1, []query.MessageSummary{}, 0)
 
-	newModel, _ := model.Update(msg)
-	m := newModel.(Model)
-
-	if m.contextStats == nil {
-		t.Error("expected contextStats to be set (not nil)")
-	}
-	if m.contextStats.MessageCount != 0 {
-		t.Errorf("expected contextStats.MessageCount=0 for zero results, got %d", m.contextStats.MessageCount)
-	}
+	assertContextStats(t, m, 0, -1, -1)
 }
 
 // TestSearchPaginationUpdatesContextStats verifies contextStats updates on append when total unknown.
@@ -352,27 +305,12 @@ func TestSearchPaginationUpdatesContextStats(t *testing.T) {
 	model.searchRequestID = 1
 	model.searchTotalCount = -1 // Unknown total
 
-	// Simulate receiving additional paginated results
-	msg := searchResultsMsg{
-		messages:   make([]query.MessageSummary, 50),
-		totalCount: -1, // Still unknown
-		requestID:  1,
-		append:     true,
-	}
+	m := applySearchResultsAppend(t, model, 1, make([]query.MessageSummary, 50), -1)
 
-	newModel, _ := model.Update(msg)
-	m := newModel.(Model)
-
-	if m.contextStats == nil {
-		t.Error("expected contextStats to be set")
-	}
-	// Total messages should now be 100 (50 original + 50 appended)
 	if len(m.messages) != 100 {
 		t.Errorf("expected 100 messages after append, got %d", len(m.messages))
 	}
-	if m.contextStats.MessageCount != 100 {
-		t.Errorf("expected contextStats.MessageCount=100 after pagination, got %d", m.contextStats.MessageCount)
-	}
+	assertContextStats(t, m, 100, -1, -1)
 }
 
 // TestSearchResultsPreservesDrillDownContextStats verifies that when drilling down
@@ -390,38 +328,13 @@ func TestSearchResultsPreservesDrillDownContextStats(t *testing.T) {
 	m := applyAggregateKey(t, model, keyEnter())
 
 	// Verify contextStats was set from selected row with full stats
-	if m.contextStats == nil {
-		t.Fatal("expected contextStats to be set after drill-down")
-	}
-	if m.contextStats.TotalSize != 1000 {
-		t.Errorf("expected TotalSize=1000 after drill-down, got %d", m.contextStats.TotalSize)
-	}
-	if m.contextStats.AttachmentCount != 5 {
-		t.Errorf("expected AttachmentCount=5 after drill-down, got %d", m.contextStats.AttachmentCount)
-	}
+	assertContextStats(t, m, 100, 1000, 5)
 
 	// Simulate searchResultsMsg arriving with total count
-	searchMsg := searchResultsMsg{
-		requestID:  m.searchRequestID,
-		messages:   []query.MessageSummary{{ID: 1}, {ID: 2}},
-		totalCount: 100,
-	}
-	newModel2, _ := m.Update(searchMsg)
-	m2 := newModel2.(Model)
+	m2 := applySearchResults(t, m, m.searchRequestID, []query.MessageSummary{{ID: 1}, {ID: 2}}, 100)
 
 	// contextStats should preserve TotalSize and AttachmentCount from drill-down
-	if m2.contextStats == nil {
-		t.Fatal("expected contextStats to be preserved after searchResultsMsg")
-	}
-	if m2.contextStats.MessageCount != 100 {
-		t.Errorf("expected MessageCount=100 (from searchResultsMsg), got %d", m2.contextStats.MessageCount)
-	}
-	if m2.contextStats.TotalSize != 1000 {
-		t.Errorf("expected TotalSize=1000 to be preserved, got %d", m2.contextStats.TotalSize)
-	}
-	if m2.contextStats.AttachmentCount != 5 {
-		t.Errorf("expected AttachmentCount=5 to be preserved, got %d", m2.contextStats.AttachmentCount)
-	}
+	assertContextStats(t, m2, 100, 1000, 5)
 }
 
 // TestSearchResultsWithoutDrillDownContextStats verifies that when searching
@@ -430,28 +343,9 @@ func TestSearchResultsWithoutDrillDownContextStats(t *testing.T) {
 	model := newTestModelAtLevel(levelMessageList)
 	model.searchRequestID = 1
 
-	// Simulate searchResultsMsg arriving (no prior drill-down, so no TotalSize/AttachmentCount)
-	searchMsg := searchResultsMsg{
-		requestID:  1,
-		messages:   []query.MessageSummary{{ID: 1}, {ID: 2}},
-		totalCount: 50,
-	}
-	newModel, _ := model.Update(searchMsg)
-	m := newModel.(Model)
+	m := applySearchResults(t, model, 1, []query.MessageSummary{{ID: 1}, {ID: 2}}, 50)
 
-	if m.contextStats == nil {
-		t.Fatal("expected contextStats to be set after search results")
-	}
-	if m.contextStats.MessageCount != 50 {
-		t.Errorf("expected MessageCount=50, got %d", m.contextStats.MessageCount)
-	}
-	// Without drill-down, TotalSize and AttachmentCount should be 0
-	if m.contextStats.TotalSize != 0 {
-		t.Errorf("expected TotalSize=0 without drill-down, got %d", m.contextStats.TotalSize)
-	}
-	if m.contextStats.AttachmentCount != 0 {
-		t.Errorf("expected AttachmentCount=0 without drill-down, got %d", m.contextStats.AttachmentCount)
-	}
+	assertContextStats(t, m, 50, 0, 0)
 }
 
 // TestAggregateSearchFilterSetsContextStats verifies contextStats is calculated from
@@ -799,12 +693,7 @@ func TestStaleSearchResponseIgnoredAfterDrillDown(t *testing.T) {
 	m.loading = false
 
 	// Simulate a stale search response arriving with the old requestID
-	staleResponse := searchResultsMsg{
-		messages:  []query.MessageSummary{{ID: 999, Subject: "Stale search result"}},
-		requestID: staleRequestID,
-	}
-	newModel2, _ := m.Update(staleResponse)
-	m2 := newModel2.(Model)
+	m2 := applySearchResults(t, m, staleRequestID, []query.MessageSummary{{ID: 999, Subject: "Stale search result"}}, 0)
 
 	// The stale response should be ignored — messages unchanged
 	if len(m2.messages) != 1 {
