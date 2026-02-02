@@ -1,44 +1,24 @@
 package testutil
 
-// EncodedSamples contains raw byte sequences for common encodings, useful for
-// testing charset detection and conversion functions.
-var EncodedSamples = struct {
-	// ShiftJIS_Konnichiwa is "こんにちは" in Shift-JIS.
-	ShiftJIS_Konnichiwa []byte
-	// GBK_Nihao is "你好" in GBK (Simplified Chinese).
-	GBK_Nihao []byte
-	// Big5_Nihao is "你好" in Big5 (Traditional Chinese).
-	Big5_Nihao []byte
-	// EUCKR_Annyeong is "안녕" in EUC-KR (Korean).
-	EUCKR_Annyeong []byte
-
-	// Win1252_SmartQuoteRight is "Rand's Opponent" with a Windows-1252 right single quote (0x92 → U+2019).
+// encodedSamples holds the canonical byte sequences (unexported to prevent direct mutation).
+var encodedSamples = struct {
+	ShiftJIS_Konnichiwa    []byte
+	GBK_Nihao              []byte
+	Big5_Nihao             []byte
+	EUCKR_Annyeong         []byte
 	Win1252_SmartQuoteRight []byte
-	// Win1252_EnDash is "2020 – 2024" with a Windows-1252 en dash (0x96 → U+2013).
-	Win1252_EnDash []byte
-	// Win1252_EmDash is "Hello—World" with a Windows-1252 em dash (0x97 → U+2014).
-	Win1252_EmDash []byte
-	// Win1252_DoubleQuotes is smart double quotes around "Hello" (0x93/0x94 → U+201C/U+201D).
-	Win1252_DoubleQuotes []byte
-	// Win1252_Trademark is "Brand™" with Windows-1252 trademark (0x99 → U+2122).
-	Win1252_Trademark []byte
-	// Win1252_Bullet is "• Item" with Windows-1252 bullet (0x95 → U+2022).
-	Win1252_Bullet []byte
-	// Win1252_Euro is "Price: €100" with Windows-1252 euro sign (0x80 → U+20AC).
-	Win1252_Euro []byte
-
-	// Latin1_OAcute is "Miró - Picasso" with Latin-1 ó (0xF3).
-	Latin1_OAcute []byte
-	// Latin1_CCedilla is "Garçon" with Latin-1 ç (0xE7).
-	Latin1_CCedilla []byte
-	// Latin1_UUmlaut is "München" with Latin-1 ü (0xFC).
-	Latin1_UUmlaut []byte
-	// Latin1_NTilde is "España" with Latin-1 ñ (0xF1).
-	Latin1_NTilde []byte
-	// Latin1_Registered is "Laguiole.com ®" with Latin-1 ® (0xAE).
-	Latin1_Registered []byte
-	// Latin1_Degree is "25°C" with Latin-1 ° (0xB0).
-	Latin1_Degree []byte
+	Win1252_EnDash          []byte
+	Win1252_EmDash          []byte
+	Win1252_DoubleQuotes    []byte
+	Win1252_Trademark       []byte
+	Win1252_Bullet          []byte
+	Win1252_Euro            []byte
+	Latin1_OAcute           []byte
+	Latin1_CCedilla         []byte
+	Latin1_UUmlaut          []byte
+	Latin1_NTilde           []byte
+	Latin1_Registered       []byte
+	Latin1_Degree           []byte
 }{
 	ShiftJIS_Konnichiwa: []byte{0x82, 0xb1, 0x82, 0xf1, 0x82, 0xc9, 0x82, 0xbf, 0x82, 0xcd},
 	GBK_Nihao:           []byte{0xc4, 0xe3, 0xba, 0xc3},
@@ -59,4 +39,53 @@ var EncodedSamples = struct {
 	Latin1_NTilde:     []byte("Espa\xf1a"),
 	Latin1_Registered: []byte("Laguiole.com \xae"),
 	Latin1_Degree:     []byte("25\xb0C"),
+}
+
+// EncodedSamplesT mirrors the encodedSamples struct type for use by callers.
+type EncodedSamplesT struct {
+	ShiftJIS_Konnichiwa    []byte
+	GBK_Nihao              []byte
+	Big5_Nihao             []byte
+	EUCKR_Annyeong         []byte
+	Win1252_SmartQuoteRight []byte
+	Win1252_EnDash          []byte
+	Win1252_EmDash          []byte
+	Win1252_DoubleQuotes    []byte
+	Win1252_Trademark       []byte
+	Win1252_Bullet          []byte
+	Win1252_Euro            []byte
+	Latin1_OAcute           []byte
+	Latin1_CCedilla         []byte
+	Latin1_UUmlaut          []byte
+	Latin1_NTilde           []byte
+	Latin1_Registered       []byte
+	Latin1_Degree           []byte
+}
+
+func cloneBytes(b []byte) []byte {
+	return append([]byte(nil), b...)
+}
+
+// EncodedSamples returns a fresh copy of all encoded byte samples, safe for
+// mutation by individual tests without cross-test coupling.
+func EncodedSamples() EncodedSamplesT {
+	return EncodedSamplesT{
+		ShiftJIS_Konnichiwa:    cloneBytes(encodedSamples.ShiftJIS_Konnichiwa),
+		GBK_Nihao:              cloneBytes(encodedSamples.GBK_Nihao),
+		Big5_Nihao:             cloneBytes(encodedSamples.Big5_Nihao),
+		EUCKR_Annyeong:         cloneBytes(encodedSamples.EUCKR_Annyeong),
+		Win1252_SmartQuoteRight: cloneBytes(encodedSamples.Win1252_SmartQuoteRight),
+		Win1252_EnDash:          cloneBytes(encodedSamples.Win1252_EnDash),
+		Win1252_EmDash:          cloneBytes(encodedSamples.Win1252_EmDash),
+		Win1252_DoubleQuotes:    cloneBytes(encodedSamples.Win1252_DoubleQuotes),
+		Win1252_Trademark:       cloneBytes(encodedSamples.Win1252_Trademark),
+		Win1252_Bullet:          cloneBytes(encodedSamples.Win1252_Bullet),
+		Win1252_Euro:            cloneBytes(encodedSamples.Win1252_Euro),
+		Latin1_OAcute:           cloneBytes(encodedSamples.Latin1_OAcute),
+		Latin1_CCedilla:         cloneBytes(encodedSamples.Latin1_CCedilla),
+		Latin1_UUmlaut:          cloneBytes(encodedSamples.Latin1_UUmlaut),
+		Latin1_NTilde:           cloneBytes(encodedSamples.Latin1_NTilde),
+		Latin1_Registered:       cloneBytes(encodedSamples.Latin1_Registered),
+		Latin1_Degree:           cloneBytes(encodedSamples.Latin1_Degree),
+	}
 }

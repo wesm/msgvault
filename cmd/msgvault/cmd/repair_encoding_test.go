@@ -12,7 +12,7 @@ import (
 )
 
 func TestDetectAndDecode_Windows1252(t *testing.T) {
-	enc := testutil.EncodedSamples
+	enc := testutil.EncodedSamples()
 	// Windows-1252 specific characters: smart quotes (0x91-0x94), en/em dash (0x96, 0x97)
 	tests := []struct {
 		name     string
@@ -61,7 +61,7 @@ func TestDetectAndDecode_Windows1252(t *testing.T) {
 }
 
 func TestDetectAndDecode_Latin1(t *testing.T) {
-	enc := testutil.EncodedSamples
+	enc := testutil.EncodedSamples()
 	tests := []struct {
 		name     string
 		input    []byte
@@ -104,7 +104,7 @@ func TestDetectAndDecode_Latin1(t *testing.T) {
 }
 
 func TestDetectAndDecode_AsianEncodings(t *testing.T) {
-	enc := testutil.EncodedSamples
+	enc := testutil.EncodedSamples()
 	tests := []struct {
 		name  string
 		input []byte

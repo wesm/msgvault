@@ -41,7 +41,7 @@ func TestEnsureUTF8_AlreadyValid(t *testing.T) {
 }
 
 func TestEnsureUTF8_Windows1252(t *testing.T) {
-	enc := testutil.EncodedSamples
+	enc := testutil.EncodedSamples()
 	runEncodingTests(t, []encodingCase{
 		{"smart single quote (right)", enc.Win1252_SmartQuoteRight, "Rand\u2019s Opponent"},
 		{"en dash", enc.Win1252_EnDash, "2020 \u2013 2024"},
@@ -54,7 +54,7 @@ func TestEnsureUTF8_Windows1252(t *testing.T) {
 }
 
 func TestEnsureUTF8_Latin1(t *testing.T) {
-	enc := testutil.EncodedSamples
+	enc := testutil.EncodedSamples()
 	runEncodingTests(t, []encodingCase{
 		{"o with acute", enc.Latin1_OAcute, "Miró - Picasso"},
 		{"c with cedilla", enc.Latin1_CCedilla, "Garçon"},
@@ -69,7 +69,7 @@ func TestEnsureUTF8_AsianEncodings(t *testing.T) {
 	// ensureUTF8 relies on chardet heuristics without charset hints. Short
 	// byte sequences from CJK encodings are typically misidentified, so we
 	// can only assert valid UTF-8 output (not exact decoded strings).
-	enc := testutil.EncodedSamples
+	enc := testutil.EncodedSamples()
 	tests := []struct {
 		name  string
 		input []byte
