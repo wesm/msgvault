@@ -5,7 +5,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	_ "github.com/marcboeker/go-duckdb"
 	_ "github.com/mattn/go-sqlite3"
@@ -530,32 +529,13 @@ func TestDuckDBEngine_AggregateByRecipient(t *testing.T) {
 		t.Fatalf("AggregateByRecipient: %v", err)
 	}
 
-	// Expected recipients from test data:
-	// - bob@company.org: to in msgs 1,2,3 = 3 messages
-	// - carol@example.com: to in msg 1 = 1 message
-	// - alice@example.com: to in msgs 4,5 = 2 messages
-	// - dan@other.net: cc in msg 2 = 1 message (THIS TESTS CC INCLUSION)
-
-	if len(results) != 4 {
-		t.Errorf("expected 4 recipients, got %d", len(results))
-		for _, r := range results {
-			t.Logf("  %s: %d", r.Key, r.Count)
-		}
-	}
-
-	// Verify bob@company.org has the highest count
-	if len(results) > 0 && results[0].Key != "bob@company.org" {
-		t.Errorf("expected bob@company.org first (highest count), got %s", results[0].Key)
-	}
-	if len(results) > 0 && results[0].Count != 3 {
-		t.Errorf("expected bob@company.org count 3, got %d", results[0].Count)
-	}
-
-	// Verify dan@other.net is included (cc recipient)
-	dan := requireAggregateRow(t, results, "dan@other.net")
-	if dan.Count != 1 {
-		t.Errorf("expected dan@other.net count 1, got %d", dan.Count)
-	}
+	// Expected recipients from test data (includes cc):
+	assertAggregateCounts(t, results, map[string]int64{
+		"bob@company.org":   3, // to in msgs 1,2,3
+		"carol@example.com": 1, // to in msg 1
+		"alice@example.com": 2, // to in msgs 4,5
+		"dan@other.net":     1, // cc in msg 2
+	})
 }
 
 // TestDuckDBEngine_AggregateByRecipient_SearchFiltersOnKey verifies that
@@ -675,17 +655,10 @@ func TestDuckDBEngine_AggregateBySender(t *testing.T) {
 		t.Fatalf("AggregateBySender: %v", err)
 	}
 
-	// Expected: alice@example.com (3 msgs), bob@company.org (2 msgs)
-	if len(results) != 2 {
-		t.Errorf("expected 2 senders, got %d", len(results))
-	}
-
-	if len(results) > 0 && results[0].Key != "alice@example.com" {
-		t.Errorf("expected alice@example.com first, got %s", results[0].Key)
-	}
-	if len(results) > 0 && results[0].Count != 3 {
-		t.Errorf("expected alice count 3, got %d", results[0].Count)
-	}
+	assertAggregateCounts(t, results, map[string]int64{
+		"alice@example.com": 3,
+		"bob@company.org":   2,
+	})
 }
 
 func TestDuckDBEngine_AggregateBySenderName(t *testing.T) {
@@ -696,19 +669,10 @@ func TestDuckDBEngine_AggregateBySenderName(t *testing.T) {
 		t.Fatalf("AggregateBySenderName: %v", err)
 	}
 
-	// Expected: "Alice" (3 msgs), "Bob" (2 msgs) - display_name from participants
-	if len(results) != 2 {
-		t.Errorf("expected 2 sender names, got %d", len(results))
-	}
-
-	alice := requireAggregateRow(t, results, "Alice")
-	if alice.Count != 3 {
-		t.Errorf("expected Alice count 3, got %d", alice.Count)
-	}
-	bob := requireAggregateRow(t, results, "Bob")
-	if bob.Count != 2 {
-		t.Errorf("expected Bob count 2, got %d", bob.Count)
-	}
+	assertAggregateCounts(t, results, map[string]int64{
+		"Alice": 3,
+		"Bob":   2,
+	})
 }
 
 func TestDuckDBEngine_SubAggregateBySenderName(t *testing.T) {
@@ -764,7 +728,7 @@ func TestDuckDBEngine_GetGmailIDsByFilter_SenderName(t *testing.T) {
 
 func TestDuckDBEngine_AggregateBySenderName_EmptyStringFallback(t *testing.T) {
 	// Build Parquet data with an empty-string and whitespace display_name
-	analyticsDir, cleanup := newParquetBuilder(t).
+	engine := createEngineFromBuilder(t, newParquetBuilder(t).
 		addTable("messages", "messages/year=2024", "data.parquet", messagesCols, `
 			(1::BIGINT, 1::BIGINT, 'msg1', 100::BIGINT, 'Hello', 'Snippet', TIMESTAMP '2024-01-15 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1),
 			(2::BIGINT, 1::BIGINT, 'msg2', 101::BIGINT, 'World', 'Snippet', TIMESTAMP '2024-01-16 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1)
@@ -782,15 +746,7 @@ func TestDuckDBEngine_AggregateBySenderName_EmptyStringFallback(t *testing.T) {
 		`).
 		addEmptyTable("labels", "labels", "labels.parquet", labelsCols, `(1::BIGINT, 'x')`).
 		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
-		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`).
-		build()
-	defer cleanup()
-
-	engine, err := NewDuckDBEngine(analyticsDir, "", nil)
-	if err != nil {
-		t.Fatalf("NewDuckDBEngine: %v", err)
-	}
-	defer engine.Close()
+		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`))
 
 	ctx := context.Background()
 	results, err := engine.AggregateBySenderName(ctx, DefaultAggregateOptions())
@@ -817,7 +773,7 @@ func TestDuckDBEngine_AggregateBySenderName_EmptyStringFallback(t *testing.T) {
 
 func TestDuckDBEngine_ListMessages_MatchEmptySenderName(t *testing.T) {
 	// Build Parquet data with a message that has no sender
-	analyticsDir, cleanup := newParquetBuilder(t).
+	engine := createEngineFromBuilder(t, newParquetBuilder(t).
 		addTable("messages", "messages/year=2024", "data.parquet", messagesCols, `
 			(1::BIGINT, 1::BIGINT, 'msg1', 100::BIGINT, 'Has Sender', 'Snippet', TIMESTAMP '2024-01-15 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1),
 			(2::BIGINT, 1::BIGINT, 'msg2', 101::BIGINT, 'No Sender', 'Snippet', TIMESTAMP '2024-01-16 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1)
@@ -833,15 +789,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptySenderName(t *testing.T) {
 		`).
 		addEmptyTable("labels", "labels", "labels.parquet", labelsCols, `(1::BIGINT, 'x')`).
 		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
-		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`).
-		build()
-	defer cleanup()
-
-	engine, err := NewDuckDBEngine(analyticsDir, "", nil)
-	if err != nil {
-		t.Fatalf("NewDuckDBEngine: %v", err)
-	}
-	defer engine.Close()
+		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`))
 
 	ctx := context.Background()
 	// msg2 has no 'from' recipient, so MatchEmptySenderName should find it
@@ -905,18 +853,11 @@ func TestDuckDBEngine_AggregateByLabel(t *testing.T) {
 		t.Fatalf("AggregateByLabel: %v", err)
 	}
 
-	// Expected: INBOX (5 msgs), Work (2 msgs), IMPORTANT (1 msg)
-	if len(results) != 3 {
-		t.Errorf("expected 3 labels, got %d", len(results))
-	}
-
-	// INBOX should be first with count 5
-	if len(results) > 0 && results[0].Key != "INBOX" {
-		t.Errorf("expected INBOX first, got %s", results[0].Key)
-	}
-	if len(results) > 0 && results[0].Count != 5 {
-		t.Errorf("expected INBOX count 5, got %d", results[0].Count)
-	}
+	assertAggregateCounts(t, results, map[string]int64{
+		"INBOX":     5,
+		"Work":      2,
+		"IMPORTANT": 1,
+	})
 }
 
 // TestDuckDBEngine_SubAggregateByRecipient verifies sub-aggregation includes cc.
@@ -966,40 +907,11 @@ func TestDuckDBEngine_AggregateByTime(t *testing.T) {
 		t.Fatalf("AggregateByTime: %v", err)
 	}
 
-	// Expected: 2024-01 (2 msgs), 2024-02 (2 msgs), 2024-03 (1 msg)
-	if len(results) != 3 {
-		t.Errorf("expected 3 time periods, got %d", len(results))
-	}
-
-	// Build map for exact key and count verification
-	expected := map[string]int64{
+	assertAggregateCounts(t, results, map[string]int64{
 		"2024-01": 2,
 		"2024-02": 2,
 		"2024-03": 1,
-	}
-
-	for _, r := range results {
-		// Verify format is YYYY-MM
-		if len(r.Key) != 7 || r.Key[4] != '-' {
-			t.Errorf("expected YYYY-MM format, got %q", r.Key)
-			continue
-		}
-		// Verify exact count
-		expectedCount, ok := expected[r.Key]
-		if !ok {
-			t.Errorf("unexpected time period: %q", r.Key)
-			continue
-		}
-		if r.Count != expectedCount {
-			t.Errorf("time period %q: expected count %d, got %d", r.Key, expectedCount, r.Count)
-		}
-		delete(expected, r.Key)
-	}
-
-	// Verify all expected periods were found
-	for key := range expected {
-		t.Errorf("missing expected time period: %q", key)
-	}
+	})
 }
 
 // TestDuckDBEngine_SearchFast verifies SearchFast with various query types,
@@ -1088,8 +1000,8 @@ func TestDuckDBEngine_ListMessages_DateFilter(t *testing.T) {
 	ctx := context.Background()
 
 	// Test data: msg1-3 Jan 2024, msg4 Feb 2024, msg5 Mar 2024
-	feb1 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
-	mar1 := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	feb1 := makeDate(2024, 2, 1)
+	mar1 := makeDate(2024, 3, 1)
 
 	// After Feb 1 (>=): msg3 (Feb 1 09:00), msg4 (Feb 15), msg5 (Mar 1) = 3
 	results, err := engine.ListMessages(ctx, MessageFilter{After: &feb1})
@@ -1149,8 +1061,7 @@ func TestDuckDBEngine_AggregateBySender_DateFilter(t *testing.T) {
 	ctx := context.Background()
 
 	// After Feb 1 (>=): msg3 from alice, msg4 from bob, msg5 from bob
-	// -> Alice: 1, Bob: 2
-	feb1 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	feb1 := makeDate(2024, 2, 1)
 	opts := DefaultAggregateOptions()
 	opts.After = &feb1
 
@@ -1159,17 +1070,10 @@ func TestDuckDBEngine_AggregateBySender_DateFilter(t *testing.T) {
 		t.Fatalf("AggregateBySender with After: %v", err)
 	}
 
-	if len(results) != 2 {
-		t.Errorf("expected 2 senders after Feb 1, got %d", len(results))
-	}
-	bob := requireAggregateRow(t, results, "bob@company.org")
-	if bob.Count != 2 {
-		t.Errorf("expected bob count 2, got %d", bob.Count)
-	}
-	alice := requireAggregateRow(t, results, "alice@example.com")
-	if alice.Count != 1 {
-		t.Errorf("expected alice count 1, got %d", alice.Count)
-	}
+	assertAggregateCounts(t, results, map[string]int64{
+		"alice@example.com": 1,
+		"bob@company.org":   2,
+	})
 }
 
 // TestDuckDBEngine_SubAggregate_DateFilter verifies CAST(? AS TIMESTAMP) in SubAggregate.
@@ -1177,7 +1081,7 @@ func TestDuckDBEngine_SubAggregate_DateFilter(t *testing.T) {
 	engine := newParquetEngine(t)
 	ctx := context.Background()
 
-	feb1 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	feb1 := makeDate(2024, 2, 1)
 	filter := MessageFilter{Sender: "alice@example.com"}
 	opts := DefaultAggregateOptions()
 	opts.After = &feb1
@@ -1216,7 +1120,7 @@ func TestDuckDBEngine_AggregateByDomain_DateFilter(t *testing.T) {
 	engine := newParquetEngine(t)
 	ctx := context.Background()
 
-	feb1 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	feb1 := makeDate(2024, 2, 1)
 	opts := DefaultAggregateOptions()
 	opts.After = &feb1
 
@@ -2025,30 +1929,12 @@ func TestDuckDBEngine_AggregateByRecipientName(t *testing.T) {
 		t.Fatalf("AggregateByRecipientName: %v", err)
 	}
 
-	// Expected: Bob (msgs 1,2,3=3), Alice (msgs 4,5=2), Carol (msg 1=1), Dan (msg 2 cc=1)
-	if len(results) != 4 {
-		t.Errorf("expected 4 recipient names, got %d", len(results))
-		for _, r := range results {
-			t.Logf("  key=%q count=%d", r.Key, r.Count)
-		}
-	}
-
-	bob := requireAggregateRow(t, results, "Bob")
-	if bob.Count != 3 {
-		t.Errorf("expected Bob count 3, got %d", bob.Count)
-	}
-	alice := requireAggregateRow(t, results, "Alice")
-	if alice.Count != 2 {
-		t.Errorf("expected Alice count 2, got %d", alice.Count)
-	}
-	carol := requireAggregateRow(t, results, "Carol")
-	if carol.Count != 1 {
-		t.Errorf("expected Carol count 1, got %d", carol.Count)
-	}
-	dan := requireAggregateRow(t, results, "Dan")
-	if dan.Count != 1 {
-		t.Errorf("expected Dan count 1, got %d", dan.Count)
-	}
+	assertAggregateCounts(t, results, map[string]int64{
+		"Bob":   3, // msgs 1,2,3
+		"Alice": 2, // msgs 4,5
+		"Carol": 1, // msg 1
+		"Dan":   1, // msg 2 cc
+	})
 }
 
 func TestDuckDBEngine_SubAggregateByRecipientName(t *testing.T) {
@@ -2105,7 +1991,7 @@ func TestDuckDBEngine_GetGmailIDsByFilter_RecipientName(t *testing.T) {
 
 func TestDuckDBEngine_AggregateByRecipientName_EmptyStringFallback(t *testing.T) {
 	// Build Parquet data with empty-string and whitespace display_names on recipients
-	analyticsDir, cleanup := newParquetBuilder(t).
+	engine := createEngineFromBuilder(t, newParquetBuilder(t).
 		addTable("messages", "messages/year=2024", "data.parquet", messagesCols, `
 			(1::BIGINT, 1::BIGINT, 'msg1', 100::BIGINT, 'Hello', 'Snippet', TIMESTAMP '2024-01-15 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1),
 			(2::BIGINT, 1::BIGINT, 'msg2', 101::BIGINT, 'World', 'Snippet', TIMESTAMP '2024-01-16 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1)
@@ -2126,15 +2012,7 @@ func TestDuckDBEngine_AggregateByRecipientName_EmptyStringFallback(t *testing.T)
 		`).
 		addEmptyTable("labels", "labels", "labels.parquet", labelsCols, `(1::BIGINT, 'x')`).
 		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
-		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`).
-		build()
-	defer cleanup()
-
-	engine, err := NewDuckDBEngine(analyticsDir, "", nil)
-	if err != nil {
-		t.Fatalf("NewDuckDBEngine: %v", err)
-	}
-	defer engine.Close()
+		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`))
 
 	ctx := context.Background()
 	results, err := engine.AggregateByRecipientName(ctx, DefaultAggregateOptions())
@@ -2161,7 +2039,7 @@ func TestDuckDBEngine_AggregateByRecipientName_EmptyStringFallback(t *testing.T)
 
 func TestDuckDBEngine_ListMessages_MatchEmptyRecipientName(t *testing.T) {
 	// Build Parquet data with a message that has no recipients
-	analyticsDir, cleanup := newParquetBuilder(t).
+	engine := createEngineFromBuilder(t, newParquetBuilder(t).
 		addTable("messages", "messages/year=2024", "data.parquet", messagesCols, `
 			(1::BIGINT, 1::BIGINT, 'msg1', 100::BIGINT, 'Has Recipient', 'Snippet', TIMESTAMP '2024-01-15 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1),
 			(2::BIGINT, 1::BIGINT, 'msg2', 101::BIGINT, 'No Recipient', 'Snippet', TIMESTAMP '2024-01-16 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1)
@@ -2179,15 +2057,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptyRecipientName(t *testing.T) {
 		`).
 		addEmptyTable("labels", "labels", "labels.parquet", labelsCols, `(1::BIGINT, 'x')`).
 		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
-		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`).
-		build()
-	defer cleanup()
-
-	engine, err := NewDuckDBEngine(analyticsDir, "", nil)
-	if err != nil {
-		t.Fatalf("NewDuckDBEngine: %v", err)
-	}
-	defer engine.Close()
+		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`))
 
 	ctx := context.Background()
 	filter := MessageFilter{MatchEmptyRecipientName: true}

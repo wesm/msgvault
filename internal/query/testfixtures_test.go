@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/marcboeker/go-duckdb"
 )
@@ -141,3 +142,44 @@ const (
 	messageLabelsCols     = "message_id, label_id"
 	attachmentsCols       = "message_id, size, filename"
 )
+
+// createEngineFromBuilder builds Parquet files from the builder and returns a
+// DuckDBEngine. Cleanup is registered via t.Cleanup.
+func createEngineFromBuilder(t *testing.T, pb *parquetBuilder) *DuckDBEngine {
+	t.Helper()
+	analyticsDir, cleanup := pb.build()
+	t.Cleanup(cleanup)
+	engine, err := NewDuckDBEngine(analyticsDir, "", nil)
+	if err != nil {
+		t.Fatalf("NewDuckDBEngine: %v", err)
+	}
+	t.Cleanup(func() { engine.Close() })
+	return engine
+}
+
+// assertAggregateCounts verifies that every key in want exists in got with the
+// expected count, and that there are no extra rows.
+func assertAggregateCounts(t *testing.T, got []AggregateRow, want map[string]int64) {
+	t.Helper()
+	gotMap := make(map[string]int64, len(got))
+	for _, r := range got {
+		gotMap[r.Key] = r.Count
+	}
+	for key, wantCount := range want {
+		if gotCount, ok := gotMap[key]; !ok {
+			t.Errorf("missing expected key %q", key)
+		} else if gotCount != wantCount {
+			t.Errorf("key %q: got count %d, want %d", key, gotCount, wantCount)
+		}
+	}
+	for _, r := range got {
+		if _, ok := want[r.Key]; !ok {
+			t.Errorf("unexpected key %q (count=%d)", r.Key, r.Count)
+		}
+	}
+}
+
+// makeDate creates a time.Time for the given year, month, day in UTC with zero time.
+func makeDate(year, month, day int) time.Time {
+	return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+}
