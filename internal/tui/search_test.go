@@ -380,12 +380,6 @@ func TestSearchPaginationUpdatesContextStats(t *testing.T) {
 // from the selected row is preserved when searchResultsMsg arrives.
 // This is the fix for the bug where drilling down into a sender after search
 // caused TotalSize and AttachmentCount to disappear from the header.
-
-// TestSearchResultsPreservesDrillDownContextStats verifies that when drilling down
-// from a search-filtered aggregate, contextStats (TotalSize, AttachmentCount) set
-// from the selected row is preserved when searchResultsMsg arrives.
-// This is the fix for the bug where drilling down into a sender after search
-// caused TotalSize and AttachmentCount to disappear from the header.
 func TestSearchResultsPreservesDrillDownContextStats(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
 	model.level = levelAggregates
@@ -432,9 +426,6 @@ func TestSearchResultsPreservesDrillDownContextStats(t *testing.T) {
 
 // TestSearchResultsWithoutDrillDownContextStats verifies that when searching
 // without a drill-down context, contextStats is created with only MessageCount.
-
-// TestSearchResultsWithoutDrillDownContextStats verifies that when searching
-// without a drill-down context, contextStats is created with only MessageCount.
 func TestSearchResultsWithoutDrillDownContextStats(t *testing.T) {
 	model := newTestModelAtLevel(levelMessageList)
 	model.searchRequestID = 1
@@ -462,9 +453,6 @@ func TestSearchResultsWithoutDrillDownContextStats(t *testing.T) {
 		t.Errorf("expected AttachmentCount=0 without drill-down, got %d", m.contextStats.AttachmentCount)
 	}
 }
-
-// TestAggregateSearchFilterSetsContextStats verifies contextStats is calculated from
-// filtered aggregate rows when a search filter is active.
 
 // TestAggregateSearchFilterSetsContextStats verifies contextStats is calculated from
 // filtered aggregate rows when a search filter is active.
@@ -496,10 +484,6 @@ func TestAggregateSearchFilterSetsContextStats(t *testing.T) {
 		t.Errorf("contextStats.AttachmentCount = %d, want %d", m.contextStats.AttachmentCount, wantAttachments)
 	}
 }
-
-// TestAggregateSearchFilterUsesFilteredStats verifies that contextStats uses
-// the filteredStats from the query (distinct message count) rather than summing
-// row counts, which would overcount for 1:N views like Recipients and Labels.
 
 // TestAggregateSearchFilterUsesFilteredStats verifies that contextStats uses
 // the filteredStats from the query (distinct message count) rather than summing
@@ -538,9 +522,6 @@ func TestAggregateSearchFilterUsesFilteredStats(t *testing.T) {
 
 // TestAggregateNoSearchFilterClearsContextStats verifies contextStats is cleared
 // when no search filter is active at aggregate level.
-
-// TestAggregateNoSearchFilterClearsContextStats verifies contextStats is cleared
-// when no search filter is active at aggregate level.
 func TestAggregateNoSearchFilterClearsContextStats(t *testing.T) {
 	model := newTestModelAtLevel(levelAggregates).
 		withAggregateRequestID(1).
@@ -558,9 +539,6 @@ func TestAggregateNoSearchFilterClearsContextStats(t *testing.T) {
 		t.Error("expected contextStats to be nil when no search filter at aggregate level")
 	}
 }
-
-// TestSubAggregateSearchFilterSetsContextStats verifies contextStats is calculated
-// at sub-aggregate level when search filter is active.
 
 // TestSubAggregateSearchFilterSetsContextStats verifies contextStats is calculated
 // at sub-aggregate level when search filter is active.
@@ -594,9 +572,6 @@ func TestSubAggregateSearchFilterSetsContextStats(t *testing.T) {
 
 // TestHeaderViewShowsFilteredStatsOnSearch verifies the header shows contextStats
 // when search filter is active at aggregate level.
-
-// TestHeaderViewShowsFilteredStatsOnSearch verifies the header shows contextStats
-// when search filter is active at aggregate level.
 func TestHeaderViewShowsFilteredStatsOnSearch(t *testing.T) {
 	filteredStats := &query.TotalStats{MessageCount: 42, TotalSize: 12345, AttachmentCount: 7}
 	globalStats := &query.TotalStats{MessageCount: 1000, TotalSize: 999999, AttachmentCount: 100}
@@ -616,9 +591,6 @@ func TestHeaderViewShowsFilteredStatsOnSearch(t *testing.T) {
 		t.Errorf("header should not show global stats (1000 msgs) when search filter active")
 	}
 }
-
-// TestDrillDownWithSearchQueryClearsSearch verifies that drilling down from a
-// filtered aggregate clears the search query (layered search: each level independent).
 
 // TestDrillDownWithSearchQueryClearsSearch verifies that drilling down from a
 // filtered aggregate clears the search query (layered search: each level independent).
@@ -658,9 +630,6 @@ func TestDrillDownWithSearchQueryClearsSearch(t *testing.T) {
 
 // TestDrillDownWithoutSearchQueryUsesLoadMessages verifies that drilling down
 // without a search filter uses loadMessages (not search).
-
-// TestDrillDownWithoutSearchQueryUsesLoadMessages verifies that drilling down
-// without a search filter uses loadMessages (not search).
 func TestDrillDownWithoutSearchQueryUsesLoadMessages(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
 	model.level = levelAggregates
@@ -688,9 +657,6 @@ func TestDrillDownWithoutSearchQueryUsesLoadMessages(t *testing.T) {
 		t.Error("expected a command to be returned")
 	}
 }
-
-// TestSubAggregateDrillDownWithSearchQueryClearsSearch verifies drill-down from
-// sub-aggregate also clears the search query (layered search).
 
 // TestSubAggregateDrillDownWithSearchQueryClearsSearch verifies drill-down from
 // sub-aggregate also clears the search query (layered search).
@@ -731,9 +697,6 @@ func TestSubAggregateDrillDownWithSearchQueryClearsSearch(t *testing.T) {
 
 // TestDrillDownSearchBreadcrumbRoundTrip verifies that searching at aggregate level,
 // drilling down (which clears search), then pressing Esc restores the original search.
-
-// TestDrillDownSearchBreadcrumbRoundTrip verifies that searching at aggregate level,
-// drilling down (which clears search), then pressing Esc restores the original search.
 func TestDrillDownSearchBreadcrumbRoundTrip(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
 	model.level = levelAggregates
@@ -768,9 +731,6 @@ func TestDrillDownSearchBreadcrumbRoundTrip(t *testing.T) {
 
 // TestDrillDownClearsHighlightTerms verifies that highlightTerms produces no
 // highlighting after drill-down (since searchQuery is empty).
-
-// TestDrillDownClearsHighlightTerms verifies that highlightTerms produces no
-// highlighting after drill-down (since searchQuery is empty).
 func TestDrillDownClearsHighlightTerms(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
 	model.level = levelAggregates
@@ -787,9 +747,6 @@ func TestDrillDownClearsHighlightTerms(t *testing.T) {
 		t.Errorf("expected no highlighting after drill-down, got %q", result)
 	}
 }
-
-// TestSubAggregateDrillDownSearchBreadcrumbRoundTrip verifies the breadcrumb
-// round-trip through a sub-aggregate drill-down with active search.
 
 // TestSubAggregateDrillDownSearchBreadcrumbRoundTrip verifies the breadcrumb
 // round-trip through a sub-aggregate drill-down with active search.
@@ -819,10 +776,6 @@ func TestSubAggregateDrillDownSearchBreadcrumbRoundTrip(t *testing.T) {
 		t.Errorf("expected searchQuery restored to %q, got %q", "urgent", m2.searchQuery)
 	}
 }
-
-// TestStaleSearchResponseIgnoredAfterDrillDown verifies that a search response
-// from the aggregate level is ignored after drill-down because searchRequestID
-// was incremented.
 
 // TestStaleSearchResponseIgnoredAfterDrillDown verifies that a search response
 // from the aggregate level is ignored after drill-down because searchRequestID
@@ -861,9 +814,6 @@ func TestStaleSearchResponseIgnoredAfterDrillDown(t *testing.T) {
 		t.Errorf("expected message ID 100 (original), got %d", m2.messages[0].ID)
 	}
 }
-
-// TestPreSearchSnapshotRestoreOnEsc verifies that activating inline search at the
-// message list level snapshots state, and Esc restores it instantly without re-query.
 
 // TestPreSearchSnapshotRestoreOnEsc verifies that activating inline search at the
 // message list level snapshots state, and Esc restores it instantly without re-query.
@@ -942,9 +892,6 @@ func TestPreSearchSnapshotRestoreOnEsc(t *testing.T) {
 		t.Error("expected preSearchMessages cleared after restore")
 	}
 }
-
-// TestTwoStepEscClearsSearchThenGoesBack verifies that the first Esc clears
-// the inner search and the second Esc navigates back via goBack.
 
 // TestTwoStepEscClearsSearchThenGoesBack verifies that the first Esc clears
 // the inner search and the second Esc navigates back via goBack.

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -367,6 +368,60 @@ func keyHome() tea.KeyMsg {
 // makeRow creates an AggregateRow with the given key and count.
 func makeRow(key string, count int) query.AggregateRow {
 	return query.AggregateRow{Key: key, Count: int64(count)}
+}
+
+// makeRows creates n AggregateRows with sequential keys ("row-0", "row-1", ...).
+func makeRows(n int) []query.AggregateRow {
+	rows := make([]query.AggregateRow, n)
+	for i := range rows {
+		rows[i] = query.AggregateRow{
+			Key:   fmt.Sprintf("row-%d", i),
+			Count: int64((i + 1) * 10),
+		}
+	}
+	return rows
+}
+
+// makeMessages creates n MessageSummary values with sequential IDs and subjects.
+func makeMessages(n int) []query.MessageSummary {
+	msgs := make([]query.MessageSummary, n)
+	for i := range msgs {
+		msgs[i] = query.MessageSummary{
+			ID:      int64(i + 1),
+			Subject: fmt.Sprintf("Subject %d", i+1),
+		}
+	}
+	return msgs
+}
+
+// assertDrillState checks level, drill filter field, and that a command was returned.
+func assertDrillState(t *testing.T, m Model, wantLevel viewLevel, wantFilterField, wantFilterValue string) {
+	t.Helper()
+	if m.level != wantLevel {
+		t.Errorf("level: got %v, want %v", m.level, wantLevel)
+	}
+	var got string
+	switch wantFilterField {
+	case "Sender":
+		got = m.drillFilter.Sender
+	case "Recipient":
+		got = m.drillFilter.Recipient
+	case "SenderName":
+		got = m.drillFilter.SenderName
+	case "RecipientName":
+		got = m.drillFilter.RecipientName
+	case "Domain":
+		got = m.drillFilter.Domain
+	case "Label":
+		got = m.drillFilter.Label
+	case "TimePeriod":
+		got = m.drillFilter.TimePeriod
+	default:
+		t.Fatalf("unknown filter field %q", wantFilterField)
+	}
+	if got != wantFilterValue {
+		t.Errorf("drillFilter.%s: got %q, want %q", wantFilterField, got, wantFilterValue)
+	}
 }
 
 // assertSelected checks that the given key is selected.

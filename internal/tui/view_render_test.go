@@ -12,12 +12,7 @@ import (
 
 // TestPositionDisplayInMessageList verifies position shows cursor/total correctly.
 func TestPositionDisplayInMessageList(t *testing.T) {
-	msgs := make([]query.MessageSummary, 100)
-	for i := 0; i < 100; i++ {
-		msgs[i] = query.MessageSummary{ID: int64(i + 1), Subject: fmt.Sprintf("Test %d", i+1)}
-	}
-
-	model := NewBuilder().WithMessages(msgs...).
+	model := NewBuilder().WithMessages(makeMessages(100)...).
 		WithPageSize(20).WithSize(100, 30).
 		WithLevel(levelMessageList).Build()
 	model.cursor = 49 // 50th message
@@ -87,12 +82,7 @@ func TestContextStatsShowsZeroAttachmentCount(t *testing.T) {
 // TestPositionShowsTotalFromContextStats verifies footer shows "N of M" when total > loaded.
 func TestPositionShowsTotalFromContextStats(t *testing.T) {
 	// Create 100 loaded messages but contextStats says 500 total
-	messages := make([]query.MessageSummary, 100)
-	for i := range messages {
-		messages[i] = query.MessageSummary{ID: int64(i + 1), Subject: fmt.Sprintf("Msg %d", i+1)}
-	}
-
-	model := NewBuilder().WithMessages(messages...).
+	model := NewBuilder().WithMessages(makeMessages(100)...).
 		WithPageSize(20).WithSize(100, 30).
 		WithLevel(levelMessageList).
 		WithContextStats(&query.TotalStats{MessageCount: 500}).
@@ -112,12 +102,7 @@ func TestPositionShowsTotalFromContextStats(t *testing.T) {
 
 // TestPositionShowsLoadedCountWhenAllLoaded verifies footer shows "N/M" when all loaded.
 func TestPositionShowsLoadedCountWhenAllLoaded(t *testing.T) {
-	messages := make([]query.MessageSummary, 50)
-	for i := range messages {
-		messages[i] = query.MessageSummary{ID: int64(i + 1)}
-	}
-
-	model := NewBuilder().WithMessages(messages...).
+	model := NewBuilder().WithMessages(makeMessages(50)...).
 		WithPageSize(20).WithSize(100, 30).
 		WithLevel(levelMessageList).
 		WithContextStats(&query.TotalStats{MessageCount: 50}).
@@ -134,12 +119,7 @@ func TestPositionShowsLoadedCountWhenAllLoaded(t *testing.T) {
 
 // TestPositionShowsLoadedCountWhenNoContextStats verifies footer falls back to loaded count.
 func TestPositionShowsLoadedCountWhenNoContextStats(t *testing.T) {
-	messages := make([]query.MessageSummary, 75)
-	for i := range messages {
-		messages[i] = query.MessageSummary{ID: int64(i + 1)}
-	}
-
-	model := NewBuilder().WithMessages(messages...).
+	model := NewBuilder().WithMessages(makeMessages(75)...).
 		WithPageSize(20).WithSize(100, 30).
 		WithLevel(levelMessageList).Build()
 	model.cursor = 49
@@ -158,16 +138,8 @@ func TestPositionShowsLoadedCountWhenNoContextStats(t *testing.T) {
 
 // TestPositionShowsLoadedCountWhenContextStatsSmaller verifies loaded count is used when
 // contextStats.MessageCount is smaller than loaded (edge case, shouldn't normally happen).
-
-// TestPositionShowsLoadedCountWhenContextStatsSmaller verifies loaded count is used when
-// contextStats.MessageCount is smaller than loaded (edge case, shouldn't normally happen).
 func TestPositionShowsLoadedCountWhenContextStatsSmaller(t *testing.T) {
-	messages := make([]query.MessageSummary, 100)
-	for i := range messages {
-		messages[i] = query.MessageSummary{ID: int64(i + 1)}
-	}
-
-	model := NewBuilder().WithMessages(messages...).
+	model := NewBuilder().WithMessages(makeMessages(100)...).
 		WithPageSize(20).WithSize(100, 30).
 		WithLevel(levelMessageList).
 		WithContextStats(&query.TotalStats{MessageCount: 50}).
@@ -185,17 +157,9 @@ func TestPositionShowsLoadedCountWhenContextStatsSmaller(t *testing.T) {
 
 // TestPositionUsesGlobalStatsForAllMessagesView verifies footer uses global stats
 // when in "All Messages" view (allMessages=true, contextStats=nil).
-
-// TestPositionUsesGlobalStatsForAllMessagesView verifies footer uses global stats
-// when in "All Messages" view (allMessages=true, contextStats=nil).
 func TestPositionUsesGlobalStatsForAllMessagesView(t *testing.T) {
 	// Simulate 500 messages loaded (the limit)
-	messages := make([]query.MessageSummary, 500)
-	for i := range messages {
-		messages[i] = query.MessageSummary{ID: int64(i + 1)}
-	}
-
-	model := NewBuilder().WithMessages(messages...).
+	model := NewBuilder().WithMessages(makeMessages(500)...).
 		WithPageSize(20).WithSize(100, 30).
 		WithLevel(levelMessageList).
 		WithStats(&query.TotalStats{MessageCount: 175000}).
@@ -498,10 +462,6 @@ func TestViewStructureHasTitleBarFirst(t *testing.T) {
 // TestViewFitsTerminalHeight verifies View() output fits exactly in terminal height
 // when pageSize is calculated via WindowSizeMsg. This catches bugs where header
 // line count changes but pageSize calculation isn't updated.
-
-// TestViewFitsTerminalHeight verifies View() output fits exactly in terminal height
-// when pageSize is calculated via WindowSizeMsg. This catches bugs where header
-// line count changes but pageSize calculation isn't updated.
 func TestViewFitsTerminalHeight(t *testing.T) {
 	rows := []query.AggregateRow{
 		{Key: "alice@example.com", Count: 100, TotalSize: 500000},
@@ -625,9 +585,6 @@ func TestViewFitsTerminalHeightAtMessageList(t *testing.T) {
 
 // TestViewFitsTerminalHeightStartupSequence simulates the real startup sequence
 // to verify line counts at each stage of initialization.
-
-// TestViewFitsTerminalHeightStartupSequence simulates the real startup sequence
-// to verify line counts at each stage of initialization.
 func TestViewFitsTerminalHeightStartupSequence(t *testing.T) {
 	terminalHeight := 40
 	terminalWidth := 100
@@ -701,9 +658,6 @@ func truncateTestString(s string, max int) string {
 	}
 	return s[:max] + "..."
 }
-
-// TestViewFitsTerminalHeightWithBadData verifies View() handles data with
-// embedded newlines or other problematic characters without adding extra lines.
 
 // TestViewFitsTerminalHeightWithBadData verifies View() handles data with
 // embedded newlines or other problematic characters without adding extra lines.
@@ -880,9 +834,6 @@ func TestViewLineByLineAnalysis(t *testing.T) {
 
 // TestHeaderLineFitsWidth verifies the header line2 doesn't exceed terminal width
 // even when breadcrumb + stats are very long.
-
-// TestHeaderLineFitsWidth verifies the header line2 doesn't exceed terminal width
-// even when breadcrumb + stats are very long.
 func TestHeaderLineFitsWidth(t *testing.T) {
 	rows := []query.AggregateRow{
 		{Key: "alice@example.com", Count: 100, TotalSize: 500000},
@@ -918,9 +869,6 @@ func TestHeaderLineFitsWidth(t *testing.T) {
 
 // TestFooterShowsTotalUniqueWhenAvailable verifies that the footer shows
 // "N of M" format when TotalUnique is set and greater than loaded rows.
-
-// TestFooterShowsTotalUniqueWhenAvailable verifies that the footer shows
-// "N of M" format when TotalUnique is set and greater than loaded rows.
 func TestFooterShowsTotalUniqueWhenAvailable(t *testing.T) {
 	// Set up rows with TotalUnique set (simulating a query that returns more rows than loaded)
 	rows := []query.AggregateRow{
@@ -942,9 +890,6 @@ func TestFooterShowsTotalUniqueWhenAvailable(t *testing.T) {
 		t.Errorf("Footer should show '1 of 1000' when TotalUnique (1000) > loaded rows (2), got: %q", footer)
 	}
 }
-
-// TestFooterShowsLoadedCountWhenNoTotalUnique verifies that the footer falls back
-// to showing loaded count when TotalUnique is not set (zero value).
 
 // TestFooterShowsLoadedCountWhenNoTotalUnique verifies that the footer falls back
 // to showing loaded count when TotalUnique is not set (zero value).

@@ -661,9 +661,6 @@ func TestGKeyInSubAggregate(t *testing.T) {
 
 // TestGKeyInMessageListWithDrillFilter verifies 'g' switches to sub-aggregate view
 // when there's a drill filter.
-
-// TestGKeyInMessageListWithDrillFilter verifies 'g' switches to sub-aggregate view
-// when there's a drill filter.
 func TestGKeyInMessageListWithDrillFilter(t *testing.T) {
 	model := NewBuilder().
 		WithMessages(
@@ -694,9 +691,6 @@ func TestGKeyInMessageListWithDrillFilter(t *testing.T) {
 
 // TestTKeyInMessageListJumpsToTimeSubGroup verifies that pressing 't' in a
 // drilled-down message list enters sub-grouping with ViewTime.
-
-// TestTKeyInMessageListJumpsToTimeSubGroup verifies that pressing 't' in a
-// drilled-down message list enters sub-grouping with ViewTime.
 func TestTKeyInMessageListJumpsToTimeSubGroup(t *testing.T) {
 	model := NewBuilder().
 		WithMessages(
@@ -718,9 +712,6 @@ func TestTKeyInMessageListJumpsToTimeSubGroup(t *testing.T) {
 		t.Errorf("expected viewType=ViewTime after 't', got %v", m.viewType)
 	}
 }
-
-// TestTKeyInMessageListFromTimeDrillIsNoop verifies that pressing 't' when
-// the drill dimension is already Time is a no-op (avoids redundant sub-aggregate).
 
 // TestTKeyInMessageListFromTimeDrillIsNoop verifies that pressing 't' when
 // the drill dimension is already Time is a no-op (avoids redundant sub-aggregate).
@@ -747,9 +738,6 @@ func TestTKeyInMessageListFromTimeDrillIsNoop(t *testing.T) {
 
 // TestTKeyInMessageListNoDrillFilterIsNoop verifies that 't' does nothing
 // in message list without a drill filter.
-
-// TestTKeyInMessageListNoDrillFilterIsNoop verifies that 't' does nothing
-// in message list without a drill filter.
 func TestTKeyInMessageListNoDrillFilterIsNoop(t *testing.T) {
 	model := NewBuilder().
 		WithMessages(
@@ -764,9 +752,6 @@ func TestTKeyInMessageListNoDrillFilterIsNoop(t *testing.T) {
 		t.Errorf("expected level unchanged at levelMessageList, got %v", m.level)
 	}
 }
-
-// TestNextSubGroupViewSkipsSenderNames verifies that drilling from Senders
-// skips SenderNames (redundant) and goes straight to Recipients.
 
 // TestNextSubGroupViewSkipsSenderNames verifies that drilling from Senders
 // skips SenderNames (redundant) and goes straight to Recipients.
@@ -790,9 +775,6 @@ func TestNextSubGroupViewSkipsSenderNames(t *testing.T) {
 
 // TestNextSubGroupViewSkipsRecipientNames verifies that drilling from Recipients
 // skips RecipientNames (redundant) and goes straight to Domains.
-
-// TestNextSubGroupViewSkipsRecipientNames verifies that drilling from Recipients
-// skips RecipientNames (redundant) and goes straight to Domains.
 func TestNextSubGroupViewSkipsRecipientNames(t *testing.T) {
 	model := NewBuilder().
 		WithMessages(
@@ -813,9 +795,6 @@ func TestNextSubGroupViewSkipsRecipientNames(t *testing.T) {
 
 // TestNextSubGroupViewFromSenderNamesKeepsRecipients verifies that drilling from
 // SenderNames goes to Recipients (name→email sub-grouping is useful).
-
-// TestNextSubGroupViewFromSenderNamesKeepsRecipients verifies that drilling from
-// SenderNames goes to Recipients (name→email sub-grouping is useful).
 func TestNextSubGroupViewFromSenderNamesKeepsRecipients(t *testing.T) {
 	model := NewBuilder().
 		WithMessages(
@@ -833,9 +812,6 @@ func TestNextSubGroupViewFromSenderNamesKeepsRecipients(t *testing.T) {
 		t.Errorf("expected sub-group from SenderNames to be Recipients, got %v", m.viewType)
 	}
 }
-
-// TestNextSubGroupViewFromRecipientNamesKeepsDomains verifies that drilling from
-// RecipientNames goes to Domains.
 
 // TestNextSubGroupViewFromRecipientNamesKeepsDomains verifies that drilling from
 // RecipientNames goes to Domains.
@@ -1198,15 +1174,8 @@ func TestViewTypeRestoredAfterEscFromSubAggregate(t *testing.T) {
 // TestCursorScrollPreservedAfterGoBack verifies cursor and scroll are preserved
 // when navigating back. With view caching, data is restored from cache instantly
 // without requiring a reload.
-
-// TestCursorScrollPreservedAfterGoBack verifies cursor and scroll are preserved
-// when navigating back. With view caching, data is restored from cache instantly
-// without requiring a reload.
 func TestCursorScrollPreservedAfterGoBack(t *testing.T) {
-	rows := make([]query.AggregateRow, 10)
-	for i := range rows {
-		rows[i] = query.AggregateRow{Key: fmt.Sprintf("sender%d@example.com", i), Count: int64(i)}
-	}
+	rows := makeRows(10)
 	model := NewBuilder().WithRows(rows...).WithViewType(query.ViewSenders).Build()
 	model.cursor = 5
 	model.scrollOffset = 3
@@ -1272,9 +1241,6 @@ func TestGoBackClearsError(t *testing.T) {
 		t.Errorf("expected err=nil after goBack, got %v", m.err)
 	}
 }
-
-// TestDrillFilterPreservedAfterMessageDetail verifies drillFilter is preserved
-// when navigating back from message detail to message list.
 
 // TestDrillFilterPreservedAfterMessageDetail verifies drillFilter is preserved
 // when navigating back from message detail to message list.
@@ -1430,9 +1396,6 @@ func TestDetailNavigationAtBoundary(t *testing.T) {
 
 // TestDetailNavigationHLKeys verifies h/l keys also work for prev/next.
 // h=left=prev (lower index), l=right=next (higher index).
-
-// TestDetailNavigationHLKeys verifies h/l keys also work for prev/next.
-// h=left=prev (lower index), l=right=next (higher index).
 func TestDetailNavigationHLKeys(t *testing.T) {
 	model := NewBuilder().
 		WithMessages(
@@ -1509,9 +1472,6 @@ func TestDetailNavigationOutOfBoundsIndex(t *testing.T) {
 
 // TestDetailNavigationCursorPreservedOnGoBack verifies cursor position is preserved
 // when returning to message list after navigating in detail view.
-
-// TestDetailNavigationCursorPreservedOnGoBack verifies cursor position is preserved
-// when returning to message list after navigating in detail view.
 func TestDetailNavigationCursorPreservedOnGoBack(t *testing.T) {
 	model := NewBuilder().
 		WithMessages(
@@ -1550,10 +1510,6 @@ func TestDetailNavigationCursorPreservedOnGoBack(t *testing.T) {
 		t.Errorf("expected cursor=2 (preserved from navigation), got %d", m.cursor)
 	}
 }
-
-// TestDetailNavigationFromThreadView verifies that left/right navigation in detail view
-// uses threadMessages (not messages) when entered from thread view, and keeps
-// threadCursor and threadScrollOffset in sync.
 
 // TestDetailNavigationFromThreadView verifies that left/right navigation in detail view
 // uses threadMessages (not messages) when entered from thread view, and keeps
@@ -2159,9 +2115,6 @@ func TestSenderNamesDrillDown(t *testing.T) {
 
 // TestSenderNamesDrillDownEmptyKey verifies drilling into an empty sender name
 // sets MatchEmptySenderName.
-
-// TestSenderNamesDrillDownEmptyKey verifies drilling into an empty sender name
-// sets MatchEmptySenderName.
 func TestSenderNamesDrillDownEmptyKey(t *testing.T) {
 	rows := []query.AggregateRow{
 		{Key: "", Count: 3},
@@ -2217,9 +2170,6 @@ func TestSenderNamesBreadcrumbPrefix(t *testing.T) {
 
 // TestShiftTabCyclesSenderNames verifies shift+tab cycles backward through
 // SenderNames in the correct order.
-
-// TestShiftTabCyclesSenderNames verifies shift+tab cycles backward through
-// SenderNames in the correct order.
 func TestShiftTabCyclesSenderNames(t *testing.T) {
 	model := NewBuilder().
 		WithRows(query.AggregateRow{Key: "test", Count: 1}).
@@ -2232,9 +2182,6 @@ func TestShiftTabCyclesSenderNames(t *testing.T) {
 		t.Errorf("expected ViewSenders after shift+tab from SenderNames, got %v", m.viewType)
 	}
 }
-
-// TestSubAggregateFromSenderNames verifies that drilling from SenderNames
-// and then tabbing skips SenderNames in the sub-aggregate cycle.
 
 // TestSubAggregateFromSenderNames verifies that drilling from SenderNames
 // and then tabbing skips SenderNames in the sub-aggregate cycle.
@@ -2269,9 +2216,6 @@ func TestSubAggregateFromSenderNames(t *testing.T) {
 
 // TestHasDrillFilterWithSenderName verifies hasDrillFilter returns true
 // for SenderName and MatchEmptySenderName.
-
-// TestHasDrillFilterWithSenderName verifies hasDrillFilter returns true
-// for SenderName and MatchEmptySenderName.
 func TestHasDrillFilterWithSenderName(t *testing.T) {
 	model := NewBuilder().
 		WithRows(query.AggregateRow{Key: "test", Count: 1}).
@@ -2287,9 +2231,6 @@ func TestHasDrillFilterWithSenderName(t *testing.T) {
 		t.Error("expected hasDrillFilter=true for MatchEmptySenderName")
 	}
 }
-
-// TestSenderNamesBreadcrumbRoundTrip verifies that drilling into a sender name,
-// navigating to message detail, and going back preserves the SenderName filter.
 
 // TestSenderNamesBreadcrumbRoundTrip verifies that drilling into a sender name,
 // navigating to message detail, and going back preserves the SenderName filter.
@@ -2672,10 +2613,6 @@ func TestTKeyNoOpInSubAggregateWhenDrillIsTime(t *testing.T) {
 		t.Error("expected loading=false (no-op)")
 	}
 }
-
-// TestLoadDataSetsGroupByInStatsOpts verifies that loadData passes the current
-// viewType as GroupBy in StatsOptions when search is active. This ensures the
-// DuckDB engine searches the correct key columns for 1:N views.
 
 // TestLoadDataSetsGroupByInStatsOpts verifies that loadData passes the current
 // viewType as GroupBy in StatsOptions when search is active. This ensures the
