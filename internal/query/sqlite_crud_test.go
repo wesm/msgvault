@@ -157,23 +157,17 @@ func TestGetTotalStats(t *testing.T) {
 func TestGetTotalStatsWithSourceID(t *testing.T) {
 	env := newTestEnv(t)
 
-	_, err := env.DB.Exec(`
-		INSERT INTO sources (id, source_type, identifier, display_name) VALUES
-			(2, 'gmail', 'other@gmail.com', 'Other Account');
-
-		INSERT INTO labels (id, source_id, source_label_id, name, label_type) VALUES
-			(4, 2, 'INBOX', 'INBOX', 'system'),
-			(5, 2, 'personal', 'Personal', 'user');
-
-		INSERT INTO conversations (id, source_id, source_conversation_id, conversation_type, title) VALUES
-			(2, 2, 'thread2', 'email_thread', 'Other Thread');
-
-		INSERT INTO messages (id, conversation_id, source_id, source_message_id, message_type, sent_at, subject, size_estimate, has_attachments, attachment_count) VALUES
-			(6, 2, 2, 'msg6', 'email', '2024-01-20 10:00:00', 'Other msg', 500, 0, 0);
-	`)
-	if err != nil {
-		t.Fatalf("insert second account: %v", err)
-	}
+	src2 := env.AddSource(sourceOpts{Identifier: "other@gmail.com", DisplayName: "Other Account"})
+	env.AddLabel(labelOpts{SourceID: src2, SourceLabelID: "INBOX", Name: "INBOX", Type: "system"})
+	env.AddLabel(labelOpts{SourceID: src2, SourceLabelID: "personal", Name: "Personal"})
+	conv2 := env.AddConversation(conversationOpts{SourceID: src2, Title: "Other Thread"})
+	env.AddMessage(messageOpts{
+		SourceID:       src2,
+		ConversationID: conv2,
+		Subject:        "Other msg",
+		SentAt:         "2024-01-20 10:00:00",
+		SizeEstimate:   500,
+	})
 
 	allStats := env.MustGetTotalStats(StatsOptions{})
 
@@ -451,23 +445,23 @@ func TestGetGmailIDsByFilter_SenderName(t *testing.T) {
 func TestListMessages_ConversationIDFilter(t *testing.T) {
 	env := newTestEnv(t)
 
-	_, err := env.DB.Exec(`
-		INSERT INTO conversations (id, source_id, source_conversation_id, conversation_type, title) VALUES
-			(2, 1, 'thread2', 'email_thread', 'Second Thread');
-
-		INSERT INTO messages (id, conversation_id, source_id, source_message_id, message_type, sent_at, subject, snippet, size_estimate, has_attachments) VALUES
-			(10, 2, 1, 'msg10', 'email', '2024-04-01 10:00:00', 'Thread 2 Message 1', 'Thread 2 preview 1', 100, 0),
-			(11, 2, 1, 'msg11', 'email', '2024-04-02 11:00:00', 'Thread 2 Message 2', 'Thread 2 preview 2', 200, 0);
-
-		INSERT INTO message_recipients (message_id, participant_id, recipient_type, display_name) VALUES
-			(10, 1, 'from', 'Alice'),
-			(10, 2, 'to', 'Bob'),
-			(11, 2, 'from', 'Bob'),
-			(11, 1, 'to', 'Alice');
-	`)
-	if err != nil {
-		t.Fatalf("insert second conversation: %v", err)
-	}
+	conv2 := env.AddConversation(conversationOpts{SourceID: 1, Title: "Second Thread"})
+	env.AddMessage(messageOpts{
+		ConversationID: conv2,
+		Subject:        "Thread 2 Message 1",
+		SentAt:         "2024-04-01 10:00:00",
+		SizeEstimate:   100,
+		FromID:         1, // Alice
+		ToIDs:          []int64{2}, // Bob
+	})
+	env.AddMessage(messageOpts{
+		ConversationID: conv2,
+		Subject:        "Thread 2 Message 2",
+		SentAt:         "2024-04-02 11:00:00",
+		SizeEstimate:   200,
+		FromID:         2, // Bob
+		ToIDs:          []int64{1}, // Alice
+	})
 
 	convID1 := int64(1)
 	messages1 := env.MustListMessages(MessageFilter{ConversationID: &convID1})
@@ -482,21 +476,20 @@ func TestListMessages_ConversationIDFilter(t *testing.T) {
 		}
 	}
 
-	convID2 := int64(2)
-	messages2 := env.MustListMessages(MessageFilter{ConversationID: &convID2})
+	messages2 := env.MustListMessages(MessageFilter{ConversationID: &conv2})
 
 	if len(messages2) != 2 {
 		t.Errorf("expected 2 messages in conversation 2, got %d", len(messages2))
 	}
 
 	for _, msg := range messages2 {
-		if msg.ConversationID != 2 {
-			t.Errorf("expected conversation_id=2, got %d for message %d", msg.ConversationID, msg.ID)
+		if msg.ConversationID != conv2 {
+			t.Errorf("expected conversation_id=%d, got %d for message %d", conv2, msg.ConversationID, msg.ID)
 		}
 	}
 
 	filter2Asc := MessageFilter{
-		ConversationID: &convID2,
+		ConversationID: &conv2,
 		SortField:      MessageSortByDate,
 		SortDirection:  SortAsc,
 	}

@@ -19,8 +19,9 @@ type testEnv struct {
 	T      *testing.T
 
 	// Auto-increment counters for builder helpers.
-	nextParticipantID int64
-	nextMessageID     int64
+	nextParticipantID    int64
+	nextMessageID        int64
+	nextConversationSeq  int64
 }
 
 // newTestEnv creates a test environment with an in-memory SQLite database and test data.
@@ -271,6 +272,108 @@ func setupTestDB(t *testing.T) *sql.DB {
 // Test data builder helpers
 // ---------------------------------------------------------------------------
 
+// sourceOpts configures a source to insert.
+type sourceOpts struct {
+	Identifier  string // defaults to "other@gmail.com"
+	DisplayName string // defaults to "Other Account"
+	Type        string // defaults to "gmail"
+}
+
+// AddSource inserts a source and returns its ID.
+func (e *testEnv) AddSource(opts sourceOpts) int64 {
+	e.T.Helper()
+	if opts.Type == "" {
+		opts.Type = "gmail"
+	}
+	if opts.Identifier == "" {
+		opts.Identifier = "other@gmail.com"
+	}
+	if opts.DisplayName == "" {
+		opts.DisplayName = "Other Account"
+	}
+	var id int64
+	res, err := e.DB.Exec(
+		`INSERT INTO sources (source_type, identifier, display_name) VALUES (?, ?, ?)`,
+		opts.Type, opts.Identifier, opts.DisplayName,
+	)
+	if err != nil {
+		e.T.Fatalf("AddSource: %v", err)
+	}
+	id, _ = res.LastInsertId()
+	return id
+}
+
+// conversationOpts configures a conversation to insert.
+type conversationOpts struct {
+	SourceID int64  // required
+	Title    string // defaults to "Test Thread"
+}
+
+// AddConversation inserts a conversation and returns its ID.
+func (e *testEnv) AddConversation(opts conversationOpts) int64 {
+	e.T.Helper()
+	if opts.SourceID == 0 {
+		opts.SourceID = 1
+	}
+	if opts.Title == "" {
+		opts.Title = "Test Thread"
+	}
+	e.nextConversationSeq++
+	sourceConvID := fmt.Sprintf("thread_%d_%d", opts.SourceID, e.nextConversationSeq)
+	res, err := e.DB.Exec(
+		`INSERT INTO conversations (source_id, source_conversation_id, conversation_type, title) VALUES (?, ?, 'email_thread', ?)`,
+		opts.SourceID, sourceConvID, opts.Title,
+	)
+	if err != nil {
+		e.T.Fatalf("AddConversation: %v", err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+// labelOpts configures a label to insert.
+type labelOpts struct {
+	SourceID      int64  // defaults to 1
+	SourceLabelID string // defaults to Name
+	Name          string // required
+	Type          string // defaults to "user"
+}
+
+// AddLabel inserts a label and returns its ID.
+func (e *testEnv) AddLabel(opts labelOpts) int64 {
+	e.T.Helper()
+	if opts.SourceID == 0 {
+		opts.SourceID = 1
+	}
+	if opts.Type == "" {
+		opts.Type = "user"
+	}
+	if opts.SourceLabelID == "" {
+		opts.SourceLabelID = opts.Name
+	}
+	res, err := e.DB.Exec(
+		`INSERT INTO labels (source_id, source_label_id, name, label_type) VALUES (?, ?, ?, ?)`,
+		opts.SourceID, opts.SourceLabelID, opts.Name, opts.Type,
+	)
+	if err != nil {
+		e.T.Fatalf("AddLabel: %v", err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+// AddMessageLabel associates a message with a label.
+func (e *testEnv) AddMessageLabel(messageID, labelID int64) {
+	e.T.Helper()
+	_, err := e.DB.Exec(
+		`INSERT INTO message_labels (message_id, label_id) VALUES (?, ?)`,
+		messageID, labelID,
+	)
+	if err != nil {
+		e.T.Fatalf("AddMessageLabel: %v", err)
+	}
+}
+
 // participantOpts configures a participant to insert.
 type participantOpts struct {
 	Email       *string // nil = NULL; use strPtr("x") for a value
@@ -313,6 +416,8 @@ type messageOpts struct {
 	FromID         int64   // participant ID for 'from' recipient; 0 = no from
 	ToIDs          []int64 // participant IDs for 'to' recipients
 	CcIDs          []int64 // participant IDs for 'cc' recipients
+	SourceID       int64   // defaults to 1 if 0
+	ConversationID int64   // defaults to 1 if 0
 }
 
 // AddMessage inserts a message with its from/to/cc recipients and returns the message ID.
@@ -331,9 +436,18 @@ func (e *testEnv) AddMessage(opts messageOpts) int64 {
 		size = 100
 	}
 
+	convID := opts.ConversationID
+	if convID == 0 {
+		convID = 1
+	}
+	srcID := opts.SourceID
+	if srcID == 0 {
+		srcID = 1
+	}
+
 	_, err := e.DB.Exec(
-		`INSERT INTO messages (id, conversation_id, source_id, source_message_id, message_type, sent_at, subject, snippet, size_estimate, has_attachments) VALUES (?, 1, 1, ?, 'email', ?, ?, 'test', ?, ?)`,
-		id, sourceMessageID, sentAt, opts.Subject, size, opts.HasAttachments,
+		`INSERT INTO messages (id, conversation_id, source_id, source_message_id, message_type, sent_at, subject, snippet, size_estimate, has_attachments) VALUES (?, ?, ?, ?, 'email', ?, ?, 'test', ?, ?)`,
+		id, convID, srcID, sourceMessageID, sentAt, opts.Subject, size, opts.HasAttachments,
 	)
 	if err != nil {
 		e.T.Fatalf("AddMessage: %v", err)
