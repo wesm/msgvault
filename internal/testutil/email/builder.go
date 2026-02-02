@@ -24,7 +24,8 @@ type MessageBuilder struct {
 	date        string
 	contentType string
 	body        string
-	headers     map[string]string
+	headerKeys  []string
+	headerVals  []string
 	attachments []Attachment
 	boundary    string
 	crlf        bool // if true, use \r\n line endings
@@ -40,7 +41,8 @@ func NewMessage() *MessageBuilder {
 		subject:  "Test Message",
 		body:     "This is a test message body.",
 		boundary: "boundary123",
-		headers:  make(map[string]string),
+		headerKeys: nil,
+		headerVals: nil,
 	}
 }
 
@@ -73,7 +75,8 @@ func (b *MessageBuilder) Body(v string) *MessageBuilder { b.body = v; return b }
 
 // Header adds an arbitrary header.
 func (b *MessageBuilder) Header(key, value string) *MessageBuilder {
-	b.headers[key] = value
+	b.headerKeys = append(b.headerKeys, key)
+	b.headerVals = append(b.headerVals, value)
 	return b
 }
 
@@ -117,8 +120,8 @@ func (b *MessageBuilder) Bytes() []byte {
 		s.WriteString("Date: " + b.date + nl)
 	}
 
-	for k, v := range b.headers {
-		s.WriteString(k + ": " + v + nl)
+	for i, k := range b.headerKeys {
+		s.WriteString(k + ": " + b.headerVals[i] + nl)
 	}
 
 	if len(b.attachments) > 0 {
