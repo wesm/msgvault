@@ -46,28 +46,16 @@ func runEncodingTests(t *testing.T, tests []encodingCase) {
 }
 
 func TestEnsureUTF8_AlreadyValid(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-	}{
-		{"ASCII", "Hello, World!"},
-		{"UTF-8 Chinese", "你好世界"},
-		{"UTF-8 Japanese", "こんにちは"},
-		{"UTF-8 Korean", "안녕하세요"},
-		{"UTF-8 Cyrillic", "Привет мир"},
-		{"UTF-8 mixed", "Hello 世界! Привет!"},
-		{"UTF-8 emoji", "Hello 👋 World 🌍"},
-		{"empty string", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := ensureUTF8(tt.input)
-			if result != tt.input {
-				t.Errorf("ensureUTF8(%q) = %q, want unchanged", tt.input, result)
-			}
-		})
-	}
+	runEncodingTests(t, []encodingCase{
+		{"ASCII", []byte("Hello, World!"), "Hello, World!"},
+		{"UTF-8 Chinese", []byte("你好世界"), "你好世界"},
+		{"UTF-8 Japanese", []byte("こんにちは"), "こんにちは"},
+		{"UTF-8 Korean", []byte("안녕하세요"), "안녕하세요"},
+		{"UTF-8 Cyrillic", []byte("Привет мир"), "Привет мир"},
+		{"UTF-8 mixed", []byte("Hello 世界! Привет!"), "Hello 世界! Привет!"},
+		{"UTF-8 emoji", []byte("Hello 👋 World 🌍"), "Hello 👋 World 🌍"},
+		{"empty string", []byte(""), ""},
+	})
 }
 
 func TestEnsureUTF8_Windows1252(t *testing.T) {
@@ -94,14 +82,17 @@ func TestEnsureUTF8_Latin1(t *testing.T) {
 }
 
 func TestEnsureUTF8_AsianEncodings(t *testing.T) {
+	// ensureUTF8 relies on chardet heuristics without charset hints. Short
+	// byte sequences from CJK encodings are typically misidentified, so we
+	// can only assert valid UTF-8 output (not exact decoded strings).
 	tests := []struct {
 		name  string
 		input []byte
 	}{
-		{"Shift-JIS Japanese", []byte{0x82, 0xb1, 0x82, 0xf1, 0x82, 0xc9, 0x82, 0xbf, 0x82, 0xcd}},
-		{"GBK Simplified Chinese", []byte{0xc4, 0xe3, 0xba, 0xc3}},
-		{"Big5 Traditional Chinese", []byte{0xa9, 0x6f, 0xa6, 0x6e}},
-		{"EUC-KR Korean", []byte{0xbe, 0xc8, 0xb3, 0xe7}},
+		{"Shift-JIS Japanese", []byte{0x82, 0xb1, 0x82, 0xf1, 0x82, 0xc9, 0x82, 0xbf, 0x82, 0xcd}}, // こんにちは
+		{"GBK Simplified Chinese", []byte{0xc4, 0xe3, 0xba, 0xc3}},                                    // 你好
+		{"Big5 Traditional Chinese", []byte{0xa9, 0x6f, 0xa6, 0x6e}},                                   // 你好
+		{"EUC-KR Korean", []byte{0xbe, 0xc8, 0xb3, 0xe7}},                                              // 안녕
 	}
 
 	for _, tt := range tests {
