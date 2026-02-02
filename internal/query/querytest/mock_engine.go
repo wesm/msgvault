@@ -22,13 +22,18 @@ type MockEngine struct {
 	AggregateRows     []query.AggregateRow
 	GmailIDs          []string
 
+	// MessagesBySourceID maps source IDs to message details for GetMessageBySourceID.
+	// When nil, GetMessageBySourceID falls back to searching Messages by source ID.
+	MessagesBySourceID map[string]*query.MessageDetail
+
 	// Optional overrides — set these to customise behavior per-test.
-	SearchFastFunc      func(context.Context, *search.Query, query.MessageFilter, int, int) ([]query.MessageSummary, error)
-	SearchFunc          func(context.Context, *search.Query, int, int) ([]query.MessageSummary, error)
-	GetMessageFunc      func(context.Context, int64) (*query.MessageDetail, error)
-	GetTotalStatsFunc   func(context.Context, query.StatsOptions) (*query.TotalStats, error)
-	ListMessagesFunc    func(context.Context, query.MessageFilter) ([]query.MessageSummary, error)
-	SearchFastCountFunc func(context.Context, *search.Query, query.MessageFilter) (int64, error)
+	SearchFastFunc           func(context.Context, *search.Query, query.MessageFilter, int, int) ([]query.MessageSummary, error)
+	SearchFunc               func(context.Context, *search.Query, int, int) ([]query.MessageSummary, error)
+	GetMessageFunc           func(context.Context, int64) (*query.MessageDetail, error)
+	GetMessageBySourceIDFunc func(context.Context, string) (*query.MessageDetail, error)
+	GetTotalStatsFunc        func(context.Context, query.StatsOptions) (*query.TotalStats, error)
+	ListMessagesFunc         func(context.Context, query.MessageFilter) ([]query.MessageSummary, error)
+	SearchFastCountFunc      func(context.Context, *search.Query, query.MessageFilter) (int64, error)
 }
 
 // Compile-time check.
@@ -78,7 +83,15 @@ func (m *MockEngine) GetMessage(ctx context.Context, id int64) (*query.MessageDe
 	return nil, fmt.Errorf("not found")
 }
 
-func (m *MockEngine) GetMessageBySourceID(_ context.Context, _ string) (*query.MessageDetail, error) {
+func (m *MockEngine) GetMessageBySourceID(ctx context.Context, sourceID string) (*query.MessageDetail, error) {
+	if m.GetMessageBySourceIDFunc != nil {
+		return m.GetMessageBySourceIDFunc(ctx, sourceID)
+	}
+	if m.MessagesBySourceID != nil {
+		if msg, ok := m.MessagesBySourceID[sourceID]; ok {
+			return msg, nil
+		}
+	}
 	return nil, nil
 }
 
@@ -127,7 +140,7 @@ func (m *MockEngine) GetTotalStats(ctx context.Context, opts query.StatsOptions)
 	if m.Stats != nil {
 		return m.Stats, nil
 	}
-	return &query.TotalStats{}, nil
+	return nil, nil
 }
 
 func (m *MockEngine) Close() error { return nil }
