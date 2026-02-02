@@ -1002,174 +1002,67 @@ func TestDuckDBEngine_AggregateByTime(t *testing.T) {
 	}
 }
 
-// TestDuckDBEngine_SearchFast_Subject verifies searching by subject in Parquet.
-func TestDuckDBEngine_SearchFast_Subject(t *testing.T) {
-	engine := newParquetEngine(t)
-	results := searchFast(t, engine, "Hello", MessageFilter{})
-	assertSubjects(t, results, "Hello World", "Re: Hello")
-}
-
-// TestDuckDBEngine_SearchFast_Sender verifies searching by sender in Parquet.
-func TestDuckDBEngine_SearchFast_Sender(t *testing.T) {
-	engine := newParquetEngine(t)
-	results := searchFast(t, engine, "bob", MessageFilter{})
-
-	// Bob sent 2 messages (msg4, msg5) and received others
-	// Text search matches sender OR recipients, so all with bob in to_emails also match
-	if len(results) < 2 {
-		t.Errorf("expected at least 2 results for 'bob', got %d", len(results))
-	}
-
-	// Verify at least one result from bob
-	foundFromBob := false
-	for _, r := range results {
-		if r.FromEmail == "bob@company.org" {
-			foundFromBob = true
-			break
-		}
-	}
-	if !foundFromBob {
-		t.Error("expected at least one message from bob@company.org")
-	}
-}
-
-// TestDuckDBEngine_SearchFast_FromFilter verifies from: filter in Parquet.
-func TestDuckDBEngine_SearchFast_FromFilter(t *testing.T) {
-	engine := newParquetEngine(t)
-	results := searchFast(t, engine, "from:bob", MessageFilter{})
-
-	// Bob sent exactly 2 messages (msg4, msg5)
-	if len(results) != 2 {
-		t.Errorf("expected 2 results for 'from:bob', got %d", len(results))
-	}
-
-	for _, r := range results {
-		if r.FromEmail != "bob@company.org" {
-			t.Errorf("expected from bob@company.org, got %s", r.FromEmail)
-		}
-	}
-}
-
-// TestDuckDBEngine_SearchFast_LabelFilter verifies label: filter in Parquet.
-func TestDuckDBEngine_SearchFast_LabelFilter(t *testing.T) {
-	engine := newParquetEngine(t)
-	results := searchFast(t, engine, "label:Work", MessageFilter{})
-	// 2 messages have "Work" label (msg1, msg4)
-	if len(results) != 2 {
-		t.Errorf("expected 2 results for 'label:Work', got %d", len(results))
-	}
-}
-
-// TestDuckDBEngine_SearchFast_HasAttachment verifies has:attachment filter in Parquet.
-func TestDuckDBEngine_SearchFast_HasAttachment(t *testing.T) {
-	engine := newParquetEngine(t)
-	results := searchFast(t, engine, "has:attachment", MessageFilter{})
-
-	// 2 messages have attachments (msg2, msg4)
-	if len(results) != 2 {
-		t.Errorf("expected 2 results for 'has:attachment', got %d", len(results))
-	}
-
-	for _, r := range results {
-		if !r.HasAttachments {
-			t.Errorf("expected HasAttachments=true, got false for %s", r.Subject)
-		}
-	}
-}
-
-// TestDuckDBEngine_SearchFast_ContextFilter verifies search with context filter.
-func TestDuckDBEngine_SearchFast_ContextFilter(t *testing.T) {
-	engine := newParquetEngine(t)
-	results := searchFast(t, engine, "Hello", MessageFilter{Sender: "alice@example.com"})
-
-	// Alice sent 3 messages total, 2 of which have "Hello" in subject
-	if len(results) != 2 {
-		t.Errorf("expected 2 results for 'Hello' from alice, got %d", len(results))
-	}
-
-	for _, r := range results {
-		if r.FromEmail != "alice@example.com" {
-			t.Errorf("expected from alice@example.com, got %s", r.FromEmail)
-		}
-	}
-}
-
-// TestDuckDBEngine_SearchFast_RecipientContextFilter verifies search within messages
-// to a specific recipient.
-func TestDuckDBEngine_SearchFast_RecipientContextFilter(t *testing.T) {
+// TestDuckDBEngine_SearchFast verifies SearchFast with various query types,
+// filters, and context filters using table-driven subtests.
+func TestDuckDBEngine_SearchFast(t *testing.T) {
 	engine := newParquetEngine(t)
 
-	// Test data: bob is recipient in msgs 1,2,3 (to: bob+carol, to: bob, to: bob)
-	// msg1 = "Hello World", msg2 = "Re: Hello", msg3 = "Follow up"
-	// Search for "Hello" within messages to bob should find msg1 and msg2
-	results := searchFast(t, engine, "Hello", MessageFilter{Recipient: "bob@company.org"})
-	assertSubjects(t, results, "Hello World", "Re: Hello")
-}
-
-// TestDuckDBEngine_SearchFast_LabelContextFilter verifies search within messages
-// with a specific label.
-func TestDuckDBEngine_SearchFast_LabelContextFilter(t *testing.T) {
-	engine := newParquetEngine(t)
-
-	// Test data: Work label is on msgs 1,4 ("Hello World", "Question")
-	// Search for "Hello" within Work label should find only msg1
-	results := searchFast(t, engine, "Hello", MessageFilter{Label: "Work"})
-	assertSubjects(t, results, "Hello World")
-}
-
-// TestDuckDBEngine_SearchFast_DomainContextFilter verifies search within messages
-// from a specific domain using case-insensitive ILIKE.
-func TestDuckDBEngine_SearchFast_DomainContextFilter(t *testing.T) {
-	engine := newParquetEngine(t)
-
-	// Test data: example.com domain has alice (msgs 1,2,3)
-	// company.org domain has bob (msgs 4,5)
-	// Search for "Question" within company.org should find msg4
-	results := searchFast(t, engine, "Question", MessageFilter{Domain: "company.org"})
-	assertSubjects(t, results, "Question")
-
-	// Test case-insensitivity of domain filter (ILIKE)
-	results2 := searchFast(t, engine, "Hello", MessageFilter{Domain: "EXAMPLE.COM"})
-	assertSubjects(t, results2, "Hello World", "Re: Hello")
-}
-
-// TestDuckDBEngine_SearchFast_ToFilter verifies searching by recipient in Parquet.
-func TestDuckDBEngine_SearchFast_ToFilter(t *testing.T) {
-	engine := newParquetEngine(t)
-
-	// Search with to: filter - bob is in to_emails for msgs 1,2,3
-	results := searchFast(t, engine, "to:bob", MessageFilter{})
-	if len(results) != 3 {
-		t.Errorf("expected 3 results for 'to:bob', got %d", len(results))
-	}
-
-	// carol is in position 2 of to_emails for msg1 - should still be found
-	results2 := searchFast(t, engine, "to:carol", MessageFilter{})
-	assertSubjects(t, results2, "Hello World")
-}
-
-// TestDuckDBEngine_SearchFast_CaseInsensitive verifies case-insensitive search.
-func TestDuckDBEngine_SearchFast_CaseInsensitive(t *testing.T) {
-	engine := newParquetEngine(t)
-
-	// Search with different case
 	tests := []struct {
-		query    string
-		expected int
+		name         string
+		query        string
+		filter       MessageFilter
+		wantSubjects []string
 	}{
-		{"hello", 2}, // lowercase - matches "Hello World" and "Re: Hello"
-		{"HELLO", 2}, // uppercase
-		{"HeLLo", 2}, // mixed case
-		{"ALICE", 3}, // alice@example.com is sender of msgs 1,2,3 (text search only checks from, not to)
-		{"alice", 3}, // lowercase
+		// Subject search
+		{"Subject", "Hello", MessageFilter{}, []string{"Hello World", "Re: Hello"}},
+
+		// Operator filters
+		{"FromFilter", "from:bob", MessageFilter{}, []string{"Question", "Final"}},
+		{"LabelFilter", "label:Work", MessageFilter{}, []string{"Hello World", "Question"}},
+		{"HasAttachment", "has:attachment", MessageFilter{}, []string{"Re: Hello", "Question"}},
+		{"ToFilter_Bob", "to:bob", MessageFilter{}, []string{"Hello World", "Re: Hello", "Follow up"}},
+		{"ToFilter_Carol", "to:carol", MessageFilter{}, []string{"Hello World"}},
+
+		// Context filters (search + MessageFilter)
+		{"ContextFilter_SenderAlice", "Hello", MessageFilter{Sender: "alice@example.com"}, []string{"Hello World", "Re: Hello"}},
+		{"RecipientContextFilter", "Hello", MessageFilter{Recipient: "bob@company.org"}, []string{"Hello World", "Re: Hello"}},
+		{"LabelContextFilter", "Hello", MessageFilter{Label: "Work"}, []string{"Hello World"}},
+		{"DomainContextFilter", "Question", MessageFilter{Domain: "company.org"}, []string{"Question"}},
+		{"DomainContextFilter_CaseInsensitive", "Hello", MessageFilter{Domain: "EXAMPLE.COM"}, []string{"Hello World", "Re: Hello"}},
+
+		// Case-insensitive text search
+		{"CaseInsensitive_Lower", "hello", MessageFilter{}, []string{"Hello World", "Re: Hello"}},
+		{"CaseInsensitive_Upper", "HELLO", MessageFilter{}, []string{"Hello World", "Re: Hello"}},
+		{"CaseInsensitive_Mixed", "HeLLo", MessageFilter{}, []string{"Hello World", "Re: Hello"}},
+		{"CaseInsensitive_Sender_Upper", "ALICE", MessageFilter{}, []string{"Hello World", "Re: Hello", "Follow up"}},
+		{"CaseInsensitive_Sender_Lower", "alice", MessageFilter{}, []string{"Hello World", "Re: Hello", "Follow up"}},
 	}
 
-	for _, tc := range tests {
-		results := searchFast(t, engine, tc.query, MessageFilter{})
-		if len(results) != tc.expected {
-			t.Errorf("SearchFast(%q): expected %d results, got %d", tc.query, tc.expected, len(results))
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results := searchFast(t, engine, tt.query, tt.filter)
+			assertSubjects(t, results, tt.wantSubjects...)
+		})
 	}
+
+	// Sender text search: matches sender OR recipient fields, so verify minimum count
+	// and that at least one result is from bob
+	t.Run("SenderTextSearch", func(t *testing.T) {
+		results := searchFast(t, engine, "bob", MessageFilter{})
+		if len(results) < 2 {
+			t.Errorf("expected at least 2 results for 'bob', got %d", len(results))
+		}
+		foundFromBob := false
+		for _, r := range results {
+			if r.FromEmail == "bob@company.org" {
+				foundFromBob = true
+				break
+			}
+		}
+		if !foundFromBob {
+			t.Error("expected at least one message from bob@company.org")
+		}
+	})
 }
 
 // TestDuckDBEngine_ListMessages_DateFilter verifies that After/Before date filters
