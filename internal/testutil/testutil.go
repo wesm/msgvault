@@ -213,6 +213,10 @@ func PathTraversalCases() []PathTraversalCase {
 	} else {
 		cases = append(cases, PathTraversalCase{"absolute path", "/abs/path"})
 	}
+	// Forward-slash absolute paths are accepted by Windows APIs too.
+	if runtime.GOOS == "windows" {
+		cases = append(cases, PathTraversalCase{"forward-slash absolute path", "/abs/path"})
+	}
 	return cases
 }
 

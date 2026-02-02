@@ -100,6 +100,21 @@ func TestValidateRelativePath(t *testing.T) {
 	}
 }
 
+func TestPathTraversalCasesReturnsFreshSlice(t *testing.T) {
+	a := PathTraversalCases()
+	b := PathTraversalCases()
+
+	// Mutate the first slice and verify the second is unaffected.
+	if len(a) == 0 {
+		t.Fatal("PathTraversalCases() returned empty slice")
+	}
+	original := b[0].Name
+	a[0].Name = "MUTATED"
+	if b[0].Name != original {
+		t.Errorf("PathTraversalCases() returned shared slice: mutating one affected the other")
+	}
+}
+
 func TestWriteFileWithValidPaths(t *testing.T) {
 	dir := TempDir(t)
 
