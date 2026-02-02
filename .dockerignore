@@ -1,0 +1,48 @@
+# Git
+.git
+.gitignore
+
+# GitHub
+.github
+
+# Documentation (except README for reference)
+*.md
+!README.md
+
+# Project management
+.beads
+.projects
+
+# Build artifacts
+bin/
+dist/
+msgvault
+mimeshootout
+
+# Test files
+*_test.go
+testdata/
+*.test
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment and secrets
+.env
+.env.*
+*.pem
+*.key
+client_secret*.json
+
+# Temporary files
+tmp/
+*.tmp
+*.log

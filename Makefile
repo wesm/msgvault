@@ -12,7 +12,8 @@ LDFLAGS := -X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=$(VERSION) \
 
 LDFLAGS_RELEASE := $(LDFLAGS) -s -w
 
-.PHONY: build build-release install clean test test-v fmt lint tidy shootout run-shootout help
+.PHONY: build build-release install clean test test-v fmt lint tidy shootout run-shootout help \
+        docker-build docker-build-multi docker-run docker-clean
 
 # Build the binary (debug)
 build:
@@ -74,6 +75,36 @@ shootout:
 run-shootout: shootout
 	./mimeshootout -limit 1000
 
+# Build Docker image (local architecture)
+docker-build:
+	docker build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg BUILD_DATE=$(BUILD_DATE) \
+		-t msgvault:dev .
+
+# Build Docker image for multiple architectures (requires buildx)
+docker-build-multi:
+	docker buildx build \
+		--platform linux/amd64,linux/arm64 \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg BUILD_DATE=$(BUILD_DATE) \
+		-t msgvault:dev .
+
+# Run Docker container (interactive, for testing)
+docker-run:
+	docker run -it --rm \
+		-v $$(pwd)/data:/data \
+		-p 8080:8080 \
+		-e MSGVAULT_API_KEY=dev-key \
+		msgvault:dev serve
+
+# Clean Docker images
+docker-clean:
+	docker rmi msgvault:dev 2>/dev/null || true
+	docker rmi msgvault:test 2>/dev/null || true
+
 # Show help
 help:
 	@echo "msgvault build targets:"
@@ -88,6 +119,11 @@ help:
 	@echo "  lint           - Run linter"
 	@echo "  tidy           - Tidy go.mod"
 	@echo "  clean          - Remove build artifacts"
+	@echo ""
+	@echo "  docker-build       - Build Docker image (local arch)"
+	@echo "  docker-build-multi - Build multi-arch Docker image"
+	@echo "  docker-run         - Run Docker container (interactive)"
+	@echo "  docker-clean       - Remove Docker images"
 	@echo ""
 	@echo "  shootout       - Build MIME shootout tool"
 	@echo "  run-shootout   - Run MIME shootout"

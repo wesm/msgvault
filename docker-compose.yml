@@ -1,0 +1,65 @@
+# msgvault Docker Compose configuration
+#
+# Quick Start:
+#   1. Copy this file to your deployment directory
+#   2. Create data directory: mkdir -p data
+#   3. Set API key: export MSGVAULT_API_KEY=your-secret-key
+#   4. Start: docker-compose up -d
+#   5. Add account: docker-compose run msgvault add-account you@gmail.com --headless
+#
+# For Synology NAS:
+#   - Place in /volume1/docker/msgvault/
+#   - Use Container Manager to import this compose file
+#   - Map volume to /volume1/docker/msgvault/data
+
+services:
+  msgvault:
+    image: ghcr.io/econoben/msgvault:latest
+    container_name: msgvault
+
+    # Volume mounts for persistent data
+    volumes:
+      # Main data directory (database, attachments, analytics cache)
+      - ./data:/data
+      # Optional: mount config file separately
+      # - ./config.toml:/data/config.toml:ro
+
+    # Environment variables
+    environment:
+      # Data directory (inside container)
+      - MSGVAULT_HOME=/data
+      # Timezone (adjust to your location)
+      - TZ=${TZ:-America/New_York}
+      # API key for HTTP API authentication (required for serve mode)
+      - MSGVAULT_API_KEY=${MSGVAULT_API_KEY:-changeme}
+
+    # Port mapping (only needed when running 'serve' command)
+    ports:
+      - "8080:8080"
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Default command (serve mode with HTTP API)
+    # Override for one-off commands: docker-compose run msgvault <command>
+    command: ["serve"]
+
+# Example: Run specific commands
+#
+# Initialize database:
+#   docker-compose run --rm msgvault init-db
+#
+# Add Gmail account (headless OAuth):
+#   docker-compose run --rm msgvault add-account you@gmail.com --headless
+#
+# Manual sync:
+#   docker-compose run --rm msgvault sync you@gmail.com
+#
+# Full sync with date range:
+#   docker-compose run --rm msgvault sync-full you@gmail.com --after 2024-01-01
+#
+# View stats:
+#   docker-compose run --rm msgvault stats
+#
+# Search messages:
+#   docker-compose run --rm msgvault search "from:boss@company.com"
