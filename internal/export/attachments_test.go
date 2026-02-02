@@ -2,34 +2,58 @@ package export
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/query"
 )
 
-// tempPaths returns a zip file path and output directory using t.TempDir().
-func tempPaths(t *testing.T) (zipPath, outDir string) {
-	t.Helper()
-	return filepath.Join(t.TempDir(), "test.zip"), t.TempDir()
-}
-
-// att constructs a minimal AttachmentInfo for test fixtures.
-func att(filename, hash string) query.AttachmentInfo {
-	return query.AttachmentInfo{Filename: filename, ContentHash: hash}
-}
-
-func TestAttachments_ShortContentHash(t *testing.T) {
-	// ContentHash shorter than 2 chars should not panic
-	zipPath, outDir := tempPaths(t)
-	result := Attachments(zipPath, outDir, []query.AttachmentInfo{
-		att("file.txt", ""),
-		att("file2.txt", "a"),
-	})
-	if result.Err != nil {
-		t.Fatalf("unexpected error: %v", result.Err)
+func TestAttachments(t *testing.T) {
+	tests := []struct {
+		name         string
+		inputs       []query.AttachmentInfo
+		wantErr      bool
+		wantInResult string
+	}{
+		{
+			name:         "empty content hash is skipped",
+			inputs:       []query.AttachmentInfo{{Filename: "file.txt", ContentHash: ""}},
+			wantInResult: "file.txt: missing or invalid content hash",
+		},
+		{
+			name:         "single-char content hash is skipped",
+			inputs:       []query.AttachmentInfo{{Filename: "file2.txt", ContentHash: "a"}},
+			wantInResult: "file2.txt: missing or invalid content hash",
+		},
+		{
+			name: "mixed short hashes all reported",
+			inputs: []query.AttachmentInfo{
+				{Filename: "file.txt", ContentHash: ""},
+				{Filename: "file2.txt", ContentHash: "a"},
+			},
+			wantInResult: "No attachments exported",
+		},
+		{
+			name:         "nil inputs produces no panic",
+			inputs:       nil,
+			wantInResult: "No attachments exported",
+		},
 	}
-	// Should report errors for both, not panic
-	if result.Result == "" {
-		t.Error("expected non-empty result with error details")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			zipPath := filepath.Join(t.TempDir(), "test.zip")
+			outDir := t.TempDir()
+
+			result := Attachments(zipPath, outDir, tt.inputs)
+
+			if (result.Err != nil) != tt.wantErr {
+				t.Fatalf("Attachments() error = %v, wantErr %v", result.Err, tt.wantErr)
+			}
+
+			if tt.wantInResult != "" && !strings.Contains(result.Result, tt.wantInResult) {
+				t.Errorf("Attachments() result = %q, want substring %q", result.Result, tt.wantInResult)
+			}
+		})
 	}
 }
