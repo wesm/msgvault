@@ -1,6 +1,7 @@
 package mime
 
 import (
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -40,8 +41,13 @@ func makeRawEmail(opts emailOptions) []byte {
 		b.WriteString("Content-Type: " + opts.ContentType + "\r\n")
 	}
 
-	for k, v := range opts.Headers {
-		b.WriteString(k + ": " + v + "\r\n")
+	keys := make([]string, 0, len(opts.Headers))
+	for k := range opts.Headers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		b.WriteString(k + ": " + opts.Headers[k] + "\r\n")
 	}
 
 	b.WriteString("\r\n")
@@ -148,10 +154,12 @@ func TestExtractDomain(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := extractDomain(tc.email)
-		if got != tc.domain {
-			t.Errorf("extractDomain(%q) = %q, want %q", tc.email, got, tc.domain)
-		}
+		t.Run(tc.email, func(t *testing.T) {
+			got := extractDomain(tc.email)
+			if got != tc.domain {
+				t.Errorf("extractDomain(%q) = %q, want %q", tc.email, got, tc.domain)
+			}
+		})
 	}
 }
 
@@ -168,8 +176,10 @@ func TestParseReferences(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := parseReferences(tc.input)
-		assertStringSliceEqual(t, got, tc.want, "parseReferences("+tc.input+")")
+		t.Run(tc.input, func(t *testing.T) {
+			got := parseReferences(tc.input)
+			assertStringSliceEqual(t, got, tc.want, "parseReferences("+tc.input+")")
+		})
 	}
 }
 
@@ -194,19 +204,26 @@ func TestParseDate(t *testing.T) {
 	}
 
 	for _, tc := range validDates {
-		assertParseDateOK(t, tc.input)
+		t.Run("valid/"+tc.input, func(t *testing.T) {
+			assertParseDateOK(t, tc.input)
+		})
 	}
 
 	// Invalid/unparseable dates should return zero time without error
-	invalidDates := []string{
-		"",                // Empty
-		"not a date",      // Garbage
-		"2006-01-02",      // Date only, no time
-		"January 2, 2006", // Spelled out month
+	invalidDates := []struct {
+		name  string
+		input string
+	}{
+		{"empty", ""},
+		{"garbage", "not a date"},
+		{"date_only", "2006-01-02"},
+		{"spelled_month", "January 2, 2006"},
 	}
 
-	for _, input := range invalidDates {
-		assertParseDateZero(t, input)
+	for _, tc := range invalidDates {
+		t.Run("invalid/"+tc.name, func(t *testing.T) {
+			assertParseDateZero(t, tc.input)
+		})
 	}
 
 	// Verify parsed values are converted to UTC
