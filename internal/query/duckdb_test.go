@@ -1042,6 +1042,22 @@ func TestDuckDBEngine_SearchFast(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			results := searchFast(t, engine, tt.query, tt.filter)
 			assertSubjects(t, results, tt.wantSubjects...)
+
+			// Field-level assertions for specific cases
+			switch tt.name {
+			case "FromFilter":
+				for _, r := range results {
+					if r.FromEmail != "bob@company.org" {
+						t.Errorf("from:bob result has FromEmail=%q, want bob@company.org", r.FromEmail)
+					}
+				}
+			case "HasAttachment":
+				for _, r := range results {
+					if !r.HasAttachments {
+						t.Errorf("has:attachment result %q has HasAttachments=false", r.Subject)
+					}
+				}
+			}
 		})
 	}
 
