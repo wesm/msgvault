@@ -19,7 +19,7 @@ func StrPtr(s string) *string { return &s }
 // for seeding test data.
 type TestDB struct {
 	DB *sql.DB
-	T  *testing.T
+	T  testing.TB
 
 	nextParticipantID   int64
 	nextMessageID       int64
@@ -29,7 +29,7 @@ type TestDB struct {
 // NewTestDB creates an in-memory SQLite database with the production schema loaded.
 // schemaPath is the path to schema.sql (e.g. "../store/schema.sql" from the caller's package).
 // The FTS table is dropped so tests start without it by default.
-func NewTestDB(t *testing.T, schemaPath string) *TestDB {
+func NewTestDB(t testing.TB, schemaPath string) *TestDB {
 	t.Helper()
 
 	db, err := sql.Open("sqlite3", ":memory:")
@@ -326,10 +326,11 @@ func (tdb *TestDB) AddMessage(opts MessageOpts) int64 {
 	} else {
 		// Verify the provided SourceID matches the conversation's source_id.
 		var convSourceID int64
-		if err := tdb.DB.QueryRow(`SELECT source_id FROM conversations WHERE id = ?`, convID).Scan(&convSourceID); err == nil {
-			if convSourceID != srcID {
-				tdb.T.Fatalf("AddMessage: SourceID %d does not match conversation %d source_id %d", srcID, convID, convSourceID)
-			}
+		if err := tdb.DB.QueryRow(`SELECT source_id FROM conversations WHERE id = ?`, convID).Scan(&convSourceID); err != nil {
+			tdb.T.Fatalf("AddMessage: lookup source_id for conversation %d: %v", convID, err)
+		}
+		if convSourceID != srcID {
+			tdb.T.Fatalf("AddMessage: SourceID %d does not match conversation %d source_id %d", srcID, convID, convSourceID)
 		}
 	}
 
