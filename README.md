@@ -60,6 +60,7 @@ See the **[Setup Guide](https://msgvault.io/guides/oauth-setup/)** for step-by-s
 | `sync-incremental EMAIL` | Sync only new/changed messages |
 | `tui` | Launch the interactive TUI (`--account` to filter) |
 | `search QUERY` | Search messages (`--json` for machine output) |
+| `mcp` | Start the MCP server for AI assistant integration |
 | `stats` | Show archive statistics |
 | `verify EMAIL` | Verify archive integrity against Gmail |
 | `export-eml` | Export a message as `.eml` |
