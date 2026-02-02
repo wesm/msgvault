@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/query/querytest"
 )
 
 
@@ -918,44 +920,42 @@ func TestGKeyInMessageListNoDrillFilter(t *testing.T) {
 	}
 }
 
-// trackingMockEngine extends mockEngine to track GetTotalStats calls.
-
-// trackingMockEngine extends mockEngine to track GetTotalStats calls.
-type trackingMockEngine struct {
-	mockEngine
-	statsCallCount int
-	lastStatsOpts  query.StatsOptions
-	contextStats   *query.TotalStats // Stats to return (can be set per-test)
+// statsTracker records GetTotalStats calls on a querytest.MockEngine.
+type statsTracker struct {
+	callCount int
+	lastOpts  query.StatsOptions
+	result    *query.TotalStats // returned when non-nil; otherwise a default
 }
 
-
-func (t *trackingMockEngine) GetTotalStats(ctx context.Context, opts query.StatsOptions) (*query.TotalStats, error) {
-	t.statsCallCount++
-	t.lastStatsOpts = opts
-	if t.contextStats != nil {
-		return t.contextStats, nil
+// install wires the tracker into eng.GetTotalStatsFunc.
+func (st *statsTracker) install(eng *querytest.MockEngine) {
+	eng.GetTotalStatsFunc = func(_ context.Context, opts query.StatsOptions) (*query.TotalStats, error) {
+		st.callCount++
+		st.lastOpts = opts
+		if st.result != nil {
+			return st.result, nil
+		}
+		return &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}, nil
 	}
-	return &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}, nil
 }
 
 // TestStatsUpdateOnDrillDown verifies stats are reloaded when drilling into a subgroup.
 
 // TestStatsUpdateOnDrillDown verifies stats are reloaded when drilling into a subgroup.
 func TestStatsUpdateOnDrillDown(t *testing.T) {
-	engine := &trackingMockEngine{
-		mockEngine: mockEngine{
-			rows: []query.AggregateRow{
-				{Key: "alice@example.com", Count: 100, TotalSize: 500000},
-				{Key: "bob@example.com", Count: 50, TotalSize: 250000},
-			},
-			messages: []query.MessageSummary{
-				{ID: 1, Subject: "Test"},
-			},
+	engine := newMockEngine(
+		[]query.AggregateRow{
+			{Key: "alice@example.com", Count: 100, TotalSize: 500000},
+			{Key: "bob@example.com", Count: 50, TotalSize: 250000},
 		},
-	}
+		[]query.MessageSummary{{ID: 1, Subject: "Test"}},
+		nil, nil,
+	)
+	tracker := &statsTracker{}
+	tracker.install(engine)
 
 	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
-	model.rows = engine.rows
+	model.rows = engine.AggregateRows
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
@@ -1053,18 +1053,14 @@ func TestHomeKeyGoesToTop(t *testing.T) {
 
 // TestContextStatsSetOnDrillDown verifies contextStats is set from selected row.
 func TestContextStatsSetOnDrillDown(t *testing.T) {
-	engine := &mockEngine{
-		rows: []query.AggregateRow{
-			{Key: "alice@example.com", Count: 100, TotalSize: 500000, AttachmentSize: 100000},
-			{Key: "bob@example.com", Count: 50, TotalSize: 250000, AttachmentSize: 50000},
-		},
-		messages: []query.MessageSummary{
-			{ID: 1, Subject: "Test"},
-		},
+	rows := []query.AggregateRow{
+		{Key: "alice@example.com", Count: 100, TotalSize: 500000, AttachmentSize: 100000},
+		{Key: "bob@example.com", Count: 50, TotalSize: 250000, AttachmentSize: 50000},
 	}
+	engine := newMockEngine(rows, []query.MessageSummary{{ID: 1, Subject: "Test"}}, nil, nil)
 
 	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
-	model.rows = engine.rows
+	model.rows = rows
 	model.pageSize = 10
 	model.width = 100
 	model.height = 20
@@ -2739,14 +2735,14 @@ func TestTKeyNoOpInSubAggregateWhenDrillIsTime(t *testing.T) {
 // viewType as GroupBy in StatsOptions when search is active. This ensures the
 // DuckDB engine searches the correct key columns for 1:N views.
 func TestLoadDataSetsGroupByInStatsOpts(t *testing.T) {
-	engine := &trackingMockEngine{
-		mockEngine: mockEngine{
-			rows: []query.AggregateRow{
-				{Key: "bob@example.com", Count: 10, TotalSize: 5000},
-			},
+	engine := newMockEngine(
+		[]query.AggregateRow{
+			{Key: "bob@example.com", Count: 10, TotalSize: 5000},
 		},
-		contextStats: &query.TotalStats{MessageCount: 10, TotalSize: 5000},
-	}
+		nil, nil, nil,
+	)
+	tracker := &statsTracker{result: &query.TotalStats{MessageCount: 10, TotalSize: 5000}}
+	tracker.install(engine)
 
 	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.viewType = query.ViewRecipients
@@ -2763,14 +2759,14 @@ func TestLoadDataSetsGroupByInStatsOpts(t *testing.T) {
 	msg := cmd()
 
 	// The command should have called GetTotalStats with GroupBy=ViewRecipients
-	if engine.statsCallCount == 0 {
+	if tracker.callCount == 0 {
 		t.Fatal("expected GetTotalStats to be called during loadData with search active")
 	}
-	if engine.lastStatsOpts.GroupBy != query.ViewRecipients {
-		t.Errorf("expected StatsOptions.GroupBy=ViewRecipients, got %v", engine.lastStatsOpts.GroupBy)
+	if tracker.lastOpts.GroupBy != query.ViewRecipients {
+		t.Errorf("expected StatsOptions.GroupBy=ViewRecipients, got %v", tracker.lastOpts.GroupBy)
 	}
-	if engine.lastStatsOpts.SearchQuery != "bob" {
-		t.Errorf("expected StatsOptions.SearchQuery='bob', got %q", engine.lastStatsOpts.SearchQuery)
+	if tracker.lastOpts.SearchQuery != "bob" {
+		t.Errorf("expected StatsOptions.SearchQuery='bob', got %q", tracker.lastOpts.SearchQuery)
 	}
 
 	// Verify the result contains filteredStats

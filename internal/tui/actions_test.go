@@ -7,9 +7,10 @@ import (
 
 	"github.com/wesm/msgvault/internal/deletion"
 	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/query/querytest"
 )
 
-func testActionController(t *testing.T, engine *mockEngine) (*ActionController, string) {
+func testActionController(t *testing.T, engine *querytest.MockEngine) (*ActionController, string) {
 	t.Helper()
 	dir := t.TempDir()
 	mgr, err := deletion.NewManager(filepath.Join(dir, "deletions"))
@@ -21,7 +22,7 @@ func testActionController(t *testing.T, engine *mockEngine) (*ActionController, 
 
 func newTestController(t *testing.T, gmailIDs ...string) *ActionController {
 	t.Helper()
-	ctrl, _ := testActionController(t, &mockEngine{gmailIDs: gmailIDs})
+	ctrl, _ := testActionController(t, &querytest.MockEngine{GmailIDs: gmailIDs})
 	return ctrl
 }
 

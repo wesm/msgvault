@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -13,85 +12,10 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/wesm/msgvault/internal/query"
-	"github.com/wesm/msgvault/internal/search"
+	"github.com/wesm/msgvault/internal/query/querytest"
 	"github.com/wesm/msgvault/internal/testutil"
 )
 
-// stubEngine implements query.Engine for testing.
-type stubEngine struct {
-	searchFastResults []query.MessageSummary
-	searchResults     []query.MessageSummary
-	listResults       []query.MessageSummary
-	messages          map[int64]*query.MessageDetail
-	attachments       map[int64]*query.AttachmentInfo
-	stats             *query.TotalStats
-	accounts          []query.AccountInfo
-	aggregateRows     []query.AggregateRow
-}
-
-func (e *stubEngine) SearchFast(_ context.Context, _ *search.Query, _ query.MessageFilter, _, _ int) ([]query.MessageSummary, error) {
-	return e.searchFastResults, nil
-}
-func (e *stubEngine) Search(_ context.Context, _ *search.Query, _, _ int) ([]query.MessageSummary, error) {
-	return e.searchResults, nil
-}
-func (e *stubEngine) GetMessage(_ context.Context, id int64) (*query.MessageDetail, error) {
-	if m, ok := e.messages[id]; ok {
-		return m, nil
-	}
-	return nil, fmt.Errorf("not found")
-}
-func (e *stubEngine) GetAttachment(_ context.Context, id int64) (*query.AttachmentInfo, error) {
-	if e.attachments != nil {
-		if a, ok := e.attachments[id]; ok {
-			return a, nil
-		}
-	}
-	return nil, nil
-}
-func (e *stubEngine) ListMessages(_ context.Context, _ query.MessageFilter) ([]query.MessageSummary, error) {
-	return e.listResults, nil
-}
-func (e *stubEngine) GetTotalStats(_ context.Context, _ query.StatsOptions) (*query.TotalStats, error) {
-	return e.stats, nil
-}
-func (e *stubEngine) ListAccounts(_ context.Context) ([]query.AccountInfo, error) {
-	return e.accounts, nil
-}
-func (e *stubEngine) AggregateBySender(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
-	return e.aggregateRows, nil
-}
-func (e *stubEngine) AggregateBySenderName(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
-	return e.aggregateRows, nil
-}
-func (e *stubEngine) AggregateByRecipient(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
-	return e.aggregateRows, nil
-}
-func (e *stubEngine) AggregateByRecipientName(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
-	return e.aggregateRows, nil
-}
-func (e *stubEngine) AggregateByDomain(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
-	return e.aggregateRows, nil
-}
-func (e *stubEngine) AggregateByLabel(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
-	return e.aggregateRows, nil
-}
-func (e *stubEngine) AggregateByTime(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
-	return e.aggregateRows, nil
-}
-func (e *stubEngine) SubAggregate(_ context.Context, _ query.MessageFilter, _ query.ViewType, _ query.AggregateOptions) ([]query.AggregateRow, error) {
-	return nil, nil
-}
-func (e *stubEngine) GetMessageBySourceID(_ context.Context, _ string) (*query.MessageDetail, error) {
-	return nil, nil
-}
-func (e *stubEngine) SearchFastCount(_ context.Context, _ *search.Query, _ query.MessageFilter) (int64, error) {
-	return 0, nil
-}
-func (e *stubEngine) GetGmailIDsByFilter(_ context.Context, _ query.MessageFilter) ([]string, error) {
-	return nil, nil
-}
-func (e *stubEngine) Close() error { return nil }
 
 // toolHandler is the function signature for MCP tool handler methods.
 type toolHandler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
@@ -146,8 +70,8 @@ func runToolExpectError(t *testing.T, name string, fn toolHandler, args map[stri
 }
 
 func TestSearchMessages(t *testing.T) {
-	eng := &stubEngine{
-		searchFastResults: []query.MessageSummary{
+	eng := &querytest.MockEngine{
+		SearchFastResults: []query.MessageSummary{
 			testutil.NewMessageSummary(1).WithSubject("Hello").WithFromEmail("alice@example.com").Build(),
 		},
 	}
@@ -166,9 +90,9 @@ func TestSearchMessages(t *testing.T) {
 }
 
 func TestSearchFallbackToFTS(t *testing.T) {
-	eng := &stubEngine{
-		searchFastResults: nil, // fast returns nothing
-		searchResults: []query.MessageSummary{
+	eng := &querytest.MockEngine{
+		SearchFastResults: nil, // fast returns nothing
+		SearchResults: []query.MessageSummary{
 			testutil.NewMessageSummary(2).WithSubject("Body match").WithFromEmail("bob@example.com").Build(),
 		},
 	}
@@ -181,8 +105,8 @@ func TestSearchFallbackToFTS(t *testing.T) {
 }
 
 func TestGetMessage(t *testing.T) {
-	eng := &stubEngine{
-		messages: map[int64]*query.MessageDetail{
+	eng := &querytest.MockEngine{
+		Messages: map[int64]*query.MessageDetail{
 			42: testutil.NewMessageDetail(42).WithSubject("Test Message").WithBodyText("Hello world").BuildPtr(),
 		},
 	}
@@ -213,13 +137,13 @@ func TestGetMessage(t *testing.T) {
 }
 
 func TestGetStats(t *testing.T) {
-	eng := &stubEngine{
-		stats: &query.TotalStats{
+	eng := &querytest.MockEngine{
+		Stats: &query.TotalStats{
 			MessageCount: 1000,
 			TotalSize:    5000000,
 			AccountCount: 2,
 		},
-		accounts: []query.AccountInfo{
+		Accounts: []query.AccountInfo{
 			{ID: 1, Identifier: "alice@gmail.com"},
 			{ID: 2, Identifier: "bob@gmail.com"},
 		},
@@ -240,8 +164,8 @@ func TestGetStats(t *testing.T) {
 }
 
 func TestAggregate(t *testing.T) {
-	eng := &stubEngine{
-		aggregateRows: []query.AggregateRow{
+	eng := &querytest.MockEngine{
+		AggregateRows: []query.AggregateRow{
 			{Key: "alice@example.com", Count: 100, TotalSize: 50000},
 			{Key: "bob@example.com", Count: 50, TotalSize: 25000},
 		},
@@ -272,8 +196,8 @@ func TestAggregate(t *testing.T) {
 }
 
 func TestListMessages(t *testing.T) {
-	eng := &stubEngine{
-		listResults: []query.MessageSummary{
+	eng := &querytest.MockEngine{
+		ListResults: []query.MessageSummary{
 			testutil.NewMessageSummary(1).WithSubject("Test").WithFromEmail("alice@example.com").Build(),
 		},
 	}
@@ -305,7 +229,7 @@ func TestListMessages(t *testing.T) {
 }
 
 func TestAggregateInvalidDates(t *testing.T) {
-	eng := &stubEngine{}
+	eng := &querytest.MockEngine{}
 	h := &handlers{engine: eng}
 
 	errorCases := []struct {
@@ -340,8 +264,8 @@ func TestGetAttachment(t *testing.T) {
 	content := []byte("hello world PDF content")
 	createAttachmentFixture(t, tmpDir, hash, content)
 
-	eng := &stubEngine{
-		attachments: map[int64]*query.AttachmentInfo{
+	eng := &querytest.MockEngine{
+		Attachments: map[int64]*query.AttachmentInfo{
 			10: {ID: 10, Filename: "report.pdf", MimeType: "application/pdf", Size: int64(len(content)), ContentHash: hash},
 			11: {ID: 11, Filename: "no-hash.pdf", MimeType: "application/pdf", Size: 100, ContentHash: ""},
 		},
@@ -387,8 +311,8 @@ func TestGetAttachment(t *testing.T) {
 	}
 
 	t.Run("invalid content hash (path traversal)", func(t *testing.T) {
-		eng2 := &stubEngine{
-			attachments: map[int64]*query.AttachmentInfo{
+		eng2 := &querytest.MockEngine{
+			Attachments: map[int64]*query.AttachmentInfo{
 				30: {ID: 30, Filename: "evil.pdf", MimeType: "application/pdf", Size: 100, ContentHash: "../../etc/passwd"},
 			},
 		}
@@ -400,8 +324,8 @@ func TestGetAttachment(t *testing.T) {
 	})
 
 	t.Run("non-hex content hash", func(t *testing.T) {
-		eng2 := &stubEngine{
-			attachments: map[int64]*query.AttachmentInfo{
+		eng2 := &querytest.MockEngine{
+			Attachments: map[int64]*query.AttachmentInfo{
 				31: {ID: 31, Filename: "bad.pdf", MimeType: "application/pdf", Size: 100, ContentHash: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"},
 			},
 		}
@@ -410,8 +334,8 @@ func TestGetAttachment(t *testing.T) {
 	})
 
 	t.Run("attachmentsDir not configured", func(t *testing.T) {
-		eng2 := &stubEngine{
-			attachments: map[int64]*query.AttachmentInfo{
+		eng2 := &querytest.MockEngine{
+			Attachments: map[int64]*query.AttachmentInfo{
 				10: {ID: 10, Filename: "report.pdf", MimeType: "application/pdf", Size: 100, ContentHash: hash},
 			},
 		}
@@ -435,8 +359,8 @@ func TestGetAttachment(t *testing.T) {
 		}
 		bigFile.Close()
 
-		eng2 := &stubEngine{
-			attachments: map[int64]*query.AttachmentInfo{
+		eng2 := &querytest.MockEngine{
+			Attachments: map[int64]*query.AttachmentInfo{
 				40: {ID: 40, Filename: "huge.bin", MimeType: "application/octet-stream", Size: maxAttachmentSize + 1, ContentHash: bigHash},
 			},
 		}
@@ -448,8 +372,8 @@ func TestGetAttachment(t *testing.T) {
 	})
 
 	t.Run("file not on disk", func(t *testing.T) {
-		eng2 := &stubEngine{
-			attachments: map[int64]*query.AttachmentInfo{
+		eng2 := &querytest.MockEngine{
+			Attachments: map[int64]*query.AttachmentInfo{
 				20: {ID: 20, Filename: "gone.pdf", MimeType: "application/pdf", Size: 100, ContentHash: "deadbeef1234567890abcdef1234567890abcdef1234567890abcdef12345678"},
 			},
 		}

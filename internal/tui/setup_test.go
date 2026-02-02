@@ -7,91 +7,28 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/query/querytest"
 	"github.com/wesm/msgvault/internal/search"
 )
 
-// mockEngine implements query.Engine for testing.
-type mockEngine struct {
-	rows          []query.AggregateRow
-	messages      []query.MessageSummary
-	messageDetail *query.MessageDetail
-	gmailIDs      []string
-}
-
-func (m *mockEngine) AggregateBySender(ctx context.Context, opts query.AggregateOptions) ([]query.AggregateRow, error) {
-	return m.rows, nil
-}
-
-func (m *mockEngine) AggregateBySenderName(ctx context.Context, opts query.AggregateOptions) ([]query.AggregateRow, error) {
-	return m.rows, nil
-}
-
-func (m *mockEngine) AggregateByRecipient(ctx context.Context, opts query.AggregateOptions) ([]query.AggregateRow, error) {
-	return m.rows, nil
-}
-
-func (m *mockEngine) AggregateByRecipientName(ctx context.Context, opts query.AggregateOptions) ([]query.AggregateRow, error) {
-	return m.rows, nil
-}
-
-func (m *mockEngine) AggregateByDomain(ctx context.Context, opts query.AggregateOptions) ([]query.AggregateRow, error) {
-	return m.rows, nil
-}
-
-func (m *mockEngine) AggregateByLabel(ctx context.Context, opts query.AggregateOptions) ([]query.AggregateRow, error) {
-	return m.rows, nil
-}
-
-func (m *mockEngine) AggregateByTime(ctx context.Context, opts query.AggregateOptions) ([]query.AggregateRow, error) {
-	return m.rows, nil
-}
-
-func (m *mockEngine) SubAggregate(ctx context.Context, filter query.MessageFilter, groupBy query.ViewType, opts query.AggregateOptions) ([]query.AggregateRow, error) {
-	return m.rows, nil
-}
-
-func (m *mockEngine) ListMessages(ctx context.Context, filter query.MessageFilter) ([]query.MessageSummary, error) {
-	return m.messages, nil
-}
-
-func (m *mockEngine) GetMessage(ctx context.Context, id int64) (*query.MessageDetail, error) {
-	return m.messageDetail, nil
-}
-
-func (m *mockEngine) GetMessageBySourceID(ctx context.Context, sourceMessageID string) (*query.MessageDetail, error) {
-	return m.messageDetail, nil
-}
-
-func (m *mockEngine) GetAttachment(ctx context.Context, id int64) (*query.AttachmentInfo, error) {
-	return nil, nil
-}
-
-func (m *mockEngine) Search(ctx context.Context, q *search.Query, limit, offset int) ([]query.MessageSummary, error) {
-	return m.messages, nil
-}
-
-func (m *mockEngine) SearchFast(ctx context.Context, q *search.Query, filter query.MessageFilter, limit, offset int) ([]query.MessageSummary, error) {
-	return m.messages, nil
-}
-
-func (m *mockEngine) SearchFastCount(ctx context.Context, q *search.Query, filter query.MessageFilter) (int64, error) {
-	return int64(len(m.messages)), nil
-}
-
-func (m *mockEngine) GetGmailIDsByFilter(ctx context.Context, filter query.MessageFilter) ([]string, error) {
-	return m.gmailIDs, nil
-}
-
-func (m *mockEngine) ListAccounts(ctx context.Context) ([]query.AccountInfo, error) {
-	return nil, nil
-}
-
-func (m *mockEngine) GetTotalStats(ctx context.Context, opts query.StatsOptions) (*query.TotalStats, error) {
-	return &query.TotalStats{}, nil
-}
-
-func (m *mockEngine) Close() error {
-	return nil
+// newMockEngine creates a querytest.MockEngine configured for TUI testing.
+// The messages slice is returned from ListMessages, Search, SearchFast, and
+// SearchFastCount, matching the legacy mockEngine behavior.
+func newMockEngine(rows []query.AggregateRow, messages []query.MessageSummary, detail *query.MessageDetail, gmailIDs []string) *querytest.MockEngine {
+	eng := &querytest.MockEngine{
+		AggregateRows:     rows,
+		ListResults:       messages,
+		SearchResults:     messages,
+		SearchFastResults: messages,
+		GmailIDs:          gmailIDs,
+	}
+	eng.GetMessageFunc = func(_ context.Context, _ int64) (*query.MessageDetail, error) {
+		return detail, nil
+	}
+	eng.SearchFastCountFunc = func(_ context.Context, _ *search.Query, _ query.MessageFilter) (int64, error) {
+		return int64(len(messages)), nil
+	}
+	return eng
 }
 
 // =============================================================================
@@ -209,12 +146,7 @@ func (b *TestModelBuilder) WithContextStats(stats *query.TotalStats) *TestModelB
 }
 
 func (b *TestModelBuilder) Build() Model {
-	engine := &mockEngine{
-		rows:          b.rows,
-		messages:      b.messages,
-		messageDetail: b.messageDetail,
-		gmailIDs:      b.gmailIDs,
-	}
+	engine := newMockEngine(b.rows, b.messages, b.messageDetail, b.gmailIDs)
 
 	model := New(engine, Options{DataDir: b.dataDir, Version: b.version})
 	model.width = b.width
@@ -314,7 +246,7 @@ var (
 
 // newTestModel creates a Model with common test defaults.
 // The returned model has standard width/height and is ready for testing.
-func newTestModel(engine *mockEngine) Model {
+func newTestModel(engine *querytest.MockEngine) Model {
 	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.width = 100
 	model.height = 24
@@ -324,7 +256,7 @@ func newTestModel(engine *mockEngine) Model {
 
 // newTestModelWithRows creates a test model pre-populated with aggregate rows.
 func newTestModelWithRows(rows []query.AggregateRow) Model {
-	engine := &mockEngine{rows: rows}
+	engine := newMockEngine(rows, nil, nil, nil)
 	model := newTestModel(engine)
 	model.rows = rows
 	return model
@@ -332,7 +264,7 @@ func newTestModelWithRows(rows []query.AggregateRow) Model {
 
 // newTestModelAtLevel creates a test model at the specified navigation level.
 func newTestModelAtLevel(level viewLevel) Model {
-	engine := &mockEngine{}
+	engine := newMockEngine(nil, nil, nil, nil)
 	model := newTestModel(engine)
 	model.level = level
 	return model

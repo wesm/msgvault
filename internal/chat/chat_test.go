@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/query/querytest"
 	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/testutil"
 )
@@ -183,9 +184,9 @@ func TestSessionAsk(t *testing.T) {
 		WithLabels("INBOX").
 		BuildPtr()
 
-	eng := &stubEngine{
-		searchFastResults: []query.MessageSummary{{ID: 1}},
-		messages:          map[int64]*query.MessageDetail{1: detail},
+	eng := &querytest.MockEngine{
+		SearchFastResults: []query.MessageSummary{{ID: 1}},
+		Messages:          map[int64]*query.MessageDetail{1: detail},
 	}
 
 	llm := &stubLLM{
@@ -219,9 +220,9 @@ func TestSessionAsk_LLMError(t *testing.T) {
 }
 
 func TestSessionAsk_CancelledContext(t *testing.T) {
-	eng := &stubEngine{
-		searchFastResults: []query.MessageSummary{{ID: 1}},
-		messages: map[int64]*query.MessageDetail{
+	eng := &querytest.MockEngine{
+		SearchFastResults: []query.MessageSummary{{ID: 1}},
+		Messages: map[int64]*query.MessageDetail{
 			1: testutil.NewMessageDetail(1).WithSubject("S").
 				WithFrom(query.Address{Email: "a@b.com"}).BuildPtr(),
 		},
