@@ -334,14 +334,7 @@ func (m *Manager) tokenPath(email string) string {
 
 // scopesToString joins scopes with spaces.
 func scopesToString(scopes []string) string {
-	result := ""
-	for i, s := range scopes {
-		if i > 0 {
-			result += " "
-		}
-		result += s
-	}
-	return result
+	return strings.Join(scopes, " ")
 }
 
 // openBrowser opens the default browser to the given URL.
