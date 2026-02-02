@@ -9,50 +9,60 @@ import (
 )
 
 func TestAggregations(t *testing.T) {
-	env := newTestEnv(t)
-
-	tests := []struct {
+	type testCase struct {
 		name    string
-		aggFunc func(context.Context, AggregateOptions) ([]AggregateRow, error)
+		aggName string
 		want    []aggExpectation
-	}{
+	}
+
+	tests := []testCase{
 		{
 			name:    "BySender",
-			aggFunc: env.Engine.AggregateBySender,
+			aggName: "AggregateBySender",
 			want:    []aggExpectation{{"alice@example.com", 3}, {"bob@company.org", 2}},
 		},
 		{
 			name:    "BySenderName",
-			aggFunc: env.Engine.AggregateBySenderName,
+			aggName: "AggregateBySenderName",
 			want:    []aggExpectation{{"Alice Smith", 3}, {"Bob Jones", 2}},
 		},
 		{
 			name:    "ByRecipient",
-			aggFunc: env.Engine.AggregateByRecipient,
+			aggName: "AggregateByRecipient",
 			want:    []aggExpectation{{"bob@company.org", 3}, {"alice@example.com", 2}, {"carol@example.com", 1}},
 		},
 		{
 			name:    "ByDomain",
-			aggFunc: env.Engine.AggregateByDomain,
+			aggName: "AggregateByDomain",
 			want:    []aggExpectation{{"example.com", 3}, {"company.org", 2}},
 		},
 		{
 			name:    "ByLabel",
-			aggFunc: env.Engine.AggregateByLabel,
+			aggName: "AggregateByLabel",
 			want:    []aggExpectation{{"INBOX", 5}, {"Work", 2}, {"IMPORTANT", 1}},
 		},
 		{
 			name:    "ByRecipientName",
-			aggFunc: env.Engine.AggregateByRecipientName,
+			aggName: "AggregateByRecipientName",
 			want:    []aggExpectation{{"Bob Jones", 3}, {"Alice Smith", 2}, {"Carol White", 1}},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			rows, err := tc.aggFunc(env.Ctx, DefaultAggregateOptions())
+			env := newTestEnv(t)
+			aggFuncs := map[string]func(context.Context, AggregateOptions) ([]AggregateRow, error){
+				"AggregateBySender":        env.Engine.AggregateBySender,
+				"AggregateBySenderName":    env.Engine.AggregateBySenderName,
+				"AggregateByRecipient":     env.Engine.AggregateByRecipient,
+				"AggregateByDomain":        env.Engine.AggregateByDomain,
+				"AggregateByLabel":         env.Engine.AggregateByLabel,
+				"AggregateByRecipientName": env.Engine.AggregateByRecipientName,
+			}
+			aggFunc := aggFuncs[tc.aggName]
+			rows, err := aggFunc(env.Ctx, DefaultAggregateOptions())
 			if err != nil {
-				t.Fatalf("Aggregate%s: %v", tc.name, err)
+				t.Fatalf("%s: %v", tc.aggName, err)
 			}
 			assertAggRows(t, rows, tc.want)
 		})

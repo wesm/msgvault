@@ -83,23 +83,45 @@ type aggExpectation struct {
 }
 
 // assertRow finds a single key in the aggregate rows and asserts its count.
+// It also fails if the key appears more than once (duplicate detection).
 func assertRow(t *testing.T, rows []AggregateRow, key string, count int64) {
 	t.Helper()
+	found := 0
 	for _, r := range rows {
 		if r.Key == key {
+			found++
+			if found > 1 {
+				t.Errorf("key %q appears multiple times in results", key)
+			}
 			if r.Count != count {
 				t.Errorf("key %q: expected count %d, got %d", key, count, r.Count)
 			}
-			return
 		}
 	}
-	t.Errorf("key %q not found in results", key)
+	if found == 0 {
+		t.Errorf("key %q not found in results", key)
+	}
+}
+
+// assertNoDuplicateKeys fails if any key appears more than once in the rows.
+func assertNoDuplicateKeys(t *testing.T, rows []AggregateRow) {
+	t.Helper()
+	seen := make(map[string]int)
+	for _, r := range rows {
+		seen[r.Key]++
+	}
+	for key, n := range seen {
+		if n > 1 {
+			t.Errorf("duplicate key %q appears %d times in results", key, n)
+		}
+	}
 }
 
 // assertRowsContain verifies that a subset of expected key/count pairs exist
-// in the aggregate rows (order-independent).
+// in the aggregate rows (order-independent). Also checks for duplicate keys.
 func assertRowsContain(t *testing.T, rows []AggregateRow, want []aggExpectation) {
 	t.Helper()
+	assertNoDuplicateKeys(t, rows)
 	for _, w := range want {
 		assertRow(t, rows, w.Key, w.Count)
 	}
@@ -107,8 +129,10 @@ func assertRowsContain(t *testing.T, rows []AggregateRow, want []aggExpectation)
 
 // assertAggRows verifies that aggregate rows contain the expected key/count pairs
 // in the exact order given. This ensures both correctness and default sort behavior.
+// Also checks for duplicate keys.
 func assertAggRows(t *testing.T, rows []AggregateRow, want []aggExpectation) {
 	t.Helper()
+	assertNoDuplicateKeys(t, rows)
 	if len(rows) != len(want) {
 		t.Errorf("expected %d aggregate rows, got %d", len(want), len(rows))
 	}
