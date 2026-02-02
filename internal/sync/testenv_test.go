@@ -225,10 +225,10 @@ func assertDeletedFromSource(t *testing.T, st *store.Store, sourceMessageID stri
 func assertBodyContains(t *testing.T, st *store.Store, sourceMessageID, substr string) {
 	t.Helper()
 	var bodyText string
-	err := st.DB().QueryRow(`
+	err := st.DB().QueryRow(st.Rebind(`
 		SELECT mb.body_text FROM message_bodies mb
 		JOIN messages m ON m.id = mb.message_id
-		WHERE m.source_message_id = '` + sourceMessageID + `'`).Scan(&bodyText)
+		WHERE m.source_message_id = ?`), sourceMessageID).Scan(&bodyText)
 	if err != nil {
 		t.Fatalf("query body for %s: %v", sourceMessageID, err)
 	}
@@ -241,10 +241,10 @@ func assertBodyContains(t *testing.T, st *store.Store, sourceMessageID, substr s
 func assertRawDataExists(t *testing.T, st *store.Store, sourceMessageID string) {
 	t.Helper()
 	var rawData []byte
-	err := st.DB().QueryRow(`
+	err := st.DB().QueryRow(st.Rebind(`
 		SELECT raw_data FROM message_raw mr
 		JOIN messages m ON m.id = mr.message_id
-		WHERE m.source_message_id = '` + sourceMessageID + `'`).Scan(&rawData)
+		WHERE m.source_message_id = ?`), sourceMessageID).Scan(&rawData)
 	if err != nil {
 		t.Fatalf("query raw data for %s: %v", sourceMessageID, err)
 	}
