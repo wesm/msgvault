@@ -367,3 +367,35 @@ func TestFormatSize(t *testing.T) {
 		})
 	}
 }
+
+// TestSaveCacheFilePermissions verifies that the update check cache file is
+// saved with restrictive permissions (0600) to protect user data.
+func TestSaveCacheFilePermissions(t *testing.T) {
+	// Use a temp directory as MSGVAULT_HOME to avoid touching real user data
+	tmpDir := t.TempDir()
+	origHome := os.Getenv("MSGVAULT_HOME")
+	os.Setenv("MSGVAULT_HOME", tmpDir)
+	t.Cleanup(func() {
+		if origHome != "" {
+			os.Setenv("MSGVAULT_HOME", origHome)
+		} else {
+			os.Unsetenv("MSGVAULT_HOME")
+		}
+	})
+
+	// Call saveCache which writes to getCacheDir()/update_check.json
+	saveCache("1.0.0")
+
+	cachePath := filepath.Join(tmpDir, cacheFileName)
+	info, err := os.Stat(cachePath)
+	if err != nil {
+		t.Fatalf("Stat(%s) error = %v", cachePath, err)
+	}
+
+	// File should have 0600 permissions (owner read/write only)
+	got := info.Mode().Perm()
+	want := os.FileMode(0600)
+	if got != want {
+		t.Errorf("cache file permissions = %04o, want %04o", got, want)
+	}
+}
