@@ -166,7 +166,8 @@ func TestRateLimiter_Acquire_Success(t *testing.T) {
 	clk := newMockClock()
 	rl := newTestLimiterWithClock(clk)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	err := rl.Acquire(ctx, OpProfile)
 	if err != nil {
 		t.Errorf("Acquire() error = %v", err)
@@ -196,7 +197,9 @@ func TestRateLimiter_Acquire_ContextTimeout(t *testing.T) {
 	rl.refillRate = 0.001
 	rl.mu.Unlock()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Use a deadline relative to the mock clock's current time
+	deadline := clk.Now().Add(50 * time.Millisecond)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 
 	done := make(chan error, 1)
@@ -204,12 +207,16 @@ func TestRateLimiter_Acquire_ContextTimeout(t *testing.T) {
 		done <- rl.Acquire(ctx, OpMessagesBatchDelete)
 	}()
 
-	// Cancel rather than relying on real-time deadline
-	cancel()
+	// Advance mock clock past the deadline so the context expires
+	clk.Advance(100 * time.Millisecond)
 
-	err := <-done
-	if err != context.Canceled {
-		t.Errorf("Acquire() = %v, want context.Canceled", err)
+	select {
+	case err := <-done:
+		if err != context.DeadlineExceeded {
+			t.Errorf("Acquire() = %v, want context.DeadlineExceeded", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Acquire() did not return after deadline exceeded")
 	}
 }
 

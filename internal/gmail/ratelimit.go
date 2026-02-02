@@ -103,6 +103,13 @@ func NewRateLimiter(qps float64) *RateLimiter {
 	}
 }
 
+// ensureClock defaults clock to realClock{} if nil. Must be called with lock held.
+func (r *RateLimiter) ensureClock() {
+	if r.clock == nil {
+		r.clock = realClock{}
+	}
+}
+
 // Acquire blocks until the required tokens are available.
 // Returns an error if the context is cancelled.
 func (r *RateLimiter) Acquire(ctx context.Context, op Operation) error {
@@ -110,6 +117,7 @@ func (r *RateLimiter) Acquire(ctx context.Context, op Operation) error {
 
 	for {
 		r.mu.Lock()
+		r.ensureClock()
 		now := r.clock.Now()
 
 		// If we're in a throttle period, wait until it expires
@@ -159,6 +167,7 @@ func (r *RateLimiter) TryAcquire(op Operation) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	r.ensureClock()
 	r.refill()
 
 	if r.tokens >= cost {
@@ -196,6 +205,7 @@ func (r *RateLimiter) refill() {
 func (r *RateLimiter) Available() float64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.ensureClock()
 	r.refill()
 	return r.tokens
 }
@@ -206,6 +216,7 @@ func (r *RateLimiter) Throttle(duration time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	r.ensureClock()
 	now := r.clock.Now()
 	newThrottleEnd := now.Add(duration)
 
