@@ -274,13 +274,13 @@ func TestLoadManifest_InvalidJSON(t *testing.T) {
 func TestManifest_FormatSummary(t *testing.T) {
 	tests := []struct {
 		name            string
-		setupManifest   func() *Manifest
+		setupManifest   func(*testing.T) *Manifest
 		wantContains    []string
 		wantNotContains []string
 	}{
 		{
 			name: "basic summary",
-			setupManifest: func() *Manifest {
+			setupManifest: func(t *testing.T) *Manifest {
 				m := newTestManifest(t, "format test", "id1", "id2", "id3")
 				m.Summary = testSummary(3, 5*1024*1024, [2]string{"2024-01-01", "2024-01-31"}, []SenderCount{
 					{Sender: "alice@example.com", Count: 2},
@@ -292,7 +292,7 @@ func TestManifest_FormatSummary(t *testing.T) {
 		},
 		{
 			name: "with execution",
-			setupManifest: func() *Manifest {
+			setupManifest: func(t *testing.T) *Manifest {
 				m := newTestManifest(t, "exec test", "id1")
 				now := time.Now()
 				m.Execution = testExecution(MethodTrash, 10, 2, &now)
@@ -302,7 +302,7 @@ func TestManifest_FormatSummary(t *testing.T) {
 		},
 		{
 			name: "empty date range",
-			setupManifest: func() *Manifest {
+			setupManifest: func(t *testing.T) *Manifest {
 				m := newTestManifest(t, "empty date test", "id1")
 				m.Summary = testSummary(1, 1024, [2]string{"", ""}, nil)
 				return m
@@ -311,7 +311,7 @@ func TestManifest_FormatSummary(t *testing.T) {
 		},
 		{
 			name: "nil summary",
-			setupManifest: func() *Manifest {
+			setupManifest: func(t *testing.T) *Manifest {
 				m := newTestManifest(t, "no summary test")
 				m.Summary = nil
 				return m
@@ -321,7 +321,7 @@ func TestManifest_FormatSummary(t *testing.T) {
 		},
 		{
 			name: "many top senders truncated to 10",
-			setupManifest: func() *Manifest {
+			setupManifest: func(t *testing.T) *Manifest {
 				m := newTestManifest(t, "many senders test", "id1")
 				topSenders := make([]SenderCount, 15)
 				for i := 0; i < 15; i++ {
@@ -338,7 +338,7 @@ func TestManifest_FormatSummary(t *testing.T) {
 		},
 		{
 			name: "execution without completed time",
-			setupManifest: func() *Manifest {
+			setupManifest: func(t *testing.T) *Manifest {
 				m := newTestManifest(t, "no completed test", "id1")
 				m.Execution = testExecution(MethodDelete, 5, 0, nil)
 				return m
@@ -350,10 +350,13 @@ func TestManifest_FormatSummary(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m := tc.setupManifest()
+			m := tc.setupManifest(t)
 			got := m.FormatSummary()
 			assertSummaryContains(t, got, tc.wantContains...)
 			assertSummaryNotContains(t, got, tc.wantNotContains...)
+			if tc.name == "basic summary" {
+				assertSummaryContains(t, got, m.ID)
+			}
 		})
 	}
 }
