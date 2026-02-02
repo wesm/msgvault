@@ -193,13 +193,14 @@ func NewMessage(sourceID, convID int64) *MessageBuilder {
 }
 
 // NewMessage creates a builder using the fixture's per-test counter for
-// deterministic SourceMessageID values (test-msg-1, test-msg-2, ...).
+// deterministic SourceMessageID values (fixture-msg-1, fixture-msg-2, ...).
+// Uses a distinct prefix from the package-level NewMessage to avoid collisions.
 func (f *Fixture) NewMessage() *MessageBuilder {
 	return &MessageBuilder{
 		msg: store.Message{
 			ConversationID:  f.ConvID,
 			SourceID:        f.Source.ID,
-			SourceMessageID: fmt.Sprintf("test-msg-%d", f.msgCounter.Add(1)),
+			SourceMessageID: fmt.Sprintf("fixture-msg-%d", f.msgCounter.Add(1)),
 			MessageType:     "email",
 			SizeEstimate:    1000,
 		},

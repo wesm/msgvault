@@ -21,11 +21,20 @@ func TestFixtureNewMessage_DeterministicPerFixture(t *testing.T) {
 	f2 := New(t)
 	m1 := f1.NewMessage().Build()
 	m2 := f2.NewMessage().Build()
-	if m1.SourceMessageID != "test-msg-1" {
-		t.Errorf("f1 first message ID = %q, want test-msg-1", m1.SourceMessageID)
+	if m1.SourceMessageID != "fixture-msg-1" {
+		t.Errorf("f1 first message ID = %q, want fixture-msg-1", m1.SourceMessageID)
 	}
-	if m2.SourceMessageID != "test-msg-1" {
-		t.Errorf("f2 first message ID = %q, want test-msg-1", m2.SourceMessageID)
+	if m2.SourceMessageID != "fixture-msg-1" {
+		t.Errorf("f2 first message ID = %q, want fixture-msg-1", m2.SourceMessageID)
+	}
+}
+
+func TestMixedBuilders_NoDuplicateSourceMessageID(t *testing.T) {
+	f := New(t)
+	m1 := f.NewMessage().Build()
+	m2 := NewMessage(f.Source.ID, f.ConvID).Build()
+	if m1.SourceMessageID == m2.SourceMessageID {
+		t.Errorf("mixed builders produced same SourceMessageID: %q", m1.SourceMessageID)
 	}
 }
 
