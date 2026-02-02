@@ -82,7 +82,7 @@ func TestValidateRelativePath(t *testing.T) {
 	dir := TempDir(t)
 
 	// Invalid paths from shared fixture
-	for _, tt := range PathTraversalCases {
+	for _, tt := range PathTraversalCases() {
 		t.Run(tt.Name, func(t *testing.T) {
 			if err := validateRelativePath(dir, tt.Path); err == nil {
 				t.Errorf("validateRelativePath(%q) expected error, got nil", tt.Path)

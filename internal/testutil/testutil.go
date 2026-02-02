@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"testing"
 
@@ -190,14 +191,29 @@ func MustNoErr(t *testing.T, err error, msg string) {
 	}
 }
 
-// PathTraversalCases is a shared fixture of path traversal attack vectors for
-// testing path sanitization logic across packages.
-var PathTraversalCases = []struct{ Name, Path string }{
-	{"absolute path", "/abs/path"},
-	{"rooted path", string(filepath.Separator) + "rooted" + string(filepath.Separator) + "path.txt"},
-	{"escape dot dot", "../escape.txt"},
-	{"escape dot dot nested", "subdir/../../escape.txt"},
-	{"escape just dot dot", ".."},
+// PathTraversalCase describes a single path traversal test vector.
+type PathTraversalCase struct{ Name, Path string }
+
+// PathTraversalCases returns a fresh slice of path traversal attack vectors for
+// testing path sanitization logic. The returned cases include OS-appropriate
+// absolute path variants so Windows UNC/drive-letter paths are also covered.
+func PathTraversalCases() []PathTraversalCase {
+	cases := []PathTraversalCase{
+		{"rooted path", string(filepath.Separator) + "rooted" + string(filepath.Separator) + "path.txt"},
+		{"escape dot dot", "../escape.txt"},
+		{"escape dot dot nested", "subdir/../../escape.txt"},
+		{"escape just dot dot", ".."},
+	}
+	// OS-appropriate absolute paths
+	if runtime.GOOS == "windows" {
+		cases = append(cases,
+			PathTraversalCase{"absolute drive path", `C:\Windows\system32`},
+			PathTraversalCase{"UNC path", `\\server\share\file.txt`},
+		)
+	} else {
+		cases = append(cases, PathTraversalCase{"absolute path", "/abs/path"})
+	}
+	return cases
 }
 
 // WriteAndVerifyFile writes content to a file, asserts it exists, and verifies
