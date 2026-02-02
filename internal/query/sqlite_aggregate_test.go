@@ -1,36 +1,60 @@
 package query
 
 import (
+	"context"
 	"testing"
 	"time"
 )
 
-func TestAggregateBySender(t *testing.T) {
+func TestAggregations(t *testing.T) {
 	env := newTestEnv(t)
 
-	rows, err := env.Engine.AggregateBySender(env.Ctx, DefaultAggregateOptions())
-	if err != nil {
-		t.Fatalf("AggregateBySender: %v", err)
+	tests := []struct {
+		name    string
+		aggFunc func(context.Context, AggregateOptions) ([]AggregateRow, error)
+		want    []aggExpectation
+	}{
+		{
+			name:    "BySender",
+			aggFunc: env.Engine.AggregateBySender,
+			want:    []aggExpectation{{"alice@example.com", 3}, {"bob@company.org", 2}},
+		},
+		{
+			name:    "BySenderName",
+			aggFunc: env.Engine.AggregateBySenderName,
+			want:    []aggExpectation{{"Alice Smith", 3}, {"Bob Jones", 2}},
+		},
+		{
+			name:    "ByRecipient",
+			aggFunc: env.Engine.AggregateByRecipient,
+			want:    []aggExpectation{{"bob@company.org", 3}, {"alice@example.com", 2}, {"carol@example.com", 1}},
+		},
+		{
+			name:    "ByDomain",
+			aggFunc: env.Engine.AggregateByDomain,
+			want:    []aggExpectation{{"example.com", 3}, {"company.org", 2}},
+		},
+		{
+			name:    "ByLabel",
+			aggFunc: env.Engine.AggregateByLabel,
+			want:    []aggExpectation{{"INBOX", 5}, {"Work", 2}, {"IMPORTANT", 1}},
+		},
+		{
+			name:    "ByRecipientName",
+			aggFunc: env.Engine.AggregateByRecipientName,
+			want:    []aggExpectation{{"Bob Jones", 3}, {"Alice Smith", 2}, {"Carol White", 1}},
+		},
 	}
 
-	assertAggRows(t, rows, []aggExpectation{
-		{"alice@example.com", 3},
-		{"bob@company.org", 2},
-	})
-}
-
-func TestAggregateBySenderName(t *testing.T) {
-	env := newTestEnv(t)
-
-	rows, err := env.Engine.AggregateBySenderName(env.Ctx, DefaultAggregateOptions())
-	if err != nil {
-		t.Fatalf("AggregateBySenderName: %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := tc.aggFunc(env.Ctx, DefaultAggregateOptions())
+			if err != nil {
+				t.Fatalf("Aggregate%s: %v", tc.name, err)
+			}
+			assertAggRows(t, rows, tc.want)
+		})
 	}
-
-	assertAggRows(t, rows, []aggExpectation{
-		{"Alice Smith", 3},
-		{"Bob Jones", 2},
-	})
 }
 
 func TestAggregateBySenderName_FallbackToEmail(t *testing.T) {
@@ -48,18 +72,7 @@ func TestAggregateBySenderName_FallbackToEmail(t *testing.T) {
 		t.Errorf("expected 3 sender names, got %d", len(rows))
 	}
 
-	var found bool
-	for _, r := range rows {
-		if r.Key == "noname@test.com" {
-			found = true
-			if r.Count != 1 {
-				t.Errorf("expected noname@test.com count 1, got %d", r.Count)
-			}
-		}
-	}
-	if !found {
-		t.Error("expected noname@test.com in results (display_name fallback)")
-	}
+	assertRow(t, rows, "noname@test.com", 1)
 }
 
 func TestAggregateBySenderName_EmptyStringFallback(t *testing.T) {
@@ -82,68 +95,14 @@ func TestAggregateBySenderName_EmptyStringFallback(t *testing.T) {
 		}
 	}
 
-	foundEmpty := false
-	foundSpaces := false
 	for _, r := range rows {
-		if r.Key == "empty@test.com" {
-			foundEmpty = true
-		}
-		if r.Key == "spaces@test.com" {
-			foundSpaces = true
-		}
 		if r.Key == "" || r.Key == "   " {
 			t.Errorf("unexpected empty/whitespace key: %q", r.Key)
 		}
 	}
-	if !foundEmpty {
-		t.Error("expected empty@test.com in results (empty-string display_name fallback)")
-	}
-	if !foundSpaces {
-		t.Error("expected spaces@test.com in results (whitespace display_name fallback)")
-	}
-}
-
-func TestAggregateByRecipient(t *testing.T) {
-	env := newTestEnv(t)
-
-	rows, err := env.Engine.AggregateByRecipient(env.Ctx, DefaultAggregateOptions())
-	if err != nil {
-		t.Fatalf("AggregateByRecipient: %v", err)
-	}
-
-	assertAggRows(t, rows, []aggExpectation{
-		{"bob@company.org", 3},
-		{"alice@example.com", 2},
-		{"carol@example.com", 1},
-	})
-}
-
-func TestAggregateByDomain(t *testing.T) {
-	env := newTestEnv(t)
-
-	rows, err := env.Engine.AggregateByDomain(env.Ctx, DefaultAggregateOptions())
-	if err != nil {
-		t.Fatalf("AggregateByDomain: %v", err)
-	}
-
-	assertAggRows(t, rows, []aggExpectation{
-		{"example.com", 3},
-		{"company.org", 2},
-	})
-}
-
-func TestAggregateByLabel(t *testing.T) {
-	env := newTestEnv(t)
-
-	rows, err := env.Engine.AggregateByLabel(env.Ctx, DefaultAggregateOptions())
-	if err != nil {
-		t.Fatalf("AggregateByLabel: %v", err)
-	}
-
-	assertAggRows(t, rows, []aggExpectation{
-		{"INBOX", 5},
-		{"Work", 2},
-		{"IMPORTANT", 1},
+	assertRowsContain(t, rows, []aggExpectation{
+		{"empty@test.com", 1},
+		{"spaces@test.com", 1},
 	})
 }
 
@@ -235,21 +194,10 @@ func TestWithAttachmentsOnlyAggregate(t *testing.T) {
 		t.Fatalf("AggregateBySender: %v", err)
 	}
 
-	var aliceAll, bobAll int64
-	for _, row := range allRows {
-		if row.Key == "alice@example.com" {
-			aliceAll = row.Count
-		}
-		if row.Key == "bob@company.org" {
-			bobAll = row.Count
-		}
-	}
-	if aliceAll != 3 {
-		t.Errorf("expected Alice count 3, got %d", aliceAll)
-	}
-	if bobAll != 2 {
-		t.Errorf("expected Bob count 2, got %d", bobAll)
-	}
+	assertRowsContain(t, allRows, []aggExpectation{
+		{"alice@example.com", 3},
+		{"bob@company.org", 2},
+	})
 
 	opts.WithAttachmentsOnly = true
 	attRows, err := env.Engine.AggregateBySender(env.Ctx, opts)
@@ -257,22 +205,10 @@ func TestWithAttachmentsOnlyAggregate(t *testing.T) {
 		t.Fatalf("AggregateBySender with attachment filter: %v", err)
 	}
 
-	var aliceAtt, bobAtt int64
-	for _, row := range attRows {
-		if row.Key == "alice@example.com" {
-			aliceAtt = row.Count
-		}
-		if row.Key == "bob@company.org" {
-			bobAtt = row.Count
-		}
-	}
-
-	if aliceAtt != 1 {
-		t.Errorf("expected Alice attachment count 1, got %d", aliceAtt)
-	}
-	if bobAtt != 1 {
-		t.Errorf("expected Bob attachment count 1, got %d", bobAtt)
-	}
+	assertRowsContain(t, attRows, []aggExpectation{
+		{"alice@example.com", 1},
+		{"bob@company.org", 1},
+	})
 }
 
 // =============================================================================
@@ -348,18 +284,7 @@ func TestSubAggregateByRecipient(t *testing.T) {
 		t.Errorf("expected 2 recipients for alice@example.com, got %d", len(results))
 	}
 
-	var foundBob bool
-	for _, r := range results {
-		if r.Key == "bob@company.org" {
-			foundBob = true
-			if r.Count != 3 {
-				t.Errorf("expected bob@company.org count 3, got %d", r.Count)
-			}
-		}
-	}
-	if !foundBob {
-		t.Error("expected bob@company.org in recipients for alice@example.com")
-	}
+	assertRow(t, results, "bob@company.org", 3)
 }
 
 func TestSubAggregateByLabel(t *testing.T) {
@@ -438,21 +363,6 @@ func TestSubAggregateByTime(t *testing.T) {
 // RecipientName aggregate tests
 // =============================================================================
 
-func TestAggregateByRecipientName(t *testing.T) {
-	env := newTestEnv(t)
-
-	rows, err := env.Engine.AggregateByRecipientName(env.Ctx, DefaultAggregateOptions())
-	if err != nil {
-		t.Fatalf("AggregateByRecipientName: %v", err)
-	}
-
-	assertAggRows(t, rows, []aggExpectation{
-		{"Bob Jones", 3},
-		{"Alice Smith", 2},
-		{"Carol White", 1},
-	})
-}
-
 func TestAggregateByRecipientName_FallbackToEmail(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -464,18 +374,7 @@ func TestAggregateByRecipientName_FallbackToEmail(t *testing.T) {
 		t.Fatalf("AggregateByRecipientName: %v", err)
 	}
 
-	var found bool
-	for _, r := range rows {
-		if r.Key == "noname@test.com" {
-			found = true
-			if r.Count != 1 {
-				t.Errorf("expected noname@test.com count 1, got %d", r.Count)
-			}
-		}
-	}
-	if !found {
-		t.Error("expected noname@test.com in results (display_name fallback)")
-	}
+	assertRow(t, rows, "noname@test.com", 1)
 }
 
 func TestAggregateByRecipientName_EmptyStringFallback(t *testing.T) {
@@ -491,22 +390,10 @@ func TestAggregateByRecipientName_EmptyStringFallback(t *testing.T) {
 		t.Fatalf("AggregateByRecipientName: %v", err)
 	}
 
-	foundEmpty := false
-	foundSpaces := false
-	for _, r := range rows {
-		if r.Key == "empty@test.com" {
-			foundEmpty = true
-		}
-		if r.Key == "spaces@test.com" {
-			foundSpaces = true
-		}
-	}
-	if !foundEmpty {
-		t.Error("expected empty@test.com in results (empty display_name fallback)")
-	}
-	if !foundSpaces {
-		t.Error("expected spaces@test.com in results (whitespace display_name fallback)")
-	}
+	assertRowsContain(t, rows, []aggExpectation{
+		{"empty@test.com", 1},
+		{"spaces@test.com", 1},
+	})
 }
 
 func TestSubAggregateByRecipientName(t *testing.T) {

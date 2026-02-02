@@ -92,6 +92,29 @@ type aggExpectation struct {
 	Count int64
 }
 
+// assertRow finds a single key in the aggregate rows and asserts its count.
+func assertRow(t *testing.T, rows []AggregateRow, key string, count int64) {
+	t.Helper()
+	for _, r := range rows {
+		if r.Key == key {
+			if r.Count != count {
+				t.Errorf("key %q: expected count %d, got %d", key, count, r.Count)
+			}
+			return
+		}
+	}
+	t.Errorf("key %q not found in results", key)
+}
+
+// assertRowsContain verifies that a subset of expected key/count pairs exist
+// in the aggregate rows (order-independent).
+func assertRowsContain(t *testing.T, rows []AggregateRow, want []aggExpectation) {
+	t.Helper()
+	for _, w := range want {
+		assertRow(t, rows, w.Key, w.Count)
+	}
+}
+
 // assertAggRows verifies that aggregate rows contain the expected key/count pairs
 // in the exact order given. This ensures both correctness and default sort behavior.
 func assertAggRows(t *testing.T, rows []AggregateRow, want []aggExpectation) {
