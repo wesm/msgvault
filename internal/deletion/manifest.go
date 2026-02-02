@@ -149,7 +149,7 @@ func (m *Manifest) Save(path string) error {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0600)
 }
 
 // FormatSummary returns a human-readable summary of the deletion.
