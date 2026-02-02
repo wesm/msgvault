@@ -16,7 +16,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Install golangci-lint
-        run: brew install golangci-lint
+        run: brew install golangci-lint@1.64
 
       - name: Test
         run: make test
