@@ -908,17 +908,25 @@ func (m Model) threadView() string {
 
 	var sb strings.Builder
 
+	// Calculate column widths (reserve 3 for selection indicator)
+	dateWidth := 16
+	sizeWidth := 8
+	fromSubjectWidth := m.width - dateWidth - sizeWidth - 9
+	if fromSubjectWidth < 20 {
+		fromSubjectWidth = 20
+	}
+
 	// Header row
-	headerRow := fmt.Sprintf("   %-20s %-40s %19s",
-		"Date",
-		"From / Subject",
-		"Size",
+	headerRow := fmt.Sprintf("   %-*s  %-*s  %*s",
+		dateWidth, "Date",
+		fromSubjectWidth, "From / Subject",
+		sizeWidth, "Size",
 	)
-	sb.WriteString(headerStyle.Render(padRight(headerRow, m.width)))
+	sb.WriteString(tableHeaderStyle.Render(padRight(headerRow, m.width)))
 	sb.WriteString("\n")
 
 	// Separator
-	sb.WriteString(normalRowStyle.Render(strings.Repeat("─", m.width)))
+	sb.WriteString(separatorStyle.Render(strings.Repeat("─", m.width)))
 	sb.WriteString("\n")
 
 	// Calculate visible rows (account for header + separator + notification line)
@@ -936,7 +944,15 @@ func (m Model) threadView() string {
 	// Render visible messages
 	for i := m.threadScrollOffset; i < endRow; i++ {
 		msg := m.threadMessages[i]
-		isSelected := i == m.threadCursor
+		isCursor := i == m.threadCursor
+
+		// Selection indicator
+		var selIndicator string
+		if isCursor {
+			selIndicator = cursorRowStyle.Render("▶  ")
+		} else {
+			selIndicator = "   "
+		}
 
 		// Format date
 		dateStr := msg.SentAt.Format("2006-01-02 15:04")
@@ -952,36 +968,32 @@ func (m Model) threadView() string {
 		if msg.DeletedAt != nil {
 			fromSubject = "🗑 " + fromSubject // Deleted from server indicator
 		}
-		fromSubject = truncateRunes(fromSubject, 40)
-		fromSubject = fmt.Sprintf("%-40s", fromSubject)
+		fromSubject = truncateRunes(fromSubject, fromSubjectWidth)
+		fromSubject = fmt.Sprintf("%-*s", fromSubjectWidth, fromSubject)
 		fromSubject = highlightTerms(fromSubject, m.searchQuery)
 
 		// Format size
 		sizeStr := formatBytes(msg.SizeEstimate)
 
 		// Build row
-		cursor := "  "
-		if isSelected {
-			cursor = "> "
-		}
-		row := fmt.Sprintf("%s %-20s %s %8s",
-			cursor,
-			dateStr,
+		line := fmt.Sprintf("%-*s  %s  %*s",
+			dateWidth, dateStr,
 			fromSubject,
-			sizeStr,
+			sizeWidth, sizeStr,
 		)
 
 		// Apply style
 		var style lipgloss.Style
-		if isSelected {
-			style = selectedRowStyle
+		if isCursor {
+			style = cursorRowStyle
 		} else if i%2 == 0 {
 			style = normalRowStyle
 		} else {
 			style = altRowStyle
 		}
 
-		sb.WriteString(style.Render(padRight(row, m.width)))
+		sb.WriteString(selIndicator)
+		sb.WriteString(style.Render(padRight(line, m.width-3)))
 		sb.WriteString("\n")
 	}
 
