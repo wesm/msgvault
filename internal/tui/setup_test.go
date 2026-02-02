@@ -453,7 +453,7 @@ func makeMessages(n int) []query.MessageSummary {
 	return msgs
 }
 
-// assertDrillState checks level, drill filter field, and that a command was returned.
+// assertDrillState checks level and drill filter field/value.
 func assertDrillState(t *testing.T, m Model, wantLevel viewLevel, wantFilterField, wantFilterValue string) {
 	t.Helper()
 	if m.level != wantLevel {
