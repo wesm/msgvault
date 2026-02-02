@@ -93,29 +93,15 @@ func (e *stubEngine) GetGmailIDsByFilter(_ context.Context, _ query.MessageFilte
 }
 func (e *stubEngine) Close() error { return nil }
 
-func callTool(t *testing.T, h *handlers, name string, args map[string]any) *mcp.CallToolResult {
+// toolHandler is the function signature for MCP tool handler methods.
+type toolHandler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
+
+// callToolDirect invokes a handler directly with the given arguments and returns the raw result.
+func callToolDirect(t *testing.T, fn toolHandler, args map[string]any) *mcp.CallToolResult {
 	t.Helper()
 	req := mcp.CallToolRequest{}
-	req.Params.Name = name
 	req.Params.Arguments = args
-	var handler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
-	switch name {
-	case "search_messages":
-		handler = h.searchMessages
-	case "get_message":
-		handler = h.getMessage
-	case "get_attachment":
-		handler = h.getAttachment
-	case "list_messages":
-		handler = h.listMessages
-	case "get_stats":
-		handler = h.getStats
-	case "aggregate":
-		handler = h.aggregate
-	default:
-		t.Fatalf("unknown tool: %s", name)
-	}
-	result, err := handler(context.Background(), req)
+	result, err := fn(context.Background(), req)
 	if err != nil {
 		t.Fatalf("handler returned error: %v", err)
 	}
@@ -134,6 +120,30 @@ func resultText(t *testing.T, r *mcp.CallToolResult) string {
 	return tc.Text
 }
 
+// runTool invokes a handler, asserts no error, and unmarshals the JSON result into T.
+func runTool[T any](t *testing.T, fn toolHandler, args map[string]any) T {
+	t.Helper()
+	r := callToolDirect(t, fn, args)
+	if r.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, r))
+	}
+	var out T
+	if err := json.Unmarshal([]byte(resultText(t, r)), &out); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	return out
+}
+
+// runToolExpectError invokes a handler and asserts it returns an error result.
+func runToolExpectError(t *testing.T, fn toolHandler, args map[string]any) *mcp.CallToolResult {
+	t.Helper()
+	r := callToolDirect(t, fn, args)
+	if !r.IsError {
+		t.Fatal("expected error result")
+	}
+	return r
+}
+
 func TestSearchMessages(t *testing.T) {
 	now := time.Now()
 	eng := &stubEngine{
@@ -144,24 +154,14 @@ func TestSearchMessages(t *testing.T) {
 	h := &handlers{engine: eng}
 
 	t.Run("valid query", func(t *testing.T) {
-		r := callTool(t, h, "search_messages", map[string]any{"query": "from:alice"})
-		if r.IsError {
-			t.Fatalf("unexpected error: %s", resultText(t, r))
-		}
-		var msgs []query.MessageSummary
-		if err := json.Unmarshal([]byte(resultText(t, r)), &msgs); err != nil {
-			t.Fatal(err)
-		}
+		msgs := runTool[[]query.MessageSummary](t, h.searchMessages, map[string]any{"query": "from:alice"})
 		if len(msgs) != 1 || msgs[0].Subject != "Hello" {
 			t.Fatalf("unexpected result: %v", msgs)
 		}
 	})
 
 	t.Run("missing query", func(t *testing.T) {
-		r := callTool(t, h, "search_messages", map[string]any{})
-		if !r.IsError {
-			t.Fatal("expected error for missing query")
-		}
+		runToolExpectError(t, h.searchMessages, map[string]any{})
 	})
 }
 
@@ -175,14 +175,7 @@ func TestSearchFallbackToFTS(t *testing.T) {
 	}
 	h := &handlers{engine: eng}
 
-	r := callTool(t, h, "search_messages", map[string]any{"query": "important meeting notes"})
-	if r.IsError {
-		t.Fatalf("unexpected error: %s", resultText(t, r))
-	}
-	var msgs []query.MessageSummary
-	if err := json.Unmarshal([]byte(resultText(t, r)), &msgs); err != nil {
-		t.Fatal(err)
-	}
+	msgs := runTool[[]query.MessageSummary](t, h.searchMessages, map[string]any{"query": "important meeting notes"})
 	if len(msgs) != 1 || msgs[0].ID != 2 {
 		t.Fatalf("expected FTS fallback result, got: %v", msgs)
 	}
@@ -197,53 +190,27 @@ func TestGetMessage(t *testing.T) {
 	h := &handlers{engine: eng}
 
 	t.Run("found", func(t *testing.T) {
-		r := callTool(t, h, "get_message", map[string]any{"id": float64(42)})
-		if r.IsError {
-			t.Fatalf("unexpected error: %s", resultText(t, r))
-		}
-		var msg query.MessageDetail
-		if err := json.Unmarshal([]byte(resultText(t, r)), &msg); err != nil {
-			t.Fatal(err)
-		}
+		msg := runTool[query.MessageDetail](t, h.getMessage, map[string]any{"id": float64(42)})
 		if msg.Subject != "Test Message" {
 			t.Fatalf("unexpected subject: %s", msg.Subject)
 		}
 	})
 
-	t.Run("not found", func(t *testing.T) {
-		r := callTool(t, h, "get_message", map[string]any{"id": float64(999)})
-		if !r.IsError {
-			t.Fatal("expected error for not-found message")
-		}
-	})
-
-	t.Run("missing id", func(t *testing.T) {
-		r := callTool(t, h, "get_message", map[string]any{})
-		if !r.IsError {
-			t.Fatal("expected error for missing id")
-		}
-	})
-
-	t.Run("non-integer id", func(t *testing.T) {
-		r := callTool(t, h, "get_message", map[string]any{"id": float64(1.9)})
-		if !r.IsError {
-			t.Fatal("expected error for non-integer id")
-		}
-	})
-
-	t.Run("negative id", func(t *testing.T) {
-		r := callTool(t, h, "get_message", map[string]any{"id": float64(-1)})
-		if !r.IsError {
-			t.Fatal("expected error for negative id")
-		}
-	})
-
-	t.Run("overflow id", func(t *testing.T) {
-		r := callTool(t, h, "get_message", map[string]any{"id": float64(1e19)})
-		if !r.IsError {
-			t.Fatal("expected error for overflow id")
-		}
-	})
+	errorCases := []struct {
+		name string
+		args map[string]any
+	}{
+		{"not found", map[string]any{"id": float64(999)}},
+		{"missing id", map[string]any{}},
+		{"non-integer id", map[string]any{"id": float64(1.9)}},
+		{"negative id", map[string]any{"id": float64(-1)}},
+		{"overflow id", map[string]any{"id": float64(1e19)}},
+	}
+	for _, tt := range errorCases {
+		t.Run(tt.name, func(t *testing.T) {
+			runToolExpectError(t, h.getMessage, tt.args)
+		})
+	}
 }
 
 func TestGetStats(t *testing.T) {
@@ -260,18 +227,11 @@ func TestGetStats(t *testing.T) {
 	}
 	h := &handlers{engine: eng}
 
-	r := callTool(t, h, "get_stats", map[string]any{})
-	if r.IsError {
-		t.Fatalf("unexpected error: %s", resultText(t, r))
-	}
-
-	var resp struct {
+	resp := runTool[struct {
 		Stats    query.TotalStats   `json:"stats"`
 		Accounts []query.AccountInfo `json:"accounts"`
-	}
-	if err := json.Unmarshal([]byte(resultText(t, r)), &resp); err != nil {
-		t.Fatal(err)
-	}
+	}](t, h.getStats, map[string]any{})
+
 	if resp.Stats.MessageCount != 1000 {
 		t.Fatalf("unexpected message count: %d", resp.Stats.MessageCount)
 	}
@@ -291,33 +251,25 @@ func TestAggregate(t *testing.T) {
 
 	for _, groupBy := range []string{"sender", "recipient", "domain", "label", "time"} {
 		t.Run(groupBy, func(t *testing.T) {
-			r := callTool(t, h, "aggregate", map[string]any{"group_by": groupBy})
-			if r.IsError {
-				t.Fatalf("unexpected error: %s", resultText(t, r))
-			}
-			var rows []query.AggregateRow
-			if err := json.Unmarshal([]byte(resultText(t, r)), &rows); err != nil {
-				t.Fatal(err)
-			}
+			rows := runTool[[]query.AggregateRow](t, h.aggregate, map[string]any{"group_by": groupBy})
 			if len(rows) != 2 {
 				t.Fatalf("expected 2 rows, got %d", len(rows))
 			}
 		})
 	}
 
-	t.Run("invalid group_by", func(t *testing.T) {
-		r := callTool(t, h, "aggregate", map[string]any{"group_by": "invalid"})
-		if !r.IsError {
-			t.Fatal("expected error for invalid group_by")
-		}
-	})
-
-	t.Run("missing group_by", func(t *testing.T) {
-		r := callTool(t, h, "aggregate", map[string]any{})
-		if !r.IsError {
-			t.Fatal("expected error for missing group_by")
-		}
-	})
+	errorCases := []struct {
+		name string
+		args map[string]any
+	}{
+		{"invalid group_by", map[string]any{"group_by": "invalid"}},
+		{"missing group_by", map[string]any{}},
+	}
+	for _, tt := range errorCases {
+		t.Run(tt.name, func(t *testing.T) {
+			runToolExpectError(t, h.aggregate, tt.args)
+		})
+	}
 }
 
 func TestListMessages(t *testing.T) {
@@ -330,69 +282,66 @@ func TestListMessages(t *testing.T) {
 	h := &handlers{engine: eng}
 
 	t.Run("valid filters", func(t *testing.T) {
-		r := callTool(t, h, "list_messages", map[string]any{
+		msgs := runTool[[]query.MessageSummary](t, h.listMessages, map[string]any{
 			"from":  "alice@example.com",
 			"after": "2024-01-01",
 			"limit": float64(10),
 		})
-		if r.IsError {
-			t.Fatalf("unexpected error: %s", resultText(t, r))
-		}
-		var msgs []query.MessageSummary
-		if err := json.Unmarshal([]byte(resultText(t, r)), &msgs); err != nil {
-			t.Fatal(err)
-		}
 		if len(msgs) != 1 {
 			t.Fatalf("expected 1 message, got %d", len(msgs))
 		}
 	})
 
-	t.Run("invalid after date", func(t *testing.T) {
-		r := callTool(t, h, "list_messages", map[string]any{"after": "not-a-date"})
-		if !r.IsError {
-			t.Fatal("expected error for invalid after date")
-		}
-	})
-
-	t.Run("invalid before date", func(t *testing.T) {
-		r := callTool(t, h, "list_messages", map[string]any{"before": "2024/01/01"})
-		if !r.IsError {
-			t.Fatal("expected error for invalid before date")
-		}
-	})
+	errorCases := []struct {
+		name string
+		args map[string]any
+	}{
+		{"invalid after date", map[string]any{"after": "not-a-date"}},
+		{"invalid before date", map[string]any{"before": "2024/01/01"}},
+	}
+	for _, tt := range errorCases {
+		t.Run(tt.name, func(t *testing.T) {
+			runToolExpectError(t, h.listMessages, tt.args)
+		})
+	}
 }
 
 func TestAggregateInvalidDates(t *testing.T) {
 	eng := &stubEngine{}
 	h := &handlers{engine: eng}
 
-	t.Run("invalid after", func(t *testing.T) {
-		r := callTool(t, h, "aggregate", map[string]any{"group_by": "sender", "after": "bad"})
-		if !r.IsError {
-			t.Fatal("expected error for invalid after date")
-		}
-	})
-
-	t.Run("invalid before", func(t *testing.T) {
-		r := callTool(t, h, "aggregate", map[string]any{"group_by": "sender", "before": "bad"})
-		if !r.IsError {
-			t.Fatal("expected error for invalid before date")
-		}
-	})
+	errorCases := []struct {
+		name string
+		args map[string]any
+	}{
+		{"invalid after", map[string]any{"group_by": "sender", "after": "bad"}},
+		{"invalid before", map[string]any{"group_by": "sender", "before": "bad"}},
+	}
+	for _, tt := range errorCases {
+		t.Run(tt.name, func(t *testing.T) {
+			runToolExpectError(t, h.aggregate, tt.args)
+		})
+	}
 }
 
-func TestGetAttachment(t *testing.T) {
-	// Create temp dir with a test attachment file
-	tmpDir := t.TempDir()
-	hash := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	hashDir := filepath.Join(tmpDir, hash[:2])
+// createAttachmentFixture creates a temp file under dir with the given hash and content,
+// returning the hash for use in test setup.
+func createAttachmentFixture(t *testing.T, dir string, hash string, content []byte) {
+	t.Helper()
+	hashDir := filepath.Join(dir, hash[:2])
 	if err := os.MkdirAll(hashDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	content := []byte("hello world PDF content")
 	if err := os.WriteFile(filepath.Join(hashDir, hash), content, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestGetAttachment(t *testing.T) {
+	tmpDir := t.TempDir()
+	hash := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	content := []byte("hello world PDF content")
+	createAttachmentFixture(t, tmpDir, hash, content)
 
 	eng := &stubEngine{
 		attachments: map[int64]*query.AttachmentInfo{
@@ -403,19 +352,13 @@ func TestGetAttachment(t *testing.T) {
 	h := &handlers{engine: eng, attachmentsDir: tmpDir}
 
 	t.Run("valid", func(t *testing.T) {
-		r := callTool(t, h, "get_attachment", map[string]any{"attachment_id": float64(10)})
-		if r.IsError {
-			t.Fatalf("unexpected error: %s", resultText(t, r))
-		}
-		var resp struct {
+		resp := runTool[struct {
 			Filename      string `json:"filename"`
 			MimeType      string `json:"mime_type"`
 			Size          int64  `json:"size"`
 			ContentBase64 string `json:"content_base64"`
-		}
-		if err := json.Unmarshal([]byte(resultText(t, r)), &resp); err != nil {
-			t.Fatal(err)
-		}
+		}](t, h.getAttachment, map[string]any{"attachment_id": float64(10)})
+
 		if resp.Filename != "report.pdf" {
 			t.Fatalf("unexpected filename: %s", resp.Filename)
 		}
@@ -431,33 +374,20 @@ func TestGetAttachment(t *testing.T) {
 		}
 	})
 
-	t.Run("missing attachment_id", func(t *testing.T) {
-		r := callTool(t, h, "get_attachment", map[string]any{})
-		if !r.IsError {
-			t.Fatal("expected error for missing attachment_id")
-		}
-	})
-
-	t.Run("non-integer id", func(t *testing.T) {
-		r := callTool(t, h, "get_attachment", map[string]any{"attachment_id": float64(1.5)})
-		if !r.IsError {
-			t.Fatal("expected error for non-integer id")
-		}
-	})
-
-	t.Run("not found", func(t *testing.T) {
-		r := callTool(t, h, "get_attachment", map[string]any{"attachment_id": float64(999)})
-		if !r.IsError {
-			t.Fatal("expected error for not-found attachment")
-		}
-	})
-
-	t.Run("missing hash", func(t *testing.T) {
-		r := callTool(t, h, "get_attachment", map[string]any{"attachment_id": float64(11)})
-		if !r.IsError {
-			t.Fatal("expected error for attachment with no content hash")
-		}
-	})
+	errorCases := []struct {
+		name string
+		args map[string]any
+	}{
+		{"missing attachment_id", map[string]any{}},
+		{"non-integer id", map[string]any{"attachment_id": float64(1.5)}},
+		{"not found", map[string]any{"attachment_id": float64(999)}},
+		{"missing hash", map[string]any{"attachment_id": float64(11)}},
+	}
+	for _, tt := range errorCases {
+		t.Run(tt.name, func(t *testing.T) {
+			runToolExpectError(t, h.getAttachment, tt.args)
+		})
+	}
 
 	t.Run("invalid content hash (path traversal)", func(t *testing.T) {
 		eng2 := &stubEngine{
@@ -466,10 +396,7 @@ func TestGetAttachment(t *testing.T) {
 			},
 		}
 		h2 := &handlers{engine: eng2, attachmentsDir: tmpDir}
-		r := callTool(t, h2, "get_attachment", map[string]any{"attachment_id": float64(30)})
-		if !r.IsError {
-			t.Fatal("expected error for path-traversal hash")
-		}
+		r := runToolExpectError(t, h2.getAttachment, map[string]any{"attachment_id": float64(30)})
 		if txt := resultText(t, r); txt != "attachment has invalid content hash" {
 			t.Fatalf("unexpected error: %s", txt)
 		}
@@ -482,10 +409,7 @@ func TestGetAttachment(t *testing.T) {
 			},
 		}
 		h2 := &handlers{engine: eng2, attachmentsDir: tmpDir}
-		r := callTool(t, h2, "get_attachment", map[string]any{"attachment_id": float64(31)})
-		if !r.IsError {
-			t.Fatal("expected error for non-hex hash")
-		}
+		runToolExpectError(t, h2.getAttachment, map[string]any{"attachment_id": float64(31)})
 	})
 
 	t.Run("attachmentsDir not configured", func(t *testing.T) {
@@ -495,10 +419,7 @@ func TestGetAttachment(t *testing.T) {
 			},
 		}
 		h2 := &handlers{engine: eng2, attachmentsDir: ""}
-		r := callTool(t, h2, "get_attachment", map[string]any{"attachment_id": float64(10)})
-		if !r.IsError {
-			t.Fatal("expected error for empty attachmentsDir")
-		}
+		runToolExpectError(t, h2.getAttachment, map[string]any{"attachment_id": float64(10)})
 	})
 
 	t.Run("oversized attachment", func(t *testing.T) {
@@ -511,7 +432,6 @@ func TestGetAttachment(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Create sparse file just over the limit.
 		if err := bigFile.Truncate(maxAttachmentSize + 1); err != nil {
 			bigFile.Close()
 			t.Fatal(err)
@@ -524,10 +444,7 @@ func TestGetAttachment(t *testing.T) {
 			},
 		}
 		h2 := &handlers{engine: eng2, attachmentsDir: tmpDir}
-		r := callTool(t, h2, "get_attachment", map[string]any{"attachment_id": float64(40)})
-		if !r.IsError {
-			t.Fatal("expected error for oversized attachment")
-		}
+		r := runToolExpectError(t, h2.getAttachment, map[string]any{"attachment_id": float64(40)})
 		if txt := resultText(t, r); !strings.Contains(txt, "too large") {
 			t.Fatalf("expected 'too large' error, got: %s", txt)
 		}
@@ -540,10 +457,7 @@ func TestGetAttachment(t *testing.T) {
 			},
 		}
 		h2 := &handlers{engine: eng2, attachmentsDir: tmpDir}
-		r := callTool(t, h2, "get_attachment", map[string]any{"attachment_id": float64(20)})
-		if !r.IsError {
-			t.Fatal("expected error for missing file on disk")
-		}
+		runToolExpectError(t, h2.getAttachment, map[string]any{"attachment_id": float64(20)})
 	})
 }
 
