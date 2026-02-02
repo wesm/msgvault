@@ -59,7 +59,10 @@ func TestAggregations(t *testing.T) {
 				"AggregateByLabel":         env.Engine.AggregateByLabel,
 				"AggregateByRecipientName": env.Engine.AggregateByRecipientName,
 			}
-			aggFunc := aggFuncs[tc.aggName]
+			aggFunc, ok := aggFuncs[tc.aggName]
+			if !ok {
+				t.Fatalf("unknown aggName %q", tc.aggName)
+			}
 			rows, err := aggFunc(env.Ctx, DefaultAggregateOptions())
 			if err != nil {
 				t.Fatalf("%s: %v", tc.aggName, err)
