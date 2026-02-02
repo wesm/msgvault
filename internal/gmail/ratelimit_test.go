@@ -2,6 +2,7 @@ package gmail
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -40,6 +41,26 @@ func (c *mockClock) After(d time.Duration) <-chan time.Time {
 	}
 	c.timers = append(c.timers, mockTimer{deadline: deadline, ch: ch})
 	return ch
+}
+
+// TimerCount returns the number of pending timers.
+func (c *mockClock) TimerCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.timers)
+}
+
+// waitForTimers spins until the mock clock has at least n pending timers,
+// avoiding wall-clock sleeps in mock-clock-based tests.
+func waitForTimers(t *testing.T, clk *mockClock, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for clk.TimerCount() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d timer(s); have %d", n, clk.TimerCount())
+		}
+		runtime.Gosched()
+	}
 }
 
 // Advance moves the clock forward and fires any pending timers.
@@ -213,8 +234,9 @@ func TestRateLimiter_Acquire_ContextTimeout(t *testing.T) {
 		done <- rl.Acquire(ctx, OpMessagesBatchDelete)
 	}()
 
-	// Allow goroutines to register their mock clock timers
-	time.Sleep(50 * time.Millisecond)
+	// Wait for both goroutines to register their mock clock timers
+	// (cancel goroutine's clk.After + Acquire's internal clk.After)
+	waitForTimers(t, clk, 2)
 
 	// Advance mock clock past the cancel point
 	clk.Advance(100 * time.Millisecond)
