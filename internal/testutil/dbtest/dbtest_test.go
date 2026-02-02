@@ -85,7 +85,7 @@ func TestAddMessage_DBErrorFailsTest(t *testing.T) {
 	tdb.DB.Close()
 
 	func() {
-		defer func() { recover() }()
+		defer func() { _ = recover() }()
 		fakeTDB.AddMessage(MessageOpts{
 			ConversationID: 1,
 			Subject:        "db error",

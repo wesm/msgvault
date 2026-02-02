@@ -68,23 +68,23 @@ func newMockEngine(rows []query.AggregateRow, messages []query.MessageSummary, d
 
 // TestModelBuilder helps construct Model instances for testing
 type TestModelBuilder struct {
-	rows          []query.AggregateRow
-	messages      []query.MessageSummary
-	messageDetail *query.MessageDetail
-	gmailIDs      []string
-	accounts      []query.AccountInfo
-	width         int
-	height        int
-	pageSize      int  // explicit override; 0 means auto-calculate from height
-	rawPageSize   bool // when true, pageSize is set without clamping
-	viewType      query.ViewType
-	level         viewLevel
-	dataDir       string
-	version       string
-	loading       *bool // nil = auto (false if data provided), non-nil = explicit
-	modal         *modalType
-	accountFilter *int64
-	stats         *query.TotalStats
+	rows              []query.AggregateRow
+	messages          []query.MessageSummary
+	messageDetail     *query.MessageDetail
+	gmailIDs          []string
+	accounts          []query.AccountInfo
+	width             int
+	height            int
+	pageSize          int  // explicit override; 0 means auto-calculate from height
+	rawPageSize       bool // when true, pageSize is set without clamping
+	viewType          query.ViewType
+	level             viewLevel
+	dataDir           string
+	version           string
+	loading           *bool // nil = auto (false if data provided), non-nil = explicit
+	modal             *modalType
+	accountFilter     *int64
+	stats             *query.TotalStats
 	contextStats      *query.TotalStats
 	activeSearchQuery string
 	activeSearchMode  *searchModeKind
@@ -306,7 +306,6 @@ var (
 		{Key: "alice@example.com", Count: 100, TotalSize: 500000},
 		{Key: "bob@example.com", Count: 50, TotalSize: 250000},
 	}
-
 )
 
 // standardStats returns a fresh stats object (1000 msgs, ~5MB, 50 attachments)
@@ -455,36 +454,6 @@ func makeMessages(n int) []query.MessageSummary {
 		}
 	}
 	return msgs
-}
-
-// assertDrillState checks level and drill filter field/value.
-func assertDrillState(t *testing.T, m Model, wantLevel viewLevel, wantFilterField, wantFilterValue string) {
-	t.Helper()
-	if m.level != wantLevel {
-		t.Errorf("level: got %v, want %v", m.level, wantLevel)
-	}
-	var got string
-	switch wantFilterField {
-	case "Sender":
-		got = m.drillFilter.Sender
-	case "Recipient":
-		got = m.drillFilter.Recipient
-	case "SenderName":
-		got = m.drillFilter.SenderName
-	case "RecipientName":
-		got = m.drillFilter.RecipientName
-	case "Domain":
-		got = m.drillFilter.Domain
-	case "Label":
-		got = m.drillFilter.Label
-	case "TimePeriod":
-		got = m.drillFilter.TimePeriod
-	default:
-		t.Fatalf("unknown filter field %q", wantFilterField)
-	}
-	if got != wantFilterValue {
-		t.Errorf("drillFilter.%s: got %q, want %q", wantFilterField, got, wantFilterValue)
-	}
 }
 
 // assertSelected checks that the given key is selected.
@@ -699,4 +668,3 @@ func assertContextStats(t *testing.T, m Model, wantCount int, wantSize int64, wa
 // =============================================================================
 // Tests
 // =============================================================================
-
