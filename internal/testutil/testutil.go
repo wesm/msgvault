@@ -2,6 +2,7 @@
 package testutil
 
 import (
+	"archive/zip"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -184,4 +185,33 @@ func MustNoErr(t *testing.T, err error, msg string) {
 	if err != nil {
 		t.Fatalf("%s: %v", msg, err)
 	}
+}
+
+// CreateTempZip creates a zip file in a temporary directory containing the
+// provided entries (filename -> content). Returns the path to the zip file.
+func CreateTempZip(t *testing.T, entries map[string]string) string {
+	t.Helper()
+
+	zipPath := filepath.Join(t.TempDir(), "test.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatalf("create zip file: %v", err)
+	}
+	defer f.Close()
+
+	w := zip.NewWriter(f)
+	for name, content := range entries {
+		fw, err := w.Create(name)
+		if err != nil {
+			t.Fatalf("create zip entry %s: %v", name, err)
+		}
+		if _, err := fw.Write([]byte(content)); err != nil {
+			t.Fatalf("write zip entry %s: %v", name, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close zip writer: %v", err)
+	}
+
+	return zipPath
 }

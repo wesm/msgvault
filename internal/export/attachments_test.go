@@ -8,23 +8,31 @@ import (
 	"github.com/wesm/msgvault/internal/query"
 )
 
+func assertContainsSubstrings(t *testing.T, got string, subs []string) {
+	t.Helper()
+	for _, sub := range subs {
+		if !strings.Contains(got, sub) {
+			t.Errorf("Result missing expected substring: %q\n  got: %q", sub, got)
+		}
+	}
+}
+
 func TestAttachments(t *testing.T) {
 	tests := []struct {
-		name            string
-		inputs          []query.AttachmentInfo
-		wantErr         bool
-		wantInResult    string
-		wantAllInResult []string
+		name           string
+		inputs         []query.AttachmentInfo
+		wantErr        bool
+		wantSubstrings []string
 	}{
 		{
-			name:         "empty content hash is skipped",
-			inputs:       []query.AttachmentInfo{{Filename: "file.txt", ContentHash: ""}},
-			wantInResult: "file.txt: missing or invalid content hash",
+			name:           "empty content hash is skipped",
+			inputs:         []query.AttachmentInfo{{Filename: "file.txt", ContentHash: ""}},
+			wantSubstrings: []string{"file.txt: missing or invalid content hash"},
 		},
 		{
-			name:         "single-char content hash is skipped",
-			inputs:       []query.AttachmentInfo{{Filename: "file2.txt", ContentHash: "a"}},
-			wantInResult: "file2.txt: missing or invalid content hash",
+			name:           "single-char content hash is skipped",
+			inputs:         []query.AttachmentInfo{{Filename: "file2.txt", ContentHash: "a"}},
+			wantSubstrings: []string{"file2.txt: missing or invalid content hash"},
 		},
 		{
 			name: "mixed short hashes all reported",
@@ -32,16 +40,16 @@ func TestAttachments(t *testing.T) {
 				{Filename: "file.txt", ContentHash: ""},
 				{Filename: "file2.txt", ContentHash: "a"},
 			},
-			wantInResult: "No attachments exported",
-			wantAllInResult: []string{
+			wantSubstrings: []string{
+				"No attachments exported",
 				"file.txt: missing or invalid content hash",
 				"file2.txt: missing or invalid content hash",
 			},
 		},
 		{
-			name:         "nil inputs produces no panic",
-			inputs:       nil,
-			wantInResult: "No attachments exported",
+			name:           "nil inputs produces no panic",
+			inputs:         nil,
+			wantSubstrings: []string{"No attachments exported"},
 		},
 	}
 
@@ -56,14 +64,7 @@ func TestAttachments(t *testing.T) {
 				t.Fatalf("Attachments() error = %v, wantErr %v", result.Err, tt.wantErr)
 			}
 
-			if tt.wantInResult != "" && !strings.Contains(result.Result, tt.wantInResult) {
-				t.Errorf("Attachments() result = %q, want substring %q", result.Result, tt.wantInResult)
-			}
-			for _, want := range tt.wantAllInResult {
-				if !strings.Contains(result.Result, want) {
-					t.Errorf("Attachments() result = %q, want substring %q", result.Result, want)
-				}
-			}
+			assertContainsSubstrings(t, result.Result, tt.wantSubstrings)
 		})
 	}
 }
