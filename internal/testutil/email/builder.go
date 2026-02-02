@@ -77,7 +77,7 @@ func (b *MessageBuilder) Body(v string) *MessageBuilder { b.body = v; return b }
 // overwritten (last-write-wins); otherwise the header is appended.
 func (b *MessageBuilder) Header(key, value string) *MessageBuilder {
 	for i, k := range b.headerKeys {
-		if k == key {
+		if strings.EqualFold(k, key) {
 			b.headerVals[i] = value
 			return b
 		}
