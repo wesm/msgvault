@@ -911,10 +911,9 @@ func (m Model) threadView() string {
 	// Calculate column widths (reserve 3 for selection indicator + 6 for spacing)
 	dateWidth := 16
 	sizeWidth := 8
-	available := m.width - dateWidth - sizeWidth - 9
-	fromSubjectWidth := available
-	if fromSubjectWidth < 10 {
-		fromSubjectWidth = 10
+	fromSubjectWidth := m.width - dateWidth - sizeWidth - 9
+	if fromSubjectWidth < 1 {
+		fromSubjectWidth = 1
 	}
 
 	// Header row
@@ -1355,18 +1354,52 @@ func min(a, b int) int {
 }
 
 // overlayModal renders a modal dialog over the content.
-// helpLineCount is the number of lines in the help modal content.
-// Must be kept in sync with the helpLines slice in overlayModal.
-const helpLineCount = 31
+// helpLines returns the content lines for the help modal.
+func helpLines() []string {
+	return []string{
+		modalTitleStyle.Render("Keyboard Shortcuts"),
+		"",
+		"Navigation",
+		"  ↑/k, ↓/j    Move cursor up/down",
+		"  ←/h, →/l    Prev/next message (in detail view)",
+		"  PgUp/PgDn   Page up/down",
+		"  Home/End    Go to first/last",
+		"  Enter       Drill down",
+		"  Esc         Go back",
+		"",
+		"Views & Sorting",
+		"  g/Tab       Cycle view types",
+		"  t           Jump to Time view (cycle granularity when in Time)",
+		"  s           Cycle sort field",
+		"  v/r         Reverse sort order",
+		"",
+		"Selection & Actions",
+		"  Space       Toggle selection",
+		"  S           Select all visible",
+		"  x           Clear selection",
+		"  d/D         Stage for deletion",
+		"  a           View all messages",
+		"",
+		"Other",
+		"  /           Search",
+		"  A           Select account",
+		"  f           Filter by attachments",
+		"  e           Export attachments (in message view)",
+		"  q           Quit",
+		"",
+		"[↑/↓] Scroll  [Any other key] Close",
+	}
+}
 
 // helpMaxVisible returns the max visible lines for the help modal given terminal height.
 func (m Model) helpMaxVisible() int {
+	count := len(helpLines())
 	v := m.height - 6
 	if v < 1 {
 		v = 1
 	}
-	if v > helpLineCount {
-		v = helpLineCount
+	if v > count {
+		v = count
 	}
 	return v
 }
@@ -1432,44 +1465,11 @@ func (m Model) overlayModal(background string) string {
 		modalContent += "\n[↑/↓] Navigate  [Enter] Select  [Esc] Cancel"
 
 	case modalHelp:
-		var helpLines []string
-		helpLines = append(helpLines, modalTitleStyle.Render("Keyboard Shortcuts"))
-		helpLines = append(helpLines, "")
-		helpLines = append(helpLines, "Navigation")
-		helpLines = append(helpLines, "  ↑/k, ↓/j    Move cursor up/down")
-		helpLines = append(helpLines, "  ←/h, →/l    Prev/next message (in detail view)")
-		helpLines = append(helpLines, "  PgUp/PgDn   Page up/down")
-		helpLines = append(helpLines, "  Home/End    Go to first/last")
-		helpLines = append(helpLines, "  Enter       Drill down")
-		helpLines = append(helpLines, "  Esc         Go back")
-		helpLines = append(helpLines, "")
-		helpLines = append(helpLines, "Views & Sorting")
-		helpLines = append(helpLines, "  g/Tab       Cycle view types")
-		helpLines = append(helpLines, "  t           Jump to Time view (cycle granularity when in Time)")
-		helpLines = append(helpLines, "  s           Cycle sort field")
-		helpLines = append(helpLines, "  v/r         Reverse sort order")
-		helpLines = append(helpLines, "")
-		helpLines = append(helpLines, "Selection & Actions")
-		helpLines = append(helpLines, "  Space       Toggle selection")
-		helpLines = append(helpLines, "  S           Select all visible")
-		helpLines = append(helpLines, "  x           Clear selection")
-		helpLines = append(helpLines, "  d/D         Stage for deletion")
-		helpLines = append(helpLines, "  a           View all messages")
-		helpLines = append(helpLines, "")
-		helpLines = append(helpLines, "Other")
-		helpLines = append(helpLines, "  /           Search")
-		helpLines = append(helpLines, "  A           Select account")
-		helpLines = append(helpLines, "  f           Filter by attachments")
-		helpLines = append(helpLines, "  e           Export attachments (in message view)")
-		helpLines = append(helpLines, "  q           Quit")
-		helpLines = append(helpLines, "")
-		helpLines = append(helpLines, "[↑/↓] Scroll  [Any other key] Close")
-
-		// Scrollable window
+		lines := helpLines()
 		maxVisible := m.helpMaxVisible()
 
 		// Clamp scroll offset
-		maxScroll := len(helpLines) - maxVisible
+		maxScroll := len(lines) - maxVisible
 		if maxScroll < 0 {
 			maxScroll = 0
 		}
@@ -1477,7 +1477,7 @@ func (m Model) overlayModal(background string) string {
 			m.helpScroll = maxScroll
 		}
 
-		visible := helpLines[m.helpScroll : m.helpScroll+maxVisible]
+		visible := lines[m.helpScroll : m.helpScroll+maxVisible]
 		modalContent = strings.Join(visible, "\n")
 
 	case modalExportAttachments:
