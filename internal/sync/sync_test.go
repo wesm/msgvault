@@ -662,3 +662,46 @@ func TestFullSyncListEmptyThreadIDRawPresent(t *testing.T) {
 
 	assertThreadSourceID(t, env.Store, "msg-list-empty", "actual-thread-from-raw")
 }
+
+// TestAttachmentFilePermissions verifies that attachment files are saved with
+// restrictive permissions (0600) to protect email content.
+func TestAttachmentFilePermissions(t *testing.T) {
+	env := newTestEnv(t)
+	env.Mock.Profile.MessagesTotal = 1
+	env.Mock.Profile.HistoryID = 12345
+	env.Mock.AddMessage("msg-with-attachment", testMIMEWithAttachment, []string{"INBOX"})
+
+	attachDir := withAttachmentsDir(t, env)
+
+	runFullSync(t, env)
+
+	// Find the attachment file
+	var attachmentPath string
+	err := filepath.WalkDir(attachDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			attachmentPath = path
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(%s): %v", attachDir, err)
+	}
+	if attachmentPath == "" {
+		t.Fatal("no attachment file found")
+	}
+
+	info, err := os.Stat(attachmentPath)
+	if err != nil {
+		t.Fatalf("Stat(%s) error = %v", attachmentPath, err)
+	}
+
+	// File should have 0600 permissions (owner read/write only)
+	got := info.Mode().Perm()
+	want := os.FileMode(0600)
+	if got != want {
+		t.Errorf("attachment file permissions = %04o, want %04o", got, want)
+	}
+}
