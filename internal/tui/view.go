@@ -719,6 +719,12 @@ func (m Model) buildDetailLines() []string {
 		lines = append(lines, fmt.Sprintf("Cc: %s", cc))
 	}
 
+	// Bcc
+	if len(msg.Bcc) > 0 {
+		bcc := formatAddresses(msg.Bcc)
+		lines = append(lines, fmt.Sprintf("Bcc: %s", bcc))
+	}
+
 	// Labels
 	if len(msg.Labels) > 0 {
 		lines = append(lines, fmt.Sprintf("Labels: %s", strings.Join(msg.Labels, ", ")))
