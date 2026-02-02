@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
 	"github.com/wesm/msgvault/internal/query"
 )
 
@@ -941,11 +940,7 @@ func TestLayoutFitsTerminalHeight(t *testing.T) {
 // TestModalCompositingPreservesANSI verifies that modal overlay doesn't corrupt ANSI sequences.
 // Note: This test mutates the global lipgloss color profile. Do not add t.Parallel().
 func TestModalCompositingPreservesANSI(t *testing.T) {
-	// Enable ANSI color output for this test, restore original profile when done.
-	// This mutates a global, so this test must run sequentially (no t.Parallel).
-	origProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI)
-	defer lipgloss.SetColorProfile(origProfile)
+	forceColorProfile(t)
 
 	model := NewBuilder().
 		WithRows(

@@ -3,14 +3,44 @@ package tui
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/query/querytest"
 	"github.com/wesm/msgvault/internal/search"
 )
+
+// ansiStart is the escape sequence prefix found in styled terminal output.
+const ansiStart = "\x1b["
+
+// colorProfileMu serializes tests that mutate the global lipgloss color profile.
+var colorProfileMu sync.Mutex
+
+// forceColorProfile sets lipgloss to ANSI color output for tests that assert
+// on styled output. It acquires colorProfileMu to prevent data races with
+// parallel tests and restores the original profile via t.Cleanup.
+func forceColorProfile(t *testing.T) {
+	t.Helper()
+	colorProfileMu.Lock()
+	orig := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(orig)
+		colorProfileMu.Unlock()
+	})
+}
+
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+
+func stripANSI(s string) string {
+	return ansiPattern.ReplaceAllString(s, "")
+}
 
 // newMockEngine creates a querytest.MockEngine configured for TUI testing.
 // The messages slice is returned from ListMessages, Search, SearchFast, and

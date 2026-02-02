@@ -1602,9 +1602,6 @@ func TestScrollClampingAfterResize(t *testing.T) {
 	}
 }
 
-// TestModalCompositingPreservesANSI verifies that modal overlay doesn't corrupt ANSI sequences.
-// Note: This test mutates the global lipgloss color profile. Do not add t.Parallel().
-
 // TestSubAggregateAKeyJumpsToMessages verifies 'a' key in sub-aggregate view
 // jumps to message list with the drill filter applied.
 func TestSubAggregateAKeyJumpsToMessages(t *testing.T) {
