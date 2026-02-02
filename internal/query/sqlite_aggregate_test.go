@@ -36,8 +36,8 @@ func TestAggregateBySenderName(t *testing.T) {
 func TestAggregateBySenderName_FallbackToEmail(t *testing.T) {
 	env := newTestEnv(t)
 
-	env.AddParticipant(participantOpts{Email: "noname@test.com", DisplayName: nil, Domain: "test.com"})
-	env.AddMessage(messageOpts{Subject: "No Name Test", SentAt: "2024-05-01 10:00:00", FromID: 100})
+	noNameID := env.AddParticipant(participantOpts{Email: strPtr("noname@test.com"), DisplayName: nil, Domain: "test.com"})
+	env.AddMessage(messageOpts{Subject: "No Name Test", SentAt: "2024-05-01 10:00:00", FromID: noNameID})
 
 	rows, err := env.Engine.AggregateBySenderName(env.Ctx, DefaultAggregateOptions())
 	if err != nil {
@@ -65,8 +65,8 @@ func TestAggregateBySenderName_FallbackToEmail(t *testing.T) {
 func TestAggregateBySenderName_EmptyStringFallback(t *testing.T) {
 	env := newTestEnv(t)
 
-	emptyID := env.AddParticipant(participantOpts{Email: "empty@test.com", DisplayName: strPtr(""), Domain: "test.com"})
-	spacesID := env.AddParticipant(participantOpts{Email: "spaces@test.com", DisplayName: strPtr("   "), Domain: "test.com"})
+	emptyID := env.AddParticipant(participantOpts{Email: strPtr("empty@test.com"), DisplayName: strPtr(""), Domain: "test.com"})
+	spacesID := env.AddParticipant(participantOpts{Email: strPtr("spaces@test.com"), DisplayName: strPtr("   "), Domain: "test.com"})
 	env.AddMessage(messageOpts{Subject: "Empty Name", SentAt: "2024-05-01 10:00:00", FromID: emptyID})
 	env.AddMessage(messageOpts{Subject: "Spaces Name", SentAt: "2024-05-02 10:00:00", FromID: spacesID})
 
@@ -456,7 +456,7 @@ func TestAggregateByRecipientName(t *testing.T) {
 func TestAggregateByRecipientName_FallbackToEmail(t *testing.T) {
 	env := newTestEnv(t)
 
-	noNameID := env.AddParticipant(participantOpts{Email: "noname@test.com", DisplayName: nil, Domain: "test.com"})
+	noNameID := env.AddParticipant(participantOpts{Email: strPtr("noname@test.com"), DisplayName: nil, Domain: "test.com"})
 	env.AddMessage(messageOpts{Subject: "No Name Recipient", SentAt: "2024-05-01 10:00:00", FromID: 1, ToIDs: []int64{noNameID}})
 
 	rows, err := env.Engine.AggregateByRecipientName(env.Ctx, DefaultAggregateOptions())
@@ -481,8 +481,8 @@ func TestAggregateByRecipientName_FallbackToEmail(t *testing.T) {
 func TestAggregateByRecipientName_EmptyStringFallback(t *testing.T) {
 	env := newTestEnv(t)
 
-	emptyID := env.AddParticipant(participantOpts{Email: "empty@test.com", DisplayName: strPtr(""), Domain: "test.com"})
-	spacesID := env.AddParticipant(participantOpts{Email: "spaces@test.com", DisplayName: strPtr("   "), Domain: "test.com"})
+	emptyID := env.AddParticipant(participantOpts{Email: strPtr("empty@test.com"), DisplayName: strPtr(""), Domain: "test.com"})
+	spacesID := env.AddParticipant(participantOpts{Email: strPtr("spaces@test.com"), DisplayName: strPtr("   "), Domain: "test.com"})
 	env.AddMessage(messageOpts{Subject: "Empty Rcpt Name", SentAt: "2024-05-01 10:00:00", FromID: 1, ToIDs: []int64{emptyID}})
 	env.AddMessage(messageOpts{Subject: "Spaces Rcpt Name", SentAt: "2024-05-02 10:00:00", FromID: 1, CcIDs: []int64{spacesID}})
 

@@ -116,6 +116,9 @@ func assertAggRows(t *testing.T, rows []AggregateRow, want []aggExpectation) {
 // Skips the test if FTS5 is not available in this SQLite build.
 func (e *testEnv) EnableFTS() {
 	e.T.Helper()
+	// Drop any pre-existing FTS table (defensive against schema changes).
+	_, _ = e.DB.Exec(`DROP TABLE IF EXISTS messages_fts`)
+
 	_, err := e.DB.Exec(`
 		CREATE VIRTUAL TABLE messages_fts USING fts5(message_id UNINDEXED, subject, body, from_addr, to_addr, cc_addr, tokenize='unicode61 remove_diacritics 1');
 	`)
@@ -159,6 +162,10 @@ func setupTestDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(string(schema)); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
+
+	// Drop FTS table if the production schema created it, so tests
+	// that exercise non-FTS paths start without it.
+	_, _ = db.Exec(`DROP TABLE IF EXISTS messages_fts`)
 
 	// Insert test data
 	testData := `
@@ -243,7 +250,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 
 // participantOpts configures a participant to insert.
 type participantOpts struct {
-	Email       string
+	Email       *string // nil = NULL; use strPtr("x") for a value
 	DisplayName *string // nil = NULL
 	Domain      string
 }
@@ -259,9 +266,14 @@ func (e *testEnv) AddParticipant(opts participantOpts) int64 {
 		displayName = *opts.DisplayName
 	}
 
+	var email interface{}
+	if opts.Email != nil {
+		email = *opts.Email
+	} // else nil => SQL NULL
+
 	_, err := e.DB.Exec(
 		`INSERT INTO participants (id, email_address, display_name, domain) VALUES (?, ?, ?, ?)`,
-		id, opts.Email, displayName, opts.Domain,
+		id, email, displayName, opts.Domain,
 	)
 	if err != nil {
 		e.T.Fatalf("AddParticipant: %v", err)
@@ -349,7 +361,7 @@ func newTestEnvWithEmptyBuckets(t *testing.T) *testEnv {
 
 	// Participant with empty domain
 	emptyDomainID := env.AddParticipant(participantOpts{
-		Email:       "nodomain@",
+		Email:       strPtr("nodomain@"),
 		DisplayName: strPtr("No Domain User"),
 		Domain:      "",
 	})

@@ -379,7 +379,7 @@ func TestListMessages_MatchEmptySenderName(t *testing.T) {
 func TestMatchEmptySenderName_MixedFromRecipients(t *testing.T) {
 	env := newTestEnv(t)
 
-	nullID := env.AddParticipant(participantOpts{Email: "", DisplayName: nil, Domain: ""})
+	nullID := env.AddParticipant(participantOpts{Email: nil, DisplayName: nil, Domain: ""})
 	env.AddMessage(messageOpts{Subject: "Mixed From", SentAt: "2024-06-01 10:00:00", FromID: 1})
 	// Add a second 'from' with null participant
 	lastMsgID := env.nextMessageID - 1
