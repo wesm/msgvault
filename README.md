@@ -30,12 +30,18 @@ Currently supports Gmail, with WhatsApp and other messaging platforms planned.
 
 ## Installation
 
-Requires **Go 1.25+** and a C compiler (GCC/Clang) for CGO.
+```bash
+curl -fsSL https://msgvault.io/install.sh | bash
+```
+
+The installer detects your OS and architecture, downloads the latest release from [GitHub Releases](https://github.com/wesm/msgvault/releases), verifies the SHA-256 checksum, and installs the binary.
+
+To build from source instead (requires **Go 1.25+** and a C/C++ compiler for CGO and to statically link DuckDB):
 
 ```bash
 git clone https://github.com/wesm/msgvault.git
 cd msgvault
-make install        # builds and installs to ~/.local/bin
+make install
 ```
 
 ## Quick Start
