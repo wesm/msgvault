@@ -171,6 +171,50 @@ func (c *TestContext) AssertFailedCount(want int) {
 	}
 }
 
+// AssertManifestExecution verifies the persisted execution state of a manifest.
+func (c *TestContext) AssertManifestExecution(id string, wantSucc, wantFail int, wantFailedIDs ...string) {
+	c.t.Helper()
+	m, _, err := c.Mgr.GetManifest(id)
+	if err != nil {
+		c.t.Fatalf("GetManifest(%q) failed: %v", id, err)
+	}
+	if m.Execution.Succeeded != wantSucc {
+		c.t.Errorf("Persisted Succeeded = %d, want %d", m.Execution.Succeeded, wantSucc)
+	}
+	if m.Execution.Failed != wantFail {
+		c.t.Errorf("Persisted Failed = %d, want %d", m.Execution.Failed, wantFail)
+	}
+	if len(m.Execution.FailedIDs) != len(wantFailedIDs) {
+		c.t.Errorf("FailedIDs count = %d, want %d", len(m.Execution.FailedIDs), len(wantFailedIDs))
+	} else {
+		for i, id := range wantFailedIDs {
+			if m.Execution.FailedIDs[i] != id {
+				c.t.Errorf("FailedIDs[%d] = %q, want %q", i, m.Execution.FailedIDs[i], id)
+			}
+		}
+	}
+}
+
+// SimulateTrashError injects a trash error for a specific message ID.
+func (c *TestContext) SimulateTrashError(msgID string) {
+	c.MockAPI.TrashErrors[msgID] = errors.New("simulated trash error")
+}
+
+// SimulateDeleteError injects a delete error for a specific message ID.
+func (c *TestContext) SimulateDeleteError(msgID string) {
+	c.MockAPI.DeleteErrors[msgID] = errors.New("simulated delete error")
+}
+
+// SimulateNotFound injects a 404 not-found error for a specific message ID.
+func (c *TestContext) SimulateNotFound(msgID string) {
+	c.MockAPI.SetNotFoundError(msgID)
+}
+
+// SimulateBatchDeleteError sets the batch delete operation to fail.
+func (c *TestContext) SimulateBatchDeleteError() {
+	c.MockAPI.BatchDeleteError = errors.New("simulated batch error")
+}
+
 // AssertBatchDeleteCalls verifies the number of BatchDeleteMessages calls.
 func (c *TestContext) AssertBatchDeleteCalls(want int) {
 	c.t.Helper()
@@ -304,7 +348,7 @@ func TestExecutor_Execute_WithDeleteMethod(t *testing.T) {
 
 func TestExecutor_Execute_WithFailures(t *testing.T) {
 	ctx := NewTestContext(t)
-	ctx.MockAPI.TrashErrors["msg2"] = errors.New("trash failed")
+	ctx.SimulateTrashError("msg2")
 
 	manifest := ctx.CreateManifest("partial failure", []string{"msg1", "msg2", "msg3"})
 
@@ -314,24 +358,13 @@ func TestExecutor_Execute_WithFailures(t *testing.T) {
 
 	ctx.AssertResult(2, 1)
 	ctx.AssertCompletedCount(1)
-
-	// Check failed IDs are recorded
-	loaded, _, err := ctx.Mgr.GetManifest(manifest.ID)
-	if err != nil {
-		t.Fatalf("GetManifest() error = %v", err)
-	}
-	if len(loaded.Execution.FailedIDs) != 1 {
-		t.Errorf("FailedIDs = %v, want 1 entry", loaded.Execution.FailedIDs)
-	}
-	if loaded.Execution.FailedIDs[0] != "msg2" {
-		t.Errorf("FailedIDs[0] = %q, want %q", loaded.Execution.FailedIDs[0], "msg2")
-	}
+	ctx.AssertManifestExecution(manifest.ID, 2, 1, "msg2")
 }
 
 func TestExecutor_Execute_AllFail(t *testing.T) {
 	ctx := NewTestContext(t)
-	ctx.MockAPI.TrashErrors["msg1"] = errors.New("fail 1")
-	ctx.MockAPI.TrashErrors["msg2"] = errors.New("fail 2")
+	ctx.SimulateTrashError("msg1")
+	ctx.SimulateTrashError("msg2")
 
 	manifest := ctx.CreateManifest("total failure", []string{"msg1", "msg2"})
 
@@ -430,13 +463,7 @@ func TestExecutor_Execute_ResumeFromInProgress(t *testing.T) {
 	tc.AssertTrashCalls(3)
 
 	// Verify final counts include all 5
-	loaded, _, err := tc.Mgr.GetManifest(manifest.ID)
-	if err != nil {
-		t.Fatalf("GetManifest() error = %v", err)
-	}
-	if loaded.Execution.Succeeded != 5 {
-		t.Errorf("Succeeded = %d, want 5", loaded.Execution.Succeeded)
-	}
+	tc.AssertManifestExecution(manifest.ID, 5, 0)
 }
 
 func TestExecutor_ExecuteBatch_Success(t *testing.T) {
@@ -478,7 +505,7 @@ func TestExecutor_ExecuteBatch_LargeBatch(t *testing.T) {
 
 func TestExecutor_ExecuteBatch_WithBatchError(t *testing.T) {
 	ctx := NewTestContext(t)
-	ctx.MockAPI.BatchDeleteError = errors.New("batch failed")
+	ctx.SimulateBatchDeleteError()
 
 	manifest := ctx.CreateManifest("batch fallback", []string{"msg1", "msg2", "msg3"})
 
@@ -536,7 +563,7 @@ func TestExecutor_ExecuteBatch_ManifestNotFound(t *testing.T) {
 // is treated as success, making deletion idempotent.
 func TestExecutor_Execute_NotFoundTreatedAsSuccess(t *testing.T) {
 	ctx := NewTestContext(t)
-	ctx.MockAPI.SetNotFoundError("msg2")
+	ctx.SimulateNotFound("msg2")
 
 	manifest := ctx.CreateManifest("idempotent test", []string{"msg1", "msg2", "msg3"})
 
@@ -546,15 +573,7 @@ func TestExecutor_Execute_NotFoundTreatedAsSuccess(t *testing.T) {
 
 	ctx.AssertResult(3, 0)
 	ctx.AssertCompletedCount(1)
-
-	// Verify no failed IDs recorded
-	loaded, _, err := ctx.Mgr.GetManifest(manifest.ID)
-	if err != nil {
-		t.Fatalf("GetManifest() error = %v", err)
-	}
-	if len(loaded.Execution.FailedIDs) != 0 {
-		t.Errorf("FailedIDs = %v, want empty", loaded.Execution.FailedIDs)
-	}
+	ctx.AssertManifestExecution(manifest.ID, 3, 0)
 }
 
 // TestExecutor_ExecuteBatch_FallbackNotFoundTreatedAsSuccess verifies that
@@ -562,8 +581,8 @@ func TestExecutor_Execute_NotFoundTreatedAsSuccess(t *testing.T) {
 // 404 errors are still treated as success.
 func TestExecutor_ExecuteBatch_FallbackNotFoundTreatedAsSuccess(t *testing.T) {
 	ctx := NewTestContext(t)
-	ctx.MockAPI.BatchDeleteError = errors.New("batch failed")
-	ctx.MockAPI.SetNotFoundError("msg2")
+	ctx.SimulateBatchDeleteError()
+	ctx.SimulateNotFound("msg2")
 
 	manifest := ctx.CreateManifest("batch fallback 404", []string{"msg1", "msg2", "msg3"})
 
@@ -578,8 +597,8 @@ func TestExecutor_ExecuteBatch_FallbackNotFoundTreatedAsSuccess(t *testing.T) {
 // non-404 failures during fallback are properly counted as failures.
 func TestExecutor_ExecuteBatch_FallbackWithNon404Failures(t *testing.T) {
 	ctx := NewTestContext(t)
-	ctx.MockAPI.BatchDeleteError = errors.New("batch failed")
-	ctx.MockAPI.DeleteErrors["msg2"] = errors.New("permission denied")
+	ctx.SimulateBatchDeleteError()
+	ctx.SimulateDeleteError("msg2")
 
 	manifest := ctx.CreateManifest("batch fallback failures", []string{"msg1", "msg2", "msg3"})
 
@@ -593,7 +612,7 @@ func TestExecutor_ExecuteBatch_FallbackWithNon404Failures(t *testing.T) {
 // TestExecutor_Execute_WithDeleteMethod_404 tests 404 handling with permanent delete method.
 func TestExecutor_Execute_WithDeleteMethod_404(t *testing.T) {
 	ctx := NewTestContext(t)
-	ctx.MockAPI.SetNotFoundError("msg2")
+	ctx.SimulateNotFound("msg2")
 
 	manifest := ctx.CreateManifest("delete method 404", []string{"msg1", "msg2", "msg3"})
 
@@ -607,8 +626,8 @@ func TestExecutor_Execute_WithDeleteMethod_404(t *testing.T) {
 // TestExecutor_Execute_MixedErrors tests mixed success/404/error.
 func TestExecutor_Execute_MixedErrors(t *testing.T) {
 	ctx := NewTestContext(t)
-	ctx.MockAPI.SetNotFoundError("msg2")
-	ctx.MockAPI.TrashErrors["msg4"] = errors.New("server error")
+	ctx.SimulateNotFound("msg2")
+	ctx.SimulateTrashError("msg4")
 
 	manifest := ctx.CreateManifest("mixed errors test", msgIDs(5))
 
@@ -622,9 +641,9 @@ func TestExecutor_Execute_MixedErrors(t *testing.T) {
 // TestExecutor_ExecuteBatch_FallbackMixed tests batch fallback with mixed results.
 func TestExecutor_ExecuteBatch_FallbackMixed(t *testing.T) {
 	ctx := NewTestContext(t)
-	ctx.MockAPI.BatchDeleteError = errors.New("batch not supported")
-	ctx.MockAPI.SetNotFoundError("msg2")
-	ctx.MockAPI.DeleteErrors["msg3"] = errors.New("permission denied")
+	ctx.SimulateBatchDeleteError()
+	ctx.SimulateNotFound("msg2")
+	ctx.SimulateDeleteError("msg3")
 
 	manifest := ctx.CreateManifest("batch fallback mixed", msgIDs(4))
 
