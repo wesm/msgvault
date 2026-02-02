@@ -94,6 +94,12 @@ func (b *TestModelBuilder) WithAccounts(accounts ...query.AccountInfo) *TestMode
 	return b
 }
 
+// WithStandardAccounts adds the standard testAccounts (user1@gmail.com, user2@gmail.com).
+func (b *TestModelBuilder) WithStandardAccounts() *TestModelBuilder {
+	b.accounts = testAccounts
+	return b
+}
+
 func (b *TestModelBuilder) WithSize(width, height int) *TestModelBuilder {
 	b.width = width
 	b.height = height
@@ -257,6 +263,12 @@ var (
 		{Key: "alice@example.com", Count: 100, TotalSize: 1000, AttachmentCount: 5},
 		{Key: "bob@example.com", Count: 50, TotalSize: 500, AttachmentCount: 2},
 		{Key: "charlie@example.com", Count: 25, TotalSize: 250, AttachmentCount: 1},
+	}
+
+	// testAccounts provides a standard pair of test accounts for deletion tests.
+	testAccounts = []query.AccountInfo{
+		{ID: 1, Identifier: "user1@gmail.com"},
+		{ID: 2, Identifier: "user2@gmail.com"},
 	}
 )
 
@@ -460,6 +472,25 @@ func assertSelectionCount(t *testing.T, m Model, expected int) {
 // -----------------------------------------------------------------------------
 // Key Application Helpers - remove handleXKeys casting boilerplate
 // -----------------------------------------------------------------------------
+
+// selectRow moves the cursor to the given index and toggles selection with space.
+func selectRow(t *testing.T, m Model, index int) Model {
+	t.Helper()
+	m.cursor = index
+	return applyAggregateKey(t, m, key(' '))
+}
+
+// assertPendingManifest asserts that pendingManifest is non-nil and its Account
+// filter matches wantAccount.
+func assertPendingManifest(t *testing.T, m Model, wantAccount string) {
+	t.Helper()
+	if m.pendingManifest == nil {
+		t.Fatal("expected pendingManifest to be set")
+	}
+	if m.pendingManifest.Filters.Account != wantAccount {
+		t.Errorf("expected manifest account=%q, got %q", wantAccount, m.pendingManifest.Filters.Account)
+	}
+}
 
 // applyAggregateKey sends a key through handleAggregateKeys and returns the concrete Model.
 func applyAggregateKey(t *testing.T, m Model, k tea.KeyMsg) Model {
