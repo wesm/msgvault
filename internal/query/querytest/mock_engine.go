@@ -93,12 +93,6 @@ func (m *MockEngine) GetMessageBySourceID(ctx context.Context, sourceID string) 
 		}
 		return nil, nil
 	}
-	// Fallback: scan Messages map for matching SourceMessageID.
-	for _, msg := range m.Messages {
-		if msg != nil && msg.SourceMessageID == sourceID {
-			return msg, nil
-		}
-	}
 	return nil, nil
 }
 
