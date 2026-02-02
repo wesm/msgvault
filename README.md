@@ -74,7 +74,7 @@ msgvault tui
 | `repair-encoding` | Fix UTF-8 encoding issues |
 | `list-senders` / `list-domains` / `list-labels` | Explore metadata |
 
-See the [CLI Reference](https://msgvault.io/usage/cli/) for full details.
+See the [CLI Reference](https://msgvault.io/cli-reference/) for full details.
 
 ## Configuration
 
@@ -93,18 +93,18 @@ See the [Configuration Guide](https://msgvault.io/configuration/) for all option
 
 ## MCP Server
 
-msgvault includes an MCP server that lets AI assistants search, analyze, and read your archived messages. Connect it to Claude Desktop or any MCP-capable agent and query your full message history conversationally. See the [MCP documentation](https://msgvault.io/usage/mcp/) for setup instructions.
+msgvault includes an MCP server that lets AI assistants search, analyze, and read your archived messages. Connect it to Claude Desktop or any MCP-capable agent and query your full message history conversationally. See the [MCP documentation](https://msgvault.io/usage/chat/) for setup instructions.
 
 ## Documentation
 
 - [Setup Guide](https://msgvault.io/guides/oauth-setup/): OAuth, first sync, headless servers
 - [Searching](https://msgvault.io/usage/searching/): query syntax and operators
 - [Interactive TUI](https://msgvault.io/usage/tui/): keybindings, views, deletion staging
-- [CLI Reference](https://msgvault.io/usage/cli/): all commands and flags
+- [CLI Reference](https://msgvault.io/cli-reference/): all commands and flags
 - [Multi-Account](https://msgvault.io/usage/multi-account/): managing multiple Gmail accounts
 - [Configuration](https://msgvault.io/configuration/): config file and environment variables
 - [Architecture](https://msgvault.io/architecture/storage/): SQLite, Parquet, and attachment storage
-- [MCP Server](https://msgvault.io/usage/mcp/): AI assistant integration
+- [MCP Server](https://msgvault.io/usage/chat/): AI assistant integration
 - [Troubleshooting](https://msgvault.io/troubleshooting/): common issues and fixes
 - [Development](https://msgvault.io/development/): contributing, testing, building
 
