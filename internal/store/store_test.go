@@ -210,42 +210,72 @@ st, source, _ := setupStore(t)
 	}
 }
 
-func TestStore_Message_Upsert(t *testing.T) {
+func TestStore_UpsertMessage(t *testing.T) {
+	now := time.Now()
 
-st, source, convID := setupStore(t)
-
-	msg := &store.Message{
-		ConversationID:  convID,
-		SourceID:        source.ID,
-		SourceMessageID: "msg-456",
-		MessageType:     "email",
-		Subject:         sql.NullString{String: "Test Subject", Valid: true},
-		SizeEstimate:    1000,
-		SentAt:          sql.NullTime{Time: time.Now(), Valid: true},
+	tests := []struct {
+		name string
+		msg  func(sourceID, convID int64) *store.Message
+	}{
+		{
+			name: "AllFields",
+			msg: func(sourceID, convID int64) *store.Message {
+				return &store.Message{
+					ConversationID:  convID,
+					SourceID:        sourceID,
+					SourceMessageID: "msg-all-fields",
+					MessageType:     "email",
+					Subject:         sql.NullString{String: "Full Subject", Valid: true},
+					Snippet:         sql.NullString{String: "Preview snippet", Valid: true},
+					SizeEstimate:    2048,
+					SentAt:          sql.NullTime{Time: now, Valid: true},
+					ReceivedAt:      sql.NullTime{Time: now.Add(time.Second), Valid: true},
+					InternalDate:    sql.NullTime{Time: now, Valid: true},
+					HasAttachments:  true,
+					AttachmentCount: 2,
+					IsFromMe:        true,
+				}
+			},
+		},
+		{
+			name: "MinimalFields",
+			msg: func(sourceID, convID int64) *store.Message {
+				return &store.Message{
+					ConversationID:  convID,
+					SourceID:        sourceID,
+					SourceMessageID: "msg-minimal",
+					MessageType:     "email",
+				}
+			},
+		},
 	}
 
-	// Insert
-	msgID, err := st.UpsertMessage(msg)
-	testutil.MustNoErr(t, err, "UpsertMessage()")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st, source, convID := setupStore(t)
+			msg := tt.msg(source.ID, convID)
 
-	if msgID == 0 {
-		t.Error("message ID should be non-zero")
-	}
+			// Insert
+			msgID, err := st.UpsertMessage(msg)
+			testutil.MustNoErr(t, err, "UpsertMessage insert")
+			if msgID == 0 {
+				t.Error("message ID should be non-zero")
+			}
 
-	// Update (same source_message_id)
-	msg.Subject = sql.NullString{String: "Updated Subject", Valid: true}
-	msgID2, err := st.UpsertMessage(msg)
-	testutil.MustNoErr(t, err, "UpsertMessage() update")
+			// Update (same source_message_id) should return same ID
+			msgID2, err := st.UpsertMessage(msg)
+			testutil.MustNoErr(t, err, "UpsertMessage update")
+			if msgID2 != msgID {
+				t.Errorf("update ID = %d, want %d", msgID2, msgID)
+			}
 
-	if msgID2 != msgID {
-		t.Errorf("update ID = %d, want %d", msgID2, msgID)
-	}
-
-	// Verify stats
-	stats, err := st.GetStats()
-	testutil.MustNoErr(t, err, "GetStats")
-	if stats.MessageCount != 1 {
-		t.Errorf("MessageCount = %d, want 1", stats.MessageCount)
+			// Verify stats show exactly one message
+			stats, err := st.GetStats()
+			testutil.MustNoErr(t, err, "GetStats")
+			if stats.MessageCount != 1 {
+				t.Errorf("MessageCount = %d, want 1", stats.MessageCount)
+			}
+		})
 	}
 }
 
@@ -608,60 +638,6 @@ st := testutil.NewTestStore(t)
 	}
 }
 
-func TestStore_UpsertMessage_Variations(t *testing.T) {
-	now := time.Now()
-
-	tests := []struct {
-		name string
-		msg  func(sourceID, convID int64) *store.Message
-	}{
-		{
-			name: "AllFields",
-			msg: func(sourceID, convID int64) *store.Message {
-				return &store.Message{
-					ConversationID:  convID,
-					SourceID:        sourceID,
-					SourceMessageID: "msg-all-fields",
-					MessageType:     "email",
-					Subject:         sql.NullString{String: "Full Subject", Valid: true},
-					Snippet:         sql.NullString{String: "Preview snippet", Valid: true},
-					SizeEstimate:    2048,
-					SentAt:          sql.NullTime{Time: now, Valid: true},
-					ReceivedAt:      sql.NullTime{Time: now.Add(time.Second), Valid: true},
-					InternalDate:    sql.NullTime{Time: now, Valid: true},
-					HasAttachments:  true,
-					AttachmentCount: 2,
-					IsFromMe:        true,
-				}
-			},
-		},
-		{
-			name: "MinimalFields",
-			msg: func(sourceID, convID int64) *store.Message {
-				return &store.Message{
-					ConversationID:  convID,
-					SourceID:        sourceID,
-					SourceMessageID: "msg-minimal",
-					MessageType:     "email",
-				}
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			st, source, convID := setupStore(t)
-			msg := tt.msg(source.ID, convID)
-
-			msgID, err := st.UpsertMessage(msg)
-			testutil.MustNoErr(t, err, "UpsertMessage")
-
-			if msgID == 0 {
-				t.Error("message ID should be non-zero")
-			}
-		})
-	}
-}
 
 func TestStore_UpsertMessageRaw_Update(t *testing.T) {
 
