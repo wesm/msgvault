@@ -48,6 +48,11 @@ func TestIsRateLimitError(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "RateLimitExceededByMessage",
+			body: gmailErrorBody(403, quotaExceededMsg, []map[string]string{{"reason": "rateLimitExceeded"}}, nil),
+			want: true,
+		},
+		{
 			name: "RateLimitExceededUpperCase",
 			body: errorWithDetail("RATE_LIMIT_EXCEEDED"),
 			want: true,
