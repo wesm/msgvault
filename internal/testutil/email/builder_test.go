@@ -75,8 +75,27 @@ func TestHeaderOrder(t *testing.T) {
 }
 
 func TestCRLF(t *testing.T) {
-	got := string(NewMessage().CRLF().Bytes())
-	if strings.Contains(got, "\n") && !strings.Contains(got, "\r\n") {
-		t.Error("expected CRLF line endings")
+	got := NewMessage().CRLF().Bytes()
+	for i, b := range got {
+		if b == '\n' && (i == 0 || got[i-1] != '\r') {
+			t.Fatalf("bare \\n at byte %d; expected all line endings to be \\r\\n", i)
+		}
+	}
+	if !strings.Contains(string(got), "\r\n") {
+		t.Error("expected at least one CRLF line ending")
+	}
+}
+
+func TestHeaderOverwrite(t *testing.T) {
+	got := string(NewMessage().
+		Header("X-Custom", "first").
+		Header("X-Custom", "second").
+		Bytes())
+
+	if strings.Count(got, "X-Custom:") != 1 {
+		t.Errorf("expected exactly one X-Custom header, got:\n%s", got)
+	}
+	if !strings.Contains(got, "X-Custom: second") {
+		t.Errorf("expected overwritten value 'second', got:\n%s", got)
 	}
 }

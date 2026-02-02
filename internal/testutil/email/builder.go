@@ -73,8 +73,15 @@ func (b *MessageBuilder) ContentType(v string) *MessageBuilder { b.contentType =
 // Body sets the message body text.
 func (b *MessageBuilder) Body(v string) *MessageBuilder { b.body = v; return b }
 
-// Header adds an arbitrary header.
+// Header sets an arbitrary header. If the key already exists, its value is
+// overwritten (last-write-wins); otherwise the header is appended.
 func (b *MessageBuilder) Header(key, value string) *MessageBuilder {
+	for i, k := range b.headerKeys {
+		if k == key {
+			b.headerVals[i] = value
+			return b
+		}
+	}
 	b.headerKeys = append(b.headerKeys, key)
 	b.headerVals = append(b.headerVals, value)
 	return b
