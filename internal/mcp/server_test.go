@@ -10,11 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/search"
+	"github.com/wesm/msgvault/internal/testutil"
 )
 
 // stubEngine implements query.Engine for testing.
@@ -146,10 +146,9 @@ func runToolExpectError(t *testing.T, name string, fn toolHandler, args map[stri
 }
 
 func TestSearchMessages(t *testing.T) {
-	now := time.Now()
 	eng := &stubEngine{
 		searchFastResults: []query.MessageSummary{
-			{ID: 1, Subject: "Hello", FromEmail: "alice@example.com", SentAt: now},
+			testutil.NewMessageSummary(1).WithSubject("Hello").WithFromEmail("alice@example.com").Build(),
 		},
 	}
 	h := &handlers{engine: eng}
@@ -167,11 +166,10 @@ func TestSearchMessages(t *testing.T) {
 }
 
 func TestSearchFallbackToFTS(t *testing.T) {
-	now := time.Now()
 	eng := &stubEngine{
 		searchFastResults: nil, // fast returns nothing
 		searchResults: []query.MessageSummary{
-			{ID: 2, Subject: "Body match", FromEmail: "bob@example.com", SentAt: now},
+			testutil.NewMessageSummary(2).WithSubject("Body match").WithFromEmail("bob@example.com").Build(),
 		},
 	}
 	h := &handlers{engine: eng}
@@ -185,7 +183,7 @@ func TestSearchFallbackToFTS(t *testing.T) {
 func TestGetMessage(t *testing.T) {
 	eng := &stubEngine{
 		messages: map[int64]*query.MessageDetail{
-			42: {ID: 42, Subject: "Test Message", BodyText: "Hello world"},
+			42: testutil.NewMessageDetail(42).WithSubject("Test Message").WithBodyText("Hello world").BuildPtr(),
 		},
 	}
 	h := &handlers{engine: eng}
@@ -274,10 +272,9 @@ func TestAggregate(t *testing.T) {
 }
 
 func TestListMessages(t *testing.T) {
-	now := time.Now()
 	eng := &stubEngine{
 		listResults: []query.MessageSummary{
-			{ID: 1, Subject: "Test", FromEmail: "alice@example.com", SentAt: now},
+			testutil.NewMessageSummary(1).WithSubject("Test").WithFromEmail("alice@example.com").Build(),
 		},
 	}
 	h := &handlers{engine: eng}

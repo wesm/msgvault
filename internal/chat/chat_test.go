@@ -10,7 +10,17 @@ import (
 
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/search"
+	"github.com/wesm/msgvault/internal/testutil"
 )
+
+func mockLLMResponse(t *testing.T, plan queryPlan) string {
+	t.Helper()
+	b, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("failed to marshal query plan: %v", err)
+	}
+	return string(b)
+}
 
 func TestExtractJSON(t *testing.T) {
 	tests := []struct {
@@ -164,29 +174,22 @@ func TestFormatContext(t *testing.T) {
 }
 
 func TestSessionAsk(t *testing.T) {
-	planJSON, _ := json.Marshal(queryPlan{
-		SearchText: "budget",
-		From:       "alice",
-		Reasoning:  "test query",
-	})
+	detail := testutil.NewMessageDetail(1).
+		WithSubject("Q1 Budget").
+		WithFrom(query.Address{Email: "alice@example.com", Name: "Alice"}).
+		WithTo(query.Address{Email: "me@example.com"}).
+		WithSentAt(time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)).
+		WithBodyText("Here is the budget report.").
+		WithLabels("INBOX").
+		BuildPtr()
 
 	eng := &stubEngine{
 		searchFastResults: []query.MessageSummary{{ID: 1}},
-		messages: map[int64]*query.MessageDetail{
-			1: {
-				ID:       1,
-				Subject:  "Q1 Budget",
-				From:     []query.Address{{Email: "alice@example.com", Name: "Alice"}},
-				To:       []query.Address{{Email: "me@example.com"}},
-				SentAt:   time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC),
-				BodyText: "Here is the budget report.",
-				Labels:   []string{"INBOX"},
-			},
-		},
+		messages:          map[int64]*query.MessageDetail{1: detail},
 	}
 
 	llm := &stubLLM{
-		chatResp:   string(planJSON),
+		chatResp:   mockLLMResponse(t, queryPlan{SearchText: "budget", From: "alice", Reasoning: "test query"}),
 		streamResp: "Based on the retrieved email, Alice sent you a budget report.",
 	}
 
@@ -216,15 +219,15 @@ func TestSessionAsk_LLMError(t *testing.T) {
 }
 
 func TestSessionAsk_CancelledContext(t *testing.T) {
-	planJSON, _ := json.Marshal(queryPlan{SearchText: "test", Reasoning: "r"})
 	eng := &stubEngine{
 		searchFastResults: []query.MessageSummary{{ID: 1}},
 		messages: map[int64]*query.MessageDetail{
-			1: {ID: 1, Subject: "S", From: []query.Address{{Email: "a@b.com"}}, SentAt: time.Now()},
+			1: testutil.NewMessageDetail(1).WithSubject("S").
+				WithFrom(query.Address{Email: "a@b.com"}).BuildPtr(),
 		},
 	}
 	llm := &stubLLM{
-		chatResp:  string(planJSON),
+		chatResp:  mockLLMResponse(t, queryPlan{SearchText: "test", Reasoning: "r"}),
 		streamErr: context.Canceled,
 	}
 
