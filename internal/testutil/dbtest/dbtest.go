@@ -293,6 +293,7 @@ type MessageOpts struct {
 	FromID         int64   // participant ID for 'from' recipient; 0 = no from
 	ToIDs          []int64 // participant IDs for 'to' recipients
 	CcIDs          []int64 // participant IDs for 'cc' recipients
+	BccIDs         []int64 // participant IDs for 'bcc' recipients
 	SourceID       int64   // defaults to 1 if 0
 	ConversationID int64   // defaults to 1 if 0
 }
@@ -374,6 +375,16 @@ func (tdb *TestDB) AddMessage(opts MessageOpts) int64 {
 		)
 		if err != nil {
 			tdb.T.Fatalf("AddMessage cc recipient: %v", err)
+		}
+	}
+
+	for _, bccID := range opts.BccIDs {
+		_, err = tdb.DB.Exec(
+			`INSERT INTO message_recipients (message_id, participant_id, recipient_type) VALUES (?, ?, 'bcc')`,
+			id, bccID,
+		)
+		if err != nil {
+			tdb.T.Fatalf("AddMessage bcc recipient: %v", err)
 		}
 	}
 

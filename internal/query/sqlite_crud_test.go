@@ -1,6 +1,7 @@
 package query
 
 import (
+	"context"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/testutil/dbtest"
@@ -775,4 +776,84 @@ func TestRecipientAndRecipientNameAndMatchEmptyRecipient(t *testing.T) {
 	if len(rows) != 1 || rows[0].Key != "alice@example.com" {
 		t.Errorf("SubAggregate: unexpected rows: %v", rows)
 	}
+}
+
+// TestRecipientNameFilter_IncludesBCC verifies that RecipientName filter includes BCC recipients.
+// Regression test for a bug where RecipientName only searched 'to' and 'cc' but not 'bcc'.
+func TestRecipientNameFilter_IncludesBCC(t *testing.T) {
+	tdb := dbtest.NewTestDB(t, "../store/schema.sql")
+
+	sp := dbtest.StrPtr
+	aliceID := tdb.AddParticipant(dbtest.ParticipantOpts{Email: sp("alice@example.com"), DisplayName: sp("Alice Sender"), Domain: "example.com"})
+	bobID := tdb.AddParticipant(dbtest.ParticipantOpts{Email: sp("bob@example.com"), DisplayName: sp("Bob ToRecipient"), Domain: "example.com"})
+	secretID := tdb.AddParticipant(dbtest.ParticipantOpts{Email: sp("secret@example.com"), DisplayName: sp("Secret Bob"), Domain: "example.com"})
+
+	tdb.AddSource(dbtest.SourceOpts{Identifier: "test@gmail.com"})
+	tdb.AddMessage(dbtest.MessageOpts{
+		Subject: "Test Subject",
+		SentAt:  "2024-01-15 10:00:00",
+		FromID:  aliceID,
+		ToIDs:   []int64{bobID},
+		BccIDs:  []int64{secretID},
+	})
+
+	engine := NewSQLiteEngine(tdb.DB)
+	ctx := context.Background()
+
+	t.Run("ListMessages", func(t *testing.T) {
+		messages, err := engine.ListMessages(ctx, MessageFilter{RecipientName: "Secret Bob"})
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		if len(messages) != 1 {
+			t.Errorf("expected 1 message, got %d", len(messages))
+		}
+	})
+
+	t.Run("AggregateByRecipientName", func(t *testing.T) {
+		rows, err := engine.AggregateByRecipientName(ctx, AggregateOptions{Limit: 100})
+		if err != nil {
+			t.Fatalf("AggregateByRecipientName: %v", err)
+		}
+		found := false
+		for _, row := range rows {
+			if row.Key == "Secret Bob" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected BCC recipient 'Secret Bob' in aggregate, got: %v", rows)
+		}
+	})
+
+	t.Run("SubAggregate", func(t *testing.T) {
+		rows, err := engine.SubAggregate(ctx, MessageFilter{RecipientName: "Secret Bob"}, ViewSenders, AggregateOptions{Limit: 100})
+		if err != nil {
+			t.Fatalf("SubAggregate: %v", err)
+		}
+		if len(rows) != 1 || rows[0].Key != "alice@example.com" {
+			t.Errorf("expected sender Alice, got: %v", rows)
+		}
+	})
+
+	t.Run("GetGmailIDsByFilter", func(t *testing.T) {
+		ids, err := engine.GetGmailIDsByFilter(ctx, MessageFilter{RecipientName: "Secret Bob"})
+		if err != nil {
+			t.Fatalf("GetGmailIDsByFilter: %v", err)
+		}
+		if len(ids) != 1 {
+			t.Errorf("expected 1 gmail ID, got: %v", ids)
+		}
+	})
+
+	t.Run("Recipient_email_also_finds_BCC", func(t *testing.T) {
+		messages, err := engine.ListMessages(ctx, MessageFilter{Recipient: "secret@example.com"})
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		if len(messages) != 1 {
+			t.Errorf("expected 1 message, got %d", len(messages))
+		}
+	})
 }
