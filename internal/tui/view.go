@@ -25,12 +25,6 @@ var (
 			Foreground(lipgloss.AdaptiveColor{Light: "#000000", Dark: "#ffffff"}).
 			Padding(0, 1)
 
-	headerStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.AdaptiveColor{Light: "#ffffff", Dark: "#000000"}).
-			Background(lipgloss.AdaptiveColor{Light: "#333333", Dark: "#dddddd"}).
-			Padding(0, 1)
-
 	statsStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.AdaptiveColor{Light: "#555555", Dark: "#999999"}).
 			Background(bgBase).

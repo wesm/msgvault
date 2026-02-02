@@ -386,9 +386,13 @@ func TestGetAttachment(t *testing.T) {
 	tmpDir := t.TempDir()
 	hash := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	hashDir := filepath.Join(tmpDir, hash[:2])
-	os.MkdirAll(hashDir, 0o755)
+	if err := os.MkdirAll(hashDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	content := []byte("hello world PDF content")
-	os.WriteFile(filepath.Join(hashDir, hash), content, 0o644)
+	if err := os.WriteFile(filepath.Join(hashDir, hash), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	eng := &stubEngine{
 		attachments: map[int64]*query.AttachmentInfo{
@@ -500,7 +504,9 @@ func TestGetAttachment(t *testing.T) {
 	t.Run("oversized attachment", func(t *testing.T) {
 		bigHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 		bigDir := filepath.Join(tmpDir, bigHash[:2])
-		os.MkdirAll(bigDir, 0o755)
+		if err := os.MkdirAll(bigDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
 		bigFile, err := os.Create(filepath.Join(bigDir, bigHash))
 		if err != nil {
 			t.Fatal(err)

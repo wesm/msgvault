@@ -76,7 +76,7 @@ official release over a dev build.`,
 		if !yes {
 			fmt.Print("\nProceed with update? [y/N] ")
 			var response string
-			fmt.Scanln(&response)
+			_, _ = fmt.Scanln(&response)
 			if strings.ToLower(response) != "y" && strings.ToLower(response) != "yes" {
 				fmt.Println("Update cancelled")
 				return nil

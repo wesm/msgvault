@@ -198,7 +198,7 @@ func PerformUpdate(info *UpdateInfo, progressFn func(downloaded, total int64)) e
 	}
 
 	if err := copyFile(srcPath, dstPath); err != nil {
-		os.Rename(backupPath, dstPath)
+		_ = os.Rename(backupPath, dstPath)
 		return fmt.Errorf("install: %w", err)
 	}
 
@@ -517,9 +517,6 @@ func prereleaseTag(v string) string {
 	return v[idx+1:]
 }
 
-func hasPrerelease(v string) bool {
-	return prereleaseTag(v) != ""
-}
 
 // comparePrerelease compares two prerelease tags using semver-like rules:
 // split on "." and non-alpha/digit boundaries, compare numeric segments numerically.
@@ -608,10 +605,10 @@ func isNewer(v1, v2 string) bool {
 	for i := 0; i < 3; i++ {
 		var n1, n2 int
 		if i < len(parts1) {
-			fmt.Sscanf(parts1[i], "%d", &n1)
+			_, _ = fmt.Sscanf(parts1[i], "%d", &n1)
 		}
 		if i < len(parts2) {
-			fmt.Sscanf(parts2[i], "%d", &n2)
+			_, _ = fmt.Sscanf(parts2[i], "%d", &n2)
 		}
 		if n1 > n2 {
 			return true
