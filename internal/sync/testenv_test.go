@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -296,6 +297,67 @@ func assertDateFallback(t *testing.T, st *store.Store, sourceMessageID, wantDate
 	if !strings.Contains(sentAt, wantDatePart) || !strings.Contains(sentAt, wantTimePart) {
 		t.Errorf("%s: sent_at = %q, expected to contain %s %s", sourceMessageID, sentAt, wantDatePart, wantTimePart)
 	}
+}
+
+// History event builders — construct gmail.HistoryRecord values succinctly.
+
+func historyAdded(id string) gmail.HistoryRecord {
+	return gmail.HistoryRecord{
+		MessagesAdded: []gmail.HistoryMessage{
+			{Message: gmail.MessageID{ID: id, ThreadID: "thread_" + id}},
+		},
+	}
+}
+
+func historyDeleted(id string) gmail.HistoryRecord {
+	return gmail.HistoryRecord{
+		MessagesDeleted: []gmail.HistoryMessage{
+			{Message: gmail.MessageID{ID: id, ThreadID: "thread_" + id}},
+		},
+	}
+}
+
+func historyLabelAdded(id string, labels ...string) gmail.HistoryRecord {
+	return gmail.HistoryRecord{
+		LabelsAdded: []gmail.HistoryLabelChange{
+			{
+				Message:  gmail.MessageID{ID: id, ThreadID: "thread_" + id},
+				LabelIDs: labels,
+			},
+		},
+	}
+}
+
+func historyLabelRemoved(id string, labels ...string) gmail.HistoryRecord {
+	return gmail.HistoryRecord{
+		LabelsRemoved: []gmail.HistoryLabelChange{
+			{
+				Message:  gmail.MessageID{ID: id, ThreadID: "thread_" + id},
+				LabelIDs: labels,
+			},
+		},
+	}
+}
+
+// seedPagedMessages adds `total` messages to the mock distributed across pages of `pageSize`.
+// Message IDs use the given prefix: prefix1, prefix2, etc.
+func seedPagedMessages(env *TestEnv, total int, pageSize int, prefix string) {
+	env.Mock.Profile.MessagesTotal = int64(total)
+	var pages [][]string
+	var page []string
+	for i := 1; i <= total; i++ {
+		id := fmt.Sprintf("%s%d", prefix, i)
+		env.Mock.AddMessage(id, testMIME, []string{"INBOX"})
+		page = append(page, id)
+		if len(page) == pageSize {
+			pages = append(pages, page)
+			page = nil
+		}
+	}
+	if len(page) > 0 {
+		pages = append(pages, page)
+	}
+	env.Mock.MessagePages = pages
 }
 
 // countFiles counts regular files recursively under dir.
