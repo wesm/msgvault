@@ -322,6 +322,14 @@ func (tdb *TestDB) AddMessage(opts MessageOpts) int64 {
 		if err := tdb.DB.QueryRow(`SELECT source_id FROM conversations WHERE id = ?`, convID).Scan(&srcID); err != nil {
 			tdb.T.Fatalf("AddMessage: lookup source_id for conversation %d: %v", convID, err)
 		}
+	} else {
+		// Verify the provided SourceID matches the conversation's source_id.
+		var convSourceID int64
+		if err := tdb.DB.QueryRow(`SELECT source_id FROM conversations WHERE id = ?`, convID).Scan(&convSourceID); err == nil {
+			if convSourceID != srcID {
+				tdb.T.Fatalf("AddMessage: SourceID %d does not match conversation %d source_id %d", srcID, convID, convSourceID)
+			}
+		}
 	}
 
 	_, err := tdb.DB.Exec(
