@@ -74,6 +74,12 @@ func (b *ManifestBuilder) WithExecution(method Method, succeeded, failed int, co
 	return b
 }
 
+// WithoutSummary explicitly sets the manifest summary to nil.
+func (b *ManifestBuilder) WithoutSummary() *ManifestBuilder {
+	b.m.Summary = nil
+	return b
+}
+
 // WithStatus sets the manifest status.
 func (b *ManifestBuilder) WithStatus(s Status) *ManifestBuilder {
 	b.m.Status = s
@@ -133,8 +139,8 @@ func AssertManifestInState(t *testing.T, mgr *Manager, id string, state Status) 
 		t.Fatalf("unknown state %q", state)
 	}
 	path := filepath.Join(dir, id+".json")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Errorf("manifest %q not found in %s directory", id, state)
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("manifest %q not found in %s directory: %v", id, state, err)
 	}
 }
 
@@ -371,7 +377,7 @@ func TestManifest_FormatSummary(t *testing.T) {
 		{
 			name: "nil summary",
 			setupManifest: func(t *testing.T) *Manifest {
-				return BuildManifest(t, "no summary test").Build()
+				return BuildManifest(t, "no summary test").WithoutSummary().Build()
 			},
 			wantContains:    []string{"Messages: 2"},
 			wantNotContains: []string{"Total Size:"},
@@ -531,6 +537,7 @@ func TestManager_MoveManifest(t *testing.T) {
 
 	AssertManifestInState(t, mgr, m.ID, StatusInProgress)
 	assertListCount(t, mgr.ListPending, 0)
+	assertListCount(t, mgr.ListInProgress, 1)
 
 	// Move in_progress -> completed
 	if err := mgr.MoveManifest(m.ID, StatusInProgress, StatusCompleted); err != nil {
@@ -538,6 +545,8 @@ func TestManager_MoveManifest(t *testing.T) {
 	}
 
 	AssertManifestInState(t, mgr, m.ID, StatusCompleted)
+	assertListCount(t, mgr.ListInProgress, 0)
+	assertListCount(t, mgr.ListCompleted, 1)
 }
 
 func TestManager_MoveManifest_ToFailed(t *testing.T) {
