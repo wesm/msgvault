@@ -10,18 +10,10 @@ import (
 )
 
 // Config represents the msgvault configuration.
-// ChatConfig holds chat/LLM configuration.
-type ChatConfig struct {
-	Server     string `toml:"server"`      // Ollama server URL
-	Model      string `toml:"model"`       // Model name
-	MaxResults int    `toml:"max_results"` // Top-K messages to retrieve
-}
-
 type Config struct {
 	Data  DataConfig  `toml:"data"`
 	OAuth OAuthConfig `toml:"oauth"`
 	Sync  SyncConfig  `toml:"sync"`
-	Chat  ChatConfig  `toml:"chat"`
 
 	// Computed paths (not from config file)
 	HomeDir string `toml:"-"`
@@ -73,11 +65,6 @@ func Load(path string) (*Config, error) {
 		},
 		Sync: SyncConfig{
 			RateLimitQPS: 5,
-		},
-		Chat: ChatConfig{
-			Server:     "http://localhost:11434",
-			Model:      "gpt-oss-128k",
-			MaxResults: 20,
 		},
 	}
 

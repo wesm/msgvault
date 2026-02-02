@@ -285,16 +285,6 @@ msgvault tui --account user@gmail.com
 | `?`              | Help                                            |
 | `q`              | Quit                                            |
 
-## Chat with your archive (local LLM)
-
-```bash
-# Requires Ollama running locally
-msgvault chat
-msgvault chat --server http://localhost:11434 --model llama3
-```
-
-Interactive RAG-based chat that searches your email archive to answer questions.
-
 ## Typical agent workflow
 
 1. **Check status**: `msgvault stats` — see what's in the archive.
