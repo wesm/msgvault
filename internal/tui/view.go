@@ -1354,52 +1354,51 @@ func min(a, b int) int {
 }
 
 // overlayModal renders a modal dialog over the content.
-// helpLines returns the content lines for the help modal.
-func helpLines() []string {
-	return []string{
-		modalTitleStyle.Render("Keyboard Shortcuts"),
-		"",
-		"Navigation",
-		"  ↑/k, ↓/j    Move cursor up/down",
-		"  ←/h, →/l    Prev/next message (in detail view)",
-		"  PgUp/PgDn   Page up/down",
-		"  Home/End    Go to first/last",
-		"  Enter       Drill down",
-		"  Esc         Go back",
-		"",
-		"Views & Sorting",
-		"  g/Tab       Cycle view types",
-		"  t           Jump to Time view (cycle granularity when in Time)",
-		"  s           Cycle sort field",
-		"  v/r         Reverse sort order",
-		"",
-		"Selection & Actions",
-		"  Space       Toggle selection",
-		"  S           Select all visible",
-		"  x           Clear selection",
-		"  d/D         Stage for deletion",
-		"  a           View all messages",
-		"",
-		"Other",
-		"  /           Search",
-		"  A           Select account",
-		"  f           Filter by attachments",
-		"  e           Export attachments (in message view)",
-		"  q           Quit",
-		"",
-		"[↑/↓] Scroll  [Any other key] Close",
-	}
+// rawHelpLines contains the help modal content. The first line is the title
+// (rendered with modalTitleStyle at display time). This is a package-level
+// variable so len() can be used without rebuilding the slice on every call.
+var rawHelpLines = []string{
+	"Keyboard Shortcuts", // rendered with modalTitleStyle in overlayModal
+	"",
+	"Navigation",
+	"  ↑/k, ↓/j    Move cursor up/down",
+	"  ←/h, →/l    Prev/next message (in detail view)",
+	"  PgUp/PgDn   Page up/down",
+	"  Home/End    Go to first/last",
+	"  Enter       Drill down",
+	"  Esc         Go back",
+	"",
+	"Views & Sorting",
+	"  g/Tab       Cycle view types",
+	"  t           Jump to Time view (cycle granularity when in Time)",
+	"  s           Cycle sort field",
+	"  v/r         Reverse sort order",
+	"",
+	"Selection & Actions",
+	"  Space       Toggle selection",
+	"  S           Select all visible",
+	"  x           Clear selection",
+	"  d/D         Stage for deletion",
+	"  a           View all messages",
+	"",
+	"Other",
+	"  /           Search",
+	"  A           Select account",
+	"  f           Filter by attachments",
+	"  e           Export attachments (in message view)",
+	"  q           Quit",
+	"",
+	"[↑/↓] Scroll  [Any other key] Close",
 }
 
 // helpMaxVisible returns the max visible lines for the help modal given terminal height.
 func (m Model) helpMaxVisible() int {
-	count := len(helpLines())
 	v := m.height - 6
 	if v < 1 {
 		v = 1
 	}
-	if v > count {
-		v = count
+	if v > len(rawHelpLines) {
+		v = len(rawHelpLines)
 	}
 	return v
 }
@@ -1465,11 +1464,10 @@ func (m Model) overlayModal(background string) string {
 		modalContent += "\n[↑/↓] Navigate  [Enter] Select  [Esc] Cancel"
 
 	case modalHelp:
-		lines := helpLines()
 		maxVisible := m.helpMaxVisible()
 
 		// Clamp scroll offset
-		maxScroll := len(lines) - maxVisible
+		maxScroll := len(rawHelpLines) - maxVisible
 		if maxScroll < 0 {
 			maxScroll = 0
 		}
@@ -1477,8 +1475,17 @@ func (m Model) overlayModal(background string) string {
 			m.helpScroll = maxScroll
 		}
 
-		visible := lines[m.helpScroll : m.helpScroll+maxVisible]
-		modalContent = strings.Join(visible, "\n")
+		// Build visible slice, rendering the title line with style
+		visible := rawHelpLines[m.helpScroll : m.helpScroll+maxVisible]
+		rendered := make([]string, len(visible))
+		for i, line := range visible {
+			if m.helpScroll+i == 0 {
+				rendered[i] = modalTitleStyle.Render(line)
+			} else {
+				rendered[i] = line
+			}
+		}
+		modalContent = strings.Join(rendered, "\n")
 
 	case modalExportAttachments:
 		modalContent = modalTitleStyle.Render("Export Attachments") + "\n\n"
