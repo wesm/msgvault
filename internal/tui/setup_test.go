@@ -126,7 +126,7 @@ func (b *TestModelBuilder) WithAccounts(accounts ...query.AccountInfo) *TestMode
 
 // WithStandardAccounts adds the standard testAccounts (user1@gmail.com, user2@gmail.com).
 func (b *TestModelBuilder) WithStandardAccounts() *TestModelBuilder {
-	b.accounts = testAccounts
+	b.accounts = append([]query.AccountInfo(nil), testAccounts...)
 	return b
 }
 
