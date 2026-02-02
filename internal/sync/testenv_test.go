@@ -22,50 +22,45 @@ type TestEnv struct {
 	Context context.Context
 }
 
-func NewTestEnv(t *testing.T) (*TestEnv, func()) {
+func newTestEnv(t *testing.T, opts ...*Options) *TestEnv {
 	t.Helper()
 
 	tmpDir, err := os.MkdirTemp("", "msgvault-test-*")
 	if err != nil {
 		t.Fatalf("create temp dir: %v", err)
 	}
+	t.Cleanup(func() { os.RemoveAll(tmpDir) })
 
 	dbPath := filepath.Join(tmpDir, "test.db")
 	st, err := store.Open(dbPath)
 	if err != nil {
-		os.RemoveAll(tmpDir)
 		t.Fatalf("open store: %v", err)
 	}
+	t.Cleanup(func() { st.Close() })
 
 	if err := st.InitSchema(); err != nil {
-		st.Close()
-		os.RemoveAll(tmpDir)
 		t.Fatalf("init schema: %v", err)
 	}
 
 	mock := gmail.NewMockAPI()
-	// Default profile setup
 	mock.Profile = &gmail.Profile{
-		EmailAddress:  "test@example.com",
+		EmailAddress:  testEmail,
 		MessagesTotal: 0,
 		HistoryID:     1000,
 	}
 
-	env := &TestEnv{
+	var opt *Options
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	return &TestEnv{
 		Store:   st,
 		Mock:    mock,
+		Syncer:  New(mock, st, opt),
 		TmpDir:  tmpDir,
 		Context: context.Background(),
 	}
-
-	// Helper to create syncer easily
-	env.Syncer = New(mock, st, nil)
-
-	cleanup := func() {
-		st.Close()
-		os.RemoveAll(tmpDir)
-	}
-	return env, cleanup
 }
 
 // SetupSource creates a source and sets its sync cursor, returning the source.
@@ -89,14 +84,6 @@ func (e *TestEnv) MustCreateSource(t *testing.T) *store.Source {
 		t.Fatalf("GetOrCreateSource: %v", err)
 	}
 	return source
-}
-
-// newTestEnv creates a TestEnv and registers cleanup via t.Cleanup.
-func newTestEnv(t *testing.T) *TestEnv {
-	t.Helper()
-	env, cleanup := NewTestEnv(t)
-	t.Cleanup(cleanup)
-	return env
 }
 
 // seedMessages sets the profile totals/historyID and adds messages to the mock.
@@ -177,8 +164,7 @@ func assertAttachmentCount(t *testing.T, st *store.Store, want int64) {
 func withAttachmentsDir(t *testing.T, env *TestEnv) string {
 	t.Helper()
 	attachDir := filepath.Join(env.TmpDir, "attachments")
-	opts := &Options{AttachmentsDir: attachDir}
-	env.Syncer = New(env.Mock, env.Store, opts)
+	env.Syncer = New(env.Mock, env.Store, &Options{AttachmentsDir: attachDir})
 	return attachDir
 }
 
