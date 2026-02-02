@@ -489,6 +489,26 @@ func (e *testEnv) AddMessage(opts messageOpts) int64 {
 // strPtr returns a pointer to a string (helper for participantOpts.DisplayName).
 func strPtr(s string) *string { return &s }
 
+// assertSearchCount runs a search and verifies the number of results.
+func assertSearchCount(t *testing.T, env *testEnv, q *search.Query, want int) []MessageSummary {
+	t.Helper()
+	results := env.MustSearch(q, 100, 0)
+	if len(results) != want {
+		t.Errorf("Search(%+v): got %d results, want %d", q, len(results), want)
+	}
+	return results
+}
+
+// assertAllResults verifies that every result satisfies the given predicate.
+func assertAllResults(t *testing.T, results []MessageSummary, desc string, pred func(MessageSummary) bool) {
+	t.Helper()
+	for _, r := range results {
+		if !pred(r) {
+			t.Errorf("result id=%d did not satisfy %s", r.ID, desc)
+		}
+	}
+}
+
 // newTestEnvWithEmptyBuckets creates a test DB with messages that have
 // empty senders, recipients, domains, and labels for testing MatchEmpty* filters.
 func newTestEnvWithEmptyBuckets(t *testing.T) *testEnv {
