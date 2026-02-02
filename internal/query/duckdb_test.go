@@ -623,6 +623,9 @@ func TestDuckDBEngine_AggregateBySender(t *testing.T) {
 		"alice@example.com": 3,
 		"bob@company.org":   2,
 	})
+
+	// Verify ordering: highest count first
+	assertDescendingOrder(t, results)
 }
 
 func TestDuckDBEngine_AggregateBySenderName(t *testing.T) {
@@ -822,6 +825,9 @@ func TestDuckDBEngine_AggregateByLabel(t *testing.T) {
 		"Work":      2,
 		"IMPORTANT": 1,
 	})
+
+	// Verify ordering: highest count first
+	assertDescendingOrder(t, results)
 }
 
 // TestDuckDBEngine_SubAggregateByRecipient verifies sub-aggregation includes cc.
@@ -876,6 +882,16 @@ func TestDuckDBEngine_AggregateByTime(t *testing.T) {
 		"2024-02": 2,
 		"2024-03": 1,
 	})
+
+	// Verify YYYY-MM key format
+	for _, r := range results {
+		if len(r.Key) != 7 || r.Key[4] != '-' {
+			t.Errorf("expected YYYY-MM format, got %q", r.Key)
+		}
+	}
+
+	// Default sort is by count descending
+	assertDescendingOrder(t, results)
 }
 
 // TestDuckDBEngine_SearchFast verifies SearchFast with various query types,

@@ -518,6 +518,9 @@ func assertAggregateCounts(t *testing.T, got []AggregateRow, want map[string]int
 	t.Helper()
 	gotMap := make(map[string]int64, len(got))
 	for _, r := range got {
+		if _, seen := gotMap[r.Key]; seen {
+			t.Errorf("duplicate key %q in aggregate results", r.Key)
+		}
 		gotMap[r.Key] = r.Count
 	}
 	for key, wantCount := range want {
@@ -530,6 +533,17 @@ func assertAggregateCounts(t *testing.T, got []AggregateRow, want map[string]int
 	for _, r := range got {
 		if _, ok := want[r.Key]; !ok {
 			t.Errorf("unexpected key %q (count=%d)", r.Key, r.Count)
+		}
+	}
+}
+
+// assertDescendingOrder verifies that aggregate results are sorted by count descending.
+func assertDescendingOrder(t *testing.T, got []AggregateRow) {
+	t.Helper()
+	for i := 1; i < len(got); i++ {
+		if got[i].Count > got[i-1].Count {
+			t.Errorf("results not in descending order: %q (count=%d) after %q (count=%d)",
+				got[i].Key, got[i].Count, got[i-1].Key, got[i-1].Count)
 		}
 	}
 }
