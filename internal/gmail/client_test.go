@@ -2,6 +2,7 @@ package gmail
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -20,8 +21,19 @@ func gmailErrorBody(code int, message string, errors []map[string]string, detail
 	if details != nil {
 		inner["details"] = details
 	}
-	b, _ := json.Marshal(map[string]any{"error": inner})
+	b, err := json.Marshal(map[string]any{"error": inner})
+	if err != nil {
+		panic(fmt.Sprintf("failed to marshal test body: %v", err))
+	}
 	return b
+}
+
+func errorWithReason(reason string) []byte {
+	return gmailErrorBody(403, "", []map[string]string{{"reason": reason}}, nil)
+}
+
+func errorWithDetail(reason string) []byte {
+	return gmailErrorBody(403, "", nil, []map[string]string{{"reason": reason}})
 }
 
 func TestIsRateLimitError(t *testing.T) {
@@ -32,14 +44,12 @@ func TestIsRateLimitError(t *testing.T) {
 	}{
 		{
 			name: "RateLimitExceeded",
-			body: gmailErrorBody(403, quotaExceededMsg,
-				[]map[string]string{{"reason": "rateLimitExceeded"}}, nil),
+			body: errorWithReason("rateLimitExceeded"),
 			want: true,
 		},
 		{
 			name: "RateLimitExceededUpperCase",
-			body: gmailErrorBody(403, "",
-				nil, []map[string]string{{"reason": "RATE_LIMIT_EXCEEDED"}}),
+			body: errorWithDetail("RATE_LIMIT_EXCEEDED"),
 			want: true,
 		},
 		{
@@ -49,14 +59,12 @@ func TestIsRateLimitError(t *testing.T) {
 		},
 		{
 			name: "UserRateLimitExceeded",
-			body: gmailErrorBody(403, "",
-				[]map[string]string{{"reason": "userRateLimitExceeded"}}, nil),
+			body: errorWithReason("userRateLimitExceeded"),
 			want: true,
 		},
 		{
 			name: "PermissionDenied",
-			body: gmailErrorBody(403, "The caller does not have permission",
-				[]map[string]string{{"reason": "forbidden"}}, nil),
+			body: errorWithReason("forbidden"),
 			want: false,
 		},
 		{
