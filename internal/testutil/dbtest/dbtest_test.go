@@ -84,13 +84,8 @@ func TestAddMessage_DBErrorFailsTest(t *testing.T) {
 	// Close the DB to force a non-ErrNoRows error on the source_id lookup.
 	tdb.DB.Close()
 
-	var caught bool
 	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				caught = true
-			}
-		}()
+		defer func() { recover() }()
 		fakeTDB.AddMessage(MessageOpts{
 			ConversationID: 1,
 			Subject:        "db error",
@@ -98,7 +93,7 @@ func TestAddMessage_DBErrorFailsTest(t *testing.T) {
 		})
 	}()
 
-	if !caught || ft.fatalMsg == "" {
+	if ft.fatalMsg == "" {
 		t.Fatal("expected fatal for DB error on source_id lookup")
 	}
 	t.Logf("got expected fatal: %s", ft.fatalMsg)
