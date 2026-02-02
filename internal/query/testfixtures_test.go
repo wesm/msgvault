@@ -79,7 +79,7 @@ type AttachmentFixture struct {
 
 // TestDataBuilder accumulates typed fixture data and generates Parquet files.
 type TestDataBuilder struct {
-	t           *testing.T
+	t           testing.TB
 	nextMsgID   int64
 	nextSrcID   int64
 	nextPartID  int64
@@ -98,7 +98,7 @@ type TestDataBuilder struct {
 }
 
 // NewTestDataBuilder creates a new typed test data builder.
-func NewTestDataBuilder(t *testing.T) *TestDataBuilder {
+func NewTestDataBuilder(t testing.TB) *TestDataBuilder {
 	t.Helper()
 	return &TestDataBuilder{
 		t:          t,
@@ -416,12 +416,12 @@ type parquetTable struct {
 
 // parquetBuilder creates a temp directory with Parquet test data files.
 type parquetBuilder struct {
-	t      *testing.T
+	t      testing.TB
 	tables []parquetTable
 }
 
 // newParquetBuilder creates a new builder for Parquet test fixtures.
-func newParquetBuilder(t *testing.T) *parquetBuilder {
+func newParquetBuilder(t testing.TB) *parquetBuilder {
 	t.Helper()
 	return &parquetBuilder{t: t}
 }
@@ -506,7 +506,7 @@ func escapePath(p string) string {
 }
 
 // writeTableParquet writes a single table's data to a Parquet file using DuckDB.
-func writeTableParquet(t *testing.T, db *sql.DB, path, columns, values string, empty bool) {
+func writeTableParquet(t testing.TB, db *sql.DB, path, columns, values string, empty bool) {
 	t.Helper()
 
 	whereClause := ""
@@ -530,7 +530,7 @@ func writeTableParquet(t *testing.T, db *sql.DB, path, columns, values string, e
 
 // createEngineFromBuilder builds Parquet files from the builder and returns a
 // DuckDBEngine. Cleanup is registered via t.Cleanup.
-func createEngineFromBuilder(t *testing.T, pb *parquetBuilder) *DuckDBEngine {
+func createEngineFromBuilder(t testing.TB, pb *parquetBuilder) *DuckDBEngine {
 	t.Helper()
 	analyticsDir, cleanup := pb.build()
 	t.Cleanup(cleanup)
@@ -544,7 +544,7 @@ func createEngineFromBuilder(t *testing.T, pb *parquetBuilder) *DuckDBEngine {
 
 // assertAggregateCounts verifies that every key in want exists in got with the
 // expected count, and that there are no extra rows.
-func assertAggregateCounts(t *testing.T, got []AggregateRow, want map[string]int64) {
+func assertAggregateCounts(t testing.TB, got []AggregateRow, want map[string]int64) {
 	t.Helper()
 	gotMap := make(map[string]int64, len(got))
 	for _, r := range got {
@@ -568,7 +568,7 @@ func assertAggregateCounts(t *testing.T, got []AggregateRow, want map[string]int
 }
 
 // assertDescendingOrder verifies that aggregate results are sorted by count descending.
-func assertDescendingOrder(t *testing.T, got []AggregateRow) {
+func assertDescendingOrder(t testing.TB, got []AggregateRow) {
 	t.Helper()
 	for i := 1; i < len(got); i++ {
 		if got[i].Count > got[i-1].Count {

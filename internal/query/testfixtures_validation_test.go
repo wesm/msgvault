@@ -2,9 +2,43 @@ package query
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
+
+// fatalSentinel is panicked by fakeT.Fatalf to halt execution like real Fatalf.
+type fatalSentinel struct{ msg string }
+
+// fakeT is a minimal testing.TB implementation that captures Fatalf calls
+// by panicking with a sentinel value, allowing tests to verify fatal guards.
+type fakeT struct {
+	testing.TB // embed to satisfy the interface; unused methods will panic
+	failed     bool
+	fatalMsg   string
+}
+
+func (f *fakeT) Helper()                          {}
+func (f *fakeT) Errorf(format string, args ...any) {}
+func (f *fakeT) Cleanup(fn func())                 {}
+func (f *fakeT) Fatalf(format string, args ...any) {
+	f.failed = true
+	f.fatalMsg = fmt.Sprintf(format, args...)
+	panic(fatalSentinel{f.fatalMsg})
+}
+
+// expectFatal calls fn and returns true if it triggered fakeT.Fatalf.
+func expectFatal(ft *fakeT, fn func()) bool {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(fatalSentinel); !ok {
+				panic(r) // re-panic non-sentinel
+			}
+		}
+	}()
+	fn()
+	return false
+}
 
 func TestAddLabel_ValidName(t *testing.T) {
 	b := NewTestDataBuilder(t)
@@ -18,9 +52,8 @@ func TestAddLabel_ValidName(t *testing.T) {
 	}
 }
 
-func TestAddMessage_FailsWithoutSources(t *testing.T) {
-	// When no sources exist and SourceID is 0, AddMessage should fail.
-	// We test the positive path: explicit SourceID bypasses the check.
+func TestAddMessage_ExplicitSourceID_BypassesCheck(t *testing.T) {
+	// Explicit SourceID bypasses the "no sources" check.
 	b := NewTestDataBuilder(t)
 	id := b.AddMessage(MessageOpt{
 		Subject:  "test",
@@ -28,6 +61,32 @@ func TestAddMessage_FailsWithoutSources(t *testing.T) {
 	})
 	if id != 1 {
 		t.Errorf("expected message ID 1, got %d", id)
+	}
+}
+
+func TestAddMessage_FailsWithoutSources(t *testing.T) {
+	// When no sources exist and SourceID is 0, AddMessage should fatal.
+	ft := &fakeT{}
+	expectFatal(ft, func() {
+		b := NewTestDataBuilder(ft)
+		b.AddMessage(MessageOpt{Subject: "test"}) // SourceID defaults to 0
+	})
+	if !ft.failed {
+		t.Error("expected Fatalf when adding message without sources")
+	}
+}
+
+func TestAddAttachment_FailsWithMissingMessage(t *testing.T) {
+	// AddAttachment should fatal when the message ID doesn't exist.
+	ft := &fakeT{}
+	expectFatal(ft, func() {
+		b := NewTestDataBuilder(ft)
+		b.AddSource("a@test.com")
+		b.AddMessage(MessageOpt{Subject: "exists"}) // ID = 1
+		b.AddAttachment(999, 1024, "missing.txt")   // message 999 doesn't exist
+	})
+	if !ft.failed {
+		t.Error("expected Fatalf when attaching to nonexistent message")
 	}
 }
 
