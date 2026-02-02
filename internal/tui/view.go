@@ -257,7 +257,7 @@ func (m Model) headerView() string {
 	// === LINE 1: Title bar ===
 	// Build title with version
 	titleText := "msgvault"
-	if m.version != "" && m.version != "dev" {
+	if m.version != "" && m.version != "dev" && m.version != "unknown" {
 		titleText = fmt.Sprintf("msgvault [%s]", m.version)
 	}
 

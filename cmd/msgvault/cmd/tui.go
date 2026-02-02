@@ -65,7 +65,7 @@ Performance:
 			needsBuild, reason := cacheNeedsBuild(dbPath, analyticsDir)
 			if needsBuild {
 				fmt.Printf("Building analytics cache (%s)...\n", reason)
-				result, err := buildCache(dbPath, analyticsDir, false)
+				result, err := buildCache(dbPath, analyticsDir, true)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: Failed to build cache: %v\n", err)
 					fmt.Fprintf(os.Stderr, "Falling back to SQLite (may be slow for large archives)\n")

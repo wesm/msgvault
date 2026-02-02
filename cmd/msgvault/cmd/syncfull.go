@@ -192,12 +192,18 @@ type CLIProgress struct {
 }
 
 func (p *CLIProgress) OnStart(total int64) {
-	p.startTime = time.Now()
-	p.lastPrint = time.Now()
+	now := time.Now()
+	if p.startTime.IsZero() {
+		p.startTime = now
+	}
+	p.lastPrint = now
 	// Don't print Gmail's estimate - it's often wildly inaccurate
 }
 
 func (p *CLIProgress) OnProgress(processed, added, skipped int64) {
+	if p.startTime.IsZero() {
+		p.startTime = time.Now()
+	}
 	p.processed = processed
 	p.added = added
 	p.skipped = skipped

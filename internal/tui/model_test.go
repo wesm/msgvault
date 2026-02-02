@@ -3405,6 +3405,7 @@ func TestHeaderShowsTitleBar(t *testing.T) {
 		{"tagged version", "v0.1.0", true, "[v0.1.0]"},
 		{"dev version hidden", "dev", false, ""},
 		{"empty version hidden", "", false, ""},
+		{"unknown version hidden", "unknown", false, ""},
 		{"prerelease version", "v1.0.0-rc1", true, "[v1.0.0-rc1]"},
 	}
 
