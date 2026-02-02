@@ -2522,3 +2522,171 @@ func TestRecipientAndRecipientNameAndMatchEmptyRecipient(t *testing.T) {
 		t.Errorf("SubAggregate: unexpected rows: %v", rows)
 	}
 }
+
+// TestRecipientNameFilter_IncludesBCC verifies that RecipientName filter includes BCC recipients.
+// This is a regression test for a bug where RecipientName only searched 'to' and 'cc' but not 'bcc'.
+func TestRecipientNameFilter_IncludesBCC(t *testing.T) {
+	// Setup: Create a fresh database with a BCC recipient
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	schema := `
+		CREATE TABLE sources (
+			id INTEGER PRIMARY KEY,
+			source_type TEXT NOT NULL,
+			identifier TEXT NOT NULL
+		);
+		CREATE TABLE participants (
+			id INTEGER PRIMARY KEY,
+			email_address TEXT,
+			display_name TEXT,
+			domain TEXT
+		);
+		CREATE TABLE conversations (
+			id INTEGER PRIMARY KEY,
+			source_id INTEGER NOT NULL,
+			source_conversation_id TEXT,
+			conversation_type TEXT NOT NULL,
+			title TEXT
+		);
+		CREATE TABLE messages (
+			id INTEGER PRIMARY KEY,
+			conversation_id INTEGER NOT NULL,
+			source_id INTEGER NOT NULL,
+			source_message_id TEXT,
+			message_type TEXT NOT NULL,
+			sent_at DATETIME,
+			subject TEXT,
+			snippet TEXT,
+			size_estimate INTEGER,
+			has_attachments BOOLEAN DEFAULT FALSE,
+			attachment_count INTEGER DEFAULT 0,
+			deleted_from_source_at DATETIME
+		);
+		CREATE TABLE message_bodies (
+			message_id INTEGER PRIMARY KEY,
+			body_text TEXT,
+			body_html TEXT
+		);
+		CREATE TABLE message_recipients (
+			id INTEGER PRIMARY KEY,
+			message_id INTEGER NOT NULL,
+			participant_id INTEGER NOT NULL,
+			recipient_type TEXT NOT NULL,
+			display_name TEXT
+		);
+		CREATE TABLE message_labels (
+			message_id INTEGER NOT NULL,
+			label_id INTEGER NOT NULL,
+			PRIMARY KEY (message_id, label_id)
+		);
+		CREATE TABLE labels (
+			id INTEGER PRIMARY KEY,
+			source_id INTEGER,
+			name TEXT NOT NULL,
+			label_type TEXT
+		);
+		CREATE TABLE attachments (
+			id INTEGER PRIMARY KEY,
+			message_id INTEGER NOT NULL,
+			filename TEXT,
+			size INTEGER,
+			storage_path TEXT
+		);
+	`
+	if _, err := db.Exec(schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+
+	// Insert test data: one message with a BCC recipient "Secret Bob"
+	testData := `
+		INSERT INTO sources (id, source_type, identifier) VALUES (1, 'gmail', 'test@gmail.com');
+		INSERT INTO participants (id, email_address, display_name, domain) VALUES
+			(1, 'alice@example.com', 'Alice Sender', 'example.com'),
+			(2, 'bob@example.com', 'Bob ToRecipient', 'example.com'),
+			(3, 'secret@example.com', 'Secret Bob', 'example.com');
+		INSERT INTO conversations (id, source_id, source_conversation_id, conversation_type, title)
+			VALUES (1, 1, 'thread1', 'email_thread', 'Test Thread');
+		INSERT INTO messages (id, conversation_id, source_id, source_message_id, message_type, sent_at, subject, snippet, size_estimate)
+			VALUES (1, 1, 1, 'msg1', 'email', '2024-01-15 10:00:00', 'Test Subject', 'Preview', 1000);
+		INSERT INTO message_bodies (message_id, body_text) VALUES (1, 'Test body');
+		-- From Alice
+		INSERT INTO message_recipients (message_id, participant_id, recipient_type, display_name) VALUES (1, 1, 'from', 'Alice Sender');
+		-- To Bob
+		INSERT INTO message_recipients (message_id, participant_id, recipient_type, display_name) VALUES (1, 2, 'to', 'Bob ToRecipient');
+		-- BCC Secret Bob - this should be findable by RecipientName filter
+		INSERT INTO message_recipients (message_id, participant_id, recipient_type, display_name) VALUES (1, 3, 'bcc', 'Secret Bob');
+	`
+	if _, err := db.Exec(testData); err != nil {
+		t.Fatalf("insert test data: %v", err)
+	}
+
+	engine := NewSQLiteEngine(db)
+	ctx := context.Background()
+
+	// Test 1: ListMessages with RecipientName filter should find the BCC recipient
+	t.Run("ListMessages_RecipientName_BCC", func(t *testing.T) {
+		messages, err := engine.ListMessages(ctx, MessageFilter{RecipientName: "Secret Bob"})
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		if len(messages) != 1 {
+			t.Errorf("expected 1 message with BCC recipient 'Secret Bob', got %d", len(messages))
+		}
+	})
+
+	// Test 2: AggregateByRecipientName should include BCC recipients
+	t.Run("AggregateByRecipientName_BCC", func(t *testing.T) {
+		rows, err := engine.AggregateByRecipientName(ctx, AggregateOptions{Limit: 100})
+		if err != nil {
+			t.Fatalf("AggregateByRecipientName: %v", err)
+		}
+		// Should have both "Bob ToRecipient" and "Secret Bob"
+		found := false
+		for _, row := range rows {
+			if row.Key == "Secret Bob" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected BCC recipient 'Secret Bob' in aggregate, got: %v", rows)
+		}
+	})
+
+	// Test 3: SubAggregate with RecipientName filter should find BCC
+	t.Run("SubAggregate_RecipientName_BCC", func(t *testing.T) {
+		rows, err := engine.SubAggregate(ctx, MessageFilter{RecipientName: "Secret Bob"}, ViewSenders, AggregateOptions{Limit: 100})
+		if err != nil {
+			t.Fatalf("SubAggregate: %v", err)
+		}
+		if len(rows) != 1 || rows[0].Key != "alice@example.com" {
+			t.Errorf("expected sender Alice for message with BCC 'Secret Bob', got: %v", rows)
+		}
+	})
+
+	// Test 4: GetGmailIDsByFilter with RecipientName should find BCC
+	t.Run("GetGmailIDsByFilter_RecipientName_BCC", func(t *testing.T) {
+		ids, err := engine.GetGmailIDsByFilter(ctx, MessageFilter{RecipientName: "Secret Bob"})
+		if err != nil {
+			t.Fatalf("GetGmailIDsByFilter: %v", err)
+		}
+		if len(ids) != 1 || ids[0] != "msg1" {
+			t.Errorf("expected gmail ID 'msg1' for BCC recipient, got: %v", ids)
+		}
+	})
+
+	// Test 5: For comparison, Recipient filter (by email) should also find BCC (this worked before)
+	t.Run("ListMessages_Recipient_BCC", func(t *testing.T) {
+		messages, err := engine.ListMessages(ctx, MessageFilter{Recipient: "secret@example.com"})
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		if len(messages) != 1 {
+			t.Errorf("expected 1 message with BCC recipient email, got %d", len(messages))
+		}
+	})
+}
