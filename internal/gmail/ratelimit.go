@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+// Clock abstracts time operations for testability.
+type Clock interface {
+	Now() time.Time
+	After(d time.Duration) <-chan time.Time
+}
+
 // Operation represents a Gmail API operation with its quota cost.
 type Operation int
 
@@ -48,10 +54,17 @@ const DefaultCapacity = 250
 // DefaultRefillRate is tokens per second at the default rate.
 const DefaultRefillRate = 250.0
 
+// realClock implements Clock using the standard time package.
+type realClock struct{}
+
+func (realClock) Now() time.Time                         { return time.Now() }
+func (realClock) After(d time.Duration) <-chan time.Time  { return time.After(d) }
+
 // RateLimiter implements a token bucket rate limiter for Gmail API calls.
 // It is safe for concurrent use and supports adaptive throttling.
 type RateLimiter struct {
 	mu             sync.Mutex
+	clock          Clock
 	tokens         float64
 	capacity       float64
 	refillRate     float64 // tokens per second
@@ -81,6 +94,7 @@ func NewRateLimiter(qps float64) *RateLimiter {
 
 	refillRate := DefaultRefillRate * scaleFactor
 	return &RateLimiter{
+		clock:          realClock{},
 		tokens:         DefaultCapacity,
 		capacity:       DefaultCapacity,
 		refillRate:     refillRate,
@@ -96,7 +110,7 @@ func (r *RateLimiter) Acquire(ctx context.Context, op Operation) error {
 
 	for {
 		r.mu.Lock()
-		now := time.Now()
+		now := r.clock.Now()
 
 		// If we're in a throttle period, wait until it expires
 		if now.Before(r.throttledUntil) {
@@ -106,7 +120,7 @@ func (r *RateLimiter) Acquire(ctx context.Context, op Operation) error {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(waitTime):
+			case <-r.clock.After(waitTime):
 				continue // Throttle expired, retry
 			}
 		}
@@ -131,7 +145,7 @@ func (r *RateLimiter) Acquire(ctx context.Context, op Operation) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(waitTime):
+		case <-r.clock.After(waitTime):
 			// Continue to retry
 		}
 	}
@@ -156,7 +170,7 @@ func (r *RateLimiter) TryAcquire(op Operation) bool {
 
 // refill adds tokens based on elapsed time. Must be called with lock held.
 func (r *RateLimiter) refill() {
-	now := time.Now()
+	now := r.clock.Now()
 
 	// If we're in a throttle period, don't refill yet
 	if now.Before(r.throttledUntil) {
@@ -192,7 +206,7 @@ func (r *RateLimiter) Throttle(duration time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	now := time.Now()
+	now := r.clock.Now()
 	newThrottleEnd := now.Add(duration)
 
 	// Don't shorten an existing throttle window (e.g., 429 shouldn't shorten a 403 backoff)
