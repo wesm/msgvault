@@ -1,7 +1,7 @@
 package testutil
 
-// encodedSamples holds the canonical byte sequences (unexported to prevent direct mutation).
-var encodedSamples = struct {
+// EncodedSamplesT holds encoded byte sequences for testing charset detection and repair.
+type EncodedSamplesT struct {
 	ShiftJIS_Konnichiwa    []byte
 	GBK_Nihao              []byte
 	Big5_Nihao             []byte
@@ -19,7 +19,10 @@ var encodedSamples = struct {
 	Latin1_NTilde           []byte
 	Latin1_Registered       []byte
 	Latin1_Degree           []byte
-}{
+}
+
+// encodedSamples holds the canonical byte sequences (unexported to prevent direct mutation).
+var encodedSamples = EncodedSamplesT{
 	ShiftJIS_Konnichiwa: []byte{0x82, 0xb1, 0x82, 0xf1, 0x82, 0xc9, 0x82, 0xbf, 0x82, 0xcd},
 	GBK_Nihao:           []byte{0xc4, 0xe3, 0xba, 0xc3},
 	Big5_Nihao:          []byte{0xa9, 0x6f, 0xa6, 0x6e},
@@ -41,26 +44,6 @@ var encodedSamples = struct {
 	Latin1_Degree:     []byte("25\xb0C"),
 }
 
-// EncodedSamplesT mirrors the encodedSamples struct type for use by callers.
-type EncodedSamplesT struct {
-	ShiftJIS_Konnichiwa    []byte
-	GBK_Nihao              []byte
-	Big5_Nihao             []byte
-	EUCKR_Annyeong         []byte
-	Win1252_SmartQuoteRight []byte
-	Win1252_EnDash          []byte
-	Win1252_EmDash          []byte
-	Win1252_DoubleQuotes    []byte
-	Win1252_Trademark       []byte
-	Win1252_Bullet          []byte
-	Win1252_Euro            []byte
-	Latin1_OAcute           []byte
-	Latin1_CCedilla         []byte
-	Latin1_UUmlaut          []byte
-	Latin1_NTilde           []byte
-	Latin1_Registered       []byte
-	Latin1_Degree           []byte
-}
 
 func cloneBytes(b []byte) []byte {
 	return append([]byte(nil), b...)
