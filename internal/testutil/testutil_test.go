@@ -108,6 +108,9 @@ func TestPathTraversalCasesReturnsFreshSlice(t *testing.T) {
 	if len(a) == 0 {
 		t.Fatal("PathTraversalCases() returned empty slice")
 	}
+	if len(b) == 0 {
+		t.Fatal("PathTraversalCases() returned empty slice on second call")
+	}
 	original := b[0].Name
 	a[0].Name = "MUTATED"
 	if b[0].Name != original {
