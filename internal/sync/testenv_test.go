@@ -91,6 +91,21 @@ func (e *TestEnv) MustCreateSource(t *testing.T) *store.Source {
 	return source
 }
 
+// SetOptions replaces the Syncer with one configured by the given modifier function.
+func (e *TestEnv) SetOptions(t *testing.T, mod func(*Options)) {
+	t.Helper()
+	opts := DefaultOptions()
+	mod(opts)
+	e.Syncer = New(e.Mock, e.Store, opts)
+}
+
+// SetHistory configures mock history records and the target history ID for incremental sync tests.
+func (e *TestEnv) SetHistory(historyID uint64, records ...gmail.HistoryRecord) {
+	e.Mock.Profile.HistoryID = historyID
+	e.Mock.HistoryRecords = records
+	e.Mock.HistoryID = historyID
+}
+
 // seedMessages sets the profile totals/historyID and adds messages to the mock.
 func seedMessages(env *TestEnv, total int64, historyID uint64, msgs ...string) {
 	env.Mock.Profile.MessagesTotal = total

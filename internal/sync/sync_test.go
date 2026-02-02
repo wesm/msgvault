@@ -94,9 +94,9 @@ func TestMIMEParsing(t *testing.T) {
 	env.Mock.Profile.HistoryID = 12345
 	env.Mock.AddMessage("complex1", complexMIME, []string{"INBOX"})
 
-	opts := DefaultOptions()
-	opts.AttachmentsDir = filepath.Join(env.TmpDir, "attachments")
-	env.Syncer = New(env.Mock, env.Store, opts)
+	env.SetOptions(t, func(o *Options) {
+		o.AttachmentsDir = filepath.Join(env.TmpDir, "attachments")
+	})
 
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, 1, -1, -1, -1)
@@ -138,9 +138,9 @@ func TestFullSyncNoResume(t *testing.T) {
 	env := newTestEnv(t)
 	seedMessages(env, 2, 12345, "msg1", "msg2")
 
-	opts := DefaultOptions()
-	opts.NoResume = true
-	env.Syncer = New(env.Mock, env.Store, opts)
+	env.SetOptions(t, func(o *Options) {
+		o.NoResume = true
+	})
 
 	summary := runFullSync(t, env)
 	if summary.WasResumed {
@@ -165,9 +165,9 @@ func TestFullSyncWithQuery(t *testing.T) {
 	env := newTestEnv(t)
 	seedMessages(env, 2, 12345, "msg1", "msg2")
 
-	opts := DefaultOptions()
-	opts.Query = "before:2024/06/01"
-	env.Syncer = New(env.Mock, env.Store, opts)
+	env.SetOptions(t, func(o *Options) {
+		o.Query = "before:2024/06/01"
+	})
 
 	summary := runFullSync(t, env)
 
@@ -248,11 +248,10 @@ func TestIncrementalSyncWithChanges(t *testing.T) {
 	env.Mock.AddMessage("new-msg-1", testMIME, []string{"INBOX"})
 	env.Mock.AddMessage("new-msg-2", testMIME, []string{"INBOX"})
 
-	env.Mock.HistoryRecords = []gmail.HistoryRecord{
+	env.SetHistory(12350,
 		historyAdded("new-msg-1"),
 		historyAdded("new-msg-2"),
-	}
-	env.Mock.HistoryID = 12350
+	)
 
 	summary := runIncrementalSync(t, env)
 	assertSummary(t, summary, 2, -1, -1, -1)
@@ -265,11 +264,7 @@ func TestIncrementalSyncWithDeletions(t *testing.T) {
 	runFullSync(t, env)
 
 	// Now simulate deletion via incremental
-	env.Mock.Profile.HistoryID = 12350
-	env.Mock.HistoryRecords = []gmail.HistoryRecord{
-		historyDeleted("msg1"),
-	}
-	env.Mock.HistoryID = 12350
+	env.SetHistory(12350, historyDeleted("msg1"))
 
 	summary := runIncrementalSync(t, env)
 	assertSummary(t, summary, -1, -1, -1, 1)
@@ -313,11 +308,7 @@ func TestIncrementalSyncWithLabelAdded(t *testing.T) {
 	runFullSync(t, env)
 
 	// Now simulate label addition via incremental
-	env.Mock.Profile.HistoryID = 12350
-	env.Mock.HistoryRecords = []gmail.HistoryRecord{
-		historyLabelAdded("msg1", "STARRED"),
-	}
-	env.Mock.HistoryID = 12350
+	env.SetHistory(12350, historyLabelAdded("msg1", "STARRED"))
 	env.Mock.Messages["msg1"].LabelIDs = []string{"INBOX", "STARRED"}
 
 	summary := runIncrementalSync(t, env)
@@ -333,11 +324,7 @@ func TestIncrementalSyncWithLabelRemoved(t *testing.T) {
 	runFullSync(t, env)
 
 	// Now simulate label removal via incremental
-	env.Mock.Profile.HistoryID = 12350
-	env.Mock.HistoryRecords = []gmail.HistoryRecord{
-		historyLabelRemoved("msg1", "STARRED"),
-	}
-	env.Mock.HistoryID = 12350
+	env.SetHistory(12350, historyLabelRemoved("msg1", "STARRED"))
 	env.Mock.Messages["msg1"].LabelIDs = []string{"INBOX"}
 
 	summary := runIncrementalSync(t, env)
@@ -358,10 +345,7 @@ func TestIncrementalSyncLabelAddedToNewMessage(t *testing.T) {
 	env.Mock.Profile.HistoryID = 12350
 	env.Mock.AddMessage("new-msg", testMIME, []string{"INBOX", "STARRED"})
 
-	env.Mock.HistoryRecords = []gmail.HistoryRecord{
-		historyLabelAdded("new-msg", "STARRED"),
-	}
-	env.Mock.HistoryID = 12350
+	env.SetHistory(12350, historyLabelAdded("new-msg", "STARRED"))
 
 	_, err := env.Syncer.Incremental(env.Context, testEmail)
 	if err != nil {
@@ -378,10 +362,7 @@ func TestIncrementalSyncLabelRemovedFromMissingMessage(t *testing.T) {
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12350
 
-	env.Mock.HistoryRecords = []gmail.HistoryRecord{
-		historyLabelRemoved("unknown-msg", "STARRED"),
-	}
-	env.Mock.HistoryID = 12350
+	env.SetHistory(12350, historyLabelRemoved("unknown-msg", "STARRED"))
 
 	summary := runIncrementalSync(t, env)
 	assertSummary(t, summary, 0, -1, -1, -1)
