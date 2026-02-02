@@ -5,12 +5,15 @@ package storetest
 import (
 	"database/sql"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/testutil"
 )
+
+var msgCounter atomic.Int64
 
 // Fixture holds common test state for store-level tests.
 type Fixture struct {
@@ -61,6 +64,12 @@ func (f *Fixture) EnsureLabels(labels map[string]string, typ string) map[string]
 	f.T.Helper()
 	result := make(map[string]int64, len(labels))
 	for sourceLabelID, name := range labels {
+		if name == "" {
+			f.T.Fatalf("EnsureLabels: label name is required (sourceLabelID=%q)", sourceLabelID)
+		}
+		if sourceLabelID == "" {
+			f.T.Fatalf("EnsureLabels: sourceLabelID is required")
+		}
 		lid, err := f.Store.EnsureLabel(f.Source.ID, sourceLabelID, name, typ)
 		testutil.MustNoErr(f.T, err, "EnsureLabel "+sourceLabelID)
 		result[sourceLabelID] = lid
@@ -172,7 +181,7 @@ func NewMessage(sourceID, convID int64) *MessageBuilder {
 		msg: store.Message{
 			ConversationID:  convID,
 			SourceID:        sourceID,
-			SourceMessageID: "test-msg",
+			SourceMessageID: fmt.Sprintf("test-msg-%d", msgCounter.Add(1)),
 			MessageType:     "email",
 			SizeEstimate:    1000,
 		},
