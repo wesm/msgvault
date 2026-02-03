@@ -3,7 +3,7 @@ package update
 import (
 	"archive/tar"
 	"fmt"
-        "os"
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -230,9 +230,9 @@ func TestIsDevBuildVersion(t *testing.T) {
 func TestIsNewer(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name       string
-		v1, v2     string
-		want       bool
+		name   string
+		v1, v2 string
+		want   bool
 	}{
 		{"major version bump", "1.0.0", "0.9.0", true},
 		{"minor version bump", "1.1.0", "1.0.0", true},
@@ -371,17 +371,13 @@ func TestFormatSize(t *testing.T) {
 // TestSaveCacheFilePermissions verifies that the update check cache file is
 // saved with restrictive permissions (0600) to protect user data.
 func TestSaveCacheFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file permissions not enforced on Windows")
+	}
+
 	// Use a temp directory as MSGVAULT_HOME to avoid touching real user data
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("MSGVAULT_HOME")
-	os.Setenv("MSGVAULT_HOME", tmpDir)
-	t.Cleanup(func() {
-		if origHome != "" {
-			os.Setenv("MSGVAULT_HOME", origHome)
-		} else {
-			os.Unsetenv("MSGVAULT_HOME")
-		}
-	})
+	t.Setenv("MSGVAULT_HOME", tmpDir)
 
 	// Call saveCache which writes to getCacheDir()/update_check.json
 	saveCache("1.0.0")
