@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -30,13 +29,6 @@ var Scopes = []string{
 // ScopesDeletion includes full access required for batchDelete API.
 // gmail.modify supports trash/untrash but NOT batchDelete.
 var ScopesDeletion = []string{
-	"https://mail.google.com/",
-}
-
-// ScopesDeviceFlow is used for headless device authorization.
-// Google's device flow only supports the full mail.google.com scope,
-// not granular gmail.readonly/gmail.modify scopes.
-var ScopesDeviceFlow = []string{
 	"https://mail.google.com/",
 }
 
@@ -89,26 +81,38 @@ func (m *Manager) HasToken(email string) bool {
 	return err == nil
 }
 
-// Authorize performs the OAuth flow for a new account.
-// If headless is true, uses device code flow; otherwise opens browser.
-func (m *Manager) Authorize(ctx context.Context, email string, headless bool) error {
-	var token *oauth2.Token
-	var scopes []string
-	var err error
+// PrintHeadlessInstructions prints setup instructions for headless servers.
+// Google's device flow does not support Gmail scopes, so users must authorize
+// on a machine with a browser and copy the token file.
+func PrintHeadlessInstructions(email string) {
+	fmt.Println()
+	fmt.Println("=== Headless Server Setup ===")
+	fmt.Println()
+	fmt.Println("Google's OAuth device flow does not support Gmail scopes, so --headless")
+	fmt.Println("cannot directly authorize. Instead, authorize on a machine with a browser")
+	fmt.Println("and copy the token to your server.")
+	fmt.Println()
+	fmt.Println("Step 1: On a machine with a browser, run:")
+	fmt.Println()
+	fmt.Printf("    msgvault add-account %s\n", email)
+	fmt.Println()
+	fmt.Println("Step 2: Copy the token file to your headless server:")
+	fmt.Println()
+	fmt.Printf("    scp ~/.msgvault/tokens/%s.json user@server:~/.msgvault/tokens/\n", email)
+	fmt.Println()
+	fmt.Println("The token will work on the server and auto-refresh as needed.")
+	fmt.Println("All msgvault commands (sync, tui, etc.) will work normally.")
+	fmt.Println()
+}
 
-	if headless {
-		token, err = m.deviceFlow(ctx)
-		scopes = ScopesDeviceFlow // Device flow requires full mail.google.com scope
-	} else {
-		token, err = m.browserFlow(ctx)
-		scopes = m.config.Scopes
-	}
-
+// Authorize performs the browser OAuth flow for a new account.
+func (m *Manager) Authorize(ctx context.Context, email string) error {
+	token, err := m.browserFlow(ctx)
 	if err != nil {
 		return err
 	}
 
-	return m.saveToken(email, token, scopes)
+	return m.saveToken(email, token, m.config.Scopes)
 }
 
 const (
@@ -181,142 +185,6 @@ func (m *Manager) browserFlow(ctx context.Context) (*oauth2.Token, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-}
-
-// deviceFlow uses the device authorization grant for headless environments.
-func (m *Manager) deviceFlow(ctx context.Context) (*oauth2.Token, error) {
-	// Device flow endpoint
-	deviceEndpoint := "https://oauth2.googleapis.com/device/code"
-
-	// Request device code - device flow requires full mail.google.com scope,
-	// not granular gmail.readonly/gmail.modify scopes
-	resp, err := http.PostForm(deviceEndpoint, map[string][]string{
-		"client_id": {m.config.ClientID},
-		"scope":     {scopesToString(ScopesDeviceFlow)},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("request device code: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		// Try to read error details from body
-		var errResp struct {
-			Error     string `json:"error"`
-			ErrorDesc string `json:"error_description"`
-		}
-		if json.NewDecoder(resp.Body).Decode(&errResp) == nil && errResp.Error != "" {
-			if errResp.Error == "invalid_client" {
-				return nil, fmt.Errorf("device flow not supported: %s\n\nTo use --headless, your OAuth client must be configured as 'TVs and Limited Input devices' type in Google Cloud Console.\nAlternatively, use the browser flow without --headless from a machine with a browser", errResp.ErrorDesc)
-			}
-			return nil, fmt.Errorf("device code request failed (HTTP %d): %s - %s", resp.StatusCode, errResp.Error, errResp.ErrorDesc)
-		}
-		return nil, fmt.Errorf("device code request failed with HTTP %d", resp.StatusCode)
-	}
-
-	var deviceResp struct {
-		DeviceCode      string `json:"device_code"`
-		UserCode        string `json:"user_code"`
-		VerificationURL string `json:"verification_url"`
-		ExpiresIn       int    `json:"expires_in"`
-		Interval        int    `json:"interval"`
-		Error           string `json:"error"`
-		ErrorDesc       string `json:"error_description"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&deviceResp); err != nil {
-		return nil, fmt.Errorf("parse device response: %w", err)
-	}
-
-	// Check for error in response
-	if deviceResp.Error != "" {
-		if deviceResp.Error == "invalid_client" {
-			return nil, fmt.Errorf("device flow not supported: %s\n\nTo use --headless, your OAuth client must be configured as 'TVs and Limited Input devices' type in Google Cloud Console.\nAlternatively, use the browser flow without --headless from a machine with a browser", deviceResp.ErrorDesc)
-		}
-		return nil, fmt.Errorf("device code request failed: %s - %s", deviceResp.Error, deviceResp.ErrorDesc)
-	}
-
-	// Validate required fields
-	if deviceResp.VerificationURL == "" || deviceResp.UserCode == "" || deviceResp.DeviceCode == "" {
-		return nil, fmt.Errorf("device code response missing required fields (verification_url, user_code, or device_code)")
-	}
-	if deviceResp.ExpiresIn <= 0 {
-		return nil, fmt.Errorf("device code response has invalid expires_in: %d", deviceResp.ExpiresIn)
-	}
-
-	// Display instructions to user
-	fmt.Printf("\n")
-	fmt.Printf("To authorize msgvault, visit:\n")
-	fmt.Printf("  %s\n\n", deviceResp.VerificationURL)
-	fmt.Printf("And enter code: %s\n\n", deviceResp.UserCode)
-	fmt.Printf("Waiting for authorization...\n")
-
-	// Poll for token
-	interval := time.Duration(deviceResp.Interval) * time.Second
-	if interval < 5*time.Second {
-		interval = 5 * time.Second
-	}
-
-	deadline := time.Now().Add(time.Duration(deviceResp.ExpiresIn) * time.Second)
-
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(interval):
-		}
-
-		token, err := m.pollForToken(ctx, deviceResp.DeviceCode)
-		if err == nil {
-			fmt.Printf("Authorization successful!\n")
-			return token, nil
-		}
-
-		// Check if we should continue polling
-		errStr := err.Error()
-		if errStr == "oauth error: authorization_pending" || errStr == "oauth error: slow_down" {
-			continue
-		}
-
-		return nil, err
-	}
-
-	return nil, fmt.Errorf("authorization timed out")
-}
-
-// pollForToken polls the token endpoint during device flow.
-func (m *Manager) pollForToken(ctx context.Context, deviceCode string) (*oauth2.Token, error) {
-	resp, err := http.PostForm("https://oauth2.googleapis.com/token", map[string][]string{
-		"client_id":     {m.config.ClientID},
-		"client_secret": {m.config.ClientSecret},
-		"device_code":   {deviceCode},
-		"grant_type":    {"urn:ietf:params:oauth:grant-type:device_code"},
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var tokenResp struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int    `json:"expires_in"`
-		TokenType    string `json:"token_type"`
-		Error        string `json:"error"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return nil, err
-	}
-
-	if tokenResp.Error != "" {
-		return nil, fmt.Errorf("oauth error: %s", tokenResp.Error)
-	}
-
-	return &oauth2.Token{
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		TokenType:    tokenResp.TokenType,
-		Expiry:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second),
-	}, nil
 }
 
 // tokenFile wraps an OAuth2 token with metadata about the scopes it was

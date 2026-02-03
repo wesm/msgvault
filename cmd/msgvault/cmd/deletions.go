@@ -650,7 +650,7 @@ func promptScopeEscalation(ctx context.Context, oauthMgr *oauth.Manager, account
 		return fmt.Errorf("create oauth manager: %w", err)
 	}
 
-	if err := newMgr.Authorize(ctx, account, false); err != nil {
+	if err := newMgr.Authorize(ctx, account); err != nil {
 		return fmt.Errorf("authorize: %w", err)
 	}
 

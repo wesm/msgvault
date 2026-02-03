@@ -17,8 +17,8 @@ var addAccountCmd = &cobra.Command{
 	Short: "Add a Gmail account via OAuth",
 	Long: `Add a Gmail account by completing the OAuth2 authorization flow.
 
-By default, opens a browser for authorization. Use --headless for environments
-without a display (e.g., SSH sessions) to use device code flow instead.
+By default, opens a browser for authorization. Use --headless to see instructions
+for authorizing on headless servers (Google does not support Gmail in device flow).
 
 Example:
   msgvault add-account you@gmail.com
@@ -26,6 +26,12 @@ Example:
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		email := args[0]
+
+		// For --headless, just show instructions (no OAuth config needed)
+		if headless {
+			oauth.PrintHeadlessInstructions(email)
+			return nil
+		}
 
 		// Validate config
 		if cfg.OAuth.ClientSecrets == "" {
@@ -58,14 +64,9 @@ Example:
 		}
 
 		// Perform authorization
-		ctx := cmd.Context()
-		if headless {
-			fmt.Println("Starting device code flow...")
-		} else {
-			fmt.Println("Starting browser authorization...")
-		}
+		fmt.Println("Starting browser authorization...")
 
-		if err := oauthMgr.Authorize(ctx, email, headless); err != nil {
+		if err := oauthMgr.Authorize(cmd.Context(), email); err != nil {
 			return fmt.Errorf("authorization failed: %w", err)
 		}
 
