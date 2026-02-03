@@ -77,8 +77,8 @@ func (c *ActionController) StageForDeletion(aggregateSelection map[string]bool, 
 			case query.ViewLabels:
 				filter.Label = key
 			case query.ViewTime:
-				filter.TimePeriod = key
-				filter.TimeGranularity = timeGranularity
+				filter.TimeRange.Period = key
+				filter.TimeRange.Granularity = timeGranularity
 			}
 
 			ids, err := c.queries.GetGmailIDsByFilter(ctx, filter)

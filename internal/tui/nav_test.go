@@ -690,7 +690,7 @@ func TestTKeyInMessageListFromTimeDrillIsNoop(t *testing.T) {
 		WithPageSize(10).WithSize(100, 20).
 		WithLevel(levelMessageList).WithViewType(query.ViewTime).
 		Build()
-	model.drillFilter = query.MessageFilter{TimePeriod: "2024-01"}
+	model.drillFilter = query.MessageFilter{TimeRange: query.TimeRange{Period: "2024-01"}}
 	model.drillViewType = query.ViewTime
 
 	m := applyMessageListKey(t, model, key('t'))
@@ -1813,11 +1813,11 @@ func TestTopLevelTimeDrillDown_AllGranularities(t *testing.T) {
 
 			assertState(t, m, levelMessageList, query.ViewTime, 0)
 
-			if m.drillFilter.TimePeriod != tt.key {
-				t.Errorf("drillFilter.TimePeriod = %q, want %q", m.drillFilter.TimePeriod, tt.key)
+			if m.drillFilter.TimeRange.Period != tt.key {
+				t.Errorf("drillFilter.TimePeriod = %q, want %q", m.drillFilter.TimeRange.Period, tt.key)
 			}
-			if m.drillFilter.TimeGranularity != tt.granularity {
-				t.Errorf("drillFilter.TimeGranularity = %v, want %v", m.drillFilter.TimeGranularity, tt.granularity)
+			if m.drillFilter.TimeRange.Granularity != tt.granularity {
+				t.Errorf("drillFilter.TimeGranularity = %v, want %v", m.drillFilter.TimeRange.Granularity, tt.granularity)
 			}
 		})
 	}
@@ -1853,8 +1853,8 @@ func TestSubAggregateTimeDrillDown_AllGranularities(t *testing.T) {
 
 			// drillFilter was created during top-level drill with the initial granularity
 			model.drillFilter = query.MessageFilter{
-				Sender:          "alice@example.com",
-				TimeGranularity: tt.initialGranularity,
+				Sender:    "alice@example.com",
+				TimeRange: query.TimeRange{Granularity: tt.initialGranularity},
 			}
 			model.drillViewType = query.ViewSenders
 			// User changed granularity in the sub-aggregate view
@@ -1865,12 +1865,12 @@ func TestSubAggregateTimeDrillDown_AllGranularities(t *testing.T) {
 
 			assertLevel(t, m, levelMessageList)
 
-			if m.drillFilter.TimePeriod != tt.key {
-				t.Errorf("drillFilter.TimePeriod = %q, want %q", m.drillFilter.TimePeriod, tt.key)
+			if m.drillFilter.TimeRange.Period != tt.key {
+				t.Errorf("drillFilter.TimePeriod = %q, want %q", m.drillFilter.TimeRange.Period, tt.key)
 			}
-			if m.drillFilter.TimeGranularity != tt.subGranularity {
+			if m.drillFilter.TimeRange.Granularity != tt.subGranularity {
 				t.Errorf("drillFilter.TimeGranularity = %v, want %v (should match sub-agg granularity, not initial %v)",
-					m.drillFilter.TimeGranularity, tt.subGranularity, tt.initialGranularity)
+					m.drillFilter.TimeRange.Granularity, tt.subGranularity, tt.initialGranularity)
 			}
 			// Sender filter from original drill should be preserved
 			if m.drillFilter.Sender != "alice@example.com" {
@@ -1892,9 +1892,8 @@ func TestSubAggregateTimeDrillDown_NonTimeViewPreservesGranularity(t *testing.T)
 		Build()
 
 	model.drillFilter = query.MessageFilter{
-		Sender:          "alice@example.com",
-		TimePeriod:      "2024",
-		TimeGranularity: query.TimeYear,
+		Sender:    "alice@example.com",
+		TimeRange: query.TimeRange{Period: "2024", Granularity: query.TimeYear},
 	}
 	model.drillViewType = query.ViewSenders
 	model.timeGranularity = query.TimeMonth // Different from drillFilter
@@ -1905,9 +1904,9 @@ func TestSubAggregateTimeDrillDown_NonTimeViewPreservesGranularity(t *testing.T)
 	assertLevel(t, m, levelMessageList)
 
 	// TimeGranularity should be unchanged (we drilled by Label, not Time)
-	if m.drillFilter.TimeGranularity != query.TimeYear {
+	if m.drillFilter.TimeRange.Granularity != query.TimeYear {
 		t.Errorf("drillFilter.TimeGranularity = %v, want TimeYear (non-time drill should not change it)",
-			m.drillFilter.TimeGranularity)
+			m.drillFilter.TimeRange.Granularity)
 	}
 	if m.drillFilter.Label != "INBOX" {
 		t.Errorf("drillFilter.Label = %q, want %q", m.drillFilter.Label, "INBOX")
@@ -1929,11 +1928,11 @@ func TestTopLevelTimeDrillDown_GranularityChangedBeforeEnter(t *testing.T) {
 	m := applyAggregateKey(t, model, keyEnter())
 
 	assertLevel(t, m, levelMessageList)
-	if m.drillFilter.TimeGranularity != query.TimeYear {
-		t.Errorf("drillFilter.TimeGranularity = %v, want TimeYear", m.drillFilter.TimeGranularity)
+	if m.drillFilter.TimeRange.Granularity != query.TimeYear {
+		t.Errorf("drillFilter.TimeGranularity = %v, want TimeYear", m.drillFilter.TimeRange.Granularity)
 	}
-	if m.drillFilter.TimePeriod != "2024" {
-		t.Errorf("drillFilter.TimePeriod = %q, want %q", m.drillFilter.TimePeriod, "2024")
+	if m.drillFilter.TimeRange.Period != "2024" {
+		t.Errorf("drillFilter.TimePeriod = %q, want %q", m.drillFilter.TimeRange.Period, "2024")
 	}
 }
 
@@ -1953,8 +1952,8 @@ func TestSubAggregateTimeDrillDown_FullScenario(t *testing.T) {
 	step1 := applyAggregateKey(t, model, keyEnter())
 	assertLevel(t, step1, levelMessageList)
 
-	if step1.drillFilter.TimeGranularity != query.TimeMonth {
-		t.Fatalf("after top-level drill, TimeGranularity = %v, want TimeMonth", step1.drillFilter.TimeGranularity)
+	if step1.drillFilter.TimeRange.Granularity != query.TimeMonth {
+		t.Fatalf("after top-level drill, TimeGranularity = %v, want TimeMonth", step1.drillFilter.TimeRange.Granularity)
 	}
 
 	// Step 2: Tab to sub-aggregate view
@@ -1981,12 +1980,12 @@ func TestSubAggregateTimeDrillDown_FullScenario(t *testing.T) {
 	// KEY ASSERTION: TimeGranularity must match the sub-agg view (Year), not the
 	// stale value from the top-level drill (Month). Otherwise the query generates
 	// a month-format expression compared against "2024", returning zero rows.
-	if step3.drillFilter.TimeGranularity != query.TimeYear {
+	if step3.drillFilter.TimeRange.Granularity != query.TimeYear {
 		t.Errorf("drillFilter.TimeGranularity = %v, want TimeYear (was stale TimeMonth from top-level drill)",
-			step3.drillFilter.TimeGranularity)
+			step3.drillFilter.TimeRange.Granularity)
 	}
-	if step3.drillFilter.TimePeriod != "2024" {
-		t.Errorf("drillFilter.TimePeriod = %q, want %q", step3.drillFilter.TimePeriod, "2024")
+	if step3.drillFilter.TimeRange.Period != "2024" {
+		t.Errorf("drillFilter.TimePeriod = %q, want %q", step3.drillFilter.TimeRange.Period, "2024")
 	}
 	// Original sender filter should be preserved
 	if step3.drillFilter.Sender != "alice@example.com" {
@@ -2041,7 +2040,7 @@ func TestSenderNamesDrillDownEmptyKey(t *testing.T) {
 	newModel, _ := model.handleAggregateKeys(keyEnter())
 	m := newModel.(Model)
 
-	if !m.drillFilter.MatchEmptySenderName {
+	if !m.drillFilter.MatchesEmpty(query.ViewSenderNames) {
 		t.Error("expected MatchEmptySenderName=true for empty key")
 	}
 	if m.drillFilter.SenderName != "" {
@@ -2063,7 +2062,7 @@ func TestSenderNamesDrillFilterKey(t *testing.T) {
 	}
 
 	// Test empty case
-	model.drillFilter = query.MessageFilter{MatchEmptySenderName: true}
+	model.drillFilter = query.MessageFilter{EmptyValueTarget: func() *query.ViewType { v := query.ViewSenderNames; return &v }()}
 	key = model.drillFilterKey()
 	if key != "(empty)" {
 		t.Errorf("expected '(empty)' for MatchEmptySenderName, got %q", key)
@@ -2139,7 +2138,7 @@ func TestHasDrillFilterWithSenderName(t *testing.T) {
 		t.Error("expected hasDrillFilter=true for SenderName")
 	}
 
-	model.drillFilter = query.MessageFilter{MatchEmptySenderName: true}
+	model.drillFilter = query.MessageFilter{EmptyValueTarget: func() *query.ViewType { v := query.ViewSenderNames; return &v }()}
 	if !model.hasDrillFilter() {
 		t.Error("expected hasDrillFilter=true for MatchEmptySenderName")
 	}
@@ -2225,7 +2224,7 @@ func TestRecipientNamesDrillDownEmptyKey(t *testing.T) {
 	newModel, _ := model.handleAggregateKeys(keyEnter())
 	m := newModel.(Model)
 
-	if !m.drillFilter.MatchEmptyRecipientName {
+	if !m.drillFilter.MatchesEmpty(query.ViewRecipientNames) {
 		t.Error("expected MatchEmptyRecipientName=true for empty key")
 	}
 	if m.drillFilter.RecipientName != "" {
@@ -2246,7 +2245,7 @@ func TestRecipientNamesDrillFilterKey(t *testing.T) {
 	}
 
 	// Test empty case
-	model.drillFilter = query.MessageFilter{MatchEmptyRecipientName: true}
+	model.drillFilter = query.MessageFilter{EmptyValueTarget: func() *query.ViewType { v := query.ViewRecipientNames; return &v }()}
 	key = model.drillFilterKey()
 	if key != "(empty)" {
 		t.Errorf("expected '(empty)' for MatchEmptyRecipientName, got %q", key)
@@ -2335,7 +2334,7 @@ func TestHasDrillFilterWithRecipientName(t *testing.T) {
 		t.Error("expected hasDrillFilter=true for RecipientName")
 	}
 
-	model.drillFilter = query.MessageFilter{MatchEmptyRecipientName: true}
+	model.drillFilter = query.MessageFilter{EmptyValueTarget: func() *query.ViewType { v := query.ViewRecipientNames; return &v }()}
 	if !model.hasDrillFilter() {
 		t.Error("expected hasDrillFilter=true for MatchEmptyRecipientName")
 	}
@@ -2490,7 +2489,7 @@ func TestTKeyNoOpInSubAggregateWhenDrillIsTime(t *testing.T) {
 		WithPageSize(10).WithSize(100, 20).
 		WithLevel(levelDrillDown).WithViewType(query.ViewSenders).Build()
 	model.drillViewType = query.ViewTime
-	model.drillFilter = query.MessageFilter{TimePeriod: "2024"}
+	model.drillFilter = query.MessageFilter{TimeRange: query.TimeRange{Period: "2024"}}
 
 	// Press 't' in sub-aggregate where drill was from Time — should be a no-op
 	m := applyAggregateKey(t, model, key('t'))

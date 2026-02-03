@@ -259,7 +259,7 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.drillFilter = query.MessageFilter{
 					SourceID:            m.accountFilter,
 					WithAttachmentsOnly: m.attachmentFilter,
-					TimeGranularity:     m.timeGranularity,
+					TimeRange:           query.TimeRange{Granularity: m.timeGranularity},
 				}
 			}
 
@@ -267,25 +267,37 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			switch m.viewType {
 			case query.ViewSenders:
 				m.drillFilter.Sender = key
-				m.drillFilter.MatchEmptySender = (key == "")
+				if key == "" {
+					m.drillFilter.SetEmptyTarget(query.ViewSenders)
+				}
 			case query.ViewSenderNames:
 				m.drillFilter.SenderName = key
-				m.drillFilter.MatchEmptySenderName = (key == "")
+				if key == "" {
+					m.drillFilter.SetEmptyTarget(query.ViewSenderNames)
+				}
 			case query.ViewRecipients:
 				m.drillFilter.Recipient = key
-				m.drillFilter.MatchEmptyRecipient = (key == "")
+				if key == "" {
+					m.drillFilter.SetEmptyTarget(query.ViewRecipients)
+				}
 			case query.ViewRecipientNames:
 				m.drillFilter.RecipientName = key
-				m.drillFilter.MatchEmptyRecipientName = (key == "")
+				if key == "" {
+					m.drillFilter.SetEmptyTarget(query.ViewRecipientNames)
+				}
 			case query.ViewDomains:
 				m.drillFilter.Domain = key
-				m.drillFilter.MatchEmptyDomain = (key == "")
+				if key == "" {
+					m.drillFilter.SetEmptyTarget(query.ViewDomains)
+				}
 			case query.ViewLabels:
 				m.drillFilter.Label = key
-				m.drillFilter.MatchEmptyLabel = (key == "")
+				if key == "" {
+					m.drillFilter.SetEmptyTarget(query.ViewLabels)
+				}
 			case query.ViewTime:
-				m.drillFilter.TimePeriod = key
-				m.drillFilter.TimeGranularity = m.timeGranularity
+				m.drillFilter.TimeRange.Period = key
+				m.drillFilter.TimeRange.Granularity = m.timeGranularity
 			}
 
 			m.filterKey = key

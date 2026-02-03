@@ -178,8 +178,10 @@ func (h *handlers) listMessages(ctx context.Context, req mcp.CallToolRequest) (*
 	args := req.GetArguments()
 
 	filter := query.MessageFilter{
-		Limit:  limitArg(args, "limit", 20),
-		Offset: limitArg(args, "offset", 0),
+		Pagination: query.Pagination{
+			Limit:  limitArg(args, "limit", 20),
+			Offset: limitArg(args, "offset", 0),
+		},
 	}
 
 	if v, ok := args["from"].(string); ok && v != "" {

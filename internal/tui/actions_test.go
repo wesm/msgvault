@@ -211,8 +211,8 @@ func TestStageForDeletion_DrillFilterApplied(t *testing.T) {
 	if capturedFilter.Sender != "alice@example.com" {
 		t.Errorf("expected drill filter sender 'alice@example.com', got %q", capturedFilter.Sender)
 	}
-	if capturedFilter.TimePeriod != "2024-01" {
-		t.Errorf("expected time period '2024-01', got %q", capturedFilter.TimePeriod)
+	if capturedFilter.TimeRange.Period != "2024-01" {
+		t.Errorf("expected time period '2024-01', got %q", capturedFilter.TimeRange.Period)
 	}
 	if len(manifest.GmailIDs) != 2 {
 		t.Errorf("expected 2 gmail IDs, got %d", len(manifest.GmailIDs))
@@ -238,8 +238,8 @@ func TestStageForDeletion_NoDrillFilter(t *testing.T) {
 	if capturedFilter.Sender != "" {
 		t.Errorf("expected no sender filter, got %q", capturedFilter.Sender)
 	}
-	if capturedFilter.TimePeriod != "2024-01" {
-		t.Errorf("expected time period '2024-01', got %q", capturedFilter.TimePeriod)
+	if capturedFilter.TimeRange.Period != "2024-01" {
+		t.Errorf("expected time period '2024-01', got %q", capturedFilter.TimeRange.Period)
 	}
 }
 

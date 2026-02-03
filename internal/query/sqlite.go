@@ -170,7 +170,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		`)
 		conditions = append(conditions, "p_filter_from.email_address = ?")
 		args = append(args, filter.Sender)
-	} else if filter.MatchEmptySender {
+	} else if filter.MatchesEmpty(ViewSenders) {
 		joins = append(joins, `
 			LEFT JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
 			LEFT JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
@@ -180,7 +180,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 
 	// Sender name filter
 	if filter.SenderName != "" {
-		if filter.Sender == "" && !filter.MatchEmptySender {
+		if filter.Sender == "" && !filter.MatchesEmpty(ViewSenders) {
 			joins = append(joins, `
 				JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
 				JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
@@ -188,7 +188,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		}
 		conditions = append(conditions, "COALESCE(NULLIF(TRIM(p_filter_from.display_name), ''), p_filter_from.email_address) = ?")
 		args = append(args, filter.SenderName)
-	} else if filter.MatchEmptySenderName {
+	} else if filter.MatchesEmpty(ViewSenderNames) {
 		conditions = append(conditions, `NOT EXISTS (
 			SELECT 1 FROM message_recipients mr_sn
 			JOIN participants p_sn ON p_sn.id = mr_sn.participant_id
@@ -206,7 +206,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		`)
 		conditions = append(conditions, "p_filter_to.email_address = ?")
 		args = append(args, filter.Recipient)
-	} else if filter.MatchEmptyRecipient {
+	} else if filter.MatchesEmpty(ViewRecipients) {
 		joins = append(joins, `
 			LEFT JOIN message_recipients mr_filter_to ON mr_filter_to.message_id = m.id AND mr_filter_to.recipient_type IN ('to', 'cc', 'bcc')
 		`)
@@ -216,14 +216,14 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 	// Recipient name filter — reuses the Recipient filter's join when present,
 	// ensuring both predicates apply to the same participant row.
 	if filter.RecipientName != "" {
-		if filter.Recipient == "" && filter.MatchEmptyRecipient {
+		if filter.Recipient == "" && filter.MatchesEmpty(ViewRecipients) {
 			// MatchEmptyRecipient LEFT JOINs mr without participants — add
 			// the participants join so the p_filter_to alias is available.
 			// (This combination is contradictory and will return 0 rows.)
 			joins = append(joins, `
 				JOIN participants p_filter_to ON p_filter_to.id = mr_filter_to.participant_id
 			`)
-		} else if filter.Recipient == "" && !filter.MatchEmptyRecipient {
+		} else if filter.Recipient == "" && !filter.MatchesEmpty(ViewRecipients) {
 			joins = append(joins, `
 				JOIN message_recipients mr_filter_to ON mr_filter_to.message_id = m.id AND mr_filter_to.recipient_type IN ('to', 'cc', 'bcc')
 				JOIN participants p_filter_to ON p_filter_to.id = mr_filter_to.participant_id
@@ -231,7 +231,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		}
 		conditions = append(conditions, "COALESCE(NULLIF(TRIM(p_filter_to.display_name), ''), p_filter_to.email_address) = ?")
 		args = append(args, filter.RecipientName)
-	} else if filter.MatchEmptyRecipientName {
+	} else if filter.MatchesEmpty(ViewRecipientNames) {
 		conditions = append(conditions, `NOT EXISTS (
 			SELECT 1 FROM message_recipients mr_rn
 			JOIN participants p_rn ON p_rn.id = mr_rn.participant_id
@@ -244,7 +244,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 	// Domain filter
 	// Note: MatchEmptySenderName uses NOT EXISTS (no join), so it doesn't provide p_filter_from.
 	if filter.Domain != "" {
-		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" {
+		if filter.Sender == "" && !filter.MatchesEmpty(ViewSenders) && filter.SenderName == "" {
 			joins = append(joins, `
 				JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
 				JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
@@ -252,8 +252,8 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		}
 		conditions = append(conditions, "p_filter_from.domain = ?")
 		args = append(args, filter.Domain)
-	} else if filter.MatchEmptyDomain {
-		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" {
+	} else if filter.MatchesEmpty(ViewDomains) {
+		if filter.Sender == "" && !filter.MatchesEmpty(ViewSenders) && filter.SenderName == "" {
 			joins = append(joins, `
 				LEFT JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
 				LEFT JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
@@ -270,15 +270,15 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		`)
 		conditions = append(conditions, "l_filter.name = ?")
 		args = append(args, filter.Label)
-	} else if filter.MatchEmptyLabel {
+	} else if filter.MatchesEmpty(ViewLabels) {
 		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM message_labels ml WHERE ml.message_id = m.id)")
 	}
 
 	// Time period filter
-	if filter.TimePeriod != "" {
-		granularity := filter.TimeGranularity
-		if granularity == TimeYear && len(filter.TimePeriod) > 4 {
-			switch len(filter.TimePeriod) {
+	if filter.TimeRange.Period != "" {
+		granularity := filter.TimeRange.Granularity
+		if granularity == TimeYear && len(filter.TimeRange.Period) > 4 {
+			switch len(filter.TimeRange.Period) {
 			case 7:
 				granularity = TimeMonth
 			case 10:
@@ -298,7 +298,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 			timeExpr = "strftime('%Y-%m', " + prefix + "sent_at)"
 		}
 		conditions = append(conditions, fmt.Sprintf("%s = ?", timeExpr))
-		args = append(args, filter.TimePeriod)
+		args = append(args, filter.TimeRange.Period)
 	}
 
 	return strings.Join(joins, "\n"), conditions, args
@@ -916,7 +916,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		`)
 		conditions = append(conditions, "p_from.email_address = ?")
 		args = append(args, filter.Sender)
-	} else if filter.MatchEmptySender {
+	} else if filter.MatchesEmpty(ViewSenders) {
 		// Match messages with no sender (NULL or empty email)
 		joins = append(joins, `
 			LEFT JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
@@ -927,7 +927,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 
 	// Sender name filter
 	if filter.SenderName != "" {
-		if filter.Sender == "" && !filter.MatchEmptySender {
+		if filter.Sender == "" && !filter.MatchesEmpty(ViewSenders) {
 			joins = append(joins, `
 				JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
 				JOIN participants p_from ON p_from.id = mr_from.participant_id
@@ -935,7 +935,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		}
 		conditions = append(conditions, "COALESCE(NULLIF(TRIM(p_from.display_name), ''), p_from.email_address) = ?")
 		args = append(args, filter.SenderName)
-	} else if filter.MatchEmptySenderName {
+	} else if filter.MatchesEmpty(ViewSenderNames) {
 		conditions = append(conditions, `NOT EXISTS (
 			SELECT 1 FROM message_recipients mr_sn
 			JOIN participants p_sn ON p_sn.id = mr_sn.participant_id
@@ -953,7 +953,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		`)
 		conditions = append(conditions, "p_to.email_address = ?")
 		args = append(args, filter.Recipient)
-	} else if filter.MatchEmptyRecipient {
+	} else if filter.MatchesEmpty(ViewRecipients) {
 		// Match messages with no recipients
 		joins = append(joins, `
 			LEFT JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type IN ('to', 'cc', 'bcc')
@@ -963,13 +963,13 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 
 	// Recipient name filter — reuses the Recipient filter's join when present.
 	if filter.RecipientName != "" {
-		if filter.Recipient == "" && filter.MatchEmptyRecipient {
+		if filter.Recipient == "" && filter.MatchesEmpty(ViewRecipients) {
 			// MatchEmptyRecipient LEFT JOINs mr without participants — add
 			// the participants join so the p_to alias is available.
 			joins = append(joins, `
 				JOIN participants p_to ON p_to.id = mr_to.participant_id
 			`)
-		} else if filter.Recipient == "" && !filter.MatchEmptyRecipient {
+		} else if filter.Recipient == "" && !filter.MatchesEmpty(ViewRecipients) {
 			joins = append(joins, `
 				JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type IN ('to', 'cc', 'bcc')
 				JOIN participants p_to ON p_to.id = mr_to.participant_id
@@ -977,7 +977,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		}
 		conditions = append(conditions, "COALESCE(NULLIF(TRIM(p_to.display_name), ''), p_to.email_address) = ?")
 		args = append(args, filter.RecipientName)
-	} else if filter.MatchEmptyRecipientName {
+	} else if filter.MatchesEmpty(ViewRecipientNames) {
 		conditions = append(conditions, `NOT EXISTS (
 			SELECT 1 FROM message_recipients mr_rn
 			JOIN participants p_rn ON p_rn.id = mr_rn.participant_id
@@ -990,7 +990,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 	// Domain filter
 	// Note: MatchEmptySenderName uses NOT EXISTS (no join), so it doesn't provide p_from.
 	if filter.Domain != "" {
-		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" {
+		if filter.Sender == "" && !filter.MatchesEmpty(ViewSenders) && filter.SenderName == "" {
 			joins = append(joins, `
 				JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
 				JOIN participants p_from ON p_from.id = mr_from.participant_id
@@ -998,9 +998,9 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		}
 		conditions = append(conditions, "p_from.domain = ?")
 		args = append(args, filter.Domain)
-	} else if filter.MatchEmptyDomain {
+	} else if filter.MatchesEmpty(ViewDomains) {
 		// Match messages with no/empty domain
-		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" {
+		if filter.Sender == "" && !filter.MatchesEmpty(ViewSenders) && filter.SenderName == "" {
 			joins = append(joins, `
 				LEFT JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
 				LEFT JOIN participants p_from ON p_from.id = mr_from.participant_id
@@ -1017,18 +1017,18 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		`)
 		conditions = append(conditions, "l.name = ?")
 		args = append(args, filter.Label)
-	} else if filter.MatchEmptyLabel {
+	} else if filter.MatchesEmpty(ViewLabels) {
 		// Match messages with no labels
 		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM message_labels ml WHERE ml.message_id = m.id)")
 	}
 
-	if filter.TimePeriod != "" {
+	if filter.TimeRange.Period != "" {
 		// Infer granularity from TimePeriod format if not explicitly set
 		// "2024" = year, "2024-01" = month, "2024-01-15" = day
-		granularity := filter.TimeGranularity
-		if granularity == TimeYear && len(filter.TimePeriod) > 4 {
+		granularity := filter.TimeRange.Granularity
+		if granularity == TimeYear && len(filter.TimeRange.Period) > 4 {
 			// TimeYear is the zero value, so check if TimePeriod suggests finer granularity
-			switch len(filter.TimePeriod) {
+			switch len(filter.TimeRange.Period) {
 			case 7: // "2024-01"
 				granularity = TimeMonth
 			case 10: // "2024-01-15"
@@ -1048,7 +1048,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 			timeExpr = "strftime('%Y-%m', m.sent_at)"
 		}
 		conditions = append(conditions, fmt.Sprintf("%s = ?", timeExpr))
-		args = append(args, filter.TimePeriod)
+		args = append(args, filter.TimeRange.Period)
 	}
 
 	// Conversation/thread filter
@@ -1059,7 +1059,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 
 	// Build ORDER BY
 	var orderBy string
-	switch filter.SortField {
+	switch filter.Sorting.Field {
 	case MessageSortByDate:
 		orderBy = "m.sent_at"
 	case MessageSortBySize:
@@ -1069,13 +1069,13 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 	default:
 		orderBy = "m.sent_at"
 	}
-	if filter.SortDirection == SortDesc {
+	if filter.Sorting.Direction == SortDesc {
 		orderBy += " DESC"
 	} else {
 		orderBy += " ASC"
 	}
 
-	limit := filter.Limit
+	limit := filter.Pagination.Limit
 	if limit == 0 {
 		limit = 500
 	}
@@ -1108,7 +1108,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		LIMIT ? OFFSET ?
 	`, strings.Join(joins, "\n"), whereClause, orderBy)
 
-	args = append(args, limit, filter.Offset)
+	args = append(args, limit, filter.Pagination.Offset)
 
 	rows, err := e.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1625,11 +1625,11 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 		args = append(args, filter.Label)
 	}
 
-	if filter.TimePeriod != "" {
+	if filter.TimeRange.Period != "" {
 		// Infer granularity from TimePeriod format if not explicitly set
-		granularity := filter.TimeGranularity
-		if granularity == TimeYear && len(filter.TimePeriod) > 4 {
-			switch len(filter.TimePeriod) {
+		granularity := filter.TimeRange.Granularity
+		if granularity == TimeYear && len(filter.TimeRange.Period) > 4 {
+			switch len(filter.TimeRange.Period) {
 			case 7:
 				granularity = TimeMonth
 			case 10:
@@ -1649,7 +1649,7 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 			timeExpr = "strftime('%Y-%m', m.sent_at)"
 		}
 		conditions = append(conditions, fmt.Sprintf("%s = ?", timeExpr))
-		args = append(args, filter.TimePeriod)
+		args = append(args, filter.TimeRange.Period)
 	}
 
 	// Build query - only add LIMIT if explicitly set
@@ -1661,9 +1661,9 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	`, strings.Join(joins, "\n"), strings.Join(conditions, " AND "))
 
 	// Only add LIMIT if explicitly set (0 means no limit)
-	if filter.Limit > 0 {
+	if filter.Pagination.Limit > 0 {
 		query += " LIMIT ?"
-		args = append(args, filter.Limit)
+		args = append(args, filter.Pagination.Limit)
 	}
 
 	rows, err := e.db.QueryContext(ctx, query, args...)

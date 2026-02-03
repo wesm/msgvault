@@ -188,25 +188,14 @@ type MessageFilter struct {
 	// Filter by conversation (thread)
 	ConversationID *int64 // filter by conversation/thread ID
 
-	// MatchEmpty* flags change how empty filter values are interpreted for each field.
-	// When false (default): empty string means "no filter" (return all)
-	// When true: empty string means "filter for NULL/empty values"
-	// This enables drilldown into empty-bucket aggregates (e.g., messages with no sender).
-	//
-	// IMPORTANT: Only set ONE MatchEmpty* flag at a time. Setting multiple flags
-	// creates an AND condition that may return no results (e.g., messages with
-	// no sender AND no recipient AND no domain). The TUI sets exactly one flag
-	// based on the current view type when drilling into an empty aggregate bucket.
-	MatchEmptySender        bool
-	MatchEmptySenderName    bool
-	MatchEmptyRecipient     bool
-	MatchEmptyRecipientName bool
-	MatchEmptyDomain        bool
-	MatchEmptyLabel         bool
+	// EmptyValueTarget specifies which dimension to filter for NULL/empty values.
+	// When nil (default): empty filter strings mean "no filter" (return all).
+	// When set to a ViewType: that dimension filters for NULL/empty values,
+	// enabling drilldown into empty-bucket aggregates (e.g., messages with no sender).
+	EmptyValueTarget *ViewType
 
 	// Time range
-	TimePeriod      string // e.g., "2024", "2024-01", "2024-01-15"
-	TimeGranularity TimeGranularity
+	TimeRange TimeRange
 
 	// Account filter
 	SourceID *int64 // nil means all accounts
@@ -219,12 +208,38 @@ type MessageFilter struct {
 	WithAttachmentsOnly bool // only return messages with attachments
 
 	// Pagination
-	Limit  int
-	Offset int
+	Pagination Pagination
 
 	// Sorting
-	SortField     MessageSortField
-	SortDirection SortDirection
+	Sorting MessageSorting
+}
+
+// Pagination specifies limit and offset for paginated queries.
+type Pagination struct {
+	Limit  int
+	Offset int
+}
+
+// MessageSorting specifies how to sort message results.
+type MessageSorting struct {
+	Field     MessageSortField
+	Direction SortDirection
+}
+
+// TimeRange groups time-related filter fields.
+type TimeRange struct {
+	Period      string // e.g., "2024", "2024-01", "2024-01-15"
+	Granularity TimeGranularity
+}
+
+// MatchesEmpty returns true if EmptyValueTarget matches the given ViewType.
+func (f *MessageFilter) MatchesEmpty(v ViewType) bool {
+	return f.EmptyValueTarget != nil && *f.EmptyValueTarget == v
+}
+
+// SetEmptyTarget sets EmptyValueTarget to the given ViewType.
+func (f *MessageFilter) SetEmptyTarget(v ViewType) {
+	f.EmptyValueTarget = &v
 }
 
 // AggregateOptions configures an aggregate query.

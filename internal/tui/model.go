@@ -496,9 +496,9 @@ func (m Model) loadMessages() tea.Cmd {
 
 		// Override sorting and pagination
 		filter.SourceID = m.accountFilter
-		filter.SortField = m.msgSortField
-		filter.SortDirection = m.msgSortDirection
-		filter.Limit = 500
+		filter.Sorting.Field = m.msgSortField
+		filter.Sorting.Direction = m.msgSortDirection
+		filter.Pagination.Limit = 500
 		filter.WithAttachmentsOnly = m.attachmentFilter
 
 		// If not showing all messages and no drill filter, apply simple filter
@@ -506,19 +506,27 @@ func (m Model) loadMessages() tea.Cmd {
 			switch m.viewType {
 			case query.ViewSenders:
 				filter.Sender = m.filterKey
-				filter.MatchEmptySender = (m.filterKey == "")
+				if m.filterKey == "" {
+					filter.SetEmptyTarget(query.ViewSenders)
+				}
 			case query.ViewRecipients:
 				filter.Recipient = m.filterKey
-				filter.MatchEmptyRecipient = (m.filterKey == "")
+				if m.filterKey == "" {
+					filter.SetEmptyTarget(query.ViewRecipients)
+				}
 			case query.ViewDomains:
 				filter.Domain = m.filterKey
-				filter.MatchEmptyDomain = (m.filterKey == "")
+				if m.filterKey == "" {
+					filter.SetEmptyTarget(query.ViewDomains)
+				}
 			case query.ViewLabels:
 				filter.Label = m.filterKey
-				filter.MatchEmptyLabel = (m.filterKey == "")
+				if m.filterKey == "" {
+					filter.SetEmptyTarget(query.ViewLabels)
+				}
 			case query.ViewTime:
-				filter.TimePeriod = m.filterKey
-				filter.TimeGranularity = m.timeGranularity
+				filter.TimeRange.Period = m.filterKey
+				filter.TimeRange.Granularity = m.timeGranularity
 			}
 		}
 
@@ -535,50 +543,30 @@ func (m Model) hasDrillFilter() bool {
 		m.drillFilter.RecipientName != "" ||
 		m.drillFilter.Domain != "" ||
 		m.drillFilter.Label != "" ||
-		m.drillFilter.TimePeriod != "" ||
-		m.drillFilter.MatchEmptySender ||
-		m.drillFilter.MatchEmptySenderName ||
-		m.drillFilter.MatchEmptyRecipient ||
-		m.drillFilter.MatchEmptyRecipientName ||
-		m.drillFilter.MatchEmptyDomain ||
-		m.drillFilter.MatchEmptyLabel
+		m.drillFilter.TimeRange.Period != "" ||
+		m.drillFilter.EmptyValueTarget != nil
 }
 
 // drillFilterKey returns the key value from the drillFilter based on drillViewType.
 func (m Model) drillFilterKey() string {
+	if m.drillFilter.MatchesEmpty(m.drillViewType) {
+		return "(empty)"
+	}
 	switch m.drillViewType {
 	case query.ViewSenders:
-		if m.drillFilter.MatchEmptySender {
-			return "(empty)"
-		}
 		return m.drillFilter.Sender
 	case query.ViewSenderNames:
-		if m.drillFilter.MatchEmptySenderName {
-			return "(empty)"
-		}
 		return m.drillFilter.SenderName
 	case query.ViewRecipients:
-		if m.drillFilter.MatchEmptyRecipient {
-			return "(empty)"
-		}
 		return m.drillFilter.Recipient
 	case query.ViewRecipientNames:
-		if m.drillFilter.MatchEmptyRecipientName {
-			return "(empty)"
-		}
 		return m.drillFilter.RecipientName
 	case query.ViewDomains:
-		if m.drillFilter.MatchEmptyDomain {
-			return "(empty)"
-		}
 		return m.drillFilter.Domain
 	case query.ViewLabels:
-		if m.drillFilter.MatchEmptyLabel {
-			return "(empty)"
-		}
 		return m.drillFilter.Label
 	case query.ViewTime:
-		return m.drillFilter.TimePeriod
+		return m.drillFilter.TimeRange.Period
 	}
 	return ""
 }
@@ -598,9 +586,8 @@ func (m Model) loadThreadMessages(conversationID int64) tea.Cmd {
 
 		filter := query.MessageFilter{
 			ConversationID: &conversationID,
-			SortField:      query.MessageSortByDate,
-			SortDirection:  query.SortAsc,            // Chronological order for threads
-			Limit:          m.threadMessageLimit + 1, // Request one extra to detect truncation
+			Sorting:        query.MessageSorting{Field: query.MessageSortByDate, Direction: query.SortAsc},
+			Pagination:     query.Pagination{Limit: m.threadMessageLimit + 1}, // Request one extra to detect truncation
 		}
 		messages, err := m.engine.ListMessages(context.Background(), filter)
 

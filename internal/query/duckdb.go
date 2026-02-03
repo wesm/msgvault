@@ -598,7 +598,7 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 			  AND p.email_address = ?
 		)`)
 		args = append(args, filter.Sender)
-	} else if filter.MatchEmptySender {
+	} else if filter.MatchesEmpty(ViewSenders) {
 		conditions = append(conditions, `NOT EXISTS (
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
@@ -619,7 +619,7 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) = ?
 		)`)
 		args = append(args, filter.SenderName)
-	} else if filter.MatchEmptySenderName {
+	} else if filter.MatchesEmpty(ViewSenderNames) {
 		conditions = append(conditions, `NOT EXISTS (
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
@@ -639,7 +639,7 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 			  AND p.email_address = ?
 		)`)
 		args = append(args, filter.Recipient)
-	} else if filter.MatchEmptyRecipient {
+	} else if filter.MatchesEmpty(ViewRecipients) {
 		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM mr WHERE mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc', 'bcc'))")
 	}
 
@@ -653,7 +653,7 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) = ?
 		)`)
 		args = append(args, filter.RecipientName)
-	} else if filter.MatchEmptyRecipientName {
+	} else if filter.MatchesEmpty(ViewRecipientNames) {
 		conditions = append(conditions, `NOT EXISTS (
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
@@ -673,7 +673,7 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 			  AND p.domain = ?
 		)`)
 		args = append(args, filter.Domain)
-	} else if filter.MatchEmptyDomain {
+	} else if filter.MatchesEmpty(ViewDomains) {
 		conditions = append(conditions, `NOT EXISTS (
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
@@ -693,15 +693,15 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 			  AND lbl.name = ?
 		)`)
 		args = append(args, filter.Label)
-	} else if filter.MatchEmptyLabel {
+	} else if filter.MatchesEmpty(ViewLabels) {
 		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM ml WHERE ml.message_id = msg.id)")
 	}
 
 	// Time period filter
-	if filter.TimePeriod != "" {
-		granularity := inferTimeGranularity(filter.TimeGranularity, filter.TimePeriod)
+	if filter.TimeRange.Period != "" {
+		granularity := inferTimeGranularity(filter.TimeRange.Granularity, filter.TimeRange.Period)
 		conditions = append(conditions, fmt.Sprintf("%s = ?", timeExpr(granularity)))
-		args = append(args, filter.TimePeriod)
+		args = append(args, filter.TimeRange.Period)
 	}
 
 	if len(conditions) == 0 {
@@ -908,7 +908,7 @@ func (e *DuckDBEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 
 	// Build ORDER BY
 	var orderBy string
-	switch filter.SortField {
+	switch filter.Sorting.Field {
 	case MessageSortByDate:
 		orderBy = "msg.sent_at"
 	case MessageSortBySize:
@@ -918,13 +918,13 @@ func (e *DuckDBEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 	default:
 		orderBy = "msg.sent_at"
 	}
-	if filter.SortDirection == SortDesc {
+	if filter.Sorting.Direction == SortDesc {
 		orderBy += " DESC"
 	} else {
 		orderBy += " ASC"
 	}
 
-	limit := filter.Limit
+	limit := filter.Pagination.Limit
 	if limit == 0 {
 		limit = 500
 	}
@@ -970,7 +970,7 @@ func (e *DuckDBEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		ORDER BY %s
 	`, e.parquetCTEs(), where, orderBy, orderBy)
 
-	args = append(args, limit, filter.Offset)
+	args = append(args, limit, filter.Pagination.Offset)
 
 	rows, err := e.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1586,8 +1586,8 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 		args = append(args, filter.Label)
 	}
 
-	if filter.TimePeriod != "" {
-		granularity := inferTimeGranularity(filter.TimeGranularity, filter.TimePeriod)
+	if filter.TimeRange.Period != "" {
+		granularity := inferTimeGranularity(filter.TimeRange.Granularity, filter.TimeRange.Period)
 		// GetGmailIDsByFilter uses strftime for time filtering (no year/month columns)
 		var te string
 		switch granularity {
@@ -1599,7 +1599,7 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 			te = "strftime(msg.sent_at, '%Y-%m')"
 		}
 		conditions = append(conditions, fmt.Sprintf("%s = ?", te))
-		args = append(args, filter.TimePeriod)
+		args = append(args, filter.TimeRange.Period)
 	}
 
 	// Build query
@@ -1611,9 +1611,9 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	`, e.parquetCTEs(), strings.Join(conditions, " AND "))
 
 	// Only add LIMIT if explicitly set (0 means no limit)
-	if filter.Limit > 0 {
+	if filter.Pagination.Limit > 0 {
 		query += " LIMIT ?"
-		args = append(args, filter.Limit)
+		args = append(args, filter.Pagination.Limit)
 	}
 
 	rows, err := e.db.QueryContext(ctx, query, args...)
@@ -1835,10 +1835,10 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 		)`)
 		args = append(args, filter.Label)
 	}
-	if filter.TimePeriod != "" {
-		granularity := inferTimeGranularity(filter.TimeGranularity, filter.TimePeriod)
+	if filter.TimeRange.Period != "" {
+		granularity := inferTimeGranularity(filter.TimeRange.Granularity, filter.TimeRange.Period)
 		conditions = append(conditions, fmt.Sprintf("%s = ?", timeExpr(granularity)))
-		args = append(args, filter.TimePeriod)
+		args = append(args, filter.TimeRange.Period)
 	}
 
 	// Text search terms - search subject and from fields only (fast path)

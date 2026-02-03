@@ -736,7 +736,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptySenderName(t *testing.T) {
 
 	ctx := context.Background()
 	// msg2 has no 'from' recipient, so MatchEmptySenderName should find it
-	results, err := engine.ListMessages(ctx, MessageFilter{MatchEmptySenderName: true})
+	results, err := engine.ListMessages(ctx, MessageFilter{EmptyValueTarget: func() *ViewType { v := ViewSenderNames; return &v }()})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -1179,8 +1179,8 @@ func TestDuckDBEngine_ListMessages_ConversationIDFilter(t *testing.T) {
 	// Test chronological ordering for thread view (ascending by date)
 	filterAsc := MessageFilter{
 		ConversationID: &convID101,
-		SortField:      MessageSortByDate,
-		SortDirection:  SortAsc,
+		Sorting: MessageSorting{Field: MessageSortByDate,
+			Direction: SortAsc},
 	}
 
 	messagesAsc, err := engine.ListMessages(ctx, filterAsc)
@@ -1239,10 +1239,10 @@ func TestDuckDBEngine_ListMessages_Filters(t *testing.T) {
 		{"label=Work", MessageFilter{Label: "Work"}, []int64{1, 4}},
 
 		// Time filters
-		{"time=2024", MessageFilter{TimePeriod: "2024", TimeGranularity: TimeYear}, []int64{1, 2, 3, 4, 5}},
-		{"time=2024-01", MessageFilter{TimePeriod: "2024-01", TimeGranularity: TimeMonth}, []int64{1, 2}},
-		{"time=2024-02", MessageFilter{TimePeriod: "2024-02", TimeGranularity: TimeMonth}, []int64{3, 4}},
-		{"time=2024-03", MessageFilter{TimePeriod: "2024-03", TimeGranularity: TimeMonth}, []int64{5}},
+		{"time=2024", MessageFilter{TimeRange: TimeRange{Period: "2024", Granularity: TimeYear}}, []int64{1, 2, 3, 4, 5}},
+		{"time=2024-01", MessageFilter{TimeRange: TimeRange{Period: "2024-01", Granularity: TimeMonth}}, []int64{1, 2}},
+		{"time=2024-02", MessageFilter{TimeRange: TimeRange{Period: "2024-02", Granularity: TimeMonth}}, []int64{3, 4}},
+		{"time=2024-03", MessageFilter{TimeRange: TimeRange{Period: "2024-03", Granularity: TimeMonth}}, []int64{5}},
 
 		// Attachment filter
 		{"attachments", MessageFilter{WithAttachmentsOnly: true}, []int64{2, 4}},
@@ -1250,7 +1250,7 @@ func TestDuckDBEngine_ListMessages_Filters(t *testing.T) {
 		// Combined filters
 		{"sender=alice+label=INBOX", MessageFilter{Sender: "alice@example.com", Label: "INBOX"}, []int64{1, 2, 3}},
 		{"sender=alice+label=IMPORTANT", MessageFilter{Sender: "alice@example.com", Label: "IMPORTANT"}, []int64{2}},
-		{"domain=example.com+time=2024-01", MessageFilter{Domain: "example.com", TimePeriod: "2024-01", TimeGranularity: TimeMonth}, []int64{1, 2}},
+		{"domain=example.com+time=2024-01", MessageFilter{Domain: "example.com", TimeRange: TimeRange{Period: "2024-01", Granularity: TimeMonth}}, []int64{1, 2}},
 		{"sender=bob+attachments", MessageFilter{Sender: "bob@company.org", WithAttachmentsOnly: true}, []int64{4}},
 	}
 
@@ -1316,12 +1316,12 @@ func TestDuckDBEngine_GetGmailIDsByFilter(t *testing.T) {
 		},
 		{
 			name:    "time_period=2024-01",
-			filter:  MessageFilter{TimePeriod: "2024-01", TimeGranularity: TimeMonth},
+			filter:  MessageFilter{TimeRange: TimeRange{Period: "2024-01", Granularity: TimeMonth}},
 			wantIDs: []string{"msg1", "msg2"},
 		},
 		{
 			name:    "time_period=2024-02",
-			filter:  MessageFilter{TimePeriod: "2024-02", TimeGranularity: TimeMonth},
+			filter:  MessageFilter{TimeRange: TimeRange{Period: "2024-02", Granularity: TimeMonth}},
 			wantIDs: []string{"msg3", "msg4"},
 		},
 		{
@@ -1400,7 +1400,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptySender(t *testing.T) {
 	ctx := context.Background()
 
 	filter := MessageFilter{
-		MatchEmptySender: true,
+		EmptyValueTarget: func() *ViewType { v := ViewSenders; return &v }(),
 	}
 
 	messages, err := engine.ListMessages(ctx, filter)
@@ -1428,7 +1428,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptyRecipient(t *testing.T) {
 	ctx := context.Background()
 
 	filter := MessageFilter{
-		MatchEmptyRecipient: true,
+		EmptyValueTarget: func() *ViewType { v := ViewRecipients; return &v }(),
 	}
 
 	messages, err := engine.ListMessages(ctx, filter)
@@ -1456,7 +1456,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptyDomain(t *testing.T) {
 	ctx := context.Background()
 
 	filter := MessageFilter{
-		MatchEmptyDomain: true,
+		EmptyValueTarget: func() *ViewType { v := ViewDomains; return &v }(),
 	}
 
 	messages, err := engine.ListMessages(ctx, filter)
@@ -1491,7 +1491,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptyLabel(t *testing.T) {
 	ctx := context.Background()
 
 	filter := MessageFilter{
-		MatchEmptyLabel: true,
+		EmptyValueTarget: func() *ViewType { v := ViewLabels; return &v }(),
 	}
 
 	messages, err := engine.ListMessages(ctx, filter)
@@ -1521,8 +1521,8 @@ func TestDuckDBEngine_ListMessages_MatchEmptyCombined(t *testing.T) {
 	// Test: MatchEmptyLabel AND specific sender
 	// Only msg5 has no labels, and it's from alice
 	filter := MessageFilter{
-		Sender:          "alice@example.com",
-		MatchEmptyLabel: true,
+		Sender:           "alice@example.com",
+		EmptyValueTarget: func() *ViewType { v := ViewLabels; return &v }(),
 	}
 
 	messages, err := engine.ListMessages(ctx, filter)
@@ -2009,7 +2009,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptyRecipientName(t *testing.T) {
 		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`))
 
 	ctx := context.Background()
-	filter := MessageFilter{MatchEmptyRecipientName: true}
+	filter := MessageFilter{EmptyValueTarget: func() *ViewType { v := ViewRecipientNames; return &v }()}
 	results, err := engine.ListMessages(ctx, filter)
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
