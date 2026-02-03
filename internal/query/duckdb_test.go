@@ -2078,3 +2078,429 @@ func TestDuckDBEngine_GetTotalStats_GroupByDefault(t *testing.T) {
 		t.Errorf("expected 3 messages for sender search 'alice', got %d", stats.MessageCount)
 	}
 }
+
+// =============================================================================
+// Aggregate and SubAggregate Table-Driven Tests
+// These tests cover the refactored aggregation helpers and time granularity logic.
+// =============================================================================
+
+// TestDuckDBEngine_Aggregate_AllViewTypes is a table-driven test covering all
+// ViewType variants through the unified Aggregate method.
+func TestDuckDBEngine_Aggregate_AllViewTypes(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name       string
+		viewType   ViewType
+		opts       AggregateOptions
+		wantCounts map[string]int64
+	}{
+		{
+			name:     "ViewSenders",
+			viewType: ViewSenders,
+			opts:     DefaultAggregateOptions(),
+			wantCounts: map[string]int64{
+				"alice@example.com": 3,
+				"bob@company.org":   2,
+			},
+		},
+		{
+			name:     "ViewSenderNames",
+			viewType: ViewSenderNames,
+			opts:     DefaultAggregateOptions(),
+			wantCounts: map[string]int64{
+				"Alice": 3,
+				"Bob":   2,
+			},
+		},
+		{
+			name:     "ViewRecipients",
+			viewType: ViewRecipients,
+			opts:     DefaultAggregateOptions(),
+			wantCounts: map[string]int64{
+				"bob@company.org":   3,
+				"carol@example.com": 1,
+				"alice@example.com": 2,
+				"dan@other.net":     1,
+			},
+		},
+		{
+			name:     "ViewRecipientNames",
+			viewType: ViewRecipientNames,
+			opts:     DefaultAggregateOptions(),
+			wantCounts: map[string]int64{
+				"Bob":   3,
+				"Alice": 2,
+				"Carol": 1,
+				"Dan":   1,
+			},
+		},
+		{
+			name:     "ViewDomains",
+			viewType: ViewDomains,
+			opts:     DefaultAggregateOptions(),
+			wantCounts: map[string]int64{
+				"example.com": 3,
+				"company.org": 2,
+			},
+		},
+		{
+			name:     "ViewLabels",
+			viewType: ViewLabels,
+			opts:     DefaultAggregateOptions(),
+			wantCounts: map[string]int64{
+				"INBOX":     5,
+				"Work":      2,
+				"IMPORTANT": 1,
+			},
+		},
+		{
+			name:     "ViewTime_Month",
+			viewType: ViewTime,
+			opts:     AggregateOptions{TimeGranularity: TimeMonth, Limit: 100},
+			wantCounts: map[string]int64{
+				"2024-01": 2,
+				"2024-02": 2,
+				"2024-03": 1,
+			},
+		},
+		{
+			name:     "ViewTime_Year",
+			viewType: ViewTime,
+			opts:     AggregateOptions{TimeGranularity: TimeYear, Limit: 100},
+			wantCounts: map[string]int64{
+				"2024": 5,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rows, err := engine.Aggregate(ctx, tt.viewType, tt.opts)
+			if err != nil {
+				t.Fatalf("Aggregate(%v): %v", tt.viewType, err)
+			}
+			assertAggregateCounts(t, rows, tt.wantCounts)
+		})
+	}
+}
+
+// TestDuckDBEngine_Aggregate_TimeGranularity verifies that TimeGranularity
+// affects the grouping key format in ViewTime aggregates.
+func TestDuckDBEngine_Aggregate_TimeGranularity(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		granularity TimeGranularity
+		wantFormat  string // regex pattern for key format
+		wantKeys    []string
+	}{
+		{
+			name:        "Year",
+			granularity: TimeYear,
+			wantFormat:  `^\d{4}$`,
+			wantKeys:    []string{"2024"},
+		},
+		{
+			name:        "Month",
+			granularity: TimeMonth,
+			wantFormat:  `^\d{4}-\d{2}$`,
+			wantKeys:    []string{"2024-01", "2024-02", "2024-03"},
+		},
+		{
+			name:        "Day",
+			granularity: TimeDay,
+			wantFormat:  `^\d{4}-\d{2}-\d{2}$`,
+			wantKeys:    []string{"2024-01-15", "2024-01-16", "2024-02-01", "2024-02-15", "2024-03-01"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := AggregateOptions{TimeGranularity: tt.granularity, Limit: 100}
+			rows, err := engine.Aggregate(ctx, ViewTime, opts)
+			if err != nil {
+				t.Fatalf("Aggregate(ViewTime, %v): %v", tt.granularity, err)
+			}
+
+			gotKeys := make(map[string]bool)
+			for _, r := range rows {
+				gotKeys[r.Key] = true
+			}
+
+			for _, wantKey := range tt.wantKeys {
+				if !gotKeys[wantKey] {
+					t.Errorf("missing expected key %q in results", wantKey)
+				}
+			}
+
+			if len(rows) != len(tt.wantKeys) {
+				t.Errorf("expected %d keys, got %d", len(tt.wantKeys), len(rows))
+			}
+		})
+	}
+}
+
+// TestDuckDBEngine_SubAggregate_AllViewTypes is a table-driven test for
+// SubAggregate covering all view types.
+func TestDuckDBEngine_SubAggregate_AllViewTypes(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	// Test data: alice sent msgs 1,2,3; bob sent msgs 4,5
+	// Msg1: to bob, carol; Msg2: to bob, cc dan; Msg3: to bob
+	// Msg4: to alice; Msg5: to alice
+	tests := []struct {
+		name       string
+		filter     MessageFilter
+		groupBy    ViewType
+		opts       AggregateOptions
+		wantCounts map[string]int64
+	}{
+		{
+			name:    "SubAggregate_Sender_to_Recipients",
+			filter:  MessageFilter{Sender: "alice@example.com"},
+			groupBy: ViewRecipients,
+			opts:    DefaultAggregateOptions(),
+			wantCounts: map[string]int64{
+				"bob@company.org":   3, // msgs 1,2,3
+				"carol@example.com": 1, // msg 1
+				"dan@other.net":     1, // msg 2 (cc)
+			},
+		},
+		{
+			name:    "SubAggregate_Sender_to_RecipientNames",
+			filter:  MessageFilter{Sender: "alice@example.com"},
+			groupBy: ViewRecipientNames,
+			opts:    DefaultAggregateOptions(),
+			wantCounts: map[string]int64{
+				"Bob":   3,
+				"Carol": 1,
+				"Dan":   1,
+			},
+		},
+		{
+			name:    "SubAggregate_Sender_to_Labels",
+			filter:  MessageFilter{Sender: "alice@example.com"},
+			groupBy: ViewLabels,
+			opts:    DefaultAggregateOptions(),
+			wantCounts: map[string]int64{
+				"INBOX":     3, // all alice's msgs have INBOX
+				"Work":      1, // msg 1
+				"IMPORTANT": 1, // msg 2
+			},
+		},
+		{
+			name:    "SubAggregate_Recipient_to_SenderNames",
+			filter:  MessageFilter{Recipient: "alice@example.com"},
+			groupBy: ViewSenderNames,
+			opts:    DefaultAggregateOptions(),
+			wantCounts: map[string]int64{
+				"Bob": 2, // msgs 4,5
+			},
+		},
+		{
+			name:    "SubAggregate_Label_to_Senders",
+			filter:  MessageFilter{Label: "Work"},
+			groupBy: ViewSenders,
+			opts:    DefaultAggregateOptions(),
+			wantCounts: map[string]int64{
+				"alice@example.com": 1, // msg 1
+				"bob@company.org":   1, // msg 4
+			},
+		},
+		{
+			name:    "SubAggregate_Label_to_Domains",
+			filter:  MessageFilter{Label: "Work"},
+			groupBy: ViewDomains,
+			opts:    DefaultAggregateOptions(),
+			wantCounts: map[string]int64{
+				"example.com": 1, // msg 1 from alice
+				"company.org": 1, // msg 4 from bob
+			},
+		},
+		{
+			name:    "SubAggregate_Time_to_Senders",
+			filter:  MessageFilter{TimeRange: TimeRange{Period: "2024-01", Granularity: TimeMonth}},
+			groupBy: ViewSenders,
+			opts:    DefaultAggregateOptions(),
+			wantCounts: map[string]int64{
+				"alice@example.com": 2, // msgs 1,2
+			},
+		},
+		{
+			name:    "SubAggregate_Sender_to_Time_Month",
+			filter:  MessageFilter{Sender: "alice@example.com"},
+			groupBy: ViewTime,
+			opts:    AggregateOptions{TimeGranularity: TimeMonth, Limit: 100},
+			wantCounts: map[string]int64{
+				"2024-01": 2, // msgs 1,2
+				"2024-02": 1, // msg 3
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rows, err := engine.SubAggregate(ctx, tt.filter, tt.groupBy, tt.opts)
+			if err != nil {
+				t.Fatalf("SubAggregate: %v", err)
+			}
+			assertAggregateCounts(t, rows, tt.wantCounts)
+		})
+	}
+}
+
+// TestDuckDBEngine_Aggregate_DomainExcludesEmpty verifies that ViewDomains
+// excludes empty-string domains in both Aggregate and SubAggregate.
+// This locks in the behavior from the domain != ” guard in getViewDef.
+func TestDuckDBEngine_Aggregate_DomainExcludesEmpty(t *testing.T) {
+	// Build test data with a participant that has an empty domain
+	b := NewTestDataBuilder(t)
+	b.AddSource("test@gmail.com")
+
+	// Participants: one with valid domain, one with empty domain
+	alice := b.AddParticipant("alice@example.com", "example.com", "Alice")
+	nodom := b.AddParticipant("nodom@", "", "No Domain") // empty domain
+
+	// Messages
+	msg1 := b.AddMessage(MessageOpt{Subject: "From Alice", SentAt: makeDate(2024, 1, 15), SizeEstimate: 1000})
+	msg2 := b.AddMessage(MessageOpt{Subject: "From NoDomain", SentAt: makeDate(2024, 1, 16), SizeEstimate: 1000})
+
+	// Senders
+	b.AddFrom(msg1, alice, "Alice")
+	b.AddFrom(msg2, nodom, "No Domain")
+
+	// Empty recipients, labels, attachments
+	b.SetEmptyAttachments()
+
+	engine := b.BuildEngine()
+	ctx := context.Background()
+
+	// Top-level aggregate should only return example.com, not empty string
+	t.Run("Aggregate_ExcludesEmpty", func(t *testing.T) {
+		rows, err := engine.Aggregate(ctx, ViewDomains, DefaultAggregateOptions())
+		if err != nil {
+			t.Fatalf("Aggregate(ViewDomains): %v", err)
+		}
+
+		// Should only have example.com
+		if len(rows) != 1 {
+			t.Errorf("expected 1 domain (empty excluded), got %d", len(rows))
+			for _, r := range rows {
+				t.Logf("  key=%q count=%d", r.Key, r.Count)
+			}
+		}
+
+		for _, r := range rows {
+			if r.Key == "" {
+				t.Errorf("empty domain should be excluded from ViewDomains aggregate")
+			}
+		}
+	})
+
+	// SubAggregate should also exclude empty domains
+	t.Run("SubAggregate_ExcludesEmpty", func(t *testing.T) {
+		// No filter - should still exclude empty domains
+		rows, err := engine.SubAggregate(ctx, MessageFilter{}, ViewDomains, DefaultAggregateOptions())
+		if err != nil {
+			t.Fatalf("SubAggregate(ViewDomains): %v", err)
+		}
+
+		for _, r := range rows {
+			if r.Key == "" {
+				t.Errorf("empty domain should be excluded from ViewDomains SubAggregate")
+			}
+		}
+	})
+}
+
+// TestDuckDBEngine_SubAggregate_WithSearchQuery verifies that SubAggregate
+// respects search query filters via the keyColumns mechanism.
+func TestDuckDBEngine_SubAggregate_WithSearchQuery(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	// Filter by sender alice, sub-aggregate by recipients, search for "bob"
+	filter := MessageFilter{Sender: "alice@example.com"}
+	opts := AggregateOptions{SearchQuery: "bob", Limit: 100}
+
+	rows, err := engine.SubAggregate(ctx, filter, ViewRecipients, opts)
+	if err != nil {
+		t.Fatalf("SubAggregate: %v", err)
+	}
+
+	// Search "bob" in Recipients view filters on recipient email/name
+	// Alice sent to bob (msgs 1,2,3), carol (msg 1), dan (msg 2 cc)
+	// Only bob should match
+	if len(rows) != 1 {
+		t.Errorf("expected 1 recipient matching 'bob', got %d", len(rows))
+		for _, r := range rows {
+			t.Logf("  key=%q count=%d", r.Key, r.Count)
+		}
+	}
+
+	if len(rows) > 0 && rows[0].Key != "bob@company.org" {
+		t.Errorf("expected bob@company.org, got %q", rows[0].Key)
+	}
+}
+
+// TestDuckDBEngine_SubAggregate_TimeGranularityInference verifies that
+// inferTimeGranularity correctly adjusts granularity based on period string length.
+func TestDuckDBEngine_SubAggregate_TimeGranularityInference(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		period      string
+		baseGran    TimeGranularity
+		expectCount int // expected number of messages in that period
+	}{
+		{
+			name:        "Year_Period_4chars",
+			period:      "2024",
+			baseGran:    TimeYear,
+			expectCount: 5, // all messages in 2024
+		},
+		{
+			name:        "Month_Period_7chars",
+			period:      "2024-01",
+			baseGran:    TimeYear, // base is Year, but period is 7 chars -> inferred Month
+			expectCount: 2,        // msgs 1,2
+		},
+		{
+			name:        "Day_Period_10chars",
+			period:      "2024-01-15",
+			baseGran:    TimeYear, // base is Year, but period is 10 chars -> inferred Day
+			expectCount: 1,        // msg 1
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filter := MessageFilter{
+				TimeRange: TimeRange{Period: tt.period, Granularity: tt.baseGran},
+			}
+
+			// SubAggregate by senders to get message counts per sender
+			rows, err := engine.SubAggregate(ctx, filter, ViewSenders, DefaultAggregateOptions())
+			if err != nil {
+				t.Fatalf("SubAggregate: %v", err)
+			}
+
+			// Sum counts across all senders
+			var totalCount int64
+			for _, r := range rows {
+				totalCount += r.Count
+			}
+
+			if totalCount != int64(tt.expectCount) {
+				t.Errorf("expected %d messages for period %q, got %d", tt.expectCount, tt.period, totalCount)
+			}
+		})
+	}
+}
