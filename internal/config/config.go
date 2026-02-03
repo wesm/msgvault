@@ -17,11 +17,27 @@ type ChatConfig struct {
 	MaxResults int    `toml:"max_results"` // Top-K messages to retrieve
 }
 
+// ServerConfig holds HTTP API server configuration.
+type ServerConfig struct {
+	APIPort    int    `toml:"api_port"`    // HTTP server port (default: 8080)
+	APIKey     string `toml:"api_key"`     // API authentication key
+	MCPEnabled bool   `toml:"mcp_enabled"` // Enable MCP server endpoint
+}
+
+// AccountSchedule defines sync schedule for a single account.
+type AccountSchedule struct {
+	Email    string `toml:"email"`    // Gmail account email
+	Schedule string `toml:"schedule"` // Cron expression (e.g., "0 2 * * *" for 2am daily)
+	Enabled  bool   `toml:"enabled"`  // Whether scheduled sync is active
+}
+
 type Config struct {
-	Data  DataConfig  `toml:"data"`
-	OAuth OAuthConfig `toml:"oauth"`
-	Sync  SyncConfig  `toml:"sync"`
-	Chat  ChatConfig  `toml:"chat"`
+	Data     DataConfig        `toml:"data"`
+	OAuth    OAuthConfig       `toml:"oauth"`
+	Sync     SyncConfig        `toml:"sync"`
+	Chat     ChatConfig        `toml:"chat"`
+	Server   ServerConfig      `toml:"server"`
+	Accounts []AccountSchedule `toml:"accounts"`
 
 	// Computed paths (not from config file)
 	HomeDir string `toml:"-"`
@@ -79,6 +95,11 @@ func Load(path string) (*Config, error) {
 			Model:      "gpt-oss-128k",
 			MaxResults: 20,
 		},
+		Server: ServerConfig{
+			APIPort:    8080,
+			MCPEnabled: false,
+		},
+		Accounts: []AccountSchedule{},
 	}
 
 	// Config file is optional - use defaults if not present
@@ -119,6 +140,28 @@ func (c *Config) TokensDir() string {
 // AnalyticsDir returns the path to the Parquet analytics directory.
 func (c *Config) AnalyticsDir() string {
 	return filepath.Join(c.Data.DataDir, "analytics")
+}
+
+// ScheduledAccounts returns accounts with scheduling enabled.
+func (c *Config) ScheduledAccounts() []AccountSchedule {
+	var scheduled []AccountSchedule
+	for _, acc := range c.Accounts {
+		if acc.Enabled && acc.Schedule != "" {
+			scheduled = append(scheduled, acc)
+		}
+	}
+	return scheduled
+}
+
+// GetAccountSchedule returns the schedule for a specific account email.
+// Returns nil if the account is not configured for scheduling.
+func (c *Config) GetAccountSchedule(email string) *AccountSchedule {
+	for i := range c.Accounts {
+		if c.Accounts[i].Email == email {
+			return &c.Accounts[i]
+		}
+	}
+	return nil
 }
 
 // expandPath expands ~ to the user's home directory.
