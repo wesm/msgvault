@@ -30,6 +30,10 @@ func validRelativePaths() []string {
 		"a/b/c/deep.txt",
 		"file-with-dots.test.txt",
 		"./current.txt",
+		// Paths that look like ".." but are actually valid filenames
+		"....",            // four dots - valid filename, not parent escape
+		"..foo",           // starts with dots but is a valid filename
+		"subdir/..hidden", // hidden-style name in subdir
 	}
 }
 

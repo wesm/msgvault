@@ -23,6 +23,11 @@ func PathTraversalCases() []PathTraversalCase {
 		cases = append(cases,
 			PathTraversalCase{"absolute drive path", `C:\Windows\system32`},
 			PathTraversalCase{"UNC path", `\\server\share\file.txt`},
+			// Drive-relative paths (not absolute, but have a volume name).
+			// filepath.Join(dir, "C:foo") ignores dir and resolves relative to
+			// the current directory on the C: drive, escaping the sandbox.
+			PathTraversalCase{"drive-relative path", `C:foo`},
+			PathTraversalCase{"drive-relative nested", `D:subdir\file.txt`},
 		)
 	} else {
 		cases = append(cases, PathTraversalCase{"absolute path", "/abs/path"})

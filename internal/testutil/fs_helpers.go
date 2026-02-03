@@ -15,6 +15,13 @@ func validateRelativePath(dir, name string) error {
 		return fmt.Errorf("absolute path not allowed: %s", name)
 	}
 
+	// Reject drive-relative paths on Windows (e.g., "C:foo").
+	// These are not absolute but filepath.Join(dir, "C:foo") ignores dir
+	// and resolves relative to the current directory on the C: drive.
+	if filepath.VolumeName(name) != "" {
+		return fmt.Errorf("path with volume name not allowed: %s", name)
+	}
+
 	// Join and Clean handles separators and ".." resolution
 	targetPath := filepath.Join(dir, name)
 
@@ -23,7 +30,8 @@ func validateRelativePath(dir, name string) error {
 	if err != nil {
 		return fmt.Errorf("cannot compute relative path: %w", err)
 	}
-	if strings.HasPrefix(rel, "..") {
+	// Check for parent directory escape: exactly ".." or starts with "../" (or "..\")
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("path escapes directory: %s", name)
 	}
 
