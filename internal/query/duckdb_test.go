@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -2283,8 +2284,12 @@ func TestDuckDBEngine_Aggregate_TimeGranularity(t *testing.T) {
 				t.Fatalf("Aggregate(ViewTime, %v): %v", tt.granularity, err)
 			}
 
+			formatRegex := regexp.MustCompile(tt.wantFormat)
 			gotKeys := make(map[string]bool)
 			for _, r := range rows {
+				if !formatRegex.MatchString(r.Key) {
+					t.Errorf("key %q does not match expected format %s", r.Key, tt.wantFormat)
+				}
 				gotKeys[r.Key] = true
 			}
 
