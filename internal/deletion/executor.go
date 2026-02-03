@@ -356,7 +356,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 			}
 			e.logger.Warn("batch delete failed, falling back to individual deletes", "start_index", i, "error", err)
 			// Fall back to individual deletes
-			for _, gmailID := range batch {
+			for j, gmailID := range batch {
 				if delErr := e.client.DeleteMessage(ctx, gmailID); delErr != nil {
 					// Treat 404 (already deleted) as success - makes deletion idempotent
 					if isNotFoundError(delErr) {
@@ -380,6 +380,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 						e.logger.Warn("failed to mark message as deleted in DB", "gmail_id", gmailID, "error", markErr)
 					}
 				}
+				e.progress.OnProgress(i+j+1, succeeded, failed)
 			}
 		} else {
 			succeeded += len(batch)
