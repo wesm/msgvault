@@ -42,25 +42,7 @@ type Manager struct {
 
 // NewManager creates an OAuth manager from client secrets.
 func NewManager(clientSecretsPath, tokensDir string, logger *slog.Logger) (*Manager, error) {
-	data, err := os.ReadFile(clientSecretsPath)
-	if err != nil {
-		return nil, fmt.Errorf("read client secrets: %w", err)
-	}
-
-	config, err := google.ConfigFromJSON(data, Scopes...)
-	if err != nil {
-		return nil, fmt.Errorf("parse client secrets: %w", err)
-	}
-
-	if logger == nil {
-		logger = slog.Default()
-	}
-
-	return &Manager{
-		config:    config,
-		tokensDir: tokensDir,
-		logger:    logger,
-	}, nil
+	return NewManagerWithScopes(clientSecretsPath, tokensDir, logger, Scopes)
 }
 
 // TokenSource returns a token source for the given email.
@@ -114,6 +96,30 @@ func (m *Manager) Authorize(ctx context.Context, email string, headless bool) er
 	return m.saveToken(email, token)
 }
 
+const (
+	redirectPort = "8089"
+	callbackPath = "/callback"
+)
+
+// newCallbackHandler returns an HTTP handler that processes the OAuth callback.
+func (m *Manager) newCallbackHandler(expectedState string, codeChan chan<- string, errChan chan<- error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("state") != expectedState {
+			errChan <- fmt.Errorf("state mismatch: possible CSRF attack")
+			fmt.Fprintf(w, "Error: state mismatch")
+			return
+		}
+		code := r.URL.Query().Get("code")
+		if code == "" {
+			errChan <- fmt.Errorf("no code in callback")
+			fmt.Fprintf(w, "Error: no authorization code received")
+			return
+		}
+		codeChan <- code
+		fmt.Fprintf(w, "Authorization successful! You can close this window.")
+	}
+}
+
 // browserFlow opens a browser for OAuth authorization.
 func (m *Manager) browserFlow(ctx context.Context) (*oauth2.Token, error) {
 	// Generate random state for CSRF protection
@@ -127,24 +133,9 @@ func (m *Manager) browserFlow(ctx context.Context) (*oauth2.Token, error) {
 	codeChan := make(chan string, 1)
 	errChan := make(chan error, 1)
 
-	server := &http.Server{Addr: "localhost:8089"}
-
-	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
-		// Verify state matches
-		if r.URL.Query().Get("state") != state {
-			errChan <- fmt.Errorf("state mismatch: possible CSRF attack")
-			fmt.Fprintf(w, "Error: state mismatch")
-			return
-		}
-		code := r.URL.Query().Get("code")
-		if code == "" {
-			errChan <- fmt.Errorf("no code in callback")
-			fmt.Fprintf(w, "Error: no authorization code received")
-			return
-		}
-		codeChan <- code
-		fmt.Fprintf(w, "Authorization successful! You can close this window.")
-	})
+	mux := http.NewServeMux()
+	mux.Handle(callbackPath, m.newCallbackHandler(state, codeChan, errChan))
+	server := &http.Server{Addr: "localhost:" + redirectPort, Handler: mux}
 
 	go func() {
 		if err := server.ListenAndServe(); err != http.ErrServerClosed {
@@ -155,7 +146,7 @@ func (m *Manager) browserFlow(ctx context.Context) (*oauth2.Token, error) {
 	defer func() { _ = server.Shutdown(ctx) }()
 
 	// Generate auth URL
-	m.config.RedirectURL = "http://localhost:8089/callback"
+	m.config.RedirectURL = "http://localhost:" + redirectPort + callbackPath
 	authURL := m.config.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
 
 	// Open browser
