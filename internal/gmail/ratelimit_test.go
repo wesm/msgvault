@@ -212,6 +212,15 @@ func TestNewRateLimiter_ScaledQPS(t *testing.T) {
 	}
 }
 
+func TestNewRateLimiter_NilClockPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("newRateLimiter(nil, ...) should panic")
+		}
+	}()
+	newRateLimiter(nil, 5.0)
+}
+
 func TestRateLimiter_TryAcquire(t *testing.T) {
 	f := newRLFixture()
 

@@ -90,7 +90,11 @@ func NewRateLimiter(qps float64) *RateLimiter {
 }
 
 // newRateLimiter creates a rate limiter with the given clock and QPS.
+// Panics if clk is nil.
 func newRateLimiter(clk Clock, qps float64) *RateLimiter {
+	if clk == nil {
+		panic("gmail: RateLimiter requires a non-nil Clock")
+	}
 	if qps < MinQPS {
 		qps = MinQPS
 	}
