@@ -419,8 +419,11 @@ func TestListMessages_MatchEmptySenderName_NotExists(t *testing.T) {
 func TestMatchEmptySenderName_MixedFromRecipients(t *testing.T) {
 	env := newTestEnv(t)
 
+	// Resolve participant IDs dynamically to avoid coupling to seed order.
+	aliceID := env.MustLookupParticipant("alice@example.com")
+
 	nullID := env.AddParticipant(dbtest.ParticipantOpts{Email: nil, DisplayName: nil, Domain: ""})
-	env.AddMessage(dbtest.MessageOpts{Subject: "Mixed From", SentAt: "2024-06-01 10:00:00", FromID: 1})
+	env.AddMessage(dbtest.MessageOpts{Subject: "Mixed From", SentAt: "2024-06-01 10:00:00", FromID: aliceID})
 	lastMsgID := env.LastMessageID()
 	_, err := env.DB.Exec(`INSERT INTO message_recipients (message_id, participant_id, recipient_type) VALUES (?, ?, 'from')`, lastMsgID, nullID)
 	if err != nil {
@@ -494,22 +497,26 @@ func TestGetGmailIDsByFilter_RecipientName_WithMatchEmptyRecipient(t *testing.T)
 func TestListMessages_ConversationIDFilter(t *testing.T) {
 	env := newTestEnv(t)
 
+	// Resolve participant IDs dynamically to avoid coupling to seed order.
+	aliceID := env.MustLookupParticipant("alice@example.com")
+	bobID := env.MustLookupParticipant("bob@company.org")
+
 	conv2 := env.AddConversation(dbtest.ConversationOpts{SourceID: 1, Title: "Second Thread"})
 	env.AddMessage(dbtest.MessageOpts{
 		ConversationID: conv2,
 		Subject:        "Thread 2 Message 1",
 		SentAt:         "2024-04-01 10:00:00",
 		SizeEstimate:   100,
-		FromID:         1,
-		ToIDs:          []int64{2},
+		FromID:         aliceID,
+		ToIDs:          []int64{bobID},
 	})
 	env.AddMessage(dbtest.MessageOpts{
 		ConversationID: conv2,
 		Subject:        "Thread 2 Message 2",
 		SentAt:         "2024-04-02 11:00:00",
 		SizeEstimate:   200,
-		FromID:         2,
-		ToIDs:          []int64{1},
+		FromID:         bobID,
+		ToIDs:          []int64{aliceID},
 	})
 
 	convID1 := int64(1)

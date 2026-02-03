@@ -345,8 +345,11 @@ func TestSubAggregateByTime(t *testing.T) {
 func TestAggregateByRecipientName_FallbackToEmail(t *testing.T) {
 	env := newTestEnv(t)
 
+	// Resolve participant IDs dynamically to avoid coupling to seed order.
+	aliceID := env.MustLookupParticipant("alice@example.com")
+
 	noNameID := env.AddParticipant(dbtest.ParticipantOpts{Email: dbtest.StrPtr("noname@test.com"), DisplayName: nil, Domain: "test.com"})
-	env.AddMessage(dbtest.MessageOpts{Subject: "No Name Recipient", SentAt: "2024-05-01 10:00:00", FromID: 1, ToIDs: []int64{noNameID}})
+	env.AddMessage(dbtest.MessageOpts{Subject: "No Name Recipient", SentAt: "2024-05-01 10:00:00", FromID: aliceID, ToIDs: []int64{noNameID}})
 
 	rows, err := env.Engine.Aggregate(env.Ctx, ViewRecipientNames, DefaultAggregateOptions())
 	if err != nil {
@@ -359,10 +362,13 @@ func TestAggregateByRecipientName_FallbackToEmail(t *testing.T) {
 func TestAggregateByRecipientName_EmptyStringFallback(t *testing.T) {
 	env := newTestEnv(t)
 
+	// Resolve participant IDs dynamically to avoid coupling to seed order.
+	aliceID := env.MustLookupParticipant("alice@example.com")
+
 	emptyID := env.AddParticipant(dbtest.ParticipantOpts{Email: dbtest.StrPtr("empty@test.com"), DisplayName: dbtest.StrPtr(""), Domain: "test.com"})
 	spacesID := env.AddParticipant(dbtest.ParticipantOpts{Email: dbtest.StrPtr("spaces@test.com"), DisplayName: dbtest.StrPtr("   "), Domain: "test.com"})
-	env.AddMessage(dbtest.MessageOpts{Subject: "Empty Rcpt Name", SentAt: "2024-05-01 10:00:00", FromID: 1, ToIDs: []int64{emptyID}})
-	env.AddMessage(dbtest.MessageOpts{Subject: "Spaces Rcpt Name", SentAt: "2024-05-02 10:00:00", FromID: 1, CcIDs: []int64{spacesID}})
+	env.AddMessage(dbtest.MessageOpts{Subject: "Empty Rcpt Name", SentAt: "2024-05-01 10:00:00", FromID: aliceID, ToIDs: []int64{emptyID}})
+	env.AddMessage(dbtest.MessageOpts{Subject: "Spaces Rcpt Name", SentAt: "2024-05-02 10:00:00", FromID: aliceID, CcIDs: []int64{spacesID}})
 
 	rows, err := env.Engine.Aggregate(env.Ctx, ViewRecipientNames, DefaultAggregateOptions())
 	if err != nil {
