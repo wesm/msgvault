@@ -434,6 +434,10 @@ func TestAggregateDeterministicOrderOnTies(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
+	// Resolve participant IDs dynamically to avoid coupling to seed order.
+	aliceID := tdb.MustLookupParticipant("alice@example.com")
+	bobID := tdb.MustLookupParticipant("bob@example.com")
+
 	// Create labels with names that would sort differently than insertion order
 	// "Zebra" inserted first, "Apple" inserted second - both will have count=1
 	zebraID := tdb.AddLabel(dbtest.LabelOpts{Name: "Zebra"})
@@ -443,8 +447,8 @@ func TestAggregateDeterministicOrderOnTies(t *testing.T) {
 	msgID := tdb.AddMessage(dbtest.MessageOpts{
 		Subject: "Test",
 		SentAt:  "2024-01-01 10:00:00",
-		FromID:  1,
-		ToIDs:   []int64{2},
+		FromID:  aliceID,
+		ToIDs:   []int64{bobID},
 	})
 	tdb.AddMessageLabel(msgID, zebraID)
 	tdb.AddMessageLabel(msgID, appleID)
