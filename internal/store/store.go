@@ -22,6 +22,8 @@ type Store struct {
 	fts5Available bool // Whether FTS5 is available for full-text search
 }
 
+const defaultSQLiteParams = "?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=ON"
+
 // Open opens or creates the database at the given path.
 // Currently only SQLite is supported. PostgreSQL URLs will return an error.
 func Open(dbPath string) (*Store, error) {
@@ -36,8 +38,7 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("create db directory: %w", err)
 	}
 
-	// Open with WAL mode and busy timeout for better concurrency
-	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=ON"
+	dsn := dbPath + defaultSQLiteParams
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -150,8 +151,11 @@ func (s *Store) InitSchema() error {
 	}
 
 	if _, err := s.db.Exec(string(sqliteSchema)); err != nil {
-		// FTS5 not available - this is OK, search will be degraded
-		s.fts5Available = false
+		if strings.Contains(err.Error(), "no such module: fts5") {
+			s.fts5Available = false
+		} else {
+			return fmt.Errorf("init fts5 schema: %w", err)
+		}
 	} else {
 		s.fts5Available = true
 	}
@@ -186,10 +190,10 @@ func (s *Store) GetStats() (*Stats, error) {
 
 	for _, q := range queries {
 		if err := s.db.QueryRow(q.query).Scan(q.dest); err != nil {
-			// Table might not exist yet
-			if err != sql.ErrNoRows {
+			if strings.Contains(err.Error(), "no such table") {
 				continue
 			}
+			return nil, fmt.Errorf("get stats %q: %w", q.query, err)
 		}
 	}
 
