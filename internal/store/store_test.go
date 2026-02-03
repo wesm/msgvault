@@ -81,6 +81,25 @@ func TestStore_Source_UpdateSyncCursor(t *testing.T) {
 	}
 }
 
+func TestStore_Source_UpdateDisplayName(t *testing.T) {
+	st, source, _ := setupStore(t)
+
+	err := st.UpdateSourceDisplayName(source.ID, "Work Account")
+	if err != nil {
+		t.Fatalf("UpdateSourceDisplayName() error = %v", err)
+	}
+
+	// Verify display name was updated
+	updated, err := st.GetSourceByIdentifier("test@example.com")
+	if err != nil {
+		t.Fatalf("GetSourceByIdentifier() error = %v", err)
+	}
+
+	if !updated.DisplayName.Valid || updated.DisplayName.String != "Work Account" {
+		t.Errorf("DisplayName = %v, want 'Work Account'", updated.DisplayName)
+	}
+}
+
 func TestStore_Conversation(t *testing.T) {
 	f := storetest.New(t)
 
