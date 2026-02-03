@@ -356,6 +356,43 @@ func TestDetailNavigationOutOfBoundsIndex(t *testing.T) {
 	}
 }
 
+// TestDetailNavigationOutOfBoundsWithMultipleMessages verifies that when the index is
+// out of bounds but there are multiple messages, navigation succeeds after clamping.
+func TestDetailNavigationOutOfBoundsWithMultipleMessages(t *testing.T) {
+	model := NewBuilder().
+		WithMessages(
+			query.MessageSummary{ID: 1, Subject: "First message"},
+			query.MessageSummary{ID: 2, Subject: "Second message"},
+			query.MessageSummary{ID: 3, Subject: "Third message"},
+		).
+		WithLevel(levelMessageDetail).Build()
+	model.detailMessageIndex = 10 // Out of bounds (len=3, valid indices 0-2)
+	model.cursor = 10
+
+	// Press left (navigateDetailPrev) - should clamp to last valid index (2),
+	// then navigate to previous message (index 1), triggering loadMessageDetail
+	newModel, cmd := model.navigateDetailPrev()
+	m := newModel.(Model)
+
+	// Index should be clamped from 10 to 2, then decremented to 1
+	if m.detailMessageIndex != 1 {
+		t.Errorf("expected detailMessageIndex=1 (clamped and navigated), got %d", m.detailMessageIndex)
+	}
+	if m.cursor != 1 {
+		t.Errorf("expected cursor=1, got %d", m.cursor)
+	}
+	if m.pendingDetailSubject != "Second message" {
+		t.Errorf("expected pendingDetailSubject='Second message', got %q", m.pendingDetailSubject)
+	}
+	// Should trigger loadMessageDetail, not just show flash
+	if cmd == nil {
+		t.Error("expected command to load message detail after clamping and navigating")
+	}
+	if m.flashMessage != "" {
+		t.Errorf("expected no flash message after successful navigation, got %q", m.flashMessage)
+	}
+}
+
 // TestDetailNavigationCursorPreservedOnGoBack verifies cursor position is preserved
 // when returning to message list after navigating in detail view.
 func TestDetailNavigationCursorPreservedOnGoBack(t *testing.T) {
