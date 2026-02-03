@@ -713,35 +713,6 @@ func resizeModel(t *testing.T, m Model, w, h int) Model {
 	return newModel.(Model)
 }
 
-// assertHeaderLine splits the header into lines, checks the line count is sufficient,
-// and asserts that the specified line contains all of the given substrings.
-func assertHeaderLine(t *testing.T, model Model, lineIdx int, wantSubstrings ...string) {
-	t.Helper()
-	header := model.headerView()
-	lines := strings.Split(header, "\n")
-	if lineIdx >= len(lines) {
-		t.Fatalf("header has %d lines, want line %d", len(lines), lineIdx)
-	}
-	for _, want := range wantSubstrings {
-		if !strings.Contains(lines[lineIdx], want) {
-			t.Errorf("header line %d missing %q: %q", lineIdx, want, lines[lineIdx])
-		}
-	}
-}
-
-// assertHeaderLineNot asserts that the specified header line does NOT contain the given substring.
-func assertHeaderLineNot(t *testing.T, model Model, lineIdx int, notWant string) {
-	t.Helper()
-	header := model.headerView()
-	lines := strings.Split(header, "\n")
-	if lineIdx >= len(lines) {
-		t.Fatalf("header has %d lines, want line %d", len(lines), lineIdx)
-	}
-	if strings.Contains(lines[lineIdx], notWant) {
-		t.Errorf("header line %d should not contain %q: %q", lineIdx, notWant, lines[lineIdx])
-	}
-}
-
 // assertState checks level, viewType, and cursor in one call.
 func assertState(t *testing.T, m Model, level viewLevel, view query.ViewType, cursor int) {
 	t.Helper()

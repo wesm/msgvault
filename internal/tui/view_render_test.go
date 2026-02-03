@@ -287,97 +287,99 @@ func TestHeaderShowsTitleBar(t *testing.T) {
 	}
 }
 
-// TestHeaderShowsSelectedAccount verifies header shows selected account name.
-func TestHeaderShowsSelectedAccount(t *testing.T) {
+// TestHeaderDisplay consolidates header display tests into table-driven cases.
+func TestHeaderDisplay(t *testing.T) {
 	accountID := int64(2)
-	model := NewBuilder().WithSize(100, 20).
-		WithAccounts(
-			query.AccountInfo{ID: 1, Identifier: "alice@gmail.com"},
-			query.AccountInfo{ID: 2, Identifier: "bob@gmail.com"},
-		).
-		WithAccountFilter(&accountID).Build()
-
-	assertHeaderLine(t, model, 0, "bob@gmail.com")
-}
-
-// TestHeaderShowsViewTypeOnLine2 verifies line 2 shows current view type.
-func TestHeaderShowsViewTypeOnLine2(t *testing.T) {
-	model := NewBuilder().WithSize(100, 20).WithViewType(query.ViewSenders).
-		WithStats(standardStats()).
-		Build()
-
-	assertHeaderLine(t, model, 1, "Sender", "1000 msgs")
-}
-
-// TestHeaderDrillDownUsesPrefix verifies drill-down uses compact prefix (S: instead of From:).
-func TestHeaderDrillDownUsesPrefix(t *testing.T) {
-	model := NewBuilder().WithSize(100, 20).
-		WithLevel(levelMessageList).WithViewType(query.ViewRecipients).Build()
-	model.drillViewType = query.ViewSenders
-	model.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
-	model.filterKey = "alice@example.com"
-
-	assertHeaderLine(t, model, 1, "S:")
-	assertHeaderLineNot(t, model, 1, "From:")
-}
-
-// TestHeaderSubAggregateShowsDrillContext verifies sub-aggregate shows drill context.
-func TestHeaderSubAggregateShowsDrillContext(t *testing.T) {
-	model := NewBuilder().WithSize(100, 20).
-		WithLevel(levelDrillDown).WithViewType(query.ViewRecipients).
-		WithContextStats(&query.TotalStats{MessageCount: 100, TotalSize: 500000}).
-		Build()
-	model.drillViewType = query.ViewSenders
-	model.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
-
-	assertHeaderLine(t, model, 1, "S:", "alice@example.com", "(by Recipient)", "100 msgs")
-}
-
-// TestHeaderWithAttachmentFilter verifies header shows attachment filter indicator.
-func TestHeaderWithAttachmentFilter(t *testing.T) {
-	model := NewBuilder().WithSize(100, 20).Build()
-	model.attachmentFilter = true
-
-	assertHeaderLine(t, model, 0, "[Attachments]")
-}
-
-// TestViewStructureHasTitleBarFirst verifies View() output starts with title bar.
-func TestViewStructureHasTitleBarFirst(t *testing.T) {
-	rows := []query.AggregateRow{
-		{Key: "alice@example.com", Count: 100, TotalSize: 500000},
+	tests := []struct {
+		name         string
+		setup        func() Model
+		line         int
+		wantContains []string
+		wantMissing  []string
+	}{
+		{
+			name: "shows selected account name",
+			setup: func() Model {
+				return NewBuilder().WithSize(100, 20).
+					WithAccounts(
+						query.AccountInfo{ID: 1, Identifier: "alice@gmail.com"},
+						query.AccountInfo{ID: 2, Identifier: "bob@gmail.com"},
+					).
+					WithAccountFilter(&accountID).Build()
+			},
+			line:         0,
+			wantContains: []string{"bob@gmail.com"},
+		},
+		{
+			name: "shows view type on line 2",
+			setup: func() Model {
+				return NewBuilder().WithSize(100, 20).WithViewType(query.ViewSenders).
+					WithStats(standardStats()).Build()
+			},
+			line:         1,
+			wantContains: []string{"Sender", "1000 msgs"},
+		},
+		{
+			name: "drill-down uses compact prefix",
+			setup: func() Model {
+				m := NewBuilder().WithSize(100, 20).
+					WithLevel(levelMessageList).WithViewType(query.ViewRecipients).Build()
+				m.drillViewType = query.ViewSenders
+				m.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
+				m.filterKey = "alice@example.com"
+				return m
+			},
+			line:         1,
+			wantContains: []string{"S:"},
+			wantMissing:  []string{"From:"},
+		},
+		{
+			name: "sub-aggregate shows drill context",
+			setup: func() Model {
+				m := NewBuilder().WithSize(100, 20).
+					WithLevel(levelDrillDown).WithViewType(query.ViewRecipients).
+					WithContextStats(&query.TotalStats{MessageCount: 100, TotalSize: 500000}).Build()
+				m.drillViewType = query.ViewSenders
+				m.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
+				return m
+			},
+			line:         1,
+			wantContains: []string{"S:", "alice@example.com", "(by Recipient)", "100 msgs"},
+		},
+		{
+			name: "shows attachment filter indicator",
+			setup: func() Model {
+				m := NewBuilder().WithSize(100, 20).Build()
+				m.attachmentFilter = true
+				return m
+			},
+			line:         0,
+			wantContains: []string{"[Attachments]"},
+		},
 	}
 
-	model := NewBuilder().
-		WithRows(rows...).
-		WithViewType(query.ViewSenders).
-		WithSize(100, 30).
-		WithPageSize(20).
-		WithStats(standardStats()).
-		Build()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := tt.setup()
+			header := model.headerView()
+			lines := strings.Split(header, "\n")
 
-	view := model.View()
-	lines := strings.Split(view, "\n")
+			if len(lines) <= tt.line {
+				t.Fatalf("header has only %d lines, need line %d", len(lines), tt.line)
+			}
 
-	// Debug output
-	t.Logf("Total lines in View: %d", len(lines))
-	for i := 0; i < 5 && i < len(lines); i++ {
-		t.Logf("Line %d: %q", i+1, lines[i])
-	}
-
-	// Line 1 should be title bar with msgvault
-	if len(lines) < 1 {
-		t.Fatal("View output has no lines")
-	}
-	if !strings.Contains(lines[0], "msgvault") {
-		t.Errorf("Line 1 should contain 'msgvault' (title bar), got: %q", lines[0])
-	}
-
-	// Line 2 should be breadcrumb with view type
-	if len(lines) < 2 {
-		t.Fatal("View output has less than 2 lines")
-	}
-	if !strings.Contains(lines[1], "From") && !strings.Contains(lines[1], "msgs") {
-		t.Errorf("Line 2 should contain breadcrumb/stats (From or msgs), got: %q", lines[1])
+			line := lines[tt.line]
+			for _, s := range tt.wantContains {
+				if !strings.Contains(line, s) {
+					t.Errorf("header line %d missing %q, got: %q", tt.line, s, line)
+				}
+			}
+			for _, s := range tt.wantMissing {
+				if strings.Contains(line, s) {
+					t.Errorf("header line %d should not contain %q, got: %q", tt.line, s, line)
+				}
+			}
+		})
 	}
 }
 
