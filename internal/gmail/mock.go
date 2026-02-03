@@ -256,11 +256,17 @@ func (m *MockAPI) getListThreadID(id string) string {
 }
 
 // SetupMessages adds multiple pre-built RawMessage values to the mock store
-// in a thread-safe manner.
+// in a thread-safe manner. Nil entries in the input slice are silently skipped.
 func (m *MockAPI) SetupMessages(msgs ...*RawMessage) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.Messages == nil {
+		m.Messages = make(map[string]*RawMessage)
+	}
 	for _, msg := range msgs {
+		if msg == nil {
+			continue
+		}
 		m.Messages[msg.ID] = msg
 	}
 }
