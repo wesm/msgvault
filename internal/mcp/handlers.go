@@ -24,6 +24,68 @@ type handlers struct {
 	attachmentsDir string
 }
 
+// getIDArg extracts a required positive integer ID from the arguments map.
+func getIDArg(args map[string]any, key string) (int64, error) {
+	v, ok := args[key].(float64)
+	if !ok {
+		return 0, fmt.Errorf("%s parameter is required", key)
+	}
+	if v != math.Trunc(v) || v < 1 || v > math.MaxInt64 {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return int64(v), nil
+}
+
+// getDateArg extracts an optional date (YYYY-MM-DD) from the arguments map.
+func getDateArg(args map[string]any, key string) (*time.Time, error) {
+	v, ok := args[key].(string)
+	if !ok || v == "" {
+		return nil, nil
+	}
+	t, err := time.Parse("2006-01-02", v)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s date %q: expected YYYY-MM-DD", key, v)
+	}
+	return &t, nil
+}
+
+// readAttachmentFile reads the content-addressed attachment file after
+// validating the hash and checking size limits.
+func (h *handlers) readAttachmentFile(contentHash string) ([]byte, error) {
+	if contentHash == "" || len(contentHash) < 2 {
+		return nil, fmt.Errorf("attachment has no stored content")
+	}
+	if _, err := hex.DecodeString(contentHash); err != nil {
+		return nil, fmt.Errorf("attachment has invalid content hash")
+	}
+
+	filePath := filepath.Join(h.attachmentsDir, contentHash[:2], contentHash)
+
+	f, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("attachment file not available: %v", err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("attachment file not available: %v", err)
+	}
+	if info.Size() > maxAttachmentSize {
+		return nil, fmt.Errorf("attachment too large: %d bytes (max %d)", info.Size(), maxAttachmentSize)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(f, maxAttachmentSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("attachment file not available: %v", err)
+	}
+	if int64(len(data)) > maxAttachmentSize {
+		return nil, fmt.Errorf("attachment too large: %d bytes (max %d)", len(data), maxAttachmentSize)
+	}
+
+	return data, nil
+}
+
 func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 
@@ -32,8 +94,8 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 		return mcp.NewToolResultError("query parameter is required"), nil
 	}
 
-	limit := intArg(args, "limit", 20)
-	offset := intArg(args, "offset", 0)
+	limit := limitArg(args, "limit", 20)
+	offset := limitArg(args, "offset", 0)
 
 	q := search.Parse(queryStr)
 
@@ -57,15 +119,12 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 func (h *handlers) getMessage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 
-	idFloat, ok := args["id"].(float64)
-	if !ok {
-		return mcp.NewToolResultError("id parameter is required"), nil
-	}
-	if idFloat != math.Trunc(idFloat) || idFloat < 1 || idFloat > math.MaxInt64 {
-		return mcp.NewToolResultError("id must be a positive integer"), nil
+	id, err := getIDArg(args, "id")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	msg, err := h.engine.GetMessage(ctx, int64(idFloat))
+	msg, err := h.engine.GetMessage(ctx, id)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("message not found: %v", err)), nil
 	}
@@ -78,15 +137,12 @@ const maxAttachmentSize = 50 * 1024 * 1024 // 50MB
 func (h *handlers) getAttachment(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 
-	idFloat, ok := args["attachment_id"].(float64)
-	if !ok {
-		return mcp.NewToolResultError("attachment_id parameter is required"), nil
-	}
-	if idFloat != math.Trunc(idFloat) || idFloat < 1 || idFloat > math.MaxInt64 {
-		return mcp.NewToolResultError("attachment_id must be a positive integer"), nil
+	id, err := getIDArg(args, "attachment_id")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	att, err := h.engine.GetAttachment(ctx, int64(idFloat))
+	att, err := h.engine.GetAttachment(ctx, id)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("get attachment failed: %v", err)), nil
 	}
@@ -98,38 +154,9 @@ func (h *handlers) getAttachment(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError("attachments directory not configured"), nil
 	}
 
-	if att.ContentHash == "" || len(att.ContentHash) < 2 {
-		return mcp.NewToolResultError("attachment has no stored content"), nil
-	}
-
-	// Validate content_hash is strictly hex to prevent path traversal.
-	if _, err := hex.DecodeString(att.ContentHash); err != nil {
-		return mcp.NewToolResultError("attachment has invalid content hash"), nil
-	}
-
-	filePath := filepath.Join(h.attachmentsDir, att.ContentHash[:2], att.ContentHash)
-
-	// Open file and check size on the open fd to avoid TOCTOU races.
-	f, err := os.Open(filePath)
+	data, err := h.readAttachmentFile(att.ContentHash)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("attachment file not available: %v", err)), nil
-	}
-	defer f.Close()
-
-	info, err := f.Stat()
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("attachment file not available: %v", err)), nil
-	}
-	if info.Size() > maxAttachmentSize {
-		return mcp.NewToolResultError(fmt.Sprintf("attachment too large: %d bytes (max %d)", info.Size(), maxAttachmentSize)), nil
-	}
-
-	data, err := io.ReadAll(io.LimitReader(f, maxAttachmentSize+1))
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("attachment file not available: %v", err)), nil
-	}
-	if int64(len(data)) > maxAttachmentSize {
-		return mcp.NewToolResultError(fmt.Sprintf("attachment too large: %d bytes (max %d)", len(data), maxAttachmentSize)), nil
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
 	resp := struct {
@@ -151,8 +178,8 @@ func (h *handlers) listMessages(ctx context.Context, req mcp.CallToolRequest) (*
 	args := req.GetArguments()
 
 	filter := query.MessageFilter{
-		Limit:  intArg(args, "limit", 20),
-		Offset: intArg(args, "offset", 0),
+		Limit:  limitArg(args, "limit", 20),
+		Offset: limitArg(args, "offset", 0),
 	}
 
 	if v, ok := args["from"].(string); ok && v != "" {
@@ -167,19 +194,12 @@ func (h *handlers) listMessages(ctx context.Context, req mcp.CallToolRequest) (*
 	if v, ok := args["has_attachment"].(bool); ok && v {
 		filter.WithAttachmentsOnly = true
 	}
-	if v, ok := args["after"].(string); ok && v != "" {
-		t, err := time.Parse("2006-01-02", v)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid after date %q: expected YYYY-MM-DD", v)), nil
-		}
-		filter.After = &t
+	var err error
+	if filter.After, err = getDateArg(args, "after"); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
-	if v, ok := args["before"].(string); ok && v != "" {
-		t, err := time.Parse("2006-01-02", v)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid before date %q: expected YYYY-MM-DD", v)), nil
-		}
-		filter.Before = &t
+	if filter.Before, err = getDateArg(args, "before"); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
 	results, err := h.engine.ListMessages(ctx, filter)
@@ -221,28 +241,18 @@ func (h *handlers) aggregate(ctx context.Context, req mcp.CallToolRequest) (*mcp
 	}
 
 	opts := query.AggregateOptions{
-		Limit: intArg(args, "limit", 50),
+		Limit: limitArg(args, "limit", 50),
 	}
 
-	if v, ok := args["after"].(string); ok && v != "" {
-		t, err := time.Parse("2006-01-02", v)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid after date %q: expected YYYY-MM-DD", v)), nil
-		}
-		opts.After = &t
+	var err error
+	if opts.After, err = getDateArg(args, "after"); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
-	if v, ok := args["before"].(string); ok && v != "" {
-		t, err := time.Parse("2006-01-02", v)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid before date %q: expected YYYY-MM-DD", v)), nil
-		}
-		opts.Before = &t
+	if opts.Before, err = getDateArg(args, "before"); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	var (
-		rows []query.AggregateRow
-		err  error
-	)
+	var rows []query.AggregateRow
 
 	switch groupBy {
 	case "sender":
@@ -266,10 +276,10 @@ func (h *handlers) aggregate(ctx context.Context, req mcp.CallToolRequest) (*mcp
 	return jsonResult(rows)
 }
 
-// intArg extracts a non-negative integer from a map, with a default value.
-// JSON numbers arrive as float64. Clamps on the float64 value before
-// converting to int to avoid overflow on very large or special values.
-func intArg(args map[string]any, key string, def int) int {
+// limitArg extracts a non-negative integer limit from a map, with a default.
+// JSON numbers arrive as float64. Clamps to maxLimit to prevent excessive
+// result sets.
+func limitArg(args map[string]any, key string, def int) int {
 	v, ok := args[key].(float64)
 	if !ok {
 		return def

@@ -381,7 +381,7 @@ func TestGetAttachment(t *testing.T) {
 	})
 }
 
-func TestIntArgClamping(t *testing.T) {
+func TestLimitArgClamping(t *testing.T) {
 	tests := []struct {
 		name string
 		val  float64
@@ -398,9 +398,9 @@ func TestIntArgClamping(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := intArg(map[string]any{"x": tt.val}, "x", 20)
+			got := limitArg(map[string]any{"x": tt.val}, "x", 20)
 			if got != tt.want {
-				t.Fatalf("intArg(%v) = %d, want %d", tt.val, got, tt.want)
+				t.Fatalf("limitArg(%v) = %d, want %d", tt.val, got, tt.want)
 			}
 		})
 	}
