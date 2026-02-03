@@ -40,25 +40,7 @@ type MockEngine struct {
 // Compile-time check.
 var _ query.Engine = (*MockEngine)(nil)
 
-func (m *MockEngine) AggregateBySender(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
-	return m.AggregateRows, nil
-}
-func (m *MockEngine) AggregateBySenderName(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
-	return m.AggregateRows, nil
-}
-func (m *MockEngine) AggregateByRecipient(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
-	return m.AggregateRows, nil
-}
-func (m *MockEngine) AggregateByRecipientName(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
-	return m.AggregateRows, nil
-}
-func (m *MockEngine) AggregateByDomain(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
-	return m.AggregateRows, nil
-}
-func (m *MockEngine) AggregateByLabel(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
-	return m.AggregateRows, nil
-}
-func (m *MockEngine) AggregateByTime(_ context.Context, _ query.AggregateOptions) ([]query.AggregateRow, error) {
+func (m *MockEngine) Aggregate(_ context.Context, _ query.ViewType, _ query.AggregateOptions) ([]query.AggregateRow, error) {
 	return m.AggregateRows, nil
 }
 func (m *MockEngine) SubAggregate(_ context.Context, _ query.MessageFilter, _ query.ViewType, _ query.AggregateOptions) ([]query.AggregateRow, error) {

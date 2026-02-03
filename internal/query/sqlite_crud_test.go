@@ -242,9 +242,9 @@ func TestDeletedMessagesIncludedWithFlag(t *testing.T) {
 
 	env.MarkDeletedByID(1)
 
-	rows, err := env.Engine.AggregateBySender(env.Ctx, DefaultAggregateOptions())
+	rows, err := env.Engine.Aggregate(env.Ctx, ViewSenders, DefaultAggregateOptions())
 	if err != nil {
-		t.Fatalf("AggregateBySender: %v", err)
+		t.Fatalf("Aggregate(ViewSenders): %v", err)
 	}
 
 	for _, row := range rows {
@@ -811,7 +811,7 @@ func TestRecipientNameFilter_IncludesBCC(t *testing.T) {
 	})
 
 	t.Run("AggregateByRecipientName", func(t *testing.T) {
-		rows, err := engine.AggregateByRecipientName(ctx, AggregateOptions{Limit: 100})
+		rows, err := engine.Aggregate(ctx, ViewRecipientNames, AggregateOptions{Limit: 100})
 		if err != nil {
 			t.Fatalf("AggregateByRecipientName: %v", err)
 		}

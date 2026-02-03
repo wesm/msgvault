@@ -482,7 +482,7 @@ func TestDuckDBEngine_DeletedMessagesIncluded(t *testing.T) {
 func TestDuckDBEngine_AggregateByRecipient(t *testing.T) {
 	engine := newParquetEngine(t)
 	ctx := context.Background()
-	results, err := engine.AggregateByRecipient(ctx, DefaultAggregateOptions())
+	results, err := engine.Aggregate(ctx, ViewRecipients, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateByRecipient: %v", err)
 	}
@@ -508,7 +508,7 @@ func TestDuckDBEngine_AggregateByRecipient_SearchFiltersOnKey(t *testing.T) {
 	// Test data: bob is a recipient (to) in msgs 1,2,3
 	opts := DefaultAggregateOptions()
 	opts.SearchQuery = "bob"
-	rows, err := engine.AggregateByRecipient(ctx, opts)
+	rows, err := engine.Aggregate(ctx, ViewRecipients, opts)
 	if err != nil {
 		t.Fatalf("AggregateByRecipient (search 'bob'): %v", err)
 	}
@@ -526,7 +526,7 @@ func TestDuckDBEngine_AggregateByRecipient_SearchFiltersOnKey(t *testing.T) {
 
 	// Search for "dan" — should return only dan@other.net (cc recipient in msg 2)
 	opts.SearchQuery = "dan"
-	rows, err = engine.AggregateByRecipient(ctx, opts)
+	rows, err = engine.Aggregate(ctx, ViewRecipients, opts)
 	if err != nil {
 		t.Fatalf("AggregateByRecipient (search 'dan'): %v", err)
 	}
@@ -539,7 +539,7 @@ func TestDuckDBEngine_AggregateByRecipient_SearchFiltersOnKey(t *testing.T) {
 
 	// Verify totals don't exceed baseline
 	baseOpts := DefaultAggregateOptions()
-	baseRows, err := engine.AggregateByRecipient(ctx, baseOpts)
+	baseRows, err := engine.Aggregate(ctx, ViewRecipients, baseOpts)
 	if err != nil {
 		t.Fatalf("AggregateByRecipient (no search): %v", err)
 	}
@@ -548,7 +548,7 @@ func TestDuckDBEngine_AggregateByRecipient_SearchFiltersOnKey(t *testing.T) {
 		baseTotal += r.Count
 	}
 	opts.SearchQuery = "a" // matches alice, carol, dan (display names with 'a')
-	rows, err = engine.AggregateByRecipient(ctx, opts)
+	rows, err = engine.Aggregate(ctx, ViewRecipients, opts)
 	if err != nil {
 		t.Fatalf("AggregateByRecipient (search 'a'): %v", err)
 	}
@@ -569,7 +569,7 @@ func TestDuckDBEngine_AggregateByLabel_SearchFiltersOnKey(t *testing.T) {
 	// Search for "work" — should return only the Work label
 	opts := DefaultAggregateOptions()
 	opts.SearchQuery = "work"
-	rows, err := engine.AggregateByLabel(ctx, opts)
+	rows, err := engine.Aggregate(ctx, ViewLabels, opts)
 	if err != nil {
 		t.Fatalf("AggregateByLabel (search 'work'): %v", err)
 	}
@@ -591,7 +591,7 @@ func TestDuckDBEngine_AggregateByDomain_SearchFiltersOnKey(t *testing.T) {
 	// Search for "company" — should return only company.org
 	opts := DefaultAggregateOptions()
 	opts.SearchQuery = "company"
-	rows, err := engine.AggregateByDomain(ctx, opts)
+	rows, err := engine.Aggregate(ctx, ViewDomains, opts)
 	if err != nil {
 		t.Fatalf("AggregateByDomain (search 'company'): %v", err)
 	}
@@ -608,7 +608,7 @@ func TestDuckDBEngine_AggregateByDomain_SearchFiltersOnKey(t *testing.T) {
 func TestDuckDBEngine_AggregateBySender(t *testing.T) {
 	engine := newParquetEngine(t)
 	ctx := context.Background()
-	results, err := engine.AggregateBySender(ctx, DefaultAggregateOptions())
+	results, err := engine.Aggregate(ctx, ViewSenders, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateBySender: %v", err)
 	}
@@ -625,7 +625,7 @@ func TestDuckDBEngine_AggregateBySender(t *testing.T) {
 func TestDuckDBEngine_AggregateBySenderName(t *testing.T) {
 	engine := newParquetEngine(t)
 	ctx := context.Background()
-	results, err := engine.AggregateBySenderName(ctx, DefaultAggregateOptions())
+	results, err := engine.Aggregate(ctx, ViewSenderNames, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateBySenderName: %v", err)
 	}
@@ -701,7 +701,7 @@ func TestDuckDBEngine_AggregateBySenderName_EmptyStringFallback(t *testing.T) {
 	engine := b.BuildEngine()
 
 	ctx := context.Background()
-	results, err := engine.AggregateBySenderName(ctx, DefaultAggregateOptions())
+	results, err := engine.Aggregate(ctx, ViewSenderNames, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateBySenderName: %v", err)
 	}
@@ -754,7 +754,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptySenderName(t *testing.T) {
 func TestDuckDBEngine_AggregateAttachmentFields(t *testing.T) {
 	engine := newParquetEngine(t)
 	ctx := context.Background()
-	results, err := engine.AggregateBySender(ctx, DefaultAggregateOptions())
+	results, err := engine.Aggregate(ctx, ViewSenders, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateBySender: %v", err)
 	}
@@ -791,7 +791,7 @@ func TestDuckDBEngine_AggregateAttachmentFields(t *testing.T) {
 func TestDuckDBEngine_AggregateByLabel(t *testing.T) {
 	engine := newParquetEngine(t)
 	ctx := context.Background()
-	results, err := engine.AggregateByLabel(ctx, DefaultAggregateOptions())
+	results, err := engine.Aggregate(ctx, ViewLabels, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateByLabel: %v", err)
 	}
@@ -848,7 +848,7 @@ func TestDuckDBEngine_AggregateByTime(t *testing.T) {
 	opts := DefaultAggregateOptions()
 	opts.TimeGranularity = TimeMonth
 
-	results, err := engine.AggregateByTime(ctx, opts)
+	results, err := engine.Aggregate(ctx, ViewTime, opts)
 	if err != nil {
 		t.Fatalf("AggregateByTime: %v", err)
 	}
@@ -1021,7 +1021,7 @@ func TestDuckDBEngine_AggregateBySender_DateFilter(t *testing.T) {
 	opts := DefaultAggregateOptions()
 	opts.After = &feb1
 
-	results, err := engine.AggregateBySender(ctx, opts)
+	results, err := engine.Aggregate(ctx, ViewSenders, opts)
 	if err != nil {
 		t.Fatalf("AggregateBySender with After: %v", err)
 	}
@@ -1081,7 +1081,7 @@ func TestDuckDBEngine_AggregateByDomain_DateFilter(t *testing.T) {
 	opts.After = &feb1
 
 	// After Feb 1: msg3 from alice (example.com), msg4+msg5 from bob (company.org)
-	results, err := engine.AggregateByDomain(ctx, opts)
+	results, err := engine.Aggregate(ctx, ViewDomains, opts)
 	if err != nil {
 		t.Fatalf("AggregateByDomain with After: %v", err)
 	}
@@ -1773,7 +1773,7 @@ func TestAggregateBySender_WithSearchQuery(t *testing.T) {
 				SearchQuery: tt.searchQuery,
 				Limit:       100,
 			}
-			rows, err := engine.AggregateBySender(ctx, opts)
+			rows, err := engine.Aggregate(ctx, ViewSenders, opts)
 			if err != nil {
 				t.Fatalf("AggregateBySender: %v", err)
 			}
@@ -1873,7 +1873,7 @@ func TestBuildSearchConditions_EscapedWildcards(t *testing.T) {
 func TestDuckDBEngine_AggregateByRecipientName(t *testing.T) {
 	engine := newParquetEngine(t)
 	ctx := context.Background()
-	results, err := engine.AggregateByRecipientName(ctx, DefaultAggregateOptions())
+	results, err := engine.Aggregate(ctx, ViewRecipientNames, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateByRecipientName: %v", err)
 	}
@@ -1964,7 +1964,7 @@ func TestDuckDBEngine_AggregateByRecipientName_EmptyStringFallback(t *testing.T)
 		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`))
 
 	ctx := context.Background()
-	results, err := engine.AggregateByRecipientName(ctx, DefaultAggregateOptions())
+	results, err := engine.Aggregate(ctx, ViewRecipientNames, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateByRecipientName: %v", err)
 	}

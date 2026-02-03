@@ -552,39 +552,9 @@ func (e *DuckDBEngine) aggregateByView(ctx context.Context, view ViewType, opts 
 	return e.runAggregation(ctx, def, where, args, opts)
 }
 
-// AggregateBySender groups messages by sender email.
-func (e *DuckDBEngine) AggregateBySender(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	return e.aggregateByView(ctx, ViewSenders, opts)
-}
-
-// AggregateBySenderName groups messages by sender display name.
-func (e *DuckDBEngine) AggregateBySenderName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	return e.aggregateByView(ctx, ViewSenderNames, opts)
-}
-
-// AggregateByRecipient groups messages by recipient email.
-func (e *DuckDBEngine) AggregateByRecipient(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	return e.aggregateByView(ctx, ViewRecipients, opts)
-}
-
-// AggregateByRecipientName groups messages by recipient display name.
-func (e *DuckDBEngine) AggregateByRecipientName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	return e.aggregateByView(ctx, ViewRecipientNames, opts)
-}
-
-// AggregateByDomain groups messages by sender domain.
-func (e *DuckDBEngine) AggregateByDomain(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	return e.aggregateByView(ctx, ViewDomains, opts)
-}
-
-// AggregateByLabel groups messages by label.
-func (e *DuckDBEngine) AggregateByLabel(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	return e.aggregateByView(ctx, ViewLabels, opts)
-}
-
-// AggregateByTime groups messages by time period.
-func (e *DuckDBEngine) AggregateByTime(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	return e.aggregateByView(ctx, ViewTime, opts)
+// Aggregate performs grouping based on the provided ViewType.
+func (e *DuckDBEngine) Aggregate(ctx context.Context, groupBy ViewType, opts AggregateOptions) ([]AggregateRow, error) {
+	return e.aggregateByView(ctx, groupBy, opts)
 }
 
 // buildFilterConditions builds WHERE conditions from a MessageFilter.

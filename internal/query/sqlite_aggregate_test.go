@@ -1,7 +1,6 @@
 package query
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -12,6 +11,7 @@ func TestAggregations(t *testing.T) {
 	type testCase struct {
 		name    string
 		aggName string
+		view    ViewType
 		want    []aggExpectation
 	}
 
@@ -19,31 +19,37 @@ func TestAggregations(t *testing.T) {
 		{
 			name:    "BySender",
 			aggName: "AggregateBySender",
+			view:    ViewSenders,
 			want:    []aggExpectation{{"alice@example.com", 3}, {"bob@company.org", 2}},
 		},
 		{
 			name:    "BySenderName",
 			aggName: "AggregateBySenderName",
+			view:    ViewSenderNames,
 			want:    []aggExpectation{{"Alice Smith", 3}, {"Bob Jones", 2}},
 		},
 		{
 			name:    "ByRecipient",
 			aggName: "AggregateByRecipient",
+			view:    ViewRecipients,
 			want:    []aggExpectation{{"bob@company.org", 3}, {"alice@example.com", 2}, {"carol@example.com", 1}},
 		},
 		{
 			name:    "ByDomain",
 			aggName: "AggregateByDomain",
+			view:    ViewDomains,
 			want:    []aggExpectation{{"example.com", 3}, {"company.org", 2}},
 		},
 		{
 			name:    "ByLabel",
 			aggName: "AggregateByLabel",
+			view:    ViewLabels,
 			want:    []aggExpectation{{"INBOX", 5}, {"Work", 2}, {"IMPORTANT", 1}},
 		},
 		{
 			name:    "ByRecipientName",
 			aggName: "AggregateByRecipientName",
+			view:    ViewRecipientNames,
 			want:    []aggExpectation{{"Bob Jones", 3}, {"Alice Smith", 2}, {"Carol White", 1}},
 		},
 	}
@@ -51,19 +57,7 @@ func TestAggregations(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newTestEnv(t)
-			aggFuncs := map[string]func(context.Context, AggregateOptions) ([]AggregateRow, error){
-				"AggregateBySender":        env.Engine.AggregateBySender,
-				"AggregateBySenderName":    env.Engine.AggregateBySenderName,
-				"AggregateByRecipient":     env.Engine.AggregateByRecipient,
-				"AggregateByDomain":        env.Engine.AggregateByDomain,
-				"AggregateByLabel":         env.Engine.AggregateByLabel,
-				"AggregateByRecipientName": env.Engine.AggregateByRecipientName,
-			}
-			aggFunc, ok := aggFuncs[tc.aggName]
-			if !ok {
-				t.Fatalf("unknown aggName %q", tc.aggName)
-			}
-			rows, err := aggFunc(env.Ctx, DefaultAggregateOptions())
+			rows, err := env.Engine.Aggregate(env.Ctx, tc.view, DefaultAggregateOptions())
 			if err != nil {
 				t.Fatalf("%s: %v", tc.aggName, err)
 			}
@@ -78,7 +72,7 @@ func TestAggregateBySenderName_FallbackToEmail(t *testing.T) {
 	noNameID := env.AddParticipant(dbtest.ParticipantOpts{Email: dbtest.StrPtr("noname@test.com"), DisplayName: nil, Domain: "test.com"})
 	env.AddMessage(dbtest.MessageOpts{Subject: "No Name Test", SentAt: "2024-05-01 10:00:00", FromID: noNameID})
 
-	rows, err := env.Engine.AggregateBySenderName(env.Ctx, DefaultAggregateOptions())
+	rows, err := env.Engine.Aggregate(env.Ctx, ViewSenderNames, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateBySenderName: %v", err)
 	}
@@ -98,7 +92,7 @@ func TestAggregateBySenderName_EmptyStringFallback(t *testing.T) {
 	env.AddMessage(dbtest.MessageOpts{Subject: "Empty Name", SentAt: "2024-05-01 10:00:00", FromID: emptyID})
 	env.AddMessage(dbtest.MessageOpts{Subject: "Spaces Name", SentAt: "2024-05-02 10:00:00", FromID: spacesID})
 
-	rows, err := env.Engine.AggregateBySenderName(env.Ctx, DefaultAggregateOptions())
+	rows, err := env.Engine.Aggregate(env.Ctx, ViewSenderNames, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateBySenderName: %v", err)
 	}
@@ -127,7 +121,7 @@ func TestAggregateByTime(t *testing.T) {
 	opts := DefaultAggregateOptions()
 	opts.TimeGranularity = TimeMonth
 
-	rows, err := env.Engine.AggregateByTime(env.Ctx, opts)
+	rows, err := env.Engine.Aggregate(env.Ctx, ViewTime, opts)
 	if err != nil {
 		t.Fatalf("AggregateByTime: %v", err)
 	}
@@ -159,7 +153,7 @@ func TestAggregateWithDateFilter(t *testing.T) {
 	after := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 	opts.After = &after
 
-	rows, err := env.Engine.AggregateBySender(env.Ctx, opts)
+	rows, err := env.Engine.Aggregate(env.Ctx, ViewSenders, opts)
 	if err != nil {
 		t.Fatalf("AggregateBySender with date filter: %v", err)
 	}
@@ -179,7 +173,7 @@ func TestSortingOptions(t *testing.T) {
 	opts := DefaultAggregateOptions()
 	opts.SortField = SortBySize
 
-	rows, err := env.Engine.AggregateBySender(env.Ctx, opts)
+	rows, err := env.Engine.Aggregate(env.Ctx, ViewSenders, opts)
 	if err != nil {
 		t.Fatalf("AggregateBySender: %v", err)
 	}
@@ -190,7 +184,7 @@ func TestSortingOptions(t *testing.T) {
 
 	opts.SortDirection = SortAsc
 
-	rows, err = env.Engine.AggregateBySender(env.Ctx, opts)
+	rows, err = env.Engine.Aggregate(env.Ctx, ViewSenders, opts)
 	if err != nil {
 		t.Fatalf("AggregateBySender: %v", err)
 	}
@@ -204,7 +198,7 @@ func TestWithAttachmentsOnlyAggregate(t *testing.T) {
 	env := newTestEnv(t)
 
 	opts := DefaultAggregateOptions()
-	allRows, err := env.Engine.AggregateBySender(env.Ctx, opts)
+	allRows, err := env.Engine.Aggregate(env.Ctx, ViewSenders, opts)
 	if err != nil {
 		t.Fatalf("AggregateBySender: %v", err)
 	}
@@ -215,7 +209,7 @@ func TestWithAttachmentsOnlyAggregate(t *testing.T) {
 	})
 
 	opts.WithAttachmentsOnly = true
-	attRows, err := env.Engine.AggregateBySender(env.Ctx, opts)
+	attRows, err := env.Engine.Aggregate(env.Ctx, ViewSenders, opts)
 	if err != nil {
 		t.Fatalf("AggregateBySender with attachment filter: %v", err)
 	}
@@ -384,7 +378,7 @@ func TestAggregateByRecipientName_FallbackToEmail(t *testing.T) {
 	noNameID := env.AddParticipant(dbtest.ParticipantOpts{Email: dbtest.StrPtr("noname@test.com"), DisplayName: nil, Domain: "test.com"})
 	env.AddMessage(dbtest.MessageOpts{Subject: "No Name Recipient", SentAt: "2024-05-01 10:00:00", FromID: 1, ToIDs: []int64{noNameID}})
 
-	rows, err := env.Engine.AggregateByRecipientName(env.Ctx, DefaultAggregateOptions())
+	rows, err := env.Engine.Aggregate(env.Ctx, ViewRecipientNames, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateByRecipientName: %v", err)
 	}
@@ -400,7 +394,7 @@ func TestAggregateByRecipientName_EmptyStringFallback(t *testing.T) {
 	env.AddMessage(dbtest.MessageOpts{Subject: "Empty Rcpt Name", SentAt: "2024-05-01 10:00:00", FromID: 1, ToIDs: []int64{emptyID}})
 	env.AddMessage(dbtest.MessageOpts{Subject: "Spaces Rcpt Name", SentAt: "2024-05-02 10:00:00", FromID: 1, CcIDs: []int64{spacesID}})
 
-	rows, err := env.Engine.AggregateByRecipientName(env.Ctx, DefaultAggregateOptions())
+	rows, err := env.Engine.Aggregate(env.Ctx, ViewRecipientNames, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("AggregateByRecipientName: %v", err)
 	}

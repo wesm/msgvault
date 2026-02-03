@@ -11,14 +11,8 @@ import (
 // - SQLiteEngine: Direct SQLite queries (flexible, moderate performance)
 // - ParquetEngine: Arrow/Parquet queries (fast aggregates, read-only)
 type Engine interface {
-	// Aggregate queries - return rows grouped by key
-	AggregateBySender(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
-	AggregateBySenderName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
-	AggregateByRecipient(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
-	AggregateByRecipientName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
-	AggregateByDomain(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
-	AggregateByLabel(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
-	AggregateByTime(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
+	// Aggregate performs grouping based on the provided ViewType (Sender, Domain, etc.)
+	Aggregate(ctx context.Context, groupBy ViewType, opts AggregateOptions) ([]AggregateRow, error)
 
 	// SubAggregate performs aggregation on a filtered subset of messages.
 	// This is used for sub-grouping after drill-down, e.g., drilling into
@@ -68,29 +62,4 @@ type TotalStats struct {
 	AttachmentSize  int64
 	LabelCount      int64
 	AccountCount    int64
-}
-
-// AggregateFunc is a helper type for selecting aggregate methods.
-type AggregateFunc func(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
-
-// GetAggregateFunc returns the appropriate aggregate function for a view type.
-func (e *SQLiteEngine) GetAggregateFunc(viewType ViewType) AggregateFunc {
-	switch viewType {
-	case ViewSenders:
-		return e.AggregateBySender
-	case ViewSenderNames:
-		return e.AggregateBySenderName
-	case ViewRecipients:
-		return e.AggregateByRecipient
-	case ViewRecipientNames:
-		return e.AggregateByRecipientName
-	case ViewDomains:
-		return e.AggregateByDomain
-	case ViewLabels:
-		return e.AggregateByLabel
-	case ViewTime:
-		return e.AggregateByTime
-	default:
-		return e.AggregateBySender
-	}
 }

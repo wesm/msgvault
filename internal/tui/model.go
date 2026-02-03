@@ -298,22 +298,7 @@ func (m Model) loadData() tea.Cmd {
 		if m.level == levelDrillDown {
 			rows, err = m.engine.SubAggregate(ctx, m.drillFilter, m.viewType, opts)
 		} else {
-			switch m.viewType {
-			case query.ViewSenders:
-				rows, err = m.engine.AggregateBySender(ctx, opts)
-			case query.ViewSenderNames:
-				rows, err = m.engine.AggregateBySenderName(ctx, opts)
-			case query.ViewRecipients:
-				rows, err = m.engine.AggregateByRecipient(ctx, opts)
-			case query.ViewRecipientNames:
-				rows, err = m.engine.AggregateByRecipientName(ctx, opts)
-			case query.ViewDomains:
-				rows, err = m.engine.AggregateByDomain(ctx, opts)
-			case query.ViewLabels:
-				rows, err = m.engine.AggregateByLabel(ctx, opts)
-			case query.ViewTime:
-				rows, err = m.engine.AggregateByTime(ctx, opts)
-			}
+			rows, err = m.engine.Aggregate(ctx, m.viewType, opts)
 		}
 
 		// When search is active, compute distinct message stats separately.

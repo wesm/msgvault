@@ -38,7 +38,7 @@ Examples:
 		engine := query.NewSQLiteEngine(s.DB())
 
 		// Execute aggregation
-		results, err := engine.AggregateByLabel(cmd.Context(), opts)
+		results, err := engine.Aggregate(cmd.Context(), query.ViewLabels, opts)
 		if err != nil {
 			return fmt.Errorf("aggregate by label: %w", err)
 		}

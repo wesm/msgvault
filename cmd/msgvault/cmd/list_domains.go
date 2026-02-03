@@ -38,7 +38,7 @@ Examples:
 		engine := query.NewSQLiteEngine(s.DB())
 
 		// Execute aggregation
-		results, err := engine.AggregateByDomain(cmd.Context(), opts)
+		results, err := engine.Aggregate(cmd.Context(), query.ViewDomains, opts)
 		if err != nil {
 			return fmt.Errorf("aggregate by domain: %w", err)
 		}

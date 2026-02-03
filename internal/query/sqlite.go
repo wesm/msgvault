@@ -546,8 +546,30 @@ func (e *SQLiteEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 	return e.executeAggregateQuery(ctx, query, args)
 }
 
-// AggregateBySender groups messages by sender email.
-func (e *SQLiteEngine) AggregateBySender(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
+// Aggregate performs grouping based on the provided ViewType.
+func (e *SQLiteEngine) Aggregate(ctx context.Context, groupBy ViewType, opts AggregateOptions) ([]AggregateRow, error) {
+	switch groupBy {
+	case ViewSenders:
+		return e.aggregateBySender(ctx, opts)
+	case ViewSenderNames:
+		return e.aggregateBySenderName(ctx, opts)
+	case ViewRecipients:
+		return e.aggregateByRecipient(ctx, opts)
+	case ViewRecipientNames:
+		return e.aggregateByRecipientName(ctx, opts)
+	case ViewDomains:
+		return e.aggregateByDomain(ctx, opts)
+	case ViewLabels:
+		return e.aggregateByLabel(ctx, opts)
+	case ViewTime:
+		return e.aggregateByTime(ctx, opts)
+	default:
+		return nil, fmt.Errorf("unsupported view type: %v", groupBy)
+	}
+}
+
+// aggregateBySender groups messages by sender email.
+func (e *SQLiteEngine) aggregateBySender(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
 	where, args := buildWhereClause(opts, "m")
 
 	limit := opts.Limit
@@ -588,7 +610,7 @@ func (e *SQLiteEngine) AggregateBySender(ctx context.Context, opts AggregateOpti
 // AggregateBySenderName groups messages by sender display name.
 // Uses COALESCE(display_name, email_address) so senders without a display name
 // fall back to their email address.
-func (e *SQLiteEngine) AggregateBySenderName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
+func (e *SQLiteEngine) aggregateBySenderName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
 	where, args := buildWhereClause(opts, "m")
 
 	limit := opts.Limit
@@ -626,7 +648,7 @@ func (e *SQLiteEngine) AggregateBySenderName(ctx context.Context, opts Aggregate
 }
 
 // AggregateByRecipient groups messages by recipient email (to/cc/bcc).
-func (e *SQLiteEngine) AggregateByRecipient(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
+func (e *SQLiteEngine) aggregateByRecipient(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
 	where, args := buildWhereClause(opts, "m")
 
 	limit := opts.Limit
@@ -667,7 +689,7 @@ func (e *SQLiteEngine) AggregateByRecipient(ctx context.Context, opts AggregateO
 // AggregateByRecipientName groups messages by recipient display name.
 // Uses COALESCE(display_name, email_address) so recipients without a display name
 // fall back to their email address.
-func (e *SQLiteEngine) AggregateByRecipientName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
+func (e *SQLiteEngine) aggregateByRecipientName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
 	where, args := buildWhereClause(opts, "m")
 
 	limit := opts.Limit
@@ -705,7 +727,7 @@ func (e *SQLiteEngine) AggregateByRecipientName(ctx context.Context, opts Aggreg
 }
 
 // AggregateByDomain groups messages by sender domain.
-func (e *SQLiteEngine) AggregateByDomain(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
+func (e *SQLiteEngine) aggregateByDomain(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
 	where, args := buildWhereClause(opts, "m")
 
 	limit := opts.Limit
@@ -744,7 +766,7 @@ func (e *SQLiteEngine) AggregateByDomain(ctx context.Context, opts AggregateOpti
 }
 
 // AggregateByLabel groups messages by label.
-func (e *SQLiteEngine) AggregateByLabel(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
+func (e *SQLiteEngine) aggregateByLabel(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
 	where, args := buildWhereClause(opts, "m")
 
 	limit := opts.Limit
@@ -783,7 +805,7 @@ func (e *SQLiteEngine) AggregateByLabel(ctx context.Context, opts AggregateOptio
 }
 
 // AggregateByTime groups messages by time period.
-func (e *SQLiteEngine) AggregateByTime(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
+func (e *SQLiteEngine) aggregateByTime(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
 	where, args := buildWhereClause(opts, "m")
 
 	limit := opts.Limit

@@ -252,23 +252,20 @@ func (h *handlers) aggregate(ctx context.Context, req mcp.CallToolRequest) (*mcp
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	var rows []query.AggregateRow
+	viewTypeMap := map[string]query.ViewType{
+		"sender":    query.ViewSenders,
+		"recipient": query.ViewRecipients,
+		"domain":    query.ViewDomains,
+		"label":     query.ViewLabels,
+		"time":      query.ViewTime,
+	}
 
-	switch groupBy {
-	case "sender":
-		rows, err = h.engine.AggregateBySender(ctx, opts)
-	case "recipient":
-		rows, err = h.engine.AggregateByRecipient(ctx, opts)
-	case "domain":
-		rows, err = h.engine.AggregateByDomain(ctx, opts)
-	case "label":
-		rows, err = h.engine.AggregateByLabel(ctx, opts)
-	case "time":
-		rows, err = h.engine.AggregateByTime(ctx, opts)
-	default:
+	viewType, ok := viewTypeMap[groupBy]
+	if !ok {
 		return mcp.NewToolResultError(fmt.Sprintf("invalid group_by: %s", groupBy)), nil
 	}
 
+	rows, err := h.engine.Aggregate(ctx, viewType, opts)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("aggregate failed: %v", err)), nil
 	}
