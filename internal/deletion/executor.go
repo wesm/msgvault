@@ -186,7 +186,9 @@ func (e *Executor) Execute(ctx context.Context, manifestID string, opts *Execute
 				manifest.Execution.Succeeded = succeeded
 				manifest.Execution.Failed = failed
 				manifest.Execution.FailedIDs = failedIDs
-				_ = manifest.Save(path)
+				if saveErr := manifest.Save(path); saveErr != nil {
+					e.logger.Warn("failed to save checkpoint", "error", saveErr)
+				}
 				return fmt.Errorf("delete message: %w", err)
 			} else {
 				e.logger.Warn("failed to delete message", "gmail_id", gmailID, "error", err)
@@ -353,7 +355,9 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 				manifest.Execution.LastProcessedIndex = i
 				manifest.Execution.Succeeded = succeeded
 				manifest.Execution.Failed = failed
-				_ = manifest.Save(path)
+				if saveErr := manifest.Save(path); saveErr != nil {
+					e.logger.Warn("failed to save checkpoint", "error", saveErr)
+				}
 				return fmt.Errorf("batch delete: %w", err)
 			}
 			e.logger.Warn("batch delete failed, falling back to individual deletes", "start_index", i, "error", err)
@@ -371,7 +375,9 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 						manifest.Execution.LastProcessedIndex = i + j
 						manifest.Execution.Succeeded = succeeded
 						manifest.Execution.Failed = failed
-						_ = manifest.Save(path)
+						if saveErr := manifest.Save(path); saveErr != nil {
+							e.logger.Warn("failed to save checkpoint", "error", saveErr)
+						}
 						return fmt.Errorf("delete message: %w", delErr)
 					} else {
 						failed++

@@ -363,10 +363,10 @@ Examples:
 		// so we only trigger proactive escalation when we positively know the
 		// token lacks the required scope.
 		if needsBatchDelete && !oauthMgr.HasScope(account, "https://mail.google.com/") {
-			// Check if this is a legacy token (no scope metadata) vs one that
-			// definitively lacks the scope
-			hasAnyScope := oauthMgr.HasScope(account, "https://www.googleapis.com/auth/gmail.readonly")
-			if hasAnyScope {
+			// Only trigger proactive escalation when we have scope metadata.
+			// Legacy tokens (saved before scope tracking) fall through to
+			// reactive detection on the first API call.
+			if oauthMgr.HasScopeMetadata(account) {
 				// Token has scope metadata but lacks deletion scope — escalate now
 				if err := promptScopeEscalation(ctx, oauthMgr, account, needsBatchDelete); err != nil {
 					if errors.Is(err, errUserCanceled) {
@@ -432,8 +432,10 @@ Examples:
 				// Check if this is a scope error - offer to re-authorize
 				if isInsufficientScopeError(execErr) {
 					if err := promptScopeEscalation(ctx, oauthMgr, account, !useTrash); err != nil {
-						// User canceled or auth failed — either way, exit cleanly
-						return nil
+						if errors.Is(err, errUserCanceled) {
+							return nil
+						}
+						return err
 					}
 					fmt.Println("Run delete-staged again to continue.")
 					return nil

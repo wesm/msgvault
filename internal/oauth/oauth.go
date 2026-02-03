@@ -322,6 +322,16 @@ func (m *Manager) loadTokenFile(email string) (*tokenFile, error) {
 // HasScope checks if the stored token for the given email was authorized
 // with the specified scope. Returns false if the token doesn't exist or
 // doesn't have scope metadata (legacy tokens saved before scope tracking).
+// HasScopeMetadata returns true if the token file for this account has any
+// scope metadata stored. Legacy tokens (saved before scope tracking) return false.
+func (m *Manager) HasScopeMetadata(email string) bool {
+	tf, err := m.loadTokenFile(email)
+	if err != nil {
+		return false
+	}
+	return len(tf.Scopes) > 0
+}
+
 func (m *Manager) HasScope(email string, scope string) bool {
 	tf, err := m.loadTokenFile(email)
 	if err != nil {

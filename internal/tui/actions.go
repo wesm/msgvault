@@ -63,7 +63,9 @@ func (c *ActionController) StageForDeletion(aggregateSelection map[string]bool, 
 			if drillFilter != nil {
 				filter = *drillFilter
 			}
-			filter.SourceID = accountFilter
+			if accountFilter != nil {
+				filter.SourceID = accountFilter
+			}
 
 			switch aggregateViewType {
 			case query.ViewSenders:
