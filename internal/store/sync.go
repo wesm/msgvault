@@ -6,13 +6,84 @@ import (
 	"time"
 )
 
+const (
+	dbTimeLayout = "2006-01-02 15:04:05"
+
+	SyncStatusRunning   = "running"
+	SyncStatusCompleted = "completed"
+	SyncStatusFailed    = "failed"
+)
+
+// scanner is satisfied by both *sql.Row and *sql.Rows.
+type scanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func parseNullTime(ns sql.NullString) sql.NullTime {
+	if !ns.Valid {
+		return sql.NullTime{}
+	}
+	t, err := time.Parse(dbTimeLayout, ns.String)
+	if err != nil {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: t, Valid: true}
+}
+
+func parseTime(ns sql.NullString) time.Time {
+	if !ns.Valid {
+		return time.Time{}
+	}
+	t, _ := time.Parse(dbTimeLayout, ns.String)
+	return t
+}
+
+func scanSource(sc scanner) (*Source, error) {
+	var source Source
+	var lastSyncAt, createdAt, updatedAt sql.NullString
+
+	err := sc.Scan(
+		&source.ID, &source.SourceType, &source.Identifier, &source.DisplayName,
+		&source.GoogleUserID, &lastSyncAt, &source.SyncCursor, &createdAt, &updatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	source.LastSyncAt = parseNullTime(lastSyncAt)
+	source.CreatedAt = parseTime(createdAt)
+	source.UpdatedAt = parseTime(updatedAt)
+
+	return &source, nil
+}
+
+func scanSyncRun(sc scanner) (*SyncRun, error) {
+	var run SyncRun
+	var startedAt string
+	var completedAt sql.NullString
+
+	err := sc.Scan(
+		&run.ID, &run.SourceID, &startedAt, &completedAt, &run.Status,
+		&run.MessagesProcessed, &run.MessagesAdded, &run.MessagesUpdated, &run.ErrorsCount,
+		&run.ErrorMessage, &run.CursorBefore, &run.CursorAfter,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	run.StartedAt, _ = time.Parse(dbTimeLayout, startedAt)
+	run.CompletedAt = parseNullTime(completedAt)
+
+	return &run, nil
+}
+
 // SyncRun represents a sync operation in progress or completed.
 type SyncRun struct {
 	ID                int64
 	SourceID          int64
 	StartedAt         time.Time
 	CompletedAt       sql.NullTime
-	Status            string // "running", "completed", "failed"
+	Status            string // SyncStatusRunning, SyncStatusCompleted, SyncStatusFailed
 	MessagesProcessed int64
 	MessagesAdded     int64
 	MessagesUpdated   int64
@@ -107,29 +178,11 @@ func (s *Store) GetActiveSync(sourceID int64) (*SyncRun, error) {
 		LIMIT 1
 	`, sourceID)
 
-	var run SyncRun
-	var startedAt string
-	var completedAt sql.NullString
-
-	err := row.Scan(
-		&run.ID, &run.SourceID, &startedAt, &completedAt, &run.Status,
-		&run.MessagesProcessed, &run.MessagesAdded, &run.MessagesUpdated, &run.ErrorsCount,
-		&run.ErrorMessage, &run.CursorBefore, &run.CursorAfter,
-	)
+	run, err := scanSyncRun(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
-	if err != nil {
-		return nil, err
-	}
-
-	run.StartedAt, _ = time.Parse("2006-01-02 15:04:05", startedAt)
-	if completedAt.Valid {
-		t, _ := time.Parse("2006-01-02 15:04:05", completedAt.String)
-		run.CompletedAt = sql.NullTime{Time: t, Valid: true}
-	}
-
-	return &run, nil
+	return run, err
 }
 
 // GetLastSuccessfulSync returns the most recent successful sync for a source.
@@ -144,29 +197,11 @@ func (s *Store) GetLastSuccessfulSync(sourceID int64) (*SyncRun, error) {
 		LIMIT 1
 	`, sourceID)
 
-	var run SyncRun
-	var startedAt string
-	var completedAt sql.NullString
-
-	err := row.Scan(
-		&run.ID, &run.SourceID, &startedAt, &completedAt, &run.Status,
-		&run.MessagesProcessed, &run.MessagesAdded, &run.MessagesUpdated, &run.ErrorsCount,
-		&run.ErrorMessage, &run.CursorBefore, &run.CursorAfter,
-	)
+	run, err := scanSyncRun(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
-	if err != nil {
-		return nil, err
-	}
-
-	run.StartedAt, _ = time.Parse("2006-01-02 15:04:05", startedAt)
-	if completedAt.Valid {
-		t, _ := time.Parse("2006-01-02 15:04:05", completedAt.String)
-		run.CompletedAt = sql.NullTime{Time: t, Valid: true}
-	}
-
-	return &run, nil
+	return run, err
 }
 
 // Source represents a Gmail account or other message source.
@@ -192,26 +227,9 @@ func (s *Store) GetOrCreateSource(sourceType, identifier string) (*Source, error
 		WHERE source_type = ? AND identifier = ?
 	`, sourceType, identifier)
 
-	var source Source
-	var lastSyncAt, createdAt, updatedAt sql.NullString
-
-	err := row.Scan(
-		&source.ID, &source.SourceType, &source.Identifier, &source.DisplayName,
-		&source.GoogleUserID, &lastSyncAt, &source.SyncCursor, &createdAt, &updatedAt,
-	)
+	source, err := scanSource(row)
 	if err == nil {
-		// Parse dates
-		if lastSyncAt.Valid {
-			t, _ := time.Parse("2006-01-02 15:04:05", lastSyncAt.String)
-			source.LastSyncAt = sql.NullTime{Time: t, Valid: true}
-		}
-		if createdAt.Valid {
-			source.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt.String)
-		}
-		if updatedAt.Valid {
-			source.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt.String)
-		}
-		return &source, nil
+		return source, nil
 	}
 	if err != sql.ErrNoRows {
 		return nil, err
@@ -226,13 +244,15 @@ func (s *Store) GetOrCreateSource(sourceType, identifier string) (*Source, error
 		return nil, fmt.Errorf("insert source: %w", err)
 	}
 
-	source.ID, _ = result.LastInsertId()
-	source.SourceType = sourceType
-	source.Identifier = identifier
-	source.CreatedAt = time.Now()
-	source.UpdatedAt = time.Now()
+	newSource := &Source{
+		SourceType: sourceType,
+		Identifier: identifier,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+	newSource.ID, _ = result.LastInsertId()
 
-	return &source, nil
+	return newSource, nil
 }
 
 // UpdateSourceSyncCursor updates the sync cursor (historyId) for a source.
@@ -274,29 +294,11 @@ func (s *Store) ListSources(sourceType string) ([]*Source, error) {
 
 	var sources []*Source
 	for rows.Next() {
-		var source Source
-		var lastSyncAt, createdAt, updatedAt sql.NullString
-
-		err := rows.Scan(
-			&source.ID, &source.SourceType, &source.Identifier, &source.DisplayName,
-			&source.GoogleUserID, &lastSyncAt, &source.SyncCursor, &createdAt, &updatedAt,
-		)
+		src, err := scanSource(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scan source: %w", err)
 		}
-
-		if lastSyncAt.Valid {
-			t, _ := time.Parse("2006-01-02 15:04:05", lastSyncAt.String)
-			source.LastSyncAt = sql.NullTime{Time: t, Valid: true}
-		}
-		if createdAt.Valid {
-			source.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt.String)
-		}
-		if updatedAt.Valid {
-			source.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt.String)
-		}
-
-		sources = append(sources, &source)
+		sources = append(sources, src)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate sources: %w", err)
@@ -314,13 +316,7 @@ func (s *Store) GetSourceByIdentifier(identifier string) (*Source, error) {
 		WHERE identifier = ?
 	`, identifier)
 
-	var source Source
-	var lastSyncAt, createdAt, updatedAt sql.NullString
-
-	err := row.Scan(
-		&source.ID, &source.SourceType, &source.Identifier, &source.DisplayName,
-		&source.GoogleUserID, &lastSyncAt, &source.SyncCursor, &createdAt, &updatedAt,
-	)
+	source, err := scanSource(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -328,17 +324,5 @@ func (s *Store) GetSourceByIdentifier(identifier string) (*Source, error) {
 		return nil, err
 	}
 
-	// Parse dates
-	if lastSyncAt.Valid {
-		t, _ := time.Parse("2006-01-02 15:04:05", lastSyncAt.String)
-		source.LastSyncAt = sql.NullTime{Time: t, Valid: true}
-	}
-	if createdAt.Valid {
-		source.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt.String)
-	}
-	if updatedAt.Valid {
-		source.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt.String)
-	}
-
-	return &source, nil
+	return source, nil
 }
