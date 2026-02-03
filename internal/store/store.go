@@ -65,6 +65,61 @@ func (s *Store) DB() *sql.DB {
 	return s.db
 }
 
+// withTx executes fn within a database transaction. If fn returns an error,
+// the transaction is rolled back; otherwise it is committed.
+func (s *Store) withTx(fn func(tx *sql.Tx) error) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+// queryInChunks executes a parameterized IN-query in chunks to stay within
+// SQLite's parameter limit. queryTemplate must contain a single %s placeholder
+// for the comma-separated "?" list. The prefix args are prepended before each
+// chunk's args (e.g., a source_id filter).
+func queryInChunks[T any](db *sql.DB, ids []T, prefixArgs []interface{}, queryTemplate string, fn func(*sql.Rows) error) error {
+	const chunkSize = 500
+	for i := 0; i < len(ids); i += chunkSize {
+		end := i + chunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[i:end]
+
+		placeholders := make([]string, len(chunk))
+		args := make([]interface{}, 0, len(prefixArgs)+len(chunk))
+		args = append(args, prefixArgs...)
+		for j, id := range chunk {
+			placeholders[j] = "?"
+			args = append(args, id)
+		}
+
+		query := fmt.Sprintf(queryTemplate, strings.Join(placeholders, ","))
+		rows, err := db.Query(query, args...)
+		if err != nil {
+			return err
+		}
+
+		for rows.Next() {
+			if err := fn(rows); err != nil {
+				rows.Close()
+				return err
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Rebind converts a query with ? placeholders to the appropriate format
 // for the current database driver. Currently SQLite-only (no conversion needed).
 // When PostgreSQL support is added, this will convert ? to $1, $2, etc.

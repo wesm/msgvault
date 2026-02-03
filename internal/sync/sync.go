@@ -409,12 +409,16 @@ func (s *Syncer) syncLabels(ctx context.Context, sourceID int64) (map[string]int
 		return nil, err
 	}
 
-	labelNames := make(map[string]string)
+	labelInfos := make(map[string]store.LabelInfo)
 	for _, l := range labels {
-		labelNames[l.ID] = l.Name
+		labelType := "user"
+		if store.IsSystemLabel(l.ID) {
+			labelType = "system"
+		}
+		labelInfos[l.ID] = store.LabelInfo{Name: l.Name, Type: labelType}
 	}
 
-	return s.store.EnsureLabelsBatch(sourceID, labelNames)
+	return s.store.EnsureLabelsBatch(sourceID, labelInfos)
 }
 
 // ingestMessage parses and stores a single message.

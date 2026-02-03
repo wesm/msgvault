@@ -290,10 +290,10 @@ func TestStore_Label(t *testing.T) {
 func TestStore_EnsureLabelsBatch(t *testing.T) {
 	f := storetest.New(t)
 
-	labels := map[string]string{
-		"INBOX":       "Inbox",
-		"SENT":        "Sent",
-		"Label_12345": "My Label",
+	labels := map[string]store.LabelInfo{
+		"INBOX":       {Name: "Inbox", Type: "system"},
+		"SENT":        {Name: "Sent", Type: "system"},
+		"Label_12345": {Name: "My Label", Type: "user"},
 	}
 
 	result, err := f.Store.EnsureLabelsBatch(f.Source.ID, labels)
