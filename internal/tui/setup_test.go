@@ -187,8 +187,9 @@ func (b *TestModelBuilder) WithAccountFilter(id *int64) *TestModelBuilder {
 
 // selectedAggregates holds the aggregate selection state for the builder.
 type selectedAggregates struct {
-	keys     []string
-	viewType query.ViewType
+	keys        []string
+	viewType    query.ViewType
+	viewTypeSet bool // tracks whether viewType was explicitly set
 }
 
 // WithSelectedAggregates pre-populates aggregate selection with the given keys.
@@ -208,6 +209,7 @@ func (b *TestModelBuilder) WithSelectedAggregatesViewType(vt query.ViewType) *Te
 		b.selectedAggregates = &selectedAggregates{}
 	}
 	b.selectedAggregates.viewType = vt
+	b.selectedAggregates.viewTypeSet = true
 	return b
 }
 
@@ -320,7 +322,7 @@ func (b *TestModelBuilder) configureState(m *Model) {
 		for _, k := range b.selectedAggregates.keys {
 			m.selection.aggregateKeys[k] = true
 		}
-		if b.selectedAggregates.viewType != 0 {
+		if b.selectedAggregates.viewTypeSet {
 			m.selection.aggregateViewType = b.selectedAggregates.viewType
 		} else {
 			m.selection.aggregateViewType = m.viewType
