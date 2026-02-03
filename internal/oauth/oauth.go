@@ -363,19 +363,26 @@ func NewManagerWithScopes(clientSecretsPath, tokensDir string, logger *slog.Logg
 }
 
 // parseClientSecrets parses Google OAuth client secrets JSON.
-// Requires "Desktop application" credentials with redirect_uris.
+// Requires credentials with redirect_uris (Desktop app or Web app).
 // TV/device clients are not supported (device flow doesn't work with Gmail).
 func parseClientSecrets(data []byte, scopes []string) (*oauth2.Config, error) {
 	config, err := google.ConfigFromJSON(data, scopes...)
 	if err != nil {
-		// Check if it's a TV/device client (missing redirect_uris)
+		// Check if it's a client missing redirect_uris (TV/device or misconfigured)
 		var secrets struct {
 			Installed *struct {
 				RedirectURIs []string `json:"redirect_uris"`
 			} `json:"installed"`
+			Web *struct {
+				RedirectURIs []string `json:"redirect_uris"`
+			} `json:"web"`
 		}
-		if json.Unmarshal(data, &secrets) == nil && secrets.Installed != nil && len(secrets.Installed.RedirectURIs) == 0 {
-			return nil, fmt.Errorf("TV/device OAuth clients are not supported (Gmail doesn't work with device flow). Please create a 'Desktop application' OAuth client in Google Cloud Console")
+		if json.Unmarshal(data, &secrets) == nil {
+			missingRedirects := (secrets.Installed != nil && len(secrets.Installed.RedirectURIs) == 0) ||
+				(secrets.Web != nil && len(secrets.Web.RedirectURIs) == 0)
+			if missingRedirects {
+				return nil, fmt.Errorf("OAuth client is missing redirect_uris (TV/device clients are not supported - Gmail doesn't work with device flow). Please create a 'Desktop application' OAuth client in Google Cloud Console")
+			}
 		}
 		return nil, err
 	}

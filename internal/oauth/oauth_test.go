@@ -261,9 +261,30 @@ func TestParseClientSecrets(t *testing.T) {
 		}
 	}`
 
-	// TV/device client (no redirect_uris)
+	// Valid Web application credentials
+	validWeb := `{
+		"web": {
+			"client_id": "123.apps.googleusercontent.com",
+			"client_secret": "secret",
+			"auth_uri": "https://accounts.google.com/o/oauth2/auth",
+			"token_uri": "https://oauth2.googleapis.com/token",
+			"redirect_uris": ["http://localhost:8080/callback"]
+		}
+	}`
+
+	// TV/device client (no redirect_uris in installed)
 	tvClient := `{
 		"installed": {
+			"client_id": "123.apps.googleusercontent.com",
+			"client_secret": "secret",
+			"auth_uri": "https://accounts.google.com/o/oauth2/auth",
+			"token_uri": "https://oauth2.googleapis.com/token"
+		}
+	}`
+
+	// Web client missing redirect_uris
+	webNoRedirects := `{
+		"web": {
 			"client_id": "123.apps.googleusercontent.com",
 			"client_secret": "secret",
 			"auth_uri": "https://accounts.google.com/o/oauth2/auth",
@@ -285,9 +306,19 @@ func TestParseClientSecrets(t *testing.T) {
 			wantErr: "",
 		},
 		{
+			name:    "valid web client",
+			data:    validWeb,
+			wantErr: "",
+		},
+		{
 			name:    "TV/device client rejected",
 			data:    tvClient,
-			wantErr: "TV/device OAuth clients are not supported",
+			wantErr: "missing redirect_uris",
+		},
+		{
+			name:    "web client without redirect_uris rejected",
+			data:    webNoRedirects,
+			wantErr: "missing redirect_uris",
 		},
 		{
 			name:    "malformed JSON",
