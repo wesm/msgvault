@@ -54,6 +54,20 @@ func writeLegacyTokenFile(t *testing.T, mgr *Manager, email string, token oauth2
 
 var testToken = oauth2.Token{AccessToken: "test", TokenType: "Bearer"}
 
+// assertNoSend is a test helper to assert that a channel remains empty.
+// Uses a 100ms timeout to balance between flakiness on slow CI and detection
+// of late asynchronous sends.
+func assertNoSend[T any](t *testing.T, ch <-chan T, chanName string) {
+	t.Helper()
+	const noSendTimeout = 100 * time.Millisecond
+	select {
+	case v := <-ch:
+		t.Errorf("unexpected value on %s: %v", chanName, v)
+	case <-time.After(noSendTimeout):
+		// expected: no value arrived
+	}
+}
+
 func TestScopesToString(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -278,13 +292,7 @@ func TestNewCallbackHandler(t *testing.T) {
 					t.Error("expected code on codeChan, got nothing")
 				}
 			} else {
-				// Ensure no unexpected code was sent (use timeout to catch late sends)
-				select {
-				case code := <-codeChan:
-					t.Errorf("unexpected code on codeChan: %q", code)
-				case <-time.After(10 * time.Millisecond):
-					// expected: no value arrived
-				}
+				assertNoSend(t, codeChan, "codeChan")
 			}
 
 			// Check for expected error
@@ -298,13 +306,7 @@ func TestNewCallbackHandler(t *testing.T) {
 					t.Error("expected error on errChan, got nothing")
 				}
 			} else {
-				// Ensure no unexpected error was sent (use timeout to catch late sends)
-				select {
-				case err := <-errChan:
-					t.Errorf("unexpected error on errChan: %v", err)
-				case <-time.After(10 * time.Millisecond):
-					// expected: no value arrived
-				}
+				assertNoSend(t, errChan, "errChan")
 			}
 		})
 	}
