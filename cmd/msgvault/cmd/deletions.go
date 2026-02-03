@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -108,6 +109,10 @@ Examples:
 		manager, err := deletion.NewManager(deletionsDir)
 		if err != nil {
 			return fmt.Errorf("create manager: %w", err)
+		}
+
+		if cancelAll && len(args) > 0 {
+			return fmt.Errorf("cannot use --all with a batch ID argument")
 		}
 
 		if cancelAll {
@@ -364,6 +369,9 @@ Examples:
 			if hasAnyScope {
 				// Token has scope metadata but lacks deletion scope — escalate now
 				if err := promptScopeEscalation(ctx, oauthMgr, account, needsBatchDelete); err != nil {
+					if errors.Is(err, errUserCanceled) {
+						return nil
+					}
 					return err
 				}
 				// Re-create OAuth manager with new token
@@ -424,6 +432,7 @@ Examples:
 				// Check if this is a scope error - offer to re-authorize
 				if isInsufficientScopeError(execErr) {
 					if err := promptScopeEscalation(ctx, oauthMgr, account, !useTrash); err != nil {
+						// User canceled or auth failed — either way, exit cleanly
 						return nil
 					}
 					fmt.Println("Run delete-staged again to continue.")
@@ -484,6 +493,9 @@ func limitManifests(manifests []*deletion.Manifest, max int) []*deletion.Manifes
 	return manifests[:max]
 }
 
+// errUserCanceled is returned when the user declines scope escalation.
+var errUserCanceled = errors.New("user canceled scope escalation")
+
 // promptScopeEscalation prompts the user to re-authorize with elevated scopes.
 // It deletes the old token, runs the OAuth browser flow, and returns nil on
 // success. The caller should re-create the OAuth manager after this returns.
@@ -525,7 +537,7 @@ func promptScopeEscalation(ctx context.Context, oauthMgr *oauth.Manager, account
 		} else {
 			fmt.Println("Cancelled.")
 		}
-		return nil
+		return errUserCanceled
 	}
 
 	// Delete old token and re-authorize
