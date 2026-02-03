@@ -1273,7 +1273,9 @@ func (m Model) renderHelpModal() string {
 // renderExportAttachmentsModal renders the export attachments modal content.
 func (m Model) renderExportAttachmentsModal() string {
 	if m.messageDetail == nil || len(m.messageDetail.Attachments) == 0 {
-		return ""
+		return modalTitleStyle.Render("Export Attachments") + "\n\n" +
+			"No attachments to export.\n\n" +
+			"[Esc] Close"
 	}
 	var sb strings.Builder
 	sb.WriteString(modalTitleStyle.Render("Export Attachments"))

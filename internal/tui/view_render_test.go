@@ -1004,6 +1004,82 @@ func TestExportAttachmentsNoAttachments(t *testing.T) {
 	}
 }
 
+// TestRenderExportAttachmentsModalEdgeCases tests the export modal renderer
+// handles edge cases gracefully (nil detail, empty attachments).
+func TestRenderExportAttachmentsModalEdgeCases(t *testing.T) {
+	t.Run("nil messageDetail shows no-attachments message", func(t *testing.T) {
+		model := NewBuilder().
+			WithLevel(levelMessageDetail).
+			WithPageSize(10).WithSize(100, 20).Build()
+		model.modal = modalExportAttachments
+		model.messageDetail = nil
+
+		content := model.renderExportAttachmentsModal()
+
+		if content == "" {
+			t.Error("expected non-empty modal content when messageDetail is nil")
+		}
+		if !strings.Contains(content, "Export Attachments") {
+			t.Error("expected modal title in content")
+		}
+		if !strings.Contains(content, "No attachments") {
+			t.Errorf("expected 'No attachments' message, got: %s", content)
+		}
+	})
+
+	t.Run("empty attachments shows no-attachments message", func(t *testing.T) {
+		model := NewBuilder().
+			WithDetail(&query.MessageDetail{
+				ID:          1,
+				Subject:     "Test Email",
+				Attachments: []query.AttachmentInfo{},
+			}).
+			WithLevel(levelMessageDetail).
+			WithPageSize(10).WithSize(100, 20).Build()
+		model.modal = modalExportAttachments
+
+		content := model.renderExportAttachmentsModal()
+
+		if content == "" {
+			t.Error("expected non-empty modal content when attachments is empty")
+		}
+		if !strings.Contains(content, "Export Attachments") {
+			t.Error("expected modal title in content")
+		}
+		if !strings.Contains(content, "No attachments") {
+			t.Errorf("expected 'No attachments' message, got: %s", content)
+		}
+	})
+
+	t.Run("with attachments shows normal list", func(t *testing.T) {
+		model := NewBuilder().
+			WithDetail(&query.MessageDetail{
+				ID:      1,
+				Subject: "Test Email",
+				Attachments: []query.AttachmentInfo{
+					{ID: 1, Filename: "doc.pdf", Size: 1024},
+					{ID: 2, Filename: "image.png", Size: 2048},
+				},
+			}).
+			WithLevel(levelMessageDetail).
+			WithPageSize(10).WithSize(100, 20).Build()
+		model.modal = modalExportAttachments
+		model.exportSelection = map[int]bool{0: true, 1: true}
+
+		content := model.renderExportAttachmentsModal()
+
+		if !strings.Contains(content, "doc.pdf") {
+			t.Error("expected 'doc.pdf' in content")
+		}
+		if !strings.Contains(content, "image.png") {
+			t.Error("expected 'image.png' in content")
+		}
+		if strings.Contains(content, "No attachments") {
+			t.Error("should not show 'No attachments' message when attachments exist")
+		}
+	})
+}
+
 // --- Helper method unit tests ---
 
 // TestHeaderUpdateNoticeUnicode verifies update notice alignment with Unicode account names.
