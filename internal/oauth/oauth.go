@@ -100,7 +100,11 @@ func PrintHeadlessInstructions(email string) {
 	fmt.Println()
 	fmt.Printf("    scp ~/.msgvault/tokens/%s.json user@server:~/.msgvault/tokens/\n", email)
 	fmt.Println()
-	fmt.Println("The token will work on the server and auto-refresh as needed.")
+	fmt.Println("Step 3: On the headless server, register the account:")
+	fmt.Println()
+	fmt.Printf("    msgvault add-account %s\n", email)
+	fmt.Println()
+	fmt.Println("The token will be detected and the account registered. No browser needed.")
 	fmt.Println("All msgvault commands (sync, tui, etc.) will work normally.")
 	fmt.Println()
 }

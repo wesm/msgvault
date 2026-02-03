@@ -56,10 +56,16 @@ Example:
 			return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
 		}
 
-		// Check if already authorized
+		// Check if already authorized (e.g., token copied from another machine)
 		if oauthMgr.HasToken(email) {
-			fmt.Printf("Account %s is already authorized.\n", email)
-			fmt.Println("To re-authorize, delete the token file and try again.")
+			// Still create the source record - needed for headless setup
+			// where token was copied but account not yet registered
+			_, err = s.GetOrCreateSource("gmail", email)
+			if err != nil {
+				return fmt.Errorf("create source: %w", err)
+			}
+			fmt.Printf("Account %s is ready.\n", email)
+			fmt.Println("You can now run: msgvault sync-full", email)
 			return nil
 		}
 
@@ -84,6 +90,6 @@ Example:
 }
 
 func init() {
-	addAccountCmd.Flags().BoolVar(&headless, "headless", false, "Use device code flow for headless environments")
+	addAccountCmd.Flags().BoolVar(&headless, "headless", false, "Show instructions for headless server setup")
 	rootCmd.AddCommand(addAccountCmd)
 }
