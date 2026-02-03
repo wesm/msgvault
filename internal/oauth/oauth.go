@@ -381,7 +381,7 @@ func parseClientSecrets(data []byte, scopes []string) (*oauth2.Config, error) {
 			missingRedirects := (secrets.Installed != nil && len(secrets.Installed.RedirectURIs) == 0) ||
 				(secrets.Web != nil && len(secrets.Web.RedirectURIs) == 0)
 			if missingRedirects {
-				return nil, fmt.Errorf("OAuth client is missing redirect_uris (TV/device clients are not supported - Gmail doesn't work with device flow). Please create a 'Desktop application' OAuth client in Google Cloud Console")
+				return nil, fmt.Errorf("OAuth client is missing redirect_uris (TV/device clients are not supported - Gmail doesn't work with device flow). Please create a 'Desktop application' or 'Web application' OAuth client in Google Cloud Console")
 			}
 		}
 		return nil, err
