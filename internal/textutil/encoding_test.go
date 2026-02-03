@@ -97,15 +97,22 @@ func TestEnsureUTF8_AsianEncodings(t *testing.T) {
 	// 1. Output is valid UTF-8
 	// 2. Output is non-empty
 	// 3. Output doesn't contain replacement characters (successful decode)
+	// 4. Output contains stable substrings from the expected decoded text
 	enc := testutil.EncodedSamples()
 	tests := []struct {
-		name  string
-		input []byte
+		name             string
+		input            []byte
+		expectedContains []string // Stable substrings that must appear in correct decode
 	}{
-		{"Shift-JIS Japanese", enc.ShiftJIS_Long},
-		{"GBK Simplified Chinese", enc.GBK_Long},
-		{"Big5 Traditional Chinese", enc.Big5_Long},
-		{"EUC-KR Korean", enc.EUCKR_Long},
+		// Japanese: "日本語のテキストサンプルです。これは文字化けのテストに使用されます。"
+		// Check for key characters that wouldn't appear in a wrong decode
+		{"Shift-JIS Japanese", enc.ShiftJIS_Long, []string{"日本語", "テキスト", "です"}},
+		// Chinese (Simplified): "这是一个中文文本示例，用于测试字符编码检测功能。"
+		{"GBK Simplified Chinese", enc.GBK_Long, []string{"中文", "测试", "编码"}},
+		// Chinese (Traditional): "這是一個繁體中文範例，用於測試字元編碼偵測。"
+		{"Big5 Traditional Chinese", enc.Big5_Long, []string{"繁體中文", "測試", "編碼"}},
+		// Korean: "한글 텍스트 샘플입니다. 인코딩 감지 테스트용입니다."
+		{"EUC-KR Korean", enc.EUCKR_Long, []string{"한글", "텍스트", "인코딩"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -117,6 +124,12 @@ func TestEnsureUTF8_AsianEncodings(t *testing.T) {
 			// Verify no replacement characters (indicates failed decode)
 			if strings.ContainsRune(result, '\ufffd') {
 				t.Errorf("result contains replacement character, suggesting decode failure: %q", result)
+			}
+			// Verify correctness: output must contain expected substrings
+			for _, substr := range tt.expectedContains {
+				if !strings.Contains(result, substr) {
+					t.Errorf("result missing expected substring %q, got: %q", substr, result)
+				}
 			}
 		})
 	}
@@ -361,18 +374,46 @@ func TestEncodingIdentity(t *testing.T) {
 
 func TestGetEncodingByName_ReturnsCorrectType(t *testing.T) {
 	// Verify that specific charset names return encodings that decode identically
-	// to the expected encoding types. Uses behavior-based comparison rather than
-	// pointer equality to be robust against registry wrappers or equivalent encodings.
+	// to the expected encoding types. Uses behavior-based comparison with multiple
+	// discriminating byte sequences to distinguish closely related encodings.
 	tests := []struct {
 		charset  string
 		expected encoding.Encoding
-		input    []byte
+		inputs   [][]byte // Multiple byte sequences to better distinguish encodings
 	}{
-		{"Shift_JIS", japanese.ShiftJIS, []byte{0x82, 0xa0, 0x82, 0xa2}},  // あい
-		{"EUC-JP", japanese.EUCJP, []byte{0xa4, 0xa2, 0xa4, 0xa4}},        // あい
-		{"EUC-KR", korean.EUCKR, []byte{0xbe, 0xc8, 0xb3, 0xe7}},          // 안녕
-		{"GBK", simplifiedchinese.GBK, []byte{0xc4, 0xe3, 0xba, 0xc3}},    // 你好
-		{"Big5", traditionalchinese.Big5, []byte{0xa7, 0x41, 0xa6, 0x6e}}, // 你好
+		// Shift_JIS: Use multiple sequences including half-width katakana (0xA1-0xDF)
+		// which is handled differently in Shift_JIS vs some variants
+		{"Shift_JIS", japanese.ShiftJIS, [][]byte{
+			{0x82, 0xa0, 0x82, 0xa2}, // あい (hiragana)
+			{0x83, 0x41, 0x83, 0x42}, // アイ (full-width katakana)
+			{0xb1, 0xb2, 0xb3},       // ｱｲｳ (half-width katakana)
+			{0x93, 0xfa, 0x96, 0x7b}, // 日本
+		}},
+		// EUC-JP: Uses different byte ranges than Shift_JIS
+		{"EUC-JP", japanese.EUCJP, [][]byte{
+			{0xa4, 0xa2, 0xa4, 0xa4},             // あい
+			{0xa5, 0xa2, 0xa5, 0xa4},             // アイ
+			{0x8e, 0xb1, 0x8e, 0xb2, 0x8e, 0xb3}, // ｱｲｳ (half-width via SS2)
+			{0xc6, 0xfc, 0xcb, 0xdc},             // 日本
+		}},
+		// EUC-KR: Korean-specific sequences
+		{"EUC-KR", korean.EUCKR, [][]byte{
+			{0xbe, 0xc8, 0xb3, 0xe7}, // 안녕
+			{0xc7, 0xd1, 0xb1, 0xdb}, // 한글
+			{0xb0, 0xa1, 0xb0, 0xa2}, // 가각 (common jamo combinations)
+		}},
+		// GBK: Simplified Chinese sequences with GB2312 subset and GBK extensions
+		{"GBK", simplifiedchinese.GBK, [][]byte{
+			{0xc4, 0xe3, 0xba, 0xc3}, // 你好
+			{0xd6, 0xd0, 0xce, 0xc4}, // 中文
+			{0x81, 0x40},             // GBK extension character (丂)
+		}},
+		// Big5: Traditional Chinese sequences
+		{"Big5", traditionalchinese.Big5, [][]byte{
+			{0xa7, 0x41, 0xa6, 0x6e}, // 你好
+			{0xa4, 0xa4, 0xa4, 0xe5}, // 中文
+			{0xa1, 0x40},             // ideographic space
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.charset, func(t *testing.T) {
@@ -380,17 +421,19 @@ func TestGetEncodingByName_ReturnsCorrectType(t *testing.T) {
 			if enc == nil {
 				t.Fatalf("GetEncodingByName(%q) returned nil", tt.charset)
 			}
-			got, err := enc.NewDecoder().Bytes(tt.input)
-			if err != nil {
-				t.Fatalf("decoder error: %v", err)
-			}
-			want, err := tt.expected.NewDecoder().Bytes(tt.input)
-			if err != nil {
-				t.Fatalf("expected decoder error: %v", err)
-			}
-			if string(got) != string(want) {
-				t.Errorf("GetEncodingByName(%q) decodes %x as %q, expected encoding decodes as %q",
-					tt.charset, tt.input, got, want)
+			for i, input := range tt.inputs {
+				got, err := enc.NewDecoder().Bytes(input)
+				if err != nil {
+					t.Fatalf("decoder error on input[%d] %x: %v", i, input, err)
+				}
+				want, err := tt.expected.NewDecoder().Bytes(input)
+				if err != nil {
+					t.Fatalf("expected decoder error on input[%d] %x: %v", i, input, err)
+				}
+				if string(got) != string(want) {
+					t.Errorf("GetEncodingByName(%q) decodes input[%d] %x as %q, expected encoding decodes as %q",
+						tt.charset, i, input, got, want)
+				}
 			}
 		})
 	}
