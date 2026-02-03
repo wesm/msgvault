@@ -86,6 +86,11 @@ const MinQPS = 0.1
 // A qps of 5 is the default safe rate for Gmail API.
 // QPS is clamped to a minimum of MinQPS (0.1) to prevent division by zero.
 func NewRateLimiter(qps float64) *RateLimiter {
+	return newRateLimiter(realClock{}, qps)
+}
+
+// newRateLimiter creates a rate limiter with the given clock and QPS.
+func newRateLimiter(clk Clock, qps float64) *RateLimiter {
 	if qps < MinQPS {
 		qps = MinQPS
 	}
@@ -97,12 +102,12 @@ func NewRateLimiter(qps float64) *RateLimiter {
 
 	refillRate := DefaultRefillRate * scaleFactor
 	return &RateLimiter{
-		clock:          realClock{},
+		clock:          clk,
 		tokens:         DefaultCapacity,
 		capacity:       DefaultCapacity,
 		refillRate:     refillRate,
 		baseRefillRate: refillRate,
-		lastRefill:     time.Now(),
+		lastRefill:     clk.Now(),
 	}
 }
 

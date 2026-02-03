@@ -2,7 +2,6 @@ package gmail
 
 import (
 	"context"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -10,9 +9,10 @@ import (
 
 // mockClock provides deterministic time control for tests.
 type mockClock struct {
-	mu      sync.Mutex
-	current time.Time
-	timers  []mockTimer
+	mu          sync.Mutex
+	current     time.Time
+	timers      []mockTimer
+	timerNotify chan struct{}
 }
 
 type mockTimer struct {
@@ -21,7 +21,10 @@ type mockTimer struct {
 }
 
 func newMockClock() *mockClock {
-	return &mockClock{current: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)}
+	return &mockClock{
+		current:     time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		timerNotify: make(chan struct{}, 1),
+	}
 }
 
 func (c *mockClock) Now() time.Time {
@@ -40,6 +43,11 @@ func (c *mockClock) After(d time.Duration) <-chan time.Time {
 		return ch
 	}
 	c.timers = append(c.timers, mockTimer{deadline: deadline, ch: ch})
+	// Notify waiters that a new timer was registered.
+	select {
+	case c.timerNotify <- struct{}{}:
+	default:
+	}
 	return ch
 }
 
@@ -50,16 +58,16 @@ func (c *mockClock) TimerCount() int {
 	return len(c.timers)
 }
 
-// waitForTimers spins until the mock clock has at least n pending timers,
-// avoiding wall-clock sleeps in mock-clock-based tests.
+// waitForTimers blocks until the mock clock has at least n pending timers.
 func waitForTimers(t *testing.T, clk *mockClock, n int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	timeout := time.After(2 * time.Second)
 	for clk.TimerCount() < n {
-		if time.Now().After(deadline) {
+		select {
+		case <-clk.timerNotify:
+		case <-timeout:
 			t.Fatalf("timed out waiting for %d timer(s); have %d", n, clk.TimerCount())
 		}
-		runtime.Gosched()
 	}
 }
 
@@ -82,35 +90,7 @@ func (c *mockClock) Advance(d time.Duration) {
 
 // newTestLimiterWithClock creates a rate limiter using the given mock clock.
 func newTestLimiterWithClock(clk *mockClock) *RateLimiter {
-	return &RateLimiter{
-		clock:          clk,
-		tokens:         DefaultCapacity,
-		capacity:       DefaultCapacity,
-		refillRate:     DefaultRefillRate,
-		baseRefillRate: DefaultRefillRate,
-		lastRefill:     clk.Now(),
-	}
-}
-
-// setTokens directly sets the token count for deterministic testing.
-func setTokens(rl *RateLimiter, count float64) {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	rl.tokens = count
-}
-
-// getRefillRate safely reads the refill rate under the mutex.
-func getRefillRate(rl *RateLimiter) float64 {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	return rl.refillRate
-}
-
-// getThrottledUntil safely reads the throttledUntil field under the mutex.
-func getThrottledUntil(rl *RateLimiter) time.Time {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	return rl.throttledUntil
+	return newRateLimiter(clk, defaultQPS)
 }
 
 // rlFixture encapsulates the mock clock and rate limiter for test setup.
@@ -129,7 +109,16 @@ func newRLFixture() *rlFixture {
 
 // drain sets tokens to zero.
 func (f *rlFixture) drain() {
-	setTokens(f.rl, 0)
+	f.rl.mu.Lock()
+	defer f.rl.mu.Unlock()
+	f.rl.tokens = 0
+}
+
+// state returns a snapshot of the limiter's internal fields under the mutex.
+func (f *rlFixture) state() (tokens, refillRate float64, throttledUntil time.Time) {
+	f.rl.mu.Lock()
+	defer f.rl.mu.Unlock()
+	return f.rl.tokens, f.rl.refillRate, f.rl.throttledUntil
 }
 
 // assertAvailable checks the current available tokens.
@@ -142,8 +131,7 @@ func (f *rlFixture) assertAvailable(t *testing.T, expected float64) {
 
 // acquireAsync runs Acquire in a background goroutine and returns a channel
 // that receives the result. It waits for the goroutine to either register a
-// timer on the mock clock or complete immediately (e.g., tokens available or
-// context already canceled).
+// timer on the mock clock or complete immediately.
 func (f *rlFixture) acquireAsync(t *testing.T, ctx context.Context, op Operation) <-chan error {
 	t.Helper()
 	timersBefore := f.clk.TimerCount()
@@ -153,22 +141,21 @@ func (f *rlFixture) acquireAsync(t *testing.T, ctx context.Context, op Operation
 		ch <- f.rl.Acquire(ctx, op)
 		close(done)
 	}()
-	// Poll until either a new timer appears (Acquire is waiting) or the
-	// goroutine completes (Acquire returned immediately).
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if f.clk.TimerCount() > timersBefore {
-			return ch
-		}
+	// Wait until either a new timer appears or the goroutine completes.
+	timeout := time.After(2 * time.Second)
+	for {
 		select {
+		case <-f.clk.timerNotify:
+			if f.clk.TimerCount() > timersBefore {
+				return ch
+			}
 		case <-done:
 			return ch
-		default:
+		case <-timeout:
+			t.Fatal("acquireAsync: timed out waiting for timer or completion")
+			return ch
 		}
-		time.Sleep(time.Millisecond)
 	}
-	t.Fatal("acquireAsync: timed out waiting for timer or completion")
-	return ch
 }
 
 func TestOperationCost(t *testing.T) {
@@ -384,14 +371,16 @@ func TestRateLimiter_Throttle(t *testing.T) {
 
 		f.rl.Throttle(10 * time.Millisecond)
 
-		if got := getRefillRate(f.rl); got != DefaultRefillRate*0.5 {
-			t.Errorf("refillRate after Throttle = %v, want %v", got, DefaultRefillRate*0.5)
+		_, rate, _ := f.state()
+		if rate != DefaultRefillRate*0.5 {
+			t.Errorf("refillRate after Throttle = %v, want %v", rate, DefaultRefillRate*0.5)
 		}
 
 		f.rl.RecoverRate()
 
-		if got := getRefillRate(f.rl); got != DefaultRefillRate {
-			t.Errorf("refillRate after RecoverRate = %v, want %v", got, DefaultRefillRate)
+		_, rate, _ = f.state()
+		if rate != DefaultRefillRate {
+			t.Errorf("refillRate after RecoverRate = %v, want %v", rate, DefaultRefillRate)
 		}
 	})
 
@@ -399,10 +388,10 @@ func TestRateLimiter_Throttle(t *testing.T) {
 		f := newRLFixture()
 
 		f.rl.Throttle(200 * time.Millisecond)
-		first := getThrottledUntil(f.rl)
+		_, _, first := f.state()
 
 		f.rl.Throttle(50 * time.Millisecond)
-		second := getThrottledUntil(f.rl)
+		_, _, second := f.state()
 
 		if second.Before(first) {
 			t.Errorf("Throttle shortened existing backoff: first=%v, second=%v", first, second)
@@ -413,11 +402,11 @@ func TestRateLimiter_Throttle(t *testing.T) {
 		f := newRLFixture()
 
 		f.rl.Throttle(50 * time.Millisecond)
-		first := getThrottledUntil(f.rl)
+		_, _, first := f.state()
 
 		f.clk.Advance(30 * time.Millisecond)
 		f.rl.Throttle(50 * time.Millisecond)
-		second := getThrottledUntil(f.rl)
+		_, _, second := f.state()
 
 		if !second.After(first) {
 			t.Errorf("Throttle did not extend backoff: first=%v, second=%v", first, second)
@@ -429,15 +418,17 @@ func TestRateLimiter_Throttle(t *testing.T) {
 
 		f.rl.Throttle(50 * time.Millisecond)
 
-		if got := getRefillRate(f.rl); got != DefaultRefillRate*0.5 {
-			t.Errorf("refillRate after Throttle = %v, want %v", got, DefaultRefillRate*0.5)
+		_, rate, _ := f.state()
+		if rate != DefaultRefillRate*0.5 {
+			t.Errorf("refillRate after Throttle = %v, want %v", rate, DefaultRefillRate*0.5)
 		}
 
 		f.clk.Advance(100 * time.Millisecond)
 		f.rl.Available() // triggers refill and auto-recovery
 
-		if got := getRefillRate(f.rl); got != DefaultRefillRate {
-			t.Errorf("refillRate after throttle expiry = %v, want %v", got, DefaultRefillRate)
+		_, rate, _ = f.state()
+		if rate != DefaultRefillRate {
+			t.Errorf("refillRate after throttle expiry = %v, want %v", rate, DefaultRefillRate)
 		}
 	})
 }
