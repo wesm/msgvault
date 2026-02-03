@@ -1,0 +1,198 @@
+package cmd
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/spf13/cobra"
+	"github.com/wesm/msgvault/internal/gmail"
+	"github.com/wesm/msgvault/internal/oauth"
+	"github.com/wesm/msgvault/internal/scheduler"
+	"github.com/wesm/msgvault/internal/store"
+	"github.com/wesm/msgvault/internal/sync"
+)
+
+var serveCmd = &cobra.Command{
+	Use:   "serve",
+	Short: "Run msgvault as a daemon with scheduled sync",
+	Long: `Run msgvault as a long-running daemon that syncs email accounts on schedule.
+
+The daemon runs in the foreground and performs:
+  - Scheduled incremental syncs based on account config
+  - Automatic cache rebuilds after each sync
+
+Configure schedules in config.toml:
+  [[accounts]]
+  email = "you@gmail.com"
+  schedule = "0 2 * * *"   # 2am daily (cron format)
+  enabled = true
+
+Cron format: minute hour day-of-month month day-of-week
+  Examples:
+    0 2 * * *     = 2:00 AM daily
+    */15 * * * *  = Every 15 minutes
+    0 0 * * 0     = Midnight on Sundays
+    0 8,18 * * *  = 8 AM and 6 PM daily
+
+Use Ctrl+C to stop the daemon gracefully.`,
+	RunE: runServe,
+}
+
+func init() {
+	rootCmd.AddCommand(serveCmd)
+}
+
+func runServe(cmd *cobra.Command, args []string) error {
+	// Validate config
+	if cfg.OAuth.ClientSecrets == "" {
+		return errOAuthNotConfigured()
+	}
+
+	// Check for scheduled accounts
+	scheduled := cfg.ScheduledAccounts()
+	if len(scheduled) == 0 {
+		return fmt.Errorf("no scheduled accounts configured\n\nAdd accounts to config.toml:\n\n  [[accounts]]\n  email = \"you@gmail.com\"\n  schedule = \"0 2 * * *\"\n  enabled = true")
+	}
+
+	// Open database
+	dbPath := cfg.DatabasePath()
+	s, err := store.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer s.Close()
+
+	if err := s.InitSchema(); err != nil {
+		return fmt.Errorf("init schema: %w", err)
+	}
+
+	// Create OAuth manager
+	oauthMgr, err := oauth.NewManager(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger)
+	if err != nil {
+		return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
+	}
+
+	// Create sync function for the scheduler
+	syncFunc := func(ctx context.Context, email string) error {
+		return runScheduledSync(ctx, email, s, oauthMgr)
+	}
+
+	// Create and configure scheduler
+	sched := scheduler.New(syncFunc).WithLogger(logger)
+
+	// Add all scheduled accounts
+	count, errs := sched.AddAccountsFromConfig(cfg)
+	if len(errs) > 0 {
+		for _, err := range errs {
+			logger.Error("failed to schedule account", "error", err)
+		}
+	}
+	if count == 0 {
+		return fmt.Errorf("no accounts could be scheduled")
+	}
+
+	// Set up signal handling for graceful shutdown
+	ctx, cancel := context.WithCancel(cmd.Context())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start the scheduler
+	sched.Start()
+
+	fmt.Printf("msgvault daemon started\n")
+	fmt.Printf("  Scheduled accounts: %d\n", count)
+	fmt.Printf("  Data directory: %s\n", cfg.Data.DataDir)
+	fmt.Println()
+	fmt.Println("Press Ctrl+C to stop.")
+	fmt.Println()
+
+	// Print schedule info
+	for _, status := range sched.Status() {
+		fmt.Printf("  %s: next sync at %s\n", status.Email, status.NextRun.Local().Format("2006-01-02 15:04:05"))
+	}
+	fmt.Println()
+
+	// Wait for shutdown signal
+	select {
+	case sig := <-sigChan:
+		logger.Info("received shutdown signal", "signal", sig)
+		fmt.Printf("\nReceived %s, shutting down...\n", sig)
+	case <-ctx.Done():
+		logger.Info("context cancelled")
+	}
+
+	// Graceful shutdown
+	fmt.Println("Waiting for running syncs to complete...")
+	shutdownCtx := sched.Stop()
+
+	// Wait for scheduler to stop (with timeout)
+	select {
+	case <-shutdownCtx.Done():
+		fmt.Println("Shutdown complete.")
+	case <-time.After(30 * time.Second):
+		fmt.Println("Shutdown timed out after 30 seconds.")
+	}
+
+	return nil
+}
+
+// runScheduledSync performs an incremental sync for a scheduled account.
+func runScheduledSync(ctx context.Context, email string, s *store.Store, oauthMgr *oauth.Manager) error {
+	logger.Info("starting scheduled sync", "email", email)
+	startTime := time.Now()
+
+	// Get token source
+	tokenSource, err := oauthMgr.TokenSource(ctx, email)
+	if err != nil {
+		return fmt.Errorf("get token source: %w (run 'add-account' first)", err)
+	}
+
+	// Create Gmail client
+	rateLimiter := gmail.NewRateLimiter(float64(cfg.Sync.RateLimitQPS))
+	client := gmail.NewClient(tokenSource,
+		gmail.WithLogger(logger),
+		gmail.WithRateLimiter(rateLimiter),
+	)
+	defer client.Close()
+
+	// Set up sync options
+	opts := sync.DefaultOptions()
+	opts.AttachmentsDir = cfg.AttachmentsDir()
+
+	// Create syncer (no CLI progress for daemon mode)
+	syncer := sync.New(client, s, opts).WithLogger(logger)
+
+	// Run incremental sync
+	summary, err := syncer.Incremental(ctx, email)
+	if err != nil {
+		return fmt.Errorf("incremental sync failed: %w", err)
+	}
+
+	logger.Info("sync completed",
+		"email", email,
+		"messages_added", summary.MessagesAdded,
+		"duration", time.Since(startTime),
+	)
+
+	// Build cache after sync if there were new messages
+	if summary.MessagesAdded > 0 {
+		logger.Info("building cache after sync", "email", email)
+		result, err := buildCache(cfg.DatabasePath(), cfg.AnalyticsDir(), false)
+		if err != nil {
+			logger.Error("cache build failed", "error", err)
+			// Don't fail the sync for cache build errors
+		} else if !result.Skipped {
+			logger.Info("cache build completed",
+				"exported", result.ExportedCount,
+			)
+		}
+	}
+
+	return nil
+}
