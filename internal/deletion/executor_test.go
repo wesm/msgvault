@@ -700,6 +700,68 @@ func TestExecutor_ExecuteBatch_FallbackMixed(t *testing.T) {
 	}
 }
 
+// TestExecutor_ExecuteBatch_RetriesFailedIDs verifies that resuming a batch
+// execution retries previously failed message IDs.
+func TestExecutor_ExecuteBatch_RetriesFailedIDs(t *testing.T) {
+	tc := NewTestContext(t)
+
+	// Create a manifest that's already in_progress with failed IDs
+	gmailIDs := msgIDs(5)
+	manifest := NewManifest("retry test", gmailIDs)
+	manifest.Status = StatusInProgress
+	manifest.Execution = &Execution{
+		StartedAt:          time.Now().Add(-time.Hour),
+		Method:             MethodDelete,
+		Succeeded:          2,
+		Failed:             3,
+		FailedIDs:          []string{"msg2", "msg3", "msg4"},
+		LastProcessedIndex: 5, // All processed, but 3 failed
+	}
+	if err := tc.Mgr.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest() error = %v", err)
+	}
+
+	if err := tc.ExecuteBatch(manifest.ID); err != nil {
+		t.Fatalf("ExecuteBatch() error = %v", err)
+	}
+
+	// The 3 previously failed IDs should be retried via individual delete
+	tc.AssertDeleteCalls(3)
+	// All should succeed now (no errors injected)
+	tc.AssertResult(5, 0)
+	tc.AssertCompletedCount(1)
+}
+
+// TestExecutor_ExecuteBatch_RetryPartialSuccess verifies that retried IDs that
+// still fail are tracked correctly.
+func TestExecutor_ExecuteBatch_RetryPartialSuccess(t *testing.T) {
+	tc := NewTestContext(t)
+	tc.SimulateDeleteError("msg3") // msg3 still fails on retry
+
+	gmailIDs := msgIDs(5)
+	manifest := NewManifest("retry partial", gmailIDs)
+	manifest.Status = StatusInProgress
+	manifest.Execution = &Execution{
+		StartedAt:          time.Now().Add(-time.Hour),
+		Method:             MethodDelete,
+		Succeeded:          2,
+		Failed:             3,
+		FailedIDs:          []string{"msg2", "msg3", "msg4"},
+		LastProcessedIndex: 5,
+	}
+	if err := tc.Mgr.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest() error = %v", err)
+	}
+
+	if err := tc.ExecuteBatch(manifest.ID); err != nil {
+		t.Fatalf("ExecuteBatch() error = %v", err)
+	}
+
+	// msg2, msg4 succeed on retry; msg3 still fails
+	tc.AssertResult(4, 1)
+	tc.AssertCompletedCount(1)
+}
+
 // TestNullProgress_AllMethods exercises all NullProgress methods for coverage.
 func TestNullProgress_AllMethods(t *testing.T) {
 	p := NullProgress{}
