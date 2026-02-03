@@ -5,71 +5,80 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/testutil/ptr"
 )
 
-func TestSearch_WithoutFTS(t *testing.T) {
-	env := newTestEnv(t)
-	q := &search.Query{TextTerms: []string{"Hello"}}
-	assertSearchCount(t, env, q, 2)
-}
-
-func TestSearch_FromFilter(t *testing.T) {
-	env := newTestEnv(t)
-	q := &search.Query{FromAddrs: []string{"alice@example.com"}}
-	results := assertSearchCount(t, env, q, 3)
-	assertAllResults(t, results, "FromEmail=alice@example.com", func(m MessageSummary) bool {
-		return m.FromEmail == "alice@example.com"
-	})
-}
-
-func TestSearch_LabelFilter(t *testing.T) {
-	env := newTestEnv(t)
-	q := &search.Query{Labels: []string{"Work"}}
-	assertSearchCount(t, env, q, 2)
-}
-
-func TestSearch_DateRangeFilter(t *testing.T) {
-	env := newTestEnv(t)
+func TestSearch_Filters(t *testing.T) {
 	after := ptr.Date(2024, 2, 1)
 	before := ptr.Date(2024, 3, 1)
-	q := &search.Query{AfterDate: &after, BeforeDate: &before}
-	assertSearchCount(t, env, q, 2)
-}
-
-func TestSearch_HasAttachment(t *testing.T) {
-	env := newTestEnv(t)
-	q := &search.Query{HasAttachment: ptr.Bool(true)}
-	results := assertSearchCount(t, env, q, 2)
-	assertAllResults(t, results, "HasAttachments=true", func(m MessageSummary) bool {
-		return m.HasAttachments
-	})
-}
-
-func TestSearch_CombinedFilters(t *testing.T) {
-	env := newTestEnv(t)
-	q := &search.Query{
-		FromAddrs: []string{"alice@example.com"},
-		Labels:    []string{"Work"},
-	}
-	assertSearchCount(t, env, q, 1)
-}
-
-func TestSearch_SizeFilter(t *testing.T) {
-	env := newTestEnv(t)
 	largerThan := int64(2500)
-	q := &search.Query{LargerThan: ptr.Int64(largerThan)}
-	results := assertSearchCount(t, env, q, 1)
-	assertAllResults(t, results, "SizeEstimate>2500", func(m MessageSummary) bool {
-		return m.SizeEstimate > largerThan
-	})
-}
 
-func TestSearch_EmptyQuery(t *testing.T) {
-	env := newTestEnv(t)
-	q := &search.Query{}
-	assertSearchCount(t, env, q, 5)
+	tests := []struct {
+		name      string
+		query     *search.Query
+		wantCount int
+		validator func(MessageSummary) bool
+		validDesc string
+	}{
+		{
+			name:      "WithoutFTS",
+			query:     &search.Query{TextTerms: []string{"Hello"}},
+			wantCount: 2,
+		},
+		{
+			name:      "FromFilter",
+			query:     &search.Query{FromAddrs: []string{"alice@example.com"}},
+			wantCount: 3,
+			validator: func(m MessageSummary) bool { return m.FromEmail == "alice@example.com" },
+			validDesc: "FromEmail=alice@example.com",
+		},
+		{
+			name:      "LabelFilter",
+			query:     &search.Query{Labels: []string{"Work"}},
+			wantCount: 2,
+		},
+		{
+			name:      "DateRangeFilter",
+			query:     &search.Query{AfterDate: &after, BeforeDate: &before},
+			wantCount: 2,
+		},
+		{
+			name:      "HasAttachment",
+			query:     &search.Query{HasAttachment: ptr.Bool(true)},
+			wantCount: 2,
+			validator: func(m MessageSummary) bool { return m.HasAttachments },
+			validDesc: "HasAttachments=true",
+		},
+		{
+			name:      "CombinedFilters",
+			query:     &search.Query{FromAddrs: []string{"alice@example.com"}, Labels: []string{"Work"}},
+			wantCount: 1,
+		},
+		{
+			name:      "SizeFilter",
+			query:     &search.Query{LargerThan: ptr.Int64(largerThan)},
+			wantCount: 1,
+			validator: func(m MessageSummary) bool { return m.SizeEstimate > largerThan },
+			validDesc: "SizeEstimate>2500",
+		},
+		{
+			name:      "EmptyQuery",
+			query:     &search.Query{},
+			wantCount: 5,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newTestEnv(t)
+			results := assertSearchCount(t, env, tc.query, tc.wantCount)
+			if tc.validator != nil {
+				assertAllResults(t, results, tc.validDesc, tc.validator)
+			}
+		})
+	}
 }
 
 func TestSearch_CaseInsensitiveFallback(t *testing.T) {
@@ -193,15 +202,9 @@ func TestSearchMixedExactAndDomainFilter(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("Expected at least one result, got 0")
 	}
-	foundAlice := false
-	for _, r := range results {
-		if r.FromEmail == "alice@example.com" {
-			foundAlice = true
-		}
-	}
-	if !foundAlice {
-		t.Error("Expected to find messages from alice@example.com")
-	}
+	assertAllResults(t, results, "FromEmail matches alice@example.com or @other.com", func(m MessageSummary) bool {
+		return m.FromEmail == "alice@example.com" || strings.HasSuffix(m.FromEmail, "@other.com")
+	})
 }
 
 // TestSearchFastCountMatchesSearch verifies that SearchFastCount returns the same
@@ -265,10 +268,10 @@ func TestMergeFilterIntoQuery(t *testing.T) {
 	sourceID1 := int64(1)
 
 	tests := []struct {
-		name    string
-		initial *search.Query
-		filter  MessageFilter
-		check   func(*testing.T, *search.Query)
+		name     string
+		initial  *search.Query
+		filter   MessageFilter
+		expected *search.Query
 	}{
 		{
 			name: "EmptyFilter",
@@ -278,86 +281,47 @@ func TestMergeFilterIntoQuery(t *testing.T) {
 				Labels:    []string{"inbox"},
 			},
 			filter: MessageFilter{},
-			check: func(t *testing.T, q *search.Query) {
-				if len(q.TextTerms) != 2 || q.TextTerms[0] != "test" || q.TextTerms[1] != "query" {
-					t.Errorf("TextTerms: got %v, want [test query]", q.TextTerms)
-				}
-				if len(q.FromAddrs) != 1 || q.FromAddrs[0] != "alice@example.com" {
-					t.Errorf("FromAddrs: got %v, want [alice@example.com]", q.FromAddrs)
-				}
-				if len(q.Labels) != 1 || q.Labels[0] != "inbox" {
-					t.Errorf("Labels: got %v, want [inbox]", q.Labels)
-				}
+			expected: &search.Query{
+				TextTerms: []string{"test", "query"},
+				FromAddrs: []string{"alice@example.com"},
+				Labels:    []string{"inbox"},
 			},
 		},
 		{
-			name:    "SourceID",
-			initial: &search.Query{},
-			filter:  MessageFilter{SourceID: &sourceID42},
-			check: func(t *testing.T, q *search.Query) {
-				if q.AccountID == nil || *q.AccountID != 42 {
-					t.Errorf("AccountID: got %v, want 42", q.AccountID)
-				}
-			},
+			name:     "SourceID",
+			initial:  &search.Query{},
+			filter:   MessageFilter{SourceID: &sourceID42},
+			expected: &search.Query{AccountID: &sourceID42},
 		},
 		{
-			name:    "SenderAppends",
-			initial: &search.Query{FromAddrs: []string{"alice@example.com"}},
-			filter:  MessageFilter{Sender: "bob@example.com"},
-			check: func(t *testing.T, q *search.Query) {
-				if len(q.FromAddrs) != 2 {
-					t.Fatalf("FromAddrs: got %d items, want 2", len(q.FromAddrs))
-				}
-				if q.FromAddrs[0] != "alice@example.com" || q.FromAddrs[1] != "bob@example.com" {
-					t.Errorf("FromAddrs: got %v, want [alice@example.com bob@example.com]", q.FromAddrs)
-				}
-			},
+			name:     "SenderAppends",
+			initial:  &search.Query{FromAddrs: []string{"alice@example.com"}},
+			filter:   MessageFilter{Sender: "bob@example.com"},
+			expected: &search.Query{FromAddrs: []string{"alice@example.com", "bob@example.com"}},
 		},
 		{
-			name:    "RecipientAppends",
-			initial: &search.Query{ToAddrs: []string{"recipient1@example.com"}},
-			filter:  MessageFilter{Recipient: "recipient2@example.com"},
-			check: func(t *testing.T, q *search.Query) {
-				if len(q.ToAddrs) != 2 {
-					t.Fatalf("ToAddrs: got %d items, want 2", len(q.ToAddrs))
-				}
-				if q.ToAddrs[0] != "recipient1@example.com" || q.ToAddrs[1] != "recipient2@example.com" {
-					t.Errorf("ToAddrs: got %v, want [recipient1@example.com recipient2@example.com]", q.ToAddrs)
-				}
-			},
+			name:     "RecipientAppends",
+			initial:  &search.Query{ToAddrs: []string{"recipient1@example.com"}},
+			filter:   MessageFilter{Recipient: "recipient2@example.com"},
+			expected: &search.Query{ToAddrs: []string{"recipient1@example.com", "recipient2@example.com"}},
 		},
 		{
-			name:    "LabelAppends",
-			initial: &search.Query{Labels: []string{"inbox"}},
-			filter:  MessageFilter{Label: "important"},
-			check: func(t *testing.T, q *search.Query) {
-				if len(q.Labels) != 2 {
-					t.Fatalf("Labels: got %d items, want 2", len(q.Labels))
-				}
-				if q.Labels[0] != "inbox" || q.Labels[1] != "important" {
-					t.Errorf("Labels: got %v, want [inbox important]", q.Labels)
-				}
-			},
+			name:     "LabelAppends",
+			initial:  &search.Query{Labels: []string{"inbox"}},
+			filter:   MessageFilter{Label: "important"},
+			expected: &search.Query{Labels: []string{"inbox", "important"}},
 		},
 		{
-			name:    "Attachments",
-			initial: &search.Query{},
-			filter:  MessageFilter{WithAttachmentsOnly: true},
-			check: func(t *testing.T, q *search.Query) {
-				if q.HasAttachment == nil || !*q.HasAttachment {
-					t.Errorf("HasAttachment: got %v, want true", q.HasAttachment)
-				}
-			},
+			name:     "Attachments",
+			initial:  &search.Query{},
+			filter:   MessageFilter{WithAttachmentsOnly: true},
+			expected: &search.Query{HasAttachment: ptr.Bool(true)},
 		},
 		{
-			name:    "Domain",
-			initial: &search.Query{},
-			filter:  MessageFilter{Domain: "example.com"},
-			check: func(t *testing.T, q *search.Query) {
-				if len(q.FromAddrs) != 1 || q.FromAddrs[0] != "@example.com" {
-					t.Errorf("FromAddrs: got %v, want [@example.com]", q.FromAddrs)
-				}
-			},
+			name:     "Domain",
+			initial:  &search.Query{},
+			filter:   MessageFilter{Domain: "example.com"},
+			expected: &search.Query{FromAddrs: []string{"@example.com"}},
 		},
 		{
 			name: "MultipleFilters",
@@ -373,34 +337,23 @@ func TestMergeFilterIntoQuery(t *testing.T) {
 				WithAttachmentsOnly: true,
 				Domain:              "domain.com",
 			},
-			check: func(t *testing.T, q *search.Query) {
-				if len(q.TextTerms) != 2 || q.TextTerms[0] != "search" || q.TextTerms[1] != "term" {
-					t.Errorf("TextTerms: got %v, want [search term]", q.TextTerms)
-				}
-				if q.AccountID == nil || *q.AccountID != 1 {
-					t.Errorf("AccountID: got %v, want 1", q.AccountID)
-				}
-				if len(q.FromAddrs) != 3 {
-					t.Fatalf("FromAddrs: got %d items, want 3", len(q.FromAddrs))
-				}
-				if len(q.ToAddrs) != 1 || q.ToAddrs[0] != "carol@example.com" {
-					t.Errorf("ToAddrs: got %v, want [carol@example.com]", q.ToAddrs)
-				}
-				if len(q.Labels) != 1 || q.Labels[0] != "starred" {
-					t.Errorf("Labels: got %v, want [starred]", q.Labels)
-				}
-				if q.HasAttachment == nil || !*q.HasAttachment {
-					t.Errorf("HasAttachment: got %v, want true", q.HasAttachment)
-				}
+			expected: &search.Query{
+				TextTerms:     []string{"search", "term"},
+				FromAddrs:     []string{"alice@example.com", "bob@example.com", "@domain.com"},
+				ToAddrs:       []string{"carol@example.com"},
+				Labels:        []string{"starred"},
+				HasAttachment: ptr.Bool(true),
+				AccountID:     &sourceID1,
 			},
 		},
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			merged := MergeFilterIntoQuery(tc.initial, tc.filter)
-			tc.check(t, merged)
+			if diff := cmp.Diff(tc.expected, merged); diff != "" {
+				t.Errorf("MergeFilterIntoQuery mismatch (-want +got):\n%s", diff)
+			}
 		})
 	}
 }
