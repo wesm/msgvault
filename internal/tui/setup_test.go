@@ -88,6 +88,7 @@ type TestModelBuilder struct {
 	pageSize           int  // explicit override; 0 means auto-calculate from height
 	rawPageSize        bool // when true, pageSize is set without clamping
 	viewType           query.ViewType
+	viewTypeSet        bool // tracks whether viewType was explicitly set (fixes ViewSenders iota 0 collision)
 	level              viewLevel
 	dataDir            string
 	version            string
@@ -154,6 +155,7 @@ func (b *TestModelBuilder) WithLevel(level viewLevel) *TestModelBuilder {
 
 func (b *TestModelBuilder) WithViewType(vt query.ViewType) *TestModelBuilder {
 	b.viewType = vt
+	b.viewTypeSet = true
 	return b
 }
 
@@ -288,7 +290,7 @@ func (b *TestModelBuilder) configureState(m *Model) {
 		m.level = b.level
 	}
 
-	if b.viewType != 0 {
+	if b.viewTypeSet {
 		m.viewType = b.viewType
 	}
 
