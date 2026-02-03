@@ -4,7 +4,13 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"sync/atomic"
+)
+
+// Operation constants for call tracking.
+const (
+	OpTrash       = "trash"
+	OpDelete      = "delete"
+	OpBatchDelete = "batch_delete"
 )
 
 // DeletionMockAPI is a mock Gmail API specifically designed for testing deletion
@@ -28,9 +34,9 @@ type DeletionMockAPI struct {
 	TransientDeleteFailures map[string]int
 
 	// Rate limit simulation
-	RateLimitAfterCalls int   // Trigger rate limit after this many calls (0 = disabled)
-	RateLimitDuration   int   // Seconds to suggest retry (for 429 Retry-After)
-	rateLimitCallCount  int32 // atomic counter
+	RateLimitAfterCalls int // Trigger rate limit after this many calls (0 = disabled)
+	RateLimitDuration   int // Seconds to suggest retry (for 429 Retry-After)
+	rateLimitCallCount  int // protected by mu
 
 	// Call tracking
 	TrashCalls       []string   // Message IDs passed to TrashMessage
@@ -48,7 +54,7 @@ type DeletionMockAPI struct {
 
 // DeletionCall represents a single API call for sequence tracking.
 type DeletionCall struct {
-	Operation string   // "trash", "delete", "batch_delete"
+	Operation string   // OpTrash, OpDelete, or OpBatchDelete
 	MessageID string   // For single operations
 	BatchIDs  []string // For batch operations
 	Error     error    // Error returned (nil for success)
@@ -69,38 +75,23 @@ func (m *DeletionMockAPI) TrashMessage(ctx context.Context, messageID string) er
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Check rate limit
 	if err := m.checkRateLimit(); err != nil {
-		m.recordCall("trash", messageID, nil, err)
+		m.recordCall(OpTrash, messageID, nil, err)
 		return err
 	}
 
-	// Run hook if set
 	if m.BeforeTrash != nil {
 		if err := m.BeforeTrash(messageID); err != nil {
-			m.recordCall("trash", messageID, nil, err)
+			m.recordCall(OpTrash, messageID, nil, err)
 			return err
 		}
 	}
 
 	m.TrashCalls = append(m.TrashCalls, messageID)
 
-	// Check transient failures first
-	if failures, ok := m.TransientTrashFailures[messageID]; ok && failures > 0 {
-		m.TransientTrashFailures[messageID] = failures - 1
-		err := fmt.Errorf("transient error (retries remaining: %d)", failures-1)
-		m.recordCall("trash", messageID, nil, err)
-		return err
-	}
-
-	// Check permanent errors
-	if err, ok := m.TrashErrors[messageID]; ok {
-		m.recordCall("trash", messageID, nil, err)
-		return err
-	}
-
-	m.recordCall("trash", messageID, nil, nil)
-	return nil
+	err := m.checkErrors(messageID, m.TransientTrashFailures, m.TrashErrors)
+	m.recordCall(OpTrash, messageID, nil, err)
+	return err
 }
 
 // DeleteMessage simulates permanently deleting a message with error injection.
@@ -108,37 +99,35 @@ func (m *DeletionMockAPI) DeleteMessage(ctx context.Context, messageID string) e
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Check rate limit
 	if err := m.checkRateLimit(); err != nil {
-		m.recordCall("delete", messageID, nil, err)
+		m.recordCall(OpDelete, messageID, nil, err)
 		return err
 	}
 
-	// Run hook if set
 	if m.BeforeDelete != nil {
 		if err := m.BeforeDelete(messageID); err != nil {
-			m.recordCall("delete", messageID, nil, err)
+			m.recordCall(OpDelete, messageID, nil, err)
 			return err
 		}
 	}
 
 	m.DeleteCalls = append(m.DeleteCalls, messageID)
 
-	// Check transient failures first
-	if failures, ok := m.TransientDeleteFailures[messageID]; ok && failures > 0 {
-		m.TransientDeleteFailures[messageID] = failures - 1
-		err := fmt.Errorf("transient error (retries remaining: %d)", failures-1)
-		m.recordCall("delete", messageID, nil, err)
+	err := m.checkErrors(messageID, m.TransientDeleteFailures, m.DeleteErrors)
+	m.recordCall(OpDelete, messageID, nil, err)
+	return err
+}
+
+// checkErrors checks transient and permanent error maps for a message.
+// Must be called with mutex held.
+func (m *DeletionMockAPI) checkErrors(messageID string, transientFailures map[string]int, permanentErrors map[string]error) error {
+	if failures, ok := transientFailures[messageID]; ok && failures > 0 {
+		transientFailures[messageID] = failures - 1
+		return fmt.Errorf("transient error (retries remaining: %d)", failures-1)
+	}
+	if err, ok := permanentErrors[messageID]; ok {
 		return err
 	}
-
-	// Check permanent errors
-	if err, ok := m.DeleteErrors[messageID]; ok {
-		m.recordCall("delete", messageID, nil, err)
-		return err
-	}
-
-	m.recordCall("delete", messageID, nil, nil)
 	return nil
 }
 
@@ -149,14 +138,14 @@ func (m *DeletionMockAPI) BatchDeleteMessages(ctx context.Context, messageIDs []
 
 	// Check rate limit
 	if err := m.checkRateLimit(); err != nil {
-		m.recordCall("batch_delete", "", messageIDs, err)
+		m.recordCall(OpBatchDelete, "", messageIDs, err)
 		return err
 	}
 
 	// Run hook if set
 	if m.BeforeBatchDelete != nil {
 		if err := m.BeforeBatchDelete(messageIDs); err != nil {
-			m.recordCall("batch_delete", "", messageIDs, err)
+			m.recordCall(OpBatchDelete, "", messageIDs, err)
 			return err
 		}
 	}
@@ -164,11 +153,11 @@ func (m *DeletionMockAPI) BatchDeleteMessages(ctx context.Context, messageIDs []
 	m.BatchDeleteCalls = append(m.BatchDeleteCalls, messageIDs)
 
 	if m.BatchDeleteError != nil {
-		m.recordCall("batch_delete", "", messageIDs, m.BatchDeleteError)
+		m.recordCall(OpBatchDelete, "", messageIDs, m.BatchDeleteError)
 		return m.BatchDeleteError
 	}
 
-	m.recordCall("batch_delete", "", messageIDs, nil)
+	m.recordCall(OpBatchDelete, "", messageIDs, nil)
 	return nil
 }
 
@@ -179,8 +168,8 @@ func (m *DeletionMockAPI) checkRateLimit() error {
 		return nil
 	}
 
-	count := atomic.AddInt32(&m.rateLimitCallCount, 1)
-	if int(count) > m.RateLimitAfterCalls {
+	m.rateLimitCallCount++
+	if m.rateLimitCallCount > m.RateLimitAfterCalls {
 		return &RateLimitError{
 			RetryAfter: m.RateLimitDuration,
 		}
@@ -240,7 +229,7 @@ func (m *DeletionMockAPI) Reset() {
 	m.BatchDeleteError = nil
 	m.RateLimitAfterCalls = 0
 	m.RateLimitDuration = 0
-	atomic.StoreInt32(&m.rateLimitCallCount, 0)
+	m.rateLimitCallCount = 0
 
 	m.TrashCalls = nil
 	m.DeleteCalls = nil
