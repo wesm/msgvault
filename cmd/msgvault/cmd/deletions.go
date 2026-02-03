@@ -476,6 +476,8 @@ func (p *CLIDeletionProgress) OnStart(total int) {
 	p.startTime = time.Now()
 	p.lastPrint = time.Time{} // Force first print
 	p.tty = isTTY()
+	// Show initial progress immediately so it doesn't look like it's hanging
+	p.OnProgress(0, 0, 0)
 }
 
 func (p *CLIDeletionProgress) formatDuration(d time.Duration) string {
