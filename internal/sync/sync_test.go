@@ -23,17 +23,7 @@ func TestFullSync(t *testing.T) {
 		t.Errorf("expected history ID 12345, got %d", summary.FinalHistoryID)
 	}
 
-	// Verify API calls
-	if env.Mock.ProfileCalls != 1 {
-		t.Errorf("expected 1 profile call, got %d", env.Mock.ProfileCalls)
-	}
-	if env.Mock.LabelsCalls != 1 {
-		t.Errorf("expected 1 labels call, got %d", env.Mock.LabelsCalls)
-	}
-	if len(env.Mock.GetMessageCalls) != 3 {
-		t.Errorf("expected 3 message fetches, got %d", len(env.Mock.GetMessageCalls))
-	}
-
+	assertMockCalls(t, env, 1, 1, 3)
 	assertMessageCount(t, env.Store, 3)
 }
 
@@ -184,10 +174,7 @@ func TestFullSyncPagination(t *testing.T) {
 
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, 6, -1, -1, -1)
-
-	if env.Mock.ListMessagesCalls != 3 {
-		t.Errorf("expected 3 list calls (one per page), got %d", env.Mock.ListMessagesCalls)
-	}
+	assertListMessagesCalls(t, env, 3)
 }
 
 func TestSyncerWithLogger(t *testing.T) {
@@ -422,24 +409,59 @@ func TestFullSyncAttachmentDeduplication(t *testing.T) {
 	}
 }
 
-func TestFullSyncNoSubject(t *testing.T) {
-	env := newTestEnv(t)
-	env.Mock.Profile.MessagesTotal = 1
-	env.Mock.Profile.HistoryID = 12345
-	env.Mock.AddMessage("msg-no-subject", testMIMENoSubject(), []string{"INBOX"})
+// TestFullSync_MessageVariations consolidates tests for various MIME message formats.
+func TestFullSync_MessageVariations(t *testing.T) {
+	tests := []struct {
+		name  string
+		mime  func() []byte
+		check func(*testing.T, *TestEnv)
+	}{
+		{
+			name: "NoSubject",
+			mime: testMIMENoSubject,
+		},
+		{
+			name: "MultipleRecipients",
+			mime: testMIMEMultipleRecipients,
+		},
+		{
+			name: "HTMLOnly",
+			mime: func() []byte {
+				return testemail.NewMessage().
+					Subject("HTML Only").
+					ContentType(`text/html; charset="utf-8"`).
+					Body("<html><body><p>This is HTML only content.</p></body></html>").
+					Bytes()
+			},
+		},
+		{
+			name: "DuplicateRecipients",
+			mime: testMIMEDuplicateRecipients,
+			check: func(t *testing.T, env *TestEnv) {
+				assertRecipientCount(t, env.Store, "msg", "to", 2)
+				assertRecipientCount(t, env.Store, "msg", "cc", 1)
+				assertRecipientCount(t, env.Store, "msg", "bcc", 1)
+				assertDisplayName(t, env.Store, "msg", "to", "duplicate@example.com", "Duplicate Person")
+				assertDisplayName(t, env.Store, "msg", "cc", "cc-dup@example.com", "CC Duplicate")
+			},
+		},
+	}
 
-	summary := runFullSync(t, env)
-	assertSummary(t, summary, 1, -1, -1, -1)
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newTestEnv(t)
+			seedMessages(env, 1, 12345, "msg")
+			env.Mock.Messages["msg"].Raw = tt.mime()
 
-func TestFullSyncMultipleRecipients(t *testing.T) {
-	env := newTestEnv(t)
-	env.Mock.Profile.MessagesTotal = 1
-	env.Mock.Profile.HistoryID = 12345
-	env.Mock.AddMessage("msg-multi-recip", testMIMEMultipleRecipients(), []string{"INBOX"})
+			summary := runFullSync(t, env)
+			assertSummary(t, summary, 1, 0, -1, -1)
+			assertMessageCount(t, env.Store, 1)
 
-	summary := runFullSync(t, env)
-	assertSummary(t, summary, 1, -1, -1, -1)
+			if tt.check != nil {
+				tt.check(t, env)
+			}
+		})
+	}
 }
 
 func TestFullSyncWithMIMEParseError(t *testing.T) {
@@ -533,47 +555,8 @@ func TestFullSyncResumeWithCursor(t *testing.T) {
 	}
 	assertSummary(t, summary, 4, -1, -1, -1)
 
-	if env.Mock.ListMessagesCalls != 1 {
-		t.Errorf("expected 1 ListMessages call (resumed from page_1), got %d", env.Mock.ListMessagesCalls)
-	}
+	assertListMessagesCalls(t, env, 1)
 	assertMessageCount(t, env.Store, 4)
-}
-
-func TestFullSyncHTMLOnlyMessage(t *testing.T) {
-	env := newTestEnv(t)
-
-	htmlOnlyMIME := testemail.NewMessage().
-		Subject("HTML Only").
-		ContentType(`text/html; charset="utf-8"`).
-		Body("<html><body><p>This is HTML only content.</p></body></html>").
-		Bytes()
-
-	env.Mock.Profile.MessagesTotal = 1
-	env.Mock.Profile.HistoryID = 12345
-	env.Mock.AddMessage("msg-html-only", htmlOnlyMIME, []string{"INBOX"})
-
-	summary := runFullSync(t, env)
-	assertSummary(t, summary, 1, -1, -1, -1)
-}
-
-func TestFullSyncDuplicateRecipients(t *testing.T) {
-	env := newTestEnv(t)
-	env.Mock.Profile.MessagesTotal = 1
-	env.Mock.Profile.HistoryID = 12345
-	env.Mock.AddMessage("msg-dup-recip", testMIMEDuplicateRecipients(), []string{"INBOX"})
-
-	summary := runFullSync(t, env)
-	assertSummary(t, summary, 1, 0, -1, -1)
-	assertMessageCount(t, env.Store, 1)
-
-	// Verify recipients are deduplicated
-	assertRecipientCount(t, env.Store, "msg-dup-recip", "to", 2)
-	assertRecipientCount(t, env.Store, "msg-dup-recip", "cc", 1)
-	assertRecipientCount(t, env.Store, "msg-dup-recip", "bcc", 1)
-
-	// Verify display name preference: non-empty name preferred
-	assertDisplayName(t, env.Store, "msg-dup-recip", "to", "duplicate@example.com", "Duplicate Person")
-	assertDisplayName(t, env.Store, "msg-dup-recip", "cc", "cc-dup@example.com", "CC Duplicate")
 }
 
 func TestFullSyncDateFallbackToInternalDate(t *testing.T) {

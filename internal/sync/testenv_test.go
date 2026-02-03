@@ -162,6 +162,29 @@ func mustStats(t *testing.T, st *store.Store) *store.Stats {
 	return stats
 }
 
+// assertMockCalls verifies the expected number of API calls on the mock.
+// Pass -1 to skip checking a particular call count.
+func assertMockCalls(t *testing.T, env *TestEnv, profile, labels, messages int) {
+	t.Helper()
+	if profile >= 0 && env.Mock.ProfileCalls != profile {
+		t.Errorf("profile calls: got %d, want %d", env.Mock.ProfileCalls, profile)
+	}
+	if labels >= 0 && env.Mock.LabelsCalls != labels {
+		t.Errorf("labels calls: got %d, want %d", env.Mock.LabelsCalls, labels)
+	}
+	if messages >= 0 && len(env.Mock.GetMessageCalls) != messages {
+		t.Errorf("message fetches: got %d, want %d", len(env.Mock.GetMessageCalls), messages)
+	}
+}
+
+// assertListMessagesCalls verifies the number of ListMessages API calls (pagination).
+func assertListMessagesCalls(t *testing.T, env *TestEnv, want int) {
+	t.Helper()
+	if env.Mock.ListMessagesCalls != want {
+		t.Errorf("ListMessages calls: got %d, want %d", env.Mock.ListMessagesCalls, want)
+	}
+}
+
 // assertMessageCount checks the message count in the store.
 func assertMessageCount(t *testing.T, st *store.Store, want int64) {
 	t.Helper()
