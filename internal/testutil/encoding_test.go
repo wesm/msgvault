@@ -44,8 +44,8 @@ func TestEncodedSamplesAllSliceFieldsDeepCopied(t *testing.T) {
 				// For []byte, mutate the first byte
 				field.Index(0).Set(reflect.ValueOf(field.Index(0).Interface().(byte) ^ 0xFF))
 			} else {
-				// For other slice types, set the first element to a new zero value
-				field.Index(0).Set(reflect.Zero(field.Type().Elem()))
+				// For other slice types, use mutateSliceElement to guarantee a change
+				mutateSliceElement(t, field, 0)
 			}
 		}
 	}
@@ -85,7 +85,10 @@ func TestEncodedSamplesAllFieldsCopied(t *testing.T) {
 		origField := original.Field(i)
 		copyField := copied.Field(i)
 
-		// Skip unexported fields (reflect cannot access them)
+		// Skip unexported fields (reflect cannot access their values).
+		// Note: This means unexported fields added to EncodedSamplesT won't be
+		// validated by this test. To maintain coverage, keep EncodedSamplesT fields
+		// exported, or add explicit tests for any unexported fields.
 		if !origField.CanInterface() {
 			continue
 		}
@@ -110,5 +113,69 @@ func TestEncodedSamplesAllFieldsCopied(t *testing.T) {
 				t.Errorf("Field %s: value mismatch", fieldName)
 			}
 		}
+	}
+}
+
+// mutateSliceElement mutates the element at index idx of a slice to guarantee
+// a different value. This handles the case where the original value might
+// already be zero, making a simple "set to zero" mutation a no-op.
+func mutateSliceElement(t *testing.T, slice reflect.Value, idx int) {
+	t.Helper()
+	elem := slice.Index(idx)
+	elemKind := elem.Kind()
+
+	switch elemKind {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		// Increment to guarantee change (works even if original is 0)
+		elem.SetInt(elem.Int() + 1)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		// Increment to guarantee change (works even if original is 0)
+		elem.SetUint(elem.Uint() + 1)
+	case reflect.Float32, reflect.Float64:
+		// Add 1.0 to guarantee change
+		elem.SetFloat(elem.Float() + 1.0)
+	case reflect.Bool:
+		// Toggle the boolean
+		elem.SetBool(!elem.Bool())
+	case reflect.String:
+		// Append to guarantee change (works even if original is empty)
+		elem.SetString(elem.String() + "_mutated")
+	case reflect.Struct:
+		// For structs, try to mutate the first settable field
+		for i := 0; i < elem.NumField(); i++ {
+			field := elem.Field(i)
+			if field.CanSet() {
+				mutateValue(t, field)
+				return
+			}
+		}
+		t.Logf("Warning: could not mutate struct element at index %d (no settable fields)", idx)
+	case reflect.Ptr:
+		if !elem.IsNil() && elem.Elem().CanSet() {
+			mutateValue(t, elem.Elem())
+		} else {
+			t.Logf("Warning: could not mutate pointer element at index %d", idx)
+		}
+	default:
+		t.Logf("Warning: unhandled slice element kind %v at index %d", elemKind, idx)
+	}
+}
+
+// mutateValue mutates a single reflect.Value to guarantee a different value.
+func mutateValue(t *testing.T, v reflect.Value) {
+	t.Helper()
+	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		v.SetInt(v.Int() + 1)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		v.SetUint(v.Uint() + 1)
+	case reflect.Float32, reflect.Float64:
+		v.SetFloat(v.Float() + 1.0)
+	case reflect.Bool:
+		v.SetBool(!v.Bool())
+	case reflect.String:
+		v.SetString(v.String() + "_mutated")
+	default:
+		t.Logf("Warning: unhandled value kind %v for mutation", v.Kind())
 	}
 }
