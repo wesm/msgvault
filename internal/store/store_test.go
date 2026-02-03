@@ -24,13 +24,19 @@ func TestStore_Open(t *testing.T) {
 }
 
 func TestStore_GetStats_Empty(t *testing.T) {
-	f := storetest.New(t)
+	st := testutil.NewTestStore(t)
 
-	stats, err := f.Store.GetStats()
+	stats, err := st.GetStats()
 	testutil.MustNoErr(t, err, "GetStats()")
 
 	if stats.MessageCount != 0 {
 		t.Errorf("MessageCount = %d, want 0", stats.MessageCount)
+	}
+	if stats.ThreadCount != 0 {
+		t.Errorf("ThreadCount = %d, want 0", stats.ThreadCount)
+	}
+	if stats.SourceCount != 0 {
+		t.Errorf("SourceCount = %d, want 0", stats.SourceCount)
 	}
 }
 
