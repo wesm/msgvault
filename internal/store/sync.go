@@ -13,13 +13,23 @@ const (
 )
 
 // dbTimeLayouts lists formats used by SQLite/go-sqlite3 for timestamp storage.
-// go-sqlite3 may return RFC3339 for DATETIME columns on file-based databases,
-// while datetime('now') returns the space-separated format.
+// This matches the full set from SQLiteTimestampFormats in mattn/go-sqlite3,
+// plus RFC3339/RFC3339Nano as fallbacks for maximum compatibility.
+// The order matters: more specific formats (with fractional seconds/timezones) come first.
 var dbTimeLayouts = []string{
+	// Formats from mattn/go-sqlite3 SQLiteTimestampFormats
+	"2006-01-02 15:04:05.999999999-07:00", // space-separated with fractional seconds and TZ
+	"2006-01-02T15:04:05.999999999-07:00", // T-separated with fractional seconds and TZ
+	"2006-01-02 15:04:05.999999999",       // space-separated with fractional seconds
+	"2006-01-02T15:04:05.999999999",       // T-separated with fractional seconds
 	"2006-01-02 15:04:05",                 // SQLite datetime('now') format
-	time.RFC3339,                          // go-sqlite3 DATETIME column format
-	"2006-01-02T15:04:05Z",                // RFC3339 without timezone offset
-	"2006-01-02T15:04:05.999999999Z07:00", // RFC3339Nano
+	"2006-01-02T15:04:05",                 // T-separated basic
+	"2006-01-02 15:04",                    // space-separated without seconds
+	"2006-01-02T15:04",                    // T-separated without seconds
+	"2006-01-02",                          // date only
+	// Additional fallback formats
+	time.RFC3339,     // go-sqlite3 DATETIME column format (e.g., "2006-01-02T15:04:05Z")
+	time.RFC3339Nano, // RFC3339 with nanoseconds (e.g., "2006-01-02T15:04:05.999999999Z07:00")
 }
 
 // scanner is satisfied by both *sql.Row and *sql.Rows.
@@ -48,9 +58,11 @@ func parseNullTime(ns sql.NullString) (sql.NullTime, error) {
 	return sql.NullTime{Time: t, Valid: true}, nil
 }
 
-func parseTime(ns sql.NullString, field string) (time.Time, error) {
+// parseRequiredTime parses a timestamp that must not be NULL.
+// Use this for required fields like created_at/updated_at.
+func parseRequiredTime(ns sql.NullString, field string) (time.Time, error) {
 	if !ns.Valid {
-		return time.Time{}, nil
+		return time.Time{}, fmt.Errorf("%s: required timestamp is NULL", field)
 	}
 	t, err := parseDBTime(ns.String)
 	if err != nil {
@@ -75,11 +87,11 @@ func scanSource(sc scanner) (*Source, error) {
 	if err != nil {
 		return nil, fmt.Errorf("source %d: last_sync_at: %w", source.ID, err)
 	}
-	source.CreatedAt, err = parseTime(createdAt, "created_at")
+	source.CreatedAt, err = parseRequiredTime(createdAt, "created_at")
 	if err != nil {
 		return nil, fmt.Errorf("source %d: %w", source.ID, err)
 	}
-	source.UpdatedAt, err = parseTime(updatedAt, "updated_at")
+	source.UpdatedAt, err = parseRequiredTime(updatedAt, "updated_at")
 	if err != nil {
 		return nil, fmt.Errorf("source %d: %w", source.ID, err)
 	}
