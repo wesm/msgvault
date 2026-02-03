@@ -36,11 +36,17 @@ func TestDeletionMockAPI_CallSequence(t *testing.T) {
 func TestDeletionMockAPI_Reset(t *testing.T) {
 	mockAPI, ctx := setupDeletionMockTest(t)
 
-	// Dirty all trackable fields
-	mockAPI.TrashErrors["msg1"] = errors.New("error")
+	// Dirty all trackable fields with successful calls
 	_ = mockAPI.TrashMessage(ctx, "msg1")
 	_ = mockAPI.DeleteMessage(ctx, "msg2")
 	_ = mockAPI.BatchDeleteMessages(ctx, []string{"msg3"})
+
+	// Also set error maps to verify they get cleared
+	mockAPI.TrashErrors["msg-err"] = errors.New("error")
+	mockAPI.DeleteErrors["msg-err"] = errors.New("error")
+	mockAPI.BatchDeleteError = errors.New("error")
+
+	// Set hooks to verify they get cleared
 	mockAPI.BeforeTrash = func(string) error { return nil }
 	mockAPI.BeforeDelete = func(string) error { return nil }
 	mockAPI.BeforeBatchDelete = func([]string) error { return nil }
@@ -49,6 +55,12 @@ func TestDeletionMockAPI_Reset(t *testing.T) {
 
 	if len(mockAPI.TrashErrors) != 0 {
 		t.Error("TrashErrors not cleared")
+	}
+	if len(mockAPI.DeleteErrors) != 0 {
+		t.Error("DeleteErrors not cleared")
+	}
+	if mockAPI.BatchDeleteError != nil {
+		t.Error("BatchDeleteError not cleared")
 	}
 	if len(mockAPI.TrashCalls) != 0 {
 		t.Error("TrashCalls not cleared")
@@ -106,45 +118,57 @@ func TestDeletionMockAPI_Close(t *testing.T) {
 func TestDeletionMockAPI_Hooks(t *testing.T) {
 	tests := []struct {
 		name      string
-		setupHook func(*DeletionMockAPI)
+		setupHook func(*DeletionMockAPI, *bool)
 		act       func(context.Context, *DeletionMockAPI) error
 		wantErr   bool
 	}{
 		{
-			name:      "BeforeTrash allow",
-			setupHook: func(m *DeletionMockAPI) { m.BeforeTrash = func(string) error { return nil } },
-			act:       func(ctx context.Context, m *DeletionMockAPI) error { return m.TrashMessage(ctx, "msg1") },
-			wantErr:   false,
+			name: "BeforeTrash allow",
+			setupHook: func(m *DeletionMockAPI, called *bool) {
+				m.BeforeTrash = func(string) error { *called = true; return nil }
+			},
+			act:     func(ctx context.Context, m *DeletionMockAPI) error { return m.TrashMessage(ctx, "msg1") },
+			wantErr: false,
 		},
 		{
-			name:      "BeforeTrash block",
-			setupHook: func(m *DeletionMockAPI) { m.BeforeTrash = func(string) error { return errors.New("blocked") } },
-			act:       func(ctx context.Context, m *DeletionMockAPI) error { return m.TrashMessage(ctx, "msg1") },
-			wantErr:   true,
+			name: "BeforeTrash block",
+			setupHook: func(m *DeletionMockAPI, called *bool) {
+				m.BeforeTrash = func(string) error { *called = true; return errors.New("blocked") }
+			},
+			act:     func(ctx context.Context, m *DeletionMockAPI) error { return m.TrashMessage(ctx, "msg1") },
+			wantErr: true,
 		},
 		{
-			name:      "BeforeDelete allow",
-			setupHook: func(m *DeletionMockAPI) { m.BeforeDelete = func(string) error { return nil } },
-			act:       func(ctx context.Context, m *DeletionMockAPI) error { return m.DeleteMessage(ctx, "msg1") },
-			wantErr:   false,
+			name: "BeforeDelete allow",
+			setupHook: func(m *DeletionMockAPI, called *bool) {
+				m.BeforeDelete = func(string) error { *called = true; return nil }
+			},
+			act:     func(ctx context.Context, m *DeletionMockAPI) error { return m.DeleteMessage(ctx, "msg1") },
+			wantErr: false,
 		},
 		{
-			name:      "BeforeDelete block",
-			setupHook: func(m *DeletionMockAPI) { m.BeforeDelete = func(string) error { return errors.New("blocked") } },
-			act:       func(ctx context.Context, m *DeletionMockAPI) error { return m.DeleteMessage(ctx, "msg1") },
-			wantErr:   true,
+			name: "BeforeDelete block",
+			setupHook: func(m *DeletionMockAPI, called *bool) {
+				m.BeforeDelete = func(string) error { *called = true; return errors.New("blocked") }
+			},
+			act:     func(ctx context.Context, m *DeletionMockAPI) error { return m.DeleteMessage(ctx, "msg1") },
+			wantErr: true,
 		},
 		{
-			name:      "BeforeBatchDelete allow",
-			setupHook: func(m *DeletionMockAPI) { m.BeforeBatchDelete = func([]string) error { return nil } },
+			name: "BeforeBatchDelete allow",
+			setupHook: func(m *DeletionMockAPI, called *bool) {
+				m.BeforeBatchDelete = func([]string) error { *called = true; return nil }
+			},
 			act: func(ctx context.Context, m *DeletionMockAPI) error {
 				return m.BatchDeleteMessages(ctx, []string{"msg1", "msg2"})
 			},
 			wantErr: false,
 		},
 		{
-			name:      "BeforeBatchDelete block",
-			setupHook: func(m *DeletionMockAPI) { m.BeforeBatchDelete = func([]string) error { return errors.New("blocked") } },
+			name: "BeforeBatchDelete block",
+			setupHook: func(m *DeletionMockAPI, called *bool) {
+				m.BeforeBatchDelete = func([]string) error { *called = true; return errors.New("blocked") }
+			},
 			act: func(ctx context.Context, m *DeletionMockAPI) error {
 				return m.BatchDeleteMessages(ctx, []string{"msg1", "msg2"})
 			},
@@ -154,8 +178,12 @@ func TestDeletionMockAPI_Hooks(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mockAPI, ctx := setupDeletionMockTest(t)
-			tt.setupHook(mockAPI)
+			hookCalled := false
+			tt.setupHook(mockAPI, &hookCalled)
 			err := tt.act(ctx, mockAPI)
+			if !hookCalled {
+				t.Error("hook was not called")
+			}
 			if (err != nil) != tt.wantErr {
 				t.Errorf("error = %v, wantErr %v", err, tt.wantErr)
 			}
