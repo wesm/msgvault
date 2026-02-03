@@ -357,10 +357,16 @@ func (m *Manager) MoveManifest(id string, fromStatus, toStatus Status) error {
 	return os.Rename(fromPath, toPath)
 }
 
-// CancelManifest removes a pending manifest.
+// CancelManifest removes a pending or in-progress manifest.
 func (m *Manager) CancelManifest(id string) error {
-	path := filepath.Join(m.PendingDir(), id+".json")
-	return os.Remove(path)
+	// Try pending first, then in_progress
+	for _, dir := range []string{m.PendingDir(), m.InProgressDir()} {
+		path := filepath.Join(dir, id+".json")
+		if err := os.Remove(path); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("manifest %s not found in pending or in_progress", id)
 }
 
 // CreateManifest creates and saves a new manifest.

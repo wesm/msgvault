@@ -92,19 +92,79 @@ var showDeletionCmd = &cobra.Command{
 	},
 }
 
-var cancelDeletionCmd = &cobra.Command{
-	Use:   "cancel-deletion <batch-id>",
-	Short: "Cancel a pending deletion batch",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		batchID := args[0]
+var cancelAll bool
 
+var cancelDeletionCmd = &cobra.Command{
+	Use:   "cancel-deletion [batch-id]",
+	Short: "Cancel pending or in-progress deletion batches",
+	Long: `Cancel deletion batches by ID, or use --all to cancel all pending and in-progress batches.
+
+Examples:
+  msgvault cancel-deletion 20260202-195132-Senders-wingide-user
+  msgvault cancel-deletion --all`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
 		deletionsDir := filepath.Join(cfg.Data.DataDir, "deletions")
 		manager, err := deletion.NewManager(deletionsDir)
 		if err != nil {
 			return fmt.Errorf("create manager: %w", err)
 		}
 
+		if cancelAll {
+			count := 0
+			for _, listFn := range []func() ([]*deletion.Manifest, error){
+				manager.ListPending, manager.ListInProgress,
+			} {
+				manifests, err := listFn()
+				if err != nil {
+					continue
+				}
+				for _, m := range manifests {
+					if err := manager.CancelManifest(m.ID); err != nil {
+						fmt.Printf("  Failed to cancel %s: %v\n", m.ID, err)
+					} else {
+						fmt.Printf("  Cancelled: %s\n", m.ID)
+						count++
+					}
+				}
+			}
+			if count == 0 {
+				fmt.Println("No pending or in-progress batches to cancel.")
+			} else {
+				fmt.Printf("Cancelled %d batch(es).\n", count)
+			}
+			return nil
+		}
+
+		if len(args) == 0 {
+			// List available batches to help the user
+			fmt.Println("No batch ID specified. Available batches:")
+			fmt.Println()
+			found := false
+			for _, item := range []struct {
+				label  string
+				listFn func() ([]*deletion.Manifest, error)
+			}{
+				{"Pending", manager.ListPending},
+				{"In Progress", manager.ListInProgress},
+			} {
+				manifests, err := item.listFn()
+				if err != nil || len(manifests) == 0 {
+					continue
+				}
+				for _, m := range manifests {
+					fmt.Printf("  [%s] %s (%d messages)\n", item.label, m.ID, len(m.GmailIDs))
+					found = true
+				}
+			}
+			if !found {
+				fmt.Println("  (none)")
+			}
+			fmt.Println()
+			return fmt.Errorf("provide a batch ID or use --all")
+		}
+
+		batchID := args[0]
 		if err := manager.CancelManifest(batchID); err != nil {
 			return fmt.Errorf("cancel manifest: %w", err)
 		}
@@ -499,6 +559,7 @@ func init() {
 
 	rootCmd.AddCommand(listDeletionsCmd)
 	rootCmd.AddCommand(showDeletionCmd)
+	cancelDeletionCmd.Flags().BoolVar(&cancelAll, "all", false, "Cancel all pending and in-progress batches")
 	rootCmd.AddCommand(cancelDeletionCmd)
 	rootCmd.AddCommand(deleteStagedCmd)
 }

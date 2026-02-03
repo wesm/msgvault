@@ -181,7 +181,12 @@ func (e *Executor) Execute(ctx context.Context, manifestID string, opts *Execute
 				}
 			} else if isInsufficientScopeError(err) {
 				// Scope errors should propagate immediately — every subsequent
-				// message will fail for the same reason.
+				// message will fail for the same reason. Save checkpoint first.
+				manifest.Execution.LastProcessedIndex = i
+				manifest.Execution.Succeeded = succeeded
+				manifest.Execution.Failed = failed
+				manifest.Execution.FailedIDs = failedIDs
+				_ = manifest.Save(path)
 				return fmt.Errorf("delete message: %w", err)
 			} else {
 				e.logger.Warn("failed to delete message", "gmail_id", gmailID, "error", err)
@@ -339,9 +344,14 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 		batch := manifest.GmailIDs[i:end]
 
 		if err := e.client.BatchDeleteMessages(ctx, batch); err != nil {
-			// If it's a permission/scope error, return immediately — falling back
-			// to individual deletes would fail for the same reason.
+			// If it's a permission/scope error, save checkpoint and return
+			// immediately — falling back to individual deletes would fail
+			// for the same reason.
 			if isInsufficientScopeError(err) {
+				manifest.Execution.LastProcessedIndex = i
+				manifest.Execution.Succeeded = succeeded
+				manifest.Execution.Failed = failed
+				_ = manifest.Save(path)
 				return fmt.Errorf("batch delete: %w", err)
 			}
 			e.logger.Warn("batch delete failed, falling back to individual deletes", "start_index", i, "error", err)
@@ -355,6 +365,12 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 						if markErr := e.store.MarkMessageDeletedByGmailID(true, gmailID); markErr != nil {
 							e.logger.Warn("failed to mark message as deleted in DB", "gmail_id", gmailID, "error", markErr)
 						}
+					} else if isInsufficientScopeError(delErr) {
+						manifest.Execution.LastProcessedIndex = i
+						manifest.Execution.Succeeded = succeeded
+						manifest.Execution.Failed = failed
+						_ = manifest.Save(path)
+						return fmt.Errorf("delete message: %w", delErr)
 					} else {
 						failed++
 					}
