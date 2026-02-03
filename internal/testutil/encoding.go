@@ -116,13 +116,31 @@ func EncodedSamples() EncodedSamplesT {
 		srcField := original.Field(i)
 		dstField := copyElem.Field(i)
 
+		// Skip unexported fields (reflect cannot set them)
+		if !dstField.CanSet() {
+			continue
+		}
+
 		switch srcField.Kind() {
 		case reflect.Slice:
-			// Deep copy byte slices using standard library
-			dstField.SetBytes(bytes.Clone(srcField.Bytes()))
+			if srcField.IsNil() {
+				continue
+			}
+			// For []byte slices, use bytes.Clone for efficiency
+			if srcField.Type().Elem().Kind() == reflect.Uint8 {
+				dstField.SetBytes(bytes.Clone(srcField.Bytes()))
+			} else {
+				// Generic deep copy for other slice types
+				newSlice := reflect.MakeSlice(srcField.Type(), srcField.Len(), srcField.Cap())
+				reflect.Copy(newSlice, srcField)
+				dstField.Set(newSlice)
+			}
 		case reflect.String:
 			// Strings are immutable, direct copy is safe
 			dstField.SetString(srcField.String())
+		default:
+			// For any other assignable types, copy directly
+			dstField.Set(srcField)
 		}
 	}
 
