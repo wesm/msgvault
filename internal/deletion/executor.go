@@ -336,7 +336,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 	// Retry previously failed IDs before continuing with remaining messages
 	if len(retryIDs) > 0 {
 		e.logger.Info("retrying previously failed messages", "count", len(retryIDs))
-		for _, gmailID := range retryIDs {
+		for ri, gmailID := range retryIDs {
 			if delErr := e.client.DeleteMessage(ctx, gmailID); delErr != nil {
 				if isNotFoundError(delErr) {
 					e.logger.Debug("message already deleted", "gmail_id", gmailID)
@@ -345,10 +345,12 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 						e.logger.Warn("failed to mark deleted in DB", "gmail_id", gmailID, "error", markErr)
 					}
 				} else if isInsufficientScopeError(delErr) {
+					// Save only unattempted + already-failed IDs
+					remaining := append(failedIDs, retryIDs[ri:]...)
 					manifest.Execution.LastProcessedIndex = startIndex
 					manifest.Execution.Succeeded = succeeded
-					manifest.Execution.Failed = failed
-					manifest.Execution.FailedIDs = retryIDs // Preserve for next retry
+					manifest.Execution.Failed = len(remaining)
+					manifest.Execution.FailedIDs = remaining
 					if saveErr := manifest.Save(path); saveErr != nil {
 						e.logger.Warn("failed to save checkpoint", "error", saveErr)
 					}

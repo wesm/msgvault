@@ -762,6 +762,57 @@ func TestExecutor_ExecuteBatch_RetryPartialSuccess(t *testing.T) {
 	tc.AssertCompletedCount(1)
 }
 
+// TestExecutor_ExecuteBatch_RetryScopeErrorAfterPartialSuccess verifies that
+// a scope error during retry only preserves unattempted+failed IDs, not
+// already-succeeded ones.
+func TestExecutor_ExecuteBatch_RetryScopeErrorAfterPartialSuccess(t *testing.T) {
+	tc := NewTestContext(t)
+	// msg3 hits scope error; msg2 succeeds before it, msg4 is unattempted
+	tc.SimulateScopeError("msg3")
+
+	gmailIDs := msgIDs(5)
+	manifest := NewManifest("retry scope partial", gmailIDs)
+	manifest.Status = StatusInProgress
+	manifest.Execution = &Execution{
+		StartedAt:          time.Now().Add(-time.Hour),
+		Method:             MethodDelete,
+		Succeeded:          2,
+		Failed:             3,
+		FailedIDs:          []string{"msg2", "msg3", "msg4"},
+		LastProcessedIndex: 5,
+	}
+	if err := tc.Mgr.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest() error = %v", err)
+	}
+
+	err := tc.ExecuteBatch(manifest.ID)
+	if err == nil {
+		t.Fatal("ExecuteBatch() should return error for scope error during retry")
+	}
+	if !strings.Contains(err.Error(), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+		t.Errorf("error should contain scope message, got: %v", err)
+	}
+
+	// msg2 succeeded before the scope error on msg3
+	// Checkpoint should have: FailedIDs = [msg3, msg4] (current + unattempted)
+	m, _, err := tc.Mgr.GetManifest(manifest.ID)
+	if err != nil {
+		t.Fatalf("GetManifest() error = %v", err)
+	}
+	if m.Execution.Succeeded != 3 { // original 2 + msg2 retry
+		t.Errorf("Succeeded = %d, want 3", m.Execution.Succeeded)
+	}
+	if m.Execution.Failed != 2 { // msg3 + msg4
+		t.Errorf("Failed = %d, want 2", m.Execution.Failed)
+	}
+	if len(m.Execution.FailedIDs) != 2 {
+		t.Fatalf("FailedIDs count = %d, want 2", len(m.Execution.FailedIDs))
+	}
+	if m.Execution.FailedIDs[0] != "msg3" || m.Execution.FailedIDs[1] != "msg4" {
+		t.Errorf("FailedIDs = %v, want [msg3, msg4]", m.Execution.FailedIDs)
+	}
+}
+
 // TestNullProgress_AllMethods exercises all NullProgress methods for coverage.
 func TestNullProgress_AllMethods(t *testing.T) {
 	p := NullProgress{}

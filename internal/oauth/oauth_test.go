@@ -64,7 +64,10 @@ func TestHasScope(t *testing.T) {
 		Token:  oauth2.Token{AccessToken: "test", TokenType: "Bearer"},
 		Scopes: []string{"https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.modify"},
 	}
-	data, _ := json.Marshal(tf)
+	data, err := json.Marshal(tf)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(tokensDir, "test@gmail.com.json"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +141,10 @@ func TestHasScope_LegacyToken(t *testing.T) {
 
 	// Write a legacy token (no scopes field)
 	token := oauth2.Token{AccessToken: "test", TokenType: "Bearer"}
-	data, _ := json.Marshal(token)
+	data, err := json.Marshal(token)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(tokensDir, "legacy@gmail.com.json"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -166,15 +172,26 @@ func TestHasScopeMetadata(t *testing.T) {
 		Token:  oauth2.Token{AccessToken: "test", TokenType: "Bearer"},
 		Scopes: []string{"https://www.googleapis.com/auth/gmail.readonly"},
 	}
-	data, _ := json.Marshal(tf)
+	data, err := json.Marshal(tf)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(tokensDir, "scoped@gmail.com.json"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
 
 	// Legacy token (no scopes)
 	legacy := oauth2.Token{AccessToken: "test", TokenType: "Bearer"}
-	data, _ = json.Marshal(legacy)
+	data, err = json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(tokensDir, "legacy@gmail.com.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Corrupt token file
+	if err := os.WriteFile(filepath.Join(tokensDir, "corrupt@gmail.com.json"), []byte("not json"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -186,5 +203,8 @@ func TestHasScopeMetadata(t *testing.T) {
 	}
 	if mgr.HasScopeMetadata("missing@gmail.com") {
 		t.Error("expected HasScopeMetadata false for missing token")
+	}
+	if mgr.HasScopeMetadata("corrupt@gmail.com") {
+		t.Error("expected HasScopeMetadata false for corrupt token file")
 	}
 }
