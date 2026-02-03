@@ -68,26 +68,27 @@ func newMockEngine(rows []query.AggregateRow, messages []query.MessageSummary, d
 
 // TestModelBuilder helps construct Model instances for testing
 type TestModelBuilder struct {
-	rows              []query.AggregateRow
-	messages          []query.MessageSummary
-	messageDetail     *query.MessageDetail
-	gmailIDs          []string
-	accounts          []query.AccountInfo
-	width             int
-	height            int
-	pageSize          int  // explicit override; 0 means auto-calculate from height
-	rawPageSize       bool // when true, pageSize is set without clamping
-	viewType          query.ViewType
-	level             viewLevel
-	dataDir           string
-	version           string
-	loading           *bool // nil = auto (false if data provided), non-nil = explicit
-	modal             *modalType
-	accountFilter     *int64
-	stats             *query.TotalStats
-	contextStats      *query.TotalStats
-	activeSearchQuery string
-	activeSearchMode  *searchModeKind
+	rows               []query.AggregateRow
+	messages           []query.MessageSummary
+	messageDetail      *query.MessageDetail
+	gmailIDs           []string
+	accounts           []query.AccountInfo
+	width              int
+	height             int
+	pageSize           int  // explicit override; 0 means auto-calculate from height
+	rawPageSize        bool // when true, pageSize is set without clamping
+	viewType           query.ViewType
+	level              viewLevel
+	dataDir            string
+	version            string
+	loading            *bool // nil = auto (false if data provided), non-nil = explicit
+	modal              *modalType
+	accountFilter      *int64
+	stats              *query.TotalStats
+	contextStats       *query.TotalStats
+	activeSearchQuery  string
+	activeSearchMode   *searchModeKind
+	selectedAggregates *selectedAggregates
 }
 
 func NewBuilder() *TestModelBuilder {
@@ -174,6 +175,32 @@ func (b *TestModelBuilder) WithAccountFilter(id *int64) *TestModelBuilder {
 	return b
 }
 
+// selectedAggregates holds the aggregate selection state for the builder.
+type selectedAggregates struct {
+	keys     []string
+	viewType query.ViewType
+}
+
+// WithSelectedAggregates pre-populates aggregate selection with the given keys.
+// The viewType is inferred from the builder's viewType setting.
+func (b *TestModelBuilder) WithSelectedAggregates(keys ...string) *TestModelBuilder {
+	if b.selectedAggregates == nil {
+		b.selectedAggregates = &selectedAggregates{}
+	}
+	b.selectedAggregates.keys = keys
+	return b
+}
+
+// WithSelectedAggregatesViewType sets the viewType for aggregate selection.
+// Use this when the selection viewType differs from the model's viewType.
+func (b *TestModelBuilder) WithSelectedAggregatesViewType(vt query.ViewType) *TestModelBuilder {
+	if b.selectedAggregates == nil {
+		b.selectedAggregates = &selectedAggregates{}
+	}
+	b.selectedAggregates.viewType = vt
+	return b
+}
+
 func (b *TestModelBuilder) WithStats(stats *query.TotalStats) *TestModelBuilder {
 	b.stats = stats
 	return b
@@ -253,6 +280,17 @@ func (b *TestModelBuilder) Build() Model {
 		model.searchInput.SetValue(b.activeSearchQuery)
 	}
 
+	if b.selectedAggregates != nil {
+		for _, k := range b.selectedAggregates.keys {
+			model.selection.aggregateKeys[k] = true
+		}
+		if b.selectedAggregates.viewType != 0 {
+			model.selection.aggregateViewType = b.selectedAggregates.viewType
+		} else {
+			model.selection.aggregateViewType = model.viewType
+		}
+	}
+
 	return model
 }
 
@@ -275,6 +313,76 @@ func assertModal(t *testing.T, m Model, expected modalType) {
 	t.Helper()
 	if m.modal != expected {
 		t.Errorf("expected modal %v, got %v", expected, m.modal)
+	}
+}
+
+// assertModalCleared checks that the modal is dismissed and modalResult is empty.
+func assertModalCleared(t *testing.T, m Model) {
+	t.Helper()
+	if m.modal != modalNone {
+		t.Errorf("expected modalNone, got %v", m.modal)
+	}
+	if m.modalResult != "" {
+		t.Errorf("expected empty modalResult, got %q", m.modalResult)
+	}
+}
+
+// assertPendingManifestCleared checks that pendingManifest is nil.
+func assertPendingManifestCleared(t *testing.T, m Model) {
+	t.Helper()
+	if m.pendingManifest != nil {
+		t.Error("expected pendingManifest to be nil")
+	}
+}
+
+// assertPendingManifestGmailIDs checks that pendingManifest has the expected number of Gmail IDs.
+func assertPendingManifestGmailIDs(t *testing.T, m Model, expectedCount int) {
+	t.Helper()
+	if m.pendingManifest == nil {
+		t.Fatal("expected pendingManifest to be set")
+	}
+	if len(m.pendingManifest.GmailIDs) != expectedCount {
+		t.Errorf("expected %d Gmail IDs, got %d", expectedCount, len(m.pendingManifest.GmailIDs))
+	}
+}
+
+// assertSelectionViewTypeMatches checks that aggregateViewType matches the model's viewType.
+func assertSelectionViewTypeMatches(t *testing.T, m Model) {
+	t.Helper()
+	if m.selection.aggregateViewType != m.viewType {
+		t.Errorf("expected aggregateViewType %v to match viewType %v", m.selection.aggregateViewType, m.viewType)
+	}
+}
+
+// assertHasSelection checks that the model has at least one selection.
+func assertHasSelection(t *testing.T, m Model, expected bool) {
+	t.Helper()
+	if m.hasSelection() != expected {
+		t.Errorf("expected hasSelection()=%v, got %v", expected, m.hasSelection())
+	}
+}
+
+// assertMessageSelected checks that a specific message ID is selected.
+func assertMessageSelected(t *testing.T, m Model, id int64) {
+	t.Helper()
+	if !m.selection.messageIDs[id] {
+		t.Errorf("expected message ID %d to be selected", id)
+	}
+}
+
+// assertFilterKey checks the model's filterKey field.
+func assertFilterKey(t *testing.T, m Model, expected string) {
+	t.Helper()
+	if m.filterKey != expected {
+		t.Errorf("expected filterKey=%q, got %q", expected, m.filterKey)
+	}
+}
+
+// assertBreadcrumbCount checks the number of breadcrumbs.
+func assertBreadcrumbCount(t *testing.T, m Model, expected int) {
+	t.Helper()
+	if len(m.breadcrumbs) != expected {
+		t.Errorf("expected %d breadcrumbs, got %d", expected, len(m.breadcrumbs))
 	}
 }
 

@@ -82,10 +82,7 @@ func TestSelectionClearedOnViewSwitch(t *testing.T) {
 	model = applyAggregateKey(t, model, keyTab())
 
 	assertSelectionCount(t, model, 0)
-
-	if model.selection.aggregateViewType != model.viewType {
-		t.Errorf("expected aggregateViewType %v to match viewType %v", model.selection.aggregateViewType, model.viewType)
-	}
+	assertSelectionViewTypeMatches(t, model)
 }
 
 func TestSelectionClearedOnShiftTab(t *testing.T) {
@@ -121,90 +118,78 @@ func TestStageForDeletionWithAggregateSelection(t *testing.T) {
 		WithGmailIDs("msg1", "msg2").
 		Build()
 
-	// Select an aggregate
-	model.cursor = 0
-	model, _ = sendKey(t, model, key(' '))
-
-	// Stage for deletion with 'D'
+	model = selectRow(t, model, 0)
 	model, _ = sendKey(t, model, key('D'))
 
 	assertModal(t, model, modalDeleteConfirm)
-
-	if model.pendingManifest == nil {
-		t.Fatal("expected pendingManifest to be set")
-	}
-	if len(model.pendingManifest.GmailIDs) != 2 {
-		t.Errorf("expected 2 Gmail IDs, got %d", len(model.pendingManifest.GmailIDs))
-	}
+	assertPendingManifestGmailIDs(t, model, 2)
 }
 
-func TestStageForDeletionWithAccountFilter(t *testing.T) {
-	accountID := int64(1)
-	model := NewBuilder().
-		WithRows(makeRow("alice@example.com", 2)).
-		WithGmailIDs("msg1", "msg2").
-		WithStandardAccounts().
-		WithAccountFilter(&accountID).
-		Build()
-
-	model = selectRow(t, model, 0)
-
-	newModel, _ := model.stageForDeletion()
-	model = newModel.(Model)
-
-	assertPendingManifest(t, model, "user1@gmail.com")
-}
-
-func TestStageForDeletionWithSingleAccount(t *testing.T) {
-	model := NewBuilder().
-		WithRows(makeRow("alice@example.com", 2)).
-		WithGmailIDs("msg1", "msg2").
-		WithAccounts(query.AccountInfo{ID: 1, Identifier: "only@gmail.com"}).
-		Build()
-
-	model = selectRow(t, model, 0)
-
-	newModel, _ := model.stageForDeletion()
-	model = newModel.(Model)
-
-	assertPendingManifest(t, model, "only@gmail.com")
-}
-
-func TestStageForDeletionWithMultipleAccountsNoFilter(t *testing.T) {
-	model := NewBuilder().
-		WithRows(makeRow("alice@example.com", 2)).
-		WithGmailIDs("msg1", "msg2").
-		WithStandardAccounts().
-		Build()
-
-	model = selectRow(t, model, 0)
-
-	newModel, _ := model.stageForDeletion()
-	model = newModel.(Model)
-
-	assertPendingManifest(t, model, "")
-}
-
-func TestStageForDeletionWithAccountFilterNotFound(t *testing.T) {
+func TestStageForDeletion(t *testing.T) {
+	accountID1 := int64(1)
 	nonExistentID := int64(999)
-	model := NewBuilder().
-		WithRows(makeRow("alice@example.com", 2)).
-		WithGmailIDs("msg1", "msg2").
-		WithStandardAccounts().
-		WithAccountFilter(&nonExistentID).
-		Build()
 
-	model = selectRow(t, model, 0)
+	tests := []struct {
+		name             string
+		accountFilter    *int64
+		accounts         []query.AccountInfo
+		expectedAccount  string
+		checkViewWarning bool // whether to check for "Account not set" warning
+	}{
+		{
+			name:            "with account filter",
+			accountFilter:   &accountID1,
+			accounts:        testAccounts,
+			expectedAccount: "user1@gmail.com",
+		},
+		{
+			name:            "single account auto-selects",
+			accounts:        []query.AccountInfo{{ID: 1, Identifier: "only@gmail.com"}},
+			expectedAccount: "only@gmail.com",
+		},
+		{
+			name:            "multiple accounts no filter",
+			accounts:        testAccounts,
+			expectedAccount: "",
+		},
+		{
+			name:             "account filter not found",
+			accountFilter:    &nonExistentID,
+			accounts:         testAccounts,
+			expectedAccount:  "",
+			checkViewWarning: true,
+		},
+	}
 
-	newModel, _ := model.stageForDeletion()
-	model = newModel.(Model)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := NewBuilder().
+				WithRows(makeRow("alice@example.com", 2)).
+				WithGmailIDs("msg1", "msg2")
 
-	assertPendingManifest(t, model, "")
-	assertModal(t, model, modalDeleteConfirm)
+			if len(tc.accounts) > 0 {
+				b = b.WithAccounts(tc.accounts...)
+			}
+			if tc.accountFilter != nil {
+				b = b.WithAccountFilter(tc.accountFilter)
+			}
 
-	view := model.View()
-	if !strings.Contains(view, "Account not set") {
-		t.Errorf("expected 'Account not set' warning in delete confirm modal, view:\n%s", view)
+			model := b.Build()
+			model = selectRow(t, model, 0)
+
+			newModel, _ := model.stageForDeletion()
+			model = newModel.(Model)
+
+			assertPendingManifest(t, model, tc.expectedAccount)
+			assertModal(t, model, modalDeleteConfirm)
+
+			if tc.checkViewWarning {
+				view := model.View()
+				if !strings.Contains(view, "Account not set") {
+					t.Errorf("expected 'Account not set' warning in delete confirm modal, view:\n%s", view)
+				}
+			}
+		})
 	}
 }
 
@@ -217,16 +202,9 @@ func TestAKeyShowsAllMessages(t *testing.T) {
 	model, cmd = sendKey(t, model, key('a'))
 
 	assertLevel(t, model, levelMessageList)
-
-	if model.filterKey != "" {
-		t.Errorf("expected empty filterKey for all messages, got %q", model.filterKey)
-	}
-	if cmd == nil {
-		t.Error("expected command to load messages")
-	}
-	if len(model.breadcrumbs) != 1 {
-		t.Errorf("expected 1 breadcrumb, got %d", len(model.breadcrumbs))
-	}
+	assertFilterKey(t, model, "")
+	assertCmd(t, cmd, true)
+	assertBreadcrumbCount(t, model, 1)
 }
 
 func TestModalDismiss(t *testing.T) {
@@ -237,12 +215,7 @@ func TestModalDismiss(t *testing.T) {
 
 	model, _ = applyModalKey(t, model, key('x'))
 
-	if model.modal != modalNone {
-		t.Errorf("expected modalNone after dismissal, got %v", model.modal)
-	}
-	if model.modalResult != "" {
-		t.Error("expected modalResult to be cleared")
-	}
+	assertModalCleared(t, model)
 }
 
 func TestConfirmModalCancel(t *testing.T) {
@@ -253,12 +226,8 @@ func TestConfirmModalCancel(t *testing.T) {
 
 	model, _ = applyModalKey(t, model, key('n'))
 
-	if model.modal != modalNone {
-		t.Errorf("expected modalNone after cancel, got %v", model.modal)
-	}
-	if model.pendingManifest != nil {
-		t.Error("expected pendingManifest to be cleared")
-	}
+	assertModal(t, model, modalNone)
+	assertPendingManifestCleared(t, model)
 }
 
 func TestSelectionCount(t *testing.T) {
@@ -310,9 +279,7 @@ func TestDKeyAutoSelectsCurrentRow(t *testing.T) {
 		Build()
 	model.cursor = 1
 
-	if model.hasSelection() {
-		t.Error("expected no selection initially")
-	}
+	assertHasSelection(t, model, false)
 
 	m := applyAggregateKey(t, model, key('d'))
 
@@ -329,12 +296,9 @@ func TestDKeyWithExistingSelection(t *testing.T) {
 		WithGmailIDs("msg1", "msg2").
 		WithViewType(query.ViewSenders).
 		WithAccounts(query.AccountInfo{ID: 1, Identifier: "test@gmail.com"}).
+		WithSelectedAggregates("alice@example.com").
 		Build()
 	model.cursor = 1
-
-	// Pre-select alice (not the current row)
-	model.selection.aggregateKeys["alice@example.com"] = true
-	model.selection.aggregateViewType = query.ViewSenders
 
 	m := applyAggregateKey(t, model, key('d'))
 
@@ -353,15 +317,11 @@ func TestMessageListDKeyAutoSelectsCurrentMessage(t *testing.T) {
 		WithAccounts(query.AccountInfo{ID: 1, Identifier: "test@gmail.com"}).
 		Build()
 
-	if model.hasSelection() {
-		t.Error("expected no selection initially")
-	}
+	assertHasSelection(t, model, false)
 
 	m := applyMessageListKey(t, model, key('d'))
 
-	if !m.selection.messageIDs[1] {
-		t.Error("expected message ID 1 to be auto-selected")
-	}
+	assertMessageSelected(t, m, 1)
 	assertModal(t, m, modalDeleteConfirm)
 }
 
