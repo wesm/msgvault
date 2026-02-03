@@ -1,4 +1,4 @@
-package sync
+package textutil
 
 import (
 	"testing"
@@ -28,7 +28,7 @@ func TestEnsureUTF8_AlreadyValid(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ensureUTF8(string(tt.input))
+			result := EnsureUTF8(string(tt.input))
 			if result != tt.expected {
 				t.Errorf("got %q, want %q", result, tt.expected)
 			}
@@ -54,7 +54,7 @@ func TestEnsureUTF8_Windows1252(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ensureUTF8(string(tt.input))
+			result := EnsureUTF8(string(tt.input))
 			if result != tt.expected {
 				t.Errorf("got %q, want %q", result, tt.expected)
 			}
@@ -79,7 +79,7 @@ func TestEnsureUTF8_Latin1(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ensureUTF8(string(tt.input))
+			result := EnsureUTF8(string(tt.input))
 			if result != tt.expected {
 				t.Errorf("got %q, want %q", result, tt.expected)
 			}
@@ -102,7 +102,7 @@ func TestEnsureUTF8_AsianEncodings(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ensureUTF8(string(tt.input))
+			result := EnsureUTF8(string(tt.input))
 			if result != tt.expected {
 				t.Errorf("got %q, want %q", result, tt.expected)
 			}
@@ -130,7 +130,7 @@ func TestEnsureUTF8_MixedContent(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ensureUTF8(string(tt.input))
+			result := EnsureUTF8(string(tt.input))
 			testutil.AssertValidUTF8(t, result)
 			testutil.AssertContainsAll(t, result, tt.contains)
 		})
@@ -151,9 +151,9 @@ func TestSanitizeUTF8(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := sanitizeUTF8(tt.input)
+			result := SanitizeUTF8(tt.input)
 			if result != tt.expected {
-				t.Errorf("sanitizeUTF8(%q) = %q, want %q", tt.input, result, tt.expected)
+				t.Errorf("SanitizeUTF8(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
 			testutil.AssertValidUTF8(t, result)
 		})
@@ -190,15 +190,15 @@ func TestGetEncodingByName(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.charset, func(t *testing.T) {
-			enc := getEncodingByName(tt.charset)
+			enc := GetEncodingByName(tt.charset)
 			if tt.wantNil {
 				if enc != nil {
-					t.Errorf("getEncodingByName(%q) = %v, want nil", tt.charset, enc)
+					t.Errorf("GetEncodingByName(%q) = %v, want nil", tt.charset, enc)
 				}
 				return
 			}
 			if enc == nil {
-				t.Fatalf("getEncodingByName(%q) = nil, want encoding", tt.charset)
+				t.Fatalf("GetEncodingByName(%q) = nil, want encoding", tt.charset)
 			}
 			// Verify encoding identity by decoding a characteristic byte
 			if tt.verifyByte != 0 {
@@ -216,7 +216,7 @@ func TestGetEncodingByName(t *testing.T) {
 }
 
 func TestGetEncodingByName_DecodesCorrectly(t *testing.T) {
-	// Verify that getEncodingByName returns encodings that decode test samples correctly.
+	// Verify that GetEncodingByName returns encodings that decode test samples correctly.
 	enc := testutil.EncodedSamples()
 	tests := []struct {
 		name     string
@@ -231,9 +231,9 @@ func TestGetEncodingByName_DecodesCorrectly(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoding := getEncodingByName(tt.charset)
+			encoding := GetEncodingByName(tt.charset)
 			if encoding == nil {
-				t.Fatalf("getEncodingByName(%q) returned nil", tt.charset)
+				t.Fatalf("GetEncodingByName(%q) returned nil", tt.charset)
 			}
 			decoded, err := encoding.NewDecoder().Bytes(tt.input)
 			if err != nil {
@@ -263,8 +263,8 @@ func TestGetEncodingByName_MatchesExpectedEncodings(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.charset, func(t *testing.T) {
-			enc := getEncodingByName(tt.charset)
-			expected := getEncodingByName(tt.wantName)
+			enc := GetEncodingByName(tt.charset)
+			expected := GetEncodingByName(tt.wantName)
 			if enc == nil || expected == nil {
 				t.Fatalf("encoding is nil")
 			}
@@ -280,7 +280,7 @@ func TestGetEncodingByName_MatchesExpectedEncodings(t *testing.T) {
 }
 
 func TestEncodingIdentity(t *testing.T) {
-	// Verify that getEncodingByName returns the correct encoding type
+	// Verify that GetEncodingByName returns the correct encoding type
 	// by checking that decoding produces expected results for each encoding.
 	tests := []struct {
 		name     string
@@ -327,9 +327,9 @@ func TestEncodingIdentity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			enc := getEncodingByName(tt.charset)
+			enc := GetEncodingByName(tt.charset)
 			if enc == nil {
-				t.Fatalf("getEncodingByName(%q) returned nil", tt.charset)
+				t.Fatalf("GetEncodingByName(%q) returned nil", tt.charset)
 			}
 			decoded, err := enc.NewDecoder().Bytes(tt.input)
 			if err != nil {
@@ -345,19 +345,68 @@ func TestEncodingIdentity(t *testing.T) {
 func TestGetEncodingByName_ReturnsCorrectType(t *testing.T) {
 	// Verify that specific charset names return the expected encoding types
 	// by comparing with directly-imported encodings.
-	if enc := getEncodingByName("Shift_JIS"); enc != japanese.ShiftJIS {
+	if enc := GetEncodingByName("Shift_JIS"); enc != japanese.ShiftJIS {
 		t.Error("Shift_JIS should return japanese.ShiftJIS")
 	}
-	if enc := getEncodingByName("EUC-JP"); enc != japanese.EUCJP {
+	if enc := GetEncodingByName("EUC-JP"); enc != japanese.EUCJP {
 		t.Error("EUC-JP should return japanese.EUCJP")
 	}
-	if enc := getEncodingByName("EUC-KR"); enc != korean.EUCKR {
+	if enc := GetEncodingByName("EUC-KR"); enc != korean.EUCKR {
 		t.Error("EUC-KR should return korean.EUCKR")
 	}
-	if enc := getEncodingByName("GBK"); enc != simplifiedchinese.GBK {
+	if enc := GetEncodingByName("GBK"); enc != simplifiedchinese.GBK {
 		t.Error("GBK should return simplifiedchinese.GBK")
 	}
-	if enc := getEncodingByName("Big5"); enc != traditionalchinese.Big5 {
+	if enc := GetEncodingByName("Big5"); enc != traditionalchinese.Big5 {
 		t.Error("Big5 should return traditionalchinese.Big5")
+	}
+}
+
+func TestTruncateRunes(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		maxRunes int
+		expected string
+	}{
+		{"short ASCII", "Hello", 10, "Hello"},
+		{"exact length", "Hello", 5, "Hello"},
+		{"truncate ASCII", "Hello World", 8, "Hello..."},
+		{"empty string", "", 5, ""},
+		{"max 3", "Hello", 3, "Hel"},
+		{"max 4", "Hello", 4, "H..."},
+		{"UTF-8 no truncate", "你好世界", 4, "你好世界"}, // 4 runes, no truncation needed
+		{"UTF-8 truncate", "你好世界！", 4, "你..."},
+		{"emoji", "Hello 👋 World", 9, "Hello ..."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := TruncateRunes(tt.input, tt.maxRunes)
+			if result != tt.expected {
+				t.Errorf("TruncateRunes(%q, %d) = %q, want %q", tt.input, tt.maxRunes, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFirstLine(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"single line", "Hello World", "Hello World"},
+		{"multi line", "First\nSecond\nThird", "First"},
+		{"empty string", "", ""},
+		{"trailing newline", "Hello\n", "Hello"},
+		{"only newline", "\n", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := FirstLine(tt.input)
+			if result != tt.expected {
+				t.Errorf("FirstLine(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
 	}
 }

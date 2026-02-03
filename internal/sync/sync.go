@@ -10,127 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
-	"unicode/utf8"
 
-	"github.com/gogs/chardet"
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/mime"
 	"github.com/wesm/msgvault/internal/store"
-	"golang.org/x/text/encoding"
-	"golang.org/x/text/encoding/charmap"
-	"golang.org/x/text/encoding/japanese"
-	"golang.org/x/text/encoding/korean"
-	"golang.org/x/text/encoding/simplifiedchinese"
-	"golang.org/x/text/encoding/traditionalchinese"
+	"github.com/wesm/msgvault/internal/textutil"
 )
-
-// ensureUTF8 ensures a string is valid UTF-8.
-// If already valid UTF-8, returns as-is.
-// Otherwise attempts charset detection and conversion.
-// Falls back to replacing invalid bytes with replacement character.
-func ensureUTF8(s string) string {
-	if utf8.ValidString(s) {
-		return s
-	}
-
-	// Try charset detection and conversion
-	data := []byte(s)
-
-	// Try automatic charset detection (works better on longer samples,
-	// but we try it even for short strings with lower confidence threshold)
-	minConfidence := 30 // Lower threshold for shorter strings
-	if len(data) > 50 {
-		minConfidence = 50 // Higher threshold for longer strings
-	}
-
-	detector := chardet.NewTextDetector()
-	result, err := detector.DetectBest(data)
-	if err == nil && result.Confidence >= minConfidence {
-		if enc := getEncodingByName(result.Charset); enc != nil {
-			decoded, err := enc.NewDecoder().Bytes(data)
-			if err == nil && utf8.Valid(decoded) {
-				return string(decoded)
-			}
-		}
-	}
-
-	// Try common encodings in order of likelihood for email content.
-	// Single-byte encodings first (Windows-1252/Latin-1 are most common in Western emails),
-	// then multi-byte Asian encodings.
-	encodings := []encoding.Encoding{
-		charmap.Windows1252,     // Smart quotes, dashes common in Windows emails
-		charmap.ISO8859_1,       // Latin-1 (Western European)
-		charmap.ISO8859_15,      // Latin-9 (Western European with Euro)
-		japanese.ShiftJIS,       // Japanese
-		japanese.EUCJP,          // Japanese
-		korean.EUCKR,            // Korean
-		simplifiedchinese.GBK,   // Simplified Chinese
-		traditionalchinese.Big5, // Traditional Chinese
-	}
-
-	for _, enc := range encodings {
-		decoded, err := enc.NewDecoder().Bytes(data)
-		if err == nil && utf8.Valid(decoded) {
-			return string(decoded)
-		}
-	}
-
-	// Last resort: replace invalid bytes
-	return sanitizeUTF8(s)
-}
-
-// sanitizeUTF8 replaces invalid UTF-8 bytes with replacement character.
-func sanitizeUTF8(s string) string {
-	var sb strings.Builder
-	sb.Grow(len(s))
-	for i := 0; i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		if r == utf8.RuneError && size == 1 {
-			sb.WriteRune('\ufffd')
-			i++
-		} else {
-			sb.WriteRune(r)
-			i += size
-		}
-	}
-	return sb.String()
-}
-
-// getEncodingByName returns an encoding for the given IANA charset name.
-func getEncodingByName(name string) encoding.Encoding {
-	switch name {
-	case "windows-1252", "CP1252", "cp1252":
-		return charmap.Windows1252
-	case "ISO-8859-1", "iso-8859-1", "latin1", "latin-1":
-		return charmap.ISO8859_1
-	case "ISO-8859-15", "iso-8859-15", "latin9":
-		return charmap.ISO8859_15
-	case "ISO-8859-2", "iso-8859-2", "latin2":
-		return charmap.ISO8859_2
-	case "Shift_JIS", "shift_jis", "shift-jis", "sjis":
-		return japanese.ShiftJIS
-	case "EUC-JP", "euc-jp", "eucjp":
-		return japanese.EUCJP
-	case "ISO-2022-JP", "iso-2022-jp":
-		return japanese.ISO2022JP
-	case "EUC-KR", "euc-kr", "euckr":
-		return korean.EUCKR
-	case "GB2312", "gb2312", "GBK", "gbk":
-		return simplifiedchinese.GBK
-	case "GB18030", "gb18030":
-		return simplifiedchinese.GB18030
-	case "Big5", "big5", "big-5":
-		return traditionalchinese.Big5
-	case "KOI8-R", "koi8-r":
-		return charmap.KOI8R
-	case "KOI8-U", "koi8-u":
-		return charmap.KOI8U
-	default:
-		return nil
-	}
-}
 
 // ErrHistoryExpired indicates that the Gmail history ID is too old and a full sync is required.
 var ErrHistoryExpired = errors.New("history expired - run full sync")
@@ -197,6 +83,130 @@ func (s *Syncer) WithProgress(p gmail.SyncProgress) *Syncer {
 	return s
 }
 
+// syncState holds the state for a sync operation.
+type syncState struct {
+	syncID     int64
+	checkpoint *store.Checkpoint
+	pageToken  string
+	wasResumed bool
+}
+
+// initSyncState initializes sync state, resuming from checkpoint if possible.
+func (s *Syncer) initSyncState(sourceID int64) (*syncState, error) {
+	state := &syncState{
+		checkpoint: &store.Checkpoint{},
+	}
+
+	if !s.opts.NoResume {
+		activeSync, err := s.store.GetActiveSync(sourceID)
+		if err != nil {
+			return nil, fmt.Errorf("check active sync: %w", err)
+		}
+		if activeSync != nil {
+			state.syncID = activeSync.ID
+			if activeSync.CursorBefore.Valid {
+				state.pageToken = activeSync.CursorBefore.String
+			}
+			state.checkpoint = &store.Checkpoint{
+				PageToken:         state.pageToken,
+				MessagesProcessed: activeSync.MessagesProcessed,
+				MessagesAdded:     activeSync.MessagesAdded,
+				MessagesUpdated:   activeSync.MessagesUpdated,
+				ErrorsCount:       activeSync.ErrorsCount,
+			}
+			state.wasResumed = true
+			s.logger.Info("resuming sync", "messages_processed", state.checkpoint.MessagesProcessed)
+			return state, nil
+		}
+	}
+
+	// Start new sync
+	syncID, err := s.store.StartSync(sourceID, "full")
+	if err != nil {
+		return nil, fmt.Errorf("start sync: %w", err)
+	}
+	state.syncID = syncID
+	return state, nil
+}
+
+// batchResult holds the result of processing a batch.
+type batchResult struct {
+	processed  int64
+	added      int64
+	skipped    int64
+	oldestDate time.Time
+}
+
+// processBatch processes a single batch of messages from a list response.
+func (s *Syncer) processBatch(ctx context.Context, sourceID int64, listResp *gmail.MessageListResponse, labelMap map[string]int64, checkpoint *store.Checkpoint, summary *gmail.SyncSummary) (*batchResult, error) {
+	result := &batchResult{}
+
+	if len(listResp.Messages) == 0 {
+		return result, nil
+	}
+
+	// Build message ID list and thread ID map
+	messageIDs := make([]string, len(listResp.Messages))
+	threadIDs := make(map[string]string) // messageID -> threadID
+	for i, m := range listResp.Messages {
+		messageIDs[i] = m.ID
+		threadIDs[m.ID] = m.ThreadID
+	}
+
+	// Check which messages already exist
+	existingMap, err := s.store.MessageExistsBatch(sourceID, messageIDs)
+	if err != nil {
+		return nil, fmt.Errorf("check existing: %w", err)
+	}
+
+	// Filter to new messages
+	var newIDs []string
+	for _, id := range messageIDs {
+		if _, exists := existingMap[id]; !exists {
+			newIDs = append(newIDs, id)
+		}
+	}
+
+	result.processed = int64(len(messageIDs))
+	result.skipped = int64(len(messageIDs) - len(newIDs))
+
+	// Fetch and ingest new messages
+	if len(newIDs) > 0 {
+		rawMessages, err := s.client.GetMessagesRawBatch(ctx, newIDs)
+		if err != nil {
+			return nil, fmt.Errorf("fetch messages: %w", err)
+		}
+
+		for i, raw := range rawMessages {
+			if raw == nil {
+				checkpoint.ErrorsCount++
+				continue
+			}
+
+			// Track oldest message date for progress display
+			// Gmail returns messages newest-to-oldest, so oldest shows where we've reached
+			if raw.InternalDate > 0 {
+				msgDate := time.UnixMilli(raw.InternalDate)
+				if result.oldestDate.IsZero() || msgDate.Before(result.oldestDate) {
+					result.oldestDate = msgDate
+				}
+			}
+
+			threadID := threadIDs[newIDs[i]]
+			if err := s.ingestMessage(ctx, sourceID, raw, threadID, labelMap); err != nil {
+				s.logger.Warn("failed to ingest message", "id", raw.ID, "error", err)
+				checkpoint.ErrorsCount++
+				continue
+			}
+
+			result.added++
+			summary.BytesDownloaded += int64(len(raw.Raw))
+		}
+	}
+
+	return result, nil
+}
+
 // Full performs a full synchronization.
 func (s *Syncer) Full(ctx context.Context, email string) (*gmail.SyncSummary, error) {
 	startTime := time.Now()
@@ -208,47 +218,18 @@ func (s *Syncer) Full(ctx context.Context, email string) (*gmail.SyncSummary, er
 		return nil, fmt.Errorf("get/create source: %w", err)
 	}
 
-	// Check for active sync to resume
-	var syncID int64
-	var checkpoint *store.Checkpoint
-	var pageToken string
-
-	if !s.opts.NoResume {
-		activeSync, err := s.store.GetActiveSync(source.ID)
-		if err != nil {
-			return nil, fmt.Errorf("check active sync: %w", err)
-		}
-		if activeSync != nil {
-			syncID = activeSync.ID
-			if activeSync.CursorBefore.Valid {
-				pageToken = activeSync.CursorBefore.String
-			}
-			checkpoint = &store.Checkpoint{
-				PageToken:         pageToken,
-				MessagesProcessed: activeSync.MessagesProcessed,
-				MessagesAdded:     activeSync.MessagesAdded,
-				MessagesUpdated:   activeSync.MessagesUpdated,
-				ErrorsCount:       activeSync.ErrorsCount,
-			}
-			summary.WasResumed = true
-			summary.ResumedFromToken = pageToken
-			s.logger.Info("resuming sync", "messages_processed", checkpoint.MessagesProcessed)
-		}
+	// Initialize sync state (resume or start new)
+	state, err := s.initSyncState(source.ID)
+	if err != nil {
+		return nil, err
 	}
-
-	// Start new sync if not resuming
-	if syncID == 0 {
-		syncID, err = s.store.StartSync(source.ID, "full")
-		if err != nil {
-			return nil, fmt.Errorf("start sync: %w", err)
-		}
-		checkpoint = &store.Checkpoint{}
-	}
+	summary.WasResumed = state.wasResumed
+	summary.ResumedFromToken = state.pageToken
 
 	// Defer failure handling
 	defer func() {
 		if r := recover(); r != nil {
-			_ = s.store.FailSync(syncID, fmt.Sprintf("panic: %v", r))
+			_ = s.store.FailSync(state.syncID, fmt.Sprintf("panic: %v", r))
 			panic(r)
 		}
 	}()
@@ -256,7 +237,7 @@ func (s *Syncer) Full(ctx context.Context, email string) (*gmail.SyncSummary, er
 	// Get profile to verify connection and get historyId
 	profile, err := s.client.GetProfile(ctx)
 	if err != nil {
-		_ = s.store.FailSync(syncID, err.Error())
+		_ = s.store.FailSync(state.syncID, err.Error())
 		return nil, fmt.Errorf("get profile: %w", err)
 	}
 
@@ -265,19 +246,20 @@ func (s *Syncer) Full(ctx context.Context, email string) (*gmail.SyncSummary, er
 	// Sync labels
 	labelMap, err := s.syncLabels(ctx, source.ID)
 	if err != nil {
-		_ = s.store.FailSync(syncID, err.Error())
+		_ = s.store.FailSync(state.syncID, err.Error())
 		return nil, fmt.Errorf("sync labels: %w", err)
 	}
 
 	// List and sync messages
 	var totalEstimate int64
 	firstPage := true
+	pageToken := state.pageToken
 
 	for {
 		// List messages
 		listResp, err := s.client.ListMessages(ctx, s.opts.Query, pageToken)
 		if err != nil {
-			_ = s.store.FailSync(syncID, err.Error())
+			_ = s.store.FailSync(state.syncID, err.Error())
 			return nil, fmt.Errorf("list messages: %w", err)
 		}
 
@@ -291,83 +273,30 @@ func (s *Syncer) Full(ctx context.Context, email string) (*gmail.SyncSummary, er
 			break
 		}
 
-		// Check which messages already exist
-		messageIDs := make([]string, len(listResp.Messages))
-		threadIDs := make(map[string]string) // messageID -> threadID
-		for i, m := range listResp.Messages {
-			messageIDs[i] = m.ID
-			threadIDs[m.ID] = m.ThreadID
-		}
-
-		existingMap, err := s.store.MessageExistsBatch(source.ID, messageIDs)
+		// Process batch
+		result, err := s.processBatch(ctx, source.ID, listResp, labelMap, state.checkpoint, summary)
 		if err != nil {
-			_ = s.store.FailSync(syncID, err.Error())
-			return nil, fmt.Errorf("check existing: %w", err)
+			_ = s.store.FailSync(state.syncID, err.Error())
+			return nil, err
 		}
 
-		// Filter to new messages
-		var newIDs []string
-		for _, id := range messageIDs {
-			if _, exists := existingMap[id]; !exists {
-				newIDs = append(newIDs, id)
-			}
-		}
-
-		checkpoint.MessagesProcessed += int64(len(messageIDs))
-		skipped := int64(len(messageIDs) - len(newIDs))
-
-		// Fetch new messages in batch
-		var oldestDate time.Time // Track oldest date since Gmail returns newest-to-oldest
-		if len(newIDs) > 0 {
-			rawMessages, err := s.client.GetMessagesRawBatch(ctx, newIDs)
-			if err != nil {
-				_ = s.store.FailSync(syncID, err.Error())
-				return nil, fmt.Errorf("fetch messages: %w", err)
-			}
-
-			// Ingest messages
-			for i, raw := range rawMessages {
-				if raw == nil {
-					checkpoint.ErrorsCount++
-					continue
-				}
-
-				// Track oldest message date for progress display
-				// Gmail returns messages newest-to-oldest, so oldest shows where we've reached
-				if raw.InternalDate > 0 {
-					msgDate := time.UnixMilli(raw.InternalDate)
-					if oldestDate.IsZero() || msgDate.Before(oldestDate) {
-						oldestDate = msgDate
-					}
-				}
-
-				threadID := threadIDs[newIDs[i]]
-				err := s.ingestMessage(ctx, source.ID, raw, threadID, labelMap)
-				if err != nil {
-					s.logger.Warn("failed to ingest message", "id", raw.ID, "error", err)
-					checkpoint.ErrorsCount++
-					continue
-				}
-
-				checkpoint.MessagesAdded++
-				summary.BytesDownloaded += int64(len(raw.Raw))
-			}
-		}
+		state.checkpoint.MessagesProcessed += result.processed
+		state.checkpoint.MessagesAdded += result.added
 
 		// Report current position date before progress (so UI shows consistent state)
-		if !oldestDate.IsZero() {
+		if !result.oldestDate.IsZero() {
 			if p, ok := s.progress.(gmail.SyncProgressWithDate); ok {
-				p.OnLatestDate(oldestDate)
+				p.OnLatestDate(result.oldestDate)
 			}
 		}
 
 		// Report progress
-		s.progress.OnProgress(checkpoint.MessagesProcessed, checkpoint.MessagesAdded, skipped)
+		s.progress.OnProgress(state.checkpoint.MessagesProcessed, state.checkpoint.MessagesAdded, result.skipped)
 
 		// Save checkpoint
 		pageToken = listResp.NextPageToken
-		checkpoint.PageToken = pageToken
-		if err := s.store.UpdateSyncCheckpoint(syncID, checkpoint); err != nil {
+		state.checkpoint.PageToken = pageToken
+		if err := s.store.UpdateSyncCheckpoint(state.syncID, state.checkpoint); err != nil {
 			s.logger.Warn("failed to save checkpoint", "error", err)
 		}
 
@@ -384,18 +313,18 @@ func (s *Syncer) Full(ctx context.Context, email string) (*gmail.SyncSummary, er
 	}
 
 	// Mark sync complete
-	if err := s.store.CompleteSync(syncID, historyIDStr); err != nil {
+	if err := s.store.CompleteSync(state.syncID, historyIDStr); err != nil {
 		s.logger.Warn("failed to complete sync", "error", err)
 	}
 
 	// Build summary
 	summary.EndTime = time.Now()
 	summary.Duration = summary.EndTime.Sub(summary.StartTime)
-	summary.MessagesFound = checkpoint.MessagesProcessed
-	summary.MessagesAdded = checkpoint.MessagesAdded
-	summary.MessagesUpdated = checkpoint.MessagesUpdated
-	summary.MessagesSkipped = checkpoint.MessagesProcessed - checkpoint.MessagesAdded - checkpoint.MessagesUpdated
-	summary.Errors = checkpoint.ErrorsCount
+	summary.MessagesFound = state.checkpoint.MessagesProcessed
+	summary.MessagesAdded = state.checkpoint.MessagesAdded
+	summary.MessagesUpdated = state.checkpoint.MessagesUpdated
+	summary.MessagesSkipped = state.checkpoint.MessagesProcessed - state.checkpoint.MessagesAdded - state.checkpoint.MessagesUpdated
+	summary.Errors = state.checkpoint.ErrorsCount
 	summary.FinalHistoryID = profile.HistoryID
 
 	s.progress.OnComplete(summary)
@@ -421,15 +350,30 @@ func (s *Syncer) syncLabels(ctx context.Context, sourceID int64) (map[string]int
 	return s.store.EnsureLabelsBatch(sourceID, labelInfos)
 }
 
-// ingestMessage parses and stores a single message.
-func (s *Syncer) ingestMessage(ctx context.Context, sourceID int64, raw *gmail.RawMessage, threadID string, labelMap map[string]int64) error {
-	// Validate raw MIME data exists (Python sync: line 242-244)
+// messageData holds all parsed data for a message before persistence.
+type messageData struct {
+	message        *store.Message
+	bodyText       string
+	bodyHTML       string
+	rawMIME        []byte
+	from           []mime.Address
+	to             []mime.Address
+	cc             []mime.Address
+	bcc            []mime.Address
+	gmailLabelIDs  []string
+	attachments    []mime.Attachment
+	participantMap map[string]int64
+}
+
+// parseToModel parses a raw Gmail message into a messageData struct.
+func (s *Syncer) parseToModel(sourceID int64, raw *gmail.RawMessage, threadID string) (*messageData, error) {
+	// Validate raw MIME data exists
 	if len(raw.Raw) == 0 {
-		return fmt.Errorf("missing raw MIME data for message %s", raw.ID)
+		return nil, fmt.Errorf("missing raw MIME data for message %s", raw.ID)
 	}
 
 	// Fall back to raw.ThreadID if list response threadID is missing,
-	// then to message ID as last resort (Python sync: line 232-234)
+	// then to message ID as last resort
 	if threadID == "" {
 		threadID = raw.ThreadID
 		if threadID == "" {
@@ -441,7 +385,7 @@ func (s *Syncer) ingestMessage(ctx context.Context, sourceID int64, raw *gmail.R
 	parsed, parseErr := mime.Parse(raw.Raw)
 	if parseErr != nil {
 		// Extract just the first line of error (enmime includes full stack traces)
-		errMsg := firstLine(parseErr.Error())
+		errMsg := textutil.FirstLine(parseErr.Error())
 
 		// Create placeholder message for MIME parse failures
 		// This preserves the raw data for potential future re-parsing
@@ -458,24 +402,17 @@ func (s *Syncer) ingestMessage(ctx context.Context, sourceID int64, raw *gmail.R
 			"error", errMsg)
 	}
 
-	// Ensure conversation (thread)
-	// Ensure subject is valid UTF-8
-	subject := ensureUTF8(parsed.Subject)
-	// Use placeholder for conversation matching only (subject can be empty for storage)
-	convSubject := subject
-	if convSubject == "" {
-		convSubject = "(no subject)"
-	}
-	conversationID, err := s.store.EnsureConversation(sourceID, threadID, convSubject)
-	if err != nil {
-		return fmt.Errorf("ensure conversation: %w", err)
-	}
+	// Ensure all text fields are valid UTF-8
+	subject := textutil.EnsureUTF8(parsed.Subject)
+	bodyText := textutil.EnsureUTF8(parsed.GetBodyText())
+	bodyHTML := textutil.EnsureUTF8(parsed.BodyHTML)
+	snippet := textutil.EnsureUTF8(raw.Snippet)
 
-	// Ensure participants
+	// Ensure participants exist in database
 	allAddresses := append(append(append(parsed.From, parsed.To...), parsed.Cc...), parsed.Bcc...)
 	participantMap, err := s.store.EnsureParticipantsBatch(allAddresses)
 	if err != nil {
-		return fmt.Errorf("ensure participants: %w", err)
+		return nil, fmt.Errorf("ensure participants: %w", err)
 	}
 
 	// Get sender ID
@@ -486,13 +423,17 @@ func (s *Syncer) ingestMessage(ctx context.Context, sourceID int64, raw *gmail.R
 		}
 	}
 
-	// Build message record
-	// Ensure all text fields are valid UTF-8 (detect encoding and convert if needed)
-	// Note: subject was already sanitized above for conversation matching
-	bodyText := ensureUTF8(parsed.GetBodyText())
-	bodyHTML := ensureUTF8(parsed.BodyHTML)
-	snippet := ensureUTF8(raw.Snippet)
+	// Use placeholder for conversation matching only (subject can be empty for storage)
+	convSubject := subject
+	if convSubject == "" {
+		convSubject = "(no subject)"
+	}
+	conversationID, err := s.store.EnsureConversation(sourceID, threadID, convSubject)
+	if err != nil {
+		return nil, fmt.Errorf("ensure conversation: %w", err)
+	}
 
+	// Build message record
 	msg := &store.Message{
 		ConversationID:  conversationID,
 		SourceID:        sourceID,
@@ -512,49 +453,65 @@ func (s *Syncer) ingestMessage(ctx context.Context, sourceID int64, raw *gmail.R
 		msg.InternalDate = sql.NullTime{Time: t, Valid: true}
 	}
 	if !parsed.Date.IsZero() {
-		// parseDate already returns UTC
 		msg.SentAt = sql.NullTime{Time: parsed.Date, Valid: true}
 	} else if msg.InternalDate.Valid {
 		// Fall back to InternalDate if Date header couldn't be parsed
 		msg.SentAt = msg.InternalDate
 	}
 
+	return &messageData{
+		message:        msg,
+		bodyText:       bodyText,
+		bodyHTML:       bodyHTML,
+		rawMIME:        raw.Raw,
+		from:           parsed.From,
+		to:             parsed.To,
+		cc:             parsed.Cc,
+		bcc:            parsed.Bcc,
+		gmailLabelIDs:  raw.LabelIDs,
+		attachments:    parsed.Attachments,
+		participantMap: participantMap,
+	}, nil
+}
+
+// persistMessage stores a parsed message and all related data.
+func (s *Syncer) persistMessage(data *messageData, labelMap map[string]int64) error {
 	// Upsert message
-	messageID, err := s.store.UpsertMessage(msg)
+	messageID, err := s.store.UpsertMessage(data.message)
 	if err != nil {
 		return fmt.Errorf("upsert message: %w", err)
 	}
 
 	// Store message body in separate table
 	if err := s.store.UpsertMessageBody(messageID,
-		sql.NullString{String: bodyText, Valid: bodyText != ""},
-		sql.NullString{String: bodyHTML, Valid: bodyHTML != ""},
+		sql.NullString{String: data.bodyText, Valid: data.bodyText != ""},
+		sql.NullString{String: data.bodyHTML, Valid: data.bodyHTML != ""},
 	); err != nil {
 		return fmt.Errorf("upsert message body: %w", err)
 	}
 
 	// Store raw MIME
-	if err := s.store.UpsertMessageRaw(messageID, raw.Raw); err != nil {
+	if err := s.store.UpsertMessageRaw(messageID, data.rawMIME); err != nil {
 		return fmt.Errorf("store raw: %w", err)
 	}
 
 	// Store recipients
-	if err := s.storeRecipients(messageID, "from", parsed.From, participantMap); err != nil {
+	if err := s.storeRecipients(messageID, "from", data.from, data.participantMap); err != nil {
 		return fmt.Errorf("store from: %w", err)
 	}
-	if err := s.storeRecipients(messageID, "to", parsed.To, participantMap); err != nil {
+	if err := s.storeRecipients(messageID, "to", data.to, data.participantMap); err != nil {
 		return fmt.Errorf("store to: %w", err)
 	}
-	if err := s.storeRecipients(messageID, "cc", parsed.Cc, participantMap); err != nil {
+	if err := s.storeRecipients(messageID, "cc", data.cc, data.participantMap); err != nil {
 		return fmt.Errorf("store cc: %w", err)
 	}
-	if err := s.storeRecipients(messageID, "bcc", parsed.Bcc, participantMap); err != nil {
+	if err := s.storeRecipients(messageID, "bcc", data.bcc, data.participantMap); err != nil {
 		return fmt.Errorf("store bcc: %w", err)
 	}
 
 	// Store labels
 	var labelIDs []int64
-	for _, gmailLabelID := range raw.LabelIDs {
+	for _, gmailLabelID := range data.gmailLabelIDs {
 		if internalID, ok := labelMap[gmailLabelID]; ok {
 			labelIDs = append(labelIDs, internalID)
 		}
@@ -565,7 +522,7 @@ func (s *Syncer) ingestMessage(ctx context.Context, sourceID int64, raw *gmail.R
 
 	// Store attachments
 	if s.opts.AttachmentsDir != "" {
-		for _, att := range parsed.Attachments {
+		for _, att := range data.attachments {
 			if err := s.storeAttachment(messageID, &att); err != nil {
 				s.logger.Warn("failed to store attachment", "message", messageID, "filename", att.Filename, "error", err)
 			}
@@ -573,6 +530,16 @@ func (s *Syncer) ingestMessage(ctx context.Context, sourceID int64, raw *gmail.R
 	}
 
 	return nil
+}
+
+// ingestMessage parses and stores a single message.
+func (s *Syncer) ingestMessage(ctx context.Context, sourceID int64, raw *gmail.RawMessage, threadID string, labelMap map[string]int64) error {
+	data, err := s.parseToModel(sourceID, raw, threadID)
+	if err != nil {
+		return err
+	}
+
+	return s.persistMessage(data, labelMap)
 }
 
 // storeRecipients stores recipient records.
@@ -590,7 +557,7 @@ func (s *Syncer) storeRecipients(messageID int64, recipientType string, addresse
 	for _, addr := range addresses {
 		if id, ok := participantMap[addr.Email]; ok {
 			// Ensure display name is valid UTF-8
-			name := ensureUTF8(addr.Name)
+			name := textutil.EnsureUTF8(addr.Name)
 			if _, seen := idToName[id]; !seen {
 				// First occurrence - record the ID order and initial name
 				orderedIDs = append(orderedIDs, id)
@@ -646,31 +613,6 @@ func extractSubjectFromSnippet(snippet string) string {
 		return "(MIME parse error)"
 	}
 	// Use first line of snippet, truncated
-	line := snippet
-	if idx := strings.Index(snippet, "\n"); idx > 0 {
-		line = snippet[:idx]
-	}
-	return truncateRunes(line, 80)
-}
-
-// truncateRunes truncates a string to maxRunes runes (not bytes), adding "..." if truncated.
-// This is UTF-8 safe and won't split multi-byte characters.
-func truncateRunes(s string, maxRunes int) string {
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
-		return s
-	}
-	if maxRunes <= 3 {
-		return string(runes[:maxRunes])
-	}
-	return string(runes[:maxRunes-3]) + "..."
-}
-
-// firstLine returns the first line of a string.
-// Used to extract clean error messages from enmime's stack-trace-laden errors.
-func firstLine(s string) string {
-	if idx := strings.Index(s, "\n"); idx >= 0 {
-		return s[:idx]
-	}
-	return s
+	line := textutil.FirstLine(snippet)
+	return textutil.TruncateRunes(line, 80)
 }
