@@ -451,7 +451,9 @@ func TestFullSync_MessageVariations(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			env := newTestEnv(t)
 			seedMessages(env, 1, 12345, "msg")
-			env.Mock.Messages["msg"].Raw = tt.mime()
+			raw := tt.mime()
+			env.Mock.Messages["msg"].Raw = raw
+			env.Mock.Messages["msg"].SizeEstimate = int64(len(raw))
 
 			summary := runFullSync(t, env)
 			assertSummary(t, summary, WantSummary{Added: intPtr(1), Errors: intPtr(0)})
