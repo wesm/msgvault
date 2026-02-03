@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/testutil"
@@ -14,7 +15,7 @@ func TestInspectMessage_NotFound(t *testing.T) {
 	st := testutil.NewTestStore(t)
 
 	_, err := st.InspectMessage("nonexistent-msg-id")
-	if err != sql.ErrNoRows {
+	if !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("InspectMessage(nonexistent) error = %v, want sql.ErrNoRows", err)
 	}
 }
