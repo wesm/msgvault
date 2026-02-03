@@ -384,3 +384,42 @@ func (s *Store) GetSourceByIdentifier(identifier string) (*Source, error) {
 
 	return source, nil
 }
+
+// ListSources returns all sources ordered by identifier.
+func (s *Store) ListSources() ([]*Source, error) {
+	rows, err := s.db.Query(`
+		SELECT id, source_type, identifier, display_name, google_user_id,
+		       last_sync_at, sync_cursor, created_at, updated_at
+		FROM sources
+		ORDER BY identifier
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sources []*Source
+	for rows.Next() {
+		var source Source
+		var createdAt, updatedAt sql.NullTime
+
+		err := rows.Scan(
+			&source.ID, &source.SourceType, &source.Identifier, &source.DisplayName,
+			&source.GoogleUserID, &source.LastSyncAt, &source.SyncCursor, &createdAt, &updatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if createdAt.Valid {
+			source.CreatedAt = createdAt.Time
+		}
+		if updatedAt.Valid {
+			source.UpdatedAt = updatedAt.Time
+		}
+
+		sources = append(sources, &source)
+	}
+
+	return sources, rows.Err()
+}
