@@ -87,18 +87,8 @@ func Parse(raw []byte) (*Message, error) {
 	// Filter out text/plain and text/html parts that are actually body content,
 	// matching Python's behavior: only include parts with a filename OR
 	// explicit Content-Disposition: attachment
-	for _, part := range env.Attachments {
-		if isBodyPart(part) {
-			continue
-		}
-		msg.Attachments = append(msg.Attachments, makeAttachment(part, false))
-	}
-	for _, part := range env.Inlines {
-		if isBodyPart(part) {
-			continue
-		}
-		msg.Attachments = append(msg.Attachments, makeAttachment(part, true))
-	}
+	msg.Attachments = append(msg.Attachments, processParts(env.Attachments, false)...)
+	msg.Attachments = append(msg.Attachments, processParts(env.Inlines, true)...)
 
 	// Collect any parsing errors
 	for _, e := range env.Errors {
@@ -168,6 +158,17 @@ func isBodyPart(part *enmime.Part) bool {
 	return true
 }
 
+// processParts filters body parts and converts the remaining parts to Attachments.
+func processParts(parts []*enmime.Part, isInline bool) []Attachment {
+	var result []Attachment
+	for _, part := range parts {
+		if !isBodyPart(part) {
+			result = append(result, makeAttachment(part, isInline))
+		}
+	}
+	return result
+}
+
 // makeAttachment creates an Attachment from an enmime Part.
 func makeAttachment(part *enmime.Part, isInline bool) Attachment {
 	content := part.Content
@@ -196,14 +197,35 @@ func parseReferences(refs string) []string {
 	return result
 }
 
+// dateFormats lists common email date formats for parseDate.
+var dateFormats = []string{
+	time.RFC1123Z,                           // "Mon, 02 Jan 2006 15:04:05 -0700"
+	time.RFC1123,                            // "Mon, 02 Jan 2006 15:04:05 MST"
+	"Mon, 2 Jan 2006 15:04:05 -0700",        // Single-digit day
+	"Mon, 2 Jan 2006 15:04:05 MST",          // Single-digit day with named TZ
+	"2 Jan 2006 15:04:05 -0700",             // No weekday
+	"2 Jan 2006 15:04:05 MST",               // No weekday, named TZ
+	"02 Jan 2006 15:04:05 -0700",            // No weekday, zero-padded
+	"02 Jan 2006 15:04:05 MST",              // No weekday, zero-padded, named TZ
+	time.RFC822Z,                            // "02 Jan 06 15:04 -0700"
+	time.RFC822,                             // "02 Jan 06 15:04 MST"
+	time.RFC850,                             // "Monday, 02-Jan-06 15:04:05 MST"
+	time.ANSIC,                              // "Mon Jan _2 15:04:05 2006"
+	time.UnixDate,                           // "Mon Jan _2 15:04:05 MST 2006"
+	"Mon, 02 Jan 2006 15:04:05 -0700 (MST)", // With parenthesized TZ
+	"Mon, 2 Jan 2006 15:04:05 -0700 (MST)",  // Single-digit day with paren TZ
+	time.RFC3339,                            // "2006-01-02T15:04:05Z07:00" (ISO 8601)
+	"2006-01-02T15:04:05Z",                  // ISO 8601 UTC
+	"2006-01-02T15:04:05-07:00",             // ISO 8601 with offset
+	"2006-01-02 15:04:05 -0700",             // SQL-like format
+	"2006-01-02 15:04:05",                   // SQL-like without TZ
+}
+
 // parseDate attempts to parse a date string in various formats.
 // Returns the time in UTC for consistent storage.
 func parseDate(s string) (time.Time, error) {
-	// Normalize whitespace - collapse multiple spaces to single
-	s = strings.TrimSpace(s)
-	for strings.Contains(s, "  ") {
-		s = strings.ReplaceAll(s, "  ", " ")
-	}
+	// Normalize whitespace efficiently: split on whitespace runs and rejoin
+	s = strings.Join(strings.Fields(s), " ")
 
 	// Strip trailing timezone name in parentheses like "(UTC)" or "(PST)"
 	// but keep the numeric offset for parsing
@@ -212,32 +234,8 @@ func parseDate(s string) (time.Time, error) {
 		baseStr = strings.TrimSpace(s[:idx])
 	}
 
-	// Common RFC formats
-	formats := []string{
-		time.RFC1123Z,                           // "Mon, 02 Jan 2006 15:04:05 -0700"
-		time.RFC1123,                            // "Mon, 02 Jan 2006 15:04:05 MST"
-		"Mon, 2 Jan 2006 15:04:05 -0700",        // Single-digit day
-		"Mon, 2 Jan 2006 15:04:05 MST",          // Single-digit day with named TZ
-		"2 Jan 2006 15:04:05 -0700",             // No weekday
-		"2 Jan 2006 15:04:05 MST",               // No weekday, named TZ
-		"02 Jan 2006 15:04:05 -0700",            // No weekday, zero-padded
-		"02 Jan 2006 15:04:05 MST",              // No weekday, zero-padded, named TZ
-		time.RFC822Z,                            // "02 Jan 06 15:04 -0700"
-		time.RFC822,                             // "02 Jan 06 15:04 MST"
-		time.RFC850,                             // "Monday, 02-Jan-06 15:04:05 MST"
-		time.ANSIC,                              // "Mon Jan _2 15:04:05 2006"
-		time.UnixDate,                           // "Mon Jan _2 15:04:05 MST 2006"
-		"Mon, 02 Jan 2006 15:04:05 -0700 (MST)", // With parenthesized TZ
-		"Mon, 2 Jan 2006 15:04:05 -0700 (MST)",  // Single-digit day with paren TZ
-		time.RFC3339,                            // "2006-01-02T15:04:05Z07:00" (ISO 8601)
-		"2006-01-02T15:04:05Z",                  // ISO 8601 UTC
-		"2006-01-02T15:04:05-07:00",             // ISO 8601 with offset
-		"2006-01-02 15:04:05 -0700",             // SQL-like format
-		"2006-01-02 15:04:05",                   // SQL-like without TZ
-	}
-
 	// Try parsing with base string (parenthesized TZ stripped)
-	for _, format := range formats {
+	for _, format := range dateFormats {
 		if t, err := time.Parse(format, baseStr); err == nil {
 			return t.UTC(), nil
 		}
@@ -245,7 +243,7 @@ func parseDate(s string) (time.Time, error) {
 
 	// Try original string (some formats expect the parenthesized part)
 	if baseStr != s {
-		for _, format := range formats {
+		for _, format := range dateFormats {
 			if t, err := time.Parse(format, s); err == nil {
 				return t.UTC(), nil
 			}
@@ -262,6 +260,7 @@ var blockTagRe = regexp.MustCompile(`(?i)<(/?)(p|div|br|hr|h[1-6]|li|tr|td|th|bl
 var scriptTagRe = regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
 var styleTagRe = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
 var headTagRe = regexp.MustCompile(`(?is)<head[^>]*>.*?</head>`)
+var htmlTagRe = regexp.MustCompile(`<[^>]*>`)
 
 // StripHTML removes HTML tags, decodes entities, and normalizes whitespace.
 // Block elements are converted to line breaks for readable plain text output.
@@ -284,21 +283,10 @@ func StripHTML(rawHTML string) string {
 	})
 
 	// Strip remaining HTML tags
-	var result strings.Builder
-	inTag := false
-	for _, r := range text {
-		switch {
-		case r == '<':
-			inTag = true
-		case r == '>':
-			inTag = false
-		case !inTag:
-			result.WriteRune(r)
-		}
-	}
+	text = htmlTagRe.ReplaceAllString(text, "")
 
 	// Decode HTML entities (&nbsp;, &amp;, &#160;, etc.)
-	text = html.UnescapeString(result.String())
+	text = html.UnescapeString(text)
 
 	// Normalize whitespace
 	text = strings.ReplaceAll(text, "\r\n", "\n")
@@ -310,11 +298,7 @@ func StripHTML(rawHTML string) string {
 	// Collapse multiple spaces on the same line (but preserve newlines)
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
-		// Collapse multiple spaces to single space
-		for strings.Contains(line, "  ") {
-			line = strings.ReplaceAll(line, "  ", " ")
-		}
-		lines[i] = strings.TrimSpace(line)
+		lines[i] = strings.Join(strings.Fields(line), " ")
 	}
 	text = strings.Join(lines, "\n")
 
