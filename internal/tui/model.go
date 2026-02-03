@@ -552,7 +552,7 @@ func (m Model) hasDrillFilter() bool {
 		m.drillFilter.Domain != "" ||
 		m.drillFilter.Label != "" ||
 		m.drillFilter.TimeRange.Period != "" ||
-		m.drillFilter.EmptyValueTarget != nil
+		m.drillFilter.HasEmptyTargets()
 }
 
 // drillFilterKey returns the key value from the drillFilter based on drillViewType.

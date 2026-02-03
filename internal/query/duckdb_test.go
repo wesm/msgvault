@@ -732,7 +732,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptySenderName(t *testing.T) {
 
 	ctx := context.Background()
 	// msg2 has no 'from' recipient, so MatchEmptySenderName should find it
-	results, err := engine.ListMessages(ctx, MessageFilter{EmptyValueTarget: func() *ViewType { v := ViewSenderNames; return &v }()})
+	results, err := engine.ListMessages(ctx, MessageFilter{EmptyValueTargets: map[ViewType]bool{ViewSenderNames: true}})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -1396,7 +1396,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptySender(t *testing.T) {
 	ctx := context.Background()
 
 	filter := MessageFilter{
-		EmptyValueTarget: func() *ViewType { v := ViewSenders; return &v }(),
+		EmptyValueTargets: map[ViewType]bool{ViewSenders: true},
 	}
 
 	messages, err := engine.ListMessages(ctx, filter)
@@ -1424,7 +1424,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptyRecipient(t *testing.T) {
 	ctx := context.Background()
 
 	filter := MessageFilter{
-		EmptyValueTarget: func() *ViewType { v := ViewRecipients; return &v }(),
+		EmptyValueTargets: map[ViewType]bool{ViewRecipients: true},
 	}
 
 	messages, err := engine.ListMessages(ctx, filter)
@@ -1452,7 +1452,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptyDomain(t *testing.T) {
 	ctx := context.Background()
 
 	filter := MessageFilter{
-		EmptyValueTarget: func() *ViewType { v := ViewDomains; return &v }(),
+		EmptyValueTargets: map[ViewType]bool{ViewDomains: true},
 	}
 
 	messages, err := engine.ListMessages(ctx, filter)
@@ -1487,7 +1487,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptyLabel(t *testing.T) {
 	ctx := context.Background()
 
 	filter := MessageFilter{
-		EmptyValueTarget: func() *ViewType { v := ViewLabels; return &v }(),
+		EmptyValueTargets: map[ViewType]bool{ViewLabels: true},
 	}
 
 	messages, err := engine.ListMessages(ctx, filter)
@@ -1517,8 +1517,8 @@ func TestDuckDBEngine_ListMessages_MatchEmptyCombined(t *testing.T) {
 	// Test: MatchEmptyLabel AND specific sender
 	// Only msg5 has no labels, and it's from alice
 	filter := MessageFilter{
-		Sender:           "alice@example.com",
-		EmptyValueTarget: func() *ViewType { v := ViewLabels; return &v }(),
+		Sender:            "alice@example.com",
+		EmptyValueTargets: map[ViewType]bool{ViewLabels: true},
 	}
 
 	messages, err := engine.ListMessages(ctx, filter)
@@ -1532,6 +1532,63 @@ func TestDuckDBEngine_ListMessages_MatchEmptyCombined(t *testing.T) {
 
 	if len(messages) > 0 && messages[0].Subject != "No Labels" {
 		t.Errorf("expected 'No Labels', got %q", messages[0].Subject)
+	}
+}
+
+// TestDuckDBEngine_ListMessages_MultipleEmptyTargets verifies that drilling from
+// one empty bucket into another empty bucket preserves both constraints.
+// This tests the fix for the bug where EmptyValueTarget could only hold one dimension,
+// causing the original empty constraint to be lost when drilling into a second empty bucket.
+func TestDuckDBEngine_ListMessages_MultipleEmptyTargets(t *testing.T) {
+	engine := newEmptyBucketsEngine(t)
+	ctx := context.Background()
+
+	// Scenario: User drills into "empty senders" then into "empty labels" within that subset.
+	// The filter should find messages that have BOTH no sender AND no labels.
+	// From the test data:
+	// - msg3 "No Sender" has no sender but has label INBOX
+	// - msg5 "No Labels" has sender alice but no labels
+	// Neither message satisfies both constraints, so result should be empty.
+	filter := MessageFilter{
+		EmptyValueTargets: map[ViewType]bool{
+			ViewSenders: true,
+			ViewLabels:  true,
+		},
+	}
+
+	messages, err := engine.ListMessages(ctx, filter)
+	if err != nil {
+		t.Fatalf("ListMessages with multiple empty targets: %v", err)
+	}
+
+	// No messages should match both empty sender AND empty labels
+	if len(messages) != 0 {
+		t.Errorf("expected 0 messages matching both empty sender AND empty labels, got %d", len(messages))
+		for _, m := range messages {
+			t.Logf("  got: id=%d subject=%q", m.ID, m.Subject)
+		}
+	}
+
+	// Test 2: Combine empty recipients with empty labels (also no match in test data)
+	filter2 := MessageFilter{
+		EmptyValueTargets: map[ViewType]bool{
+			ViewRecipients: true,
+			ViewLabels:     true,
+		},
+	}
+
+	messages2, err := engine.ListMessages(ctx, filter2)
+	if err != nil {
+		t.Fatalf("ListMessages with empty recipients + labels: %v", err)
+	}
+
+	// msg4 "No Recipients" has label INBOX, msg5 "No Labels" has recipients
+	// Neither satisfies both constraints
+	if len(messages2) != 0 {
+		t.Errorf("expected 0 messages matching both empty recipients AND empty labels, got %d", len(messages2))
+		for _, m := range messages2 {
+			t.Logf("  got: id=%d subject=%q", m.ID, m.Subject)
+		}
 	}
 }
 
@@ -2005,7 +2062,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptyRecipientName(t *testing.T) {
 		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`))
 
 	ctx := context.Background()
-	filter := MessageFilter{EmptyValueTarget: func() *ViewType { v := ViewRecipientNames; return &v }()}
+	filter := MessageFilter{EmptyValueTargets: map[ViewType]bool{ViewRecipientNames: true}}
 	results, err := engine.ListMessages(ctx, filter)
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)

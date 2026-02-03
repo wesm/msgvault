@@ -764,7 +764,7 @@ func TestSenderNamesDrillFilterKey(t *testing.T) {
 	}
 
 	// Test empty case
-	model.drillFilter = query.MessageFilter{EmptyValueTarget: func() *query.ViewType { v := query.ViewSenderNames; return &v }()}
+	model.drillFilter = query.MessageFilter{EmptyValueTargets: map[query.ViewType]bool{query.ViewSenderNames: true}}
 	key = model.drillFilterKey()
 	if key != "(empty)" {
 		t.Errorf("expected '(empty)' for MatchEmptySenderName, got %q", key)
@@ -840,7 +840,7 @@ func TestHasDrillFilterWithSenderName(t *testing.T) {
 		t.Error("expected hasDrillFilter=true for SenderName")
 	}
 
-	model.drillFilter = query.MessageFilter{EmptyValueTarget: func() *query.ViewType { v := query.ViewSenderNames; return &v }()}
+	model.drillFilter = query.MessageFilter{EmptyValueTargets: map[query.ViewType]bool{query.ViewSenderNames: true}}
 	if !model.hasDrillFilter() {
 		t.Error("expected hasDrillFilter=true for MatchEmptySenderName")
 	}
@@ -947,7 +947,7 @@ func TestRecipientNamesDrillFilterKey(t *testing.T) {
 	}
 
 	// Test empty case
-	model.drillFilter = query.MessageFilter{EmptyValueTarget: func() *query.ViewType { v := query.ViewRecipientNames; return &v }()}
+	model.drillFilter = query.MessageFilter{EmptyValueTargets: map[query.ViewType]bool{query.ViewRecipientNames: true}}
 	key = model.drillFilterKey()
 	if key != "(empty)" {
 		t.Errorf("expected '(empty)' for MatchEmptyRecipientName, got %q", key)
@@ -1036,7 +1036,7 @@ func TestHasDrillFilterWithRecipientName(t *testing.T) {
 		t.Error("expected hasDrillFilter=true for RecipientName")
 	}
 
-	model.drillFilter = query.MessageFilter{EmptyValueTarget: func() *query.ViewType { v := query.ViewRecipientNames; return &v }()}
+	model.drillFilter = query.MessageFilter{EmptyValueTargets: map[query.ViewType]bool{query.ViewRecipientNames: true}}
 	if !model.hasDrillFilter() {
 		t.Error("expected hasDrillFilter=true for MatchEmptyRecipientName")
 	}

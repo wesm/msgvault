@@ -191,11 +191,12 @@ type MessageFilter struct {
 	// Filter by conversation (thread)
 	ConversationID *int64 // filter by conversation/thread ID
 
-	// EmptyValueTarget specifies which dimension to filter for NULL/empty values.
-	// When nil (default): empty filter strings mean "no filter" (return all).
-	// When set to a ViewType: that dimension filters for NULL/empty values,
+	// EmptyValueTargets specifies which dimensions to filter for NULL/empty values.
+	// When empty (default): empty filter strings mean "no filter" (return all).
+	// When a ViewType is present in the map: that dimension filters for NULL/empty values,
 	// enabling drilldown into empty-bucket aggregates (e.g., messages with no sender).
-	EmptyValueTarget *ViewType
+	// Multiple dimensions can be set when drilling from one empty bucket into another.
+	EmptyValueTargets map[ViewType]bool
 
 	// Time range
 	TimeRange TimeRange
@@ -235,14 +236,23 @@ type TimeRange struct {
 	Granularity TimeGranularity
 }
 
-// MatchesEmpty returns true if EmptyValueTarget matches the given ViewType.
+// MatchesEmpty returns true if the given ViewType is in EmptyValueTargets.
 func (f *MessageFilter) MatchesEmpty(v ViewType) bool {
-	return f.EmptyValueTarget != nil && *f.EmptyValueTarget == v
+	return f.EmptyValueTargets != nil && f.EmptyValueTargets[v]
 }
 
-// SetEmptyTarget sets EmptyValueTarget to the given ViewType.
+// SetEmptyTarget adds the given ViewType to EmptyValueTargets.
+// Initializes the map if nil.
 func (f *MessageFilter) SetEmptyTarget(v ViewType) {
-	f.EmptyValueTarget = &v
+	if f.EmptyValueTargets == nil {
+		f.EmptyValueTargets = make(map[ViewType]bool)
+	}
+	f.EmptyValueTargets[v] = true
+}
+
+// HasEmptyTargets returns true if any empty targets are set.
+func (f *MessageFilter) HasEmptyTargets() bool {
+	return len(f.EmptyValueTargets) > 0
 }
 
 // AggregateOptions configures an aggregate query.

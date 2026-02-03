@@ -272,7 +272,7 @@ func TestSubAggregates(t *testing.T) {
 func TestSubAggregate_MatchEmptySenderName(t *testing.T) {
 	env := newTestEnvWithEmptyBuckets(t)
 
-	filter := MessageFilter{EmptyValueTarget: func() *ViewType { v := ViewSenderNames; return &v }()}
+	filter := MessageFilter{EmptyValueTargets: map[ViewType]bool{ViewSenderNames: true}}
 	results, err := env.Engine.SubAggregate(env.Ctx, filter, ViewLabels, DefaultAggregateOptions())
 	if err != nil {
 		t.Fatalf("SubAggregate with MatchEmptySenderName: %v", err)

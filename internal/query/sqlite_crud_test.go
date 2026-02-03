@@ -6,7 +6,14 @@ import (
 	"github.com/wesm/msgvault/internal/testutil/dbtest"
 )
 
-func viewTypePtr(v ViewType) *ViewType { return &v }
+// emptyTargets creates an EmptyValueTargets map for testing with the given ViewType(s).
+func emptyTargets(views ...ViewType) map[ViewType]bool {
+	m := make(map[ViewType]bool)
+	for _, v := range views {
+		m[v] = true
+	}
+	return m
+}
 
 func TestListMessages_Filters(t *testing.T) {
 	env := newTestEnv(t)
@@ -54,12 +61,12 @@ func TestListMessages_Filters(t *testing.T) {
 		},
 		{
 			name:      "RecipientName with MatchEmptyRecipient (contradictory)",
-			filter:    MessageFilter{RecipientName: "Bob Jones", EmptyValueTarget: viewTypePtr(ViewRecipients)},
+			filter:    MessageFilter{RecipientName: "Bob Jones", EmptyValueTargets: emptyTargets(ViewRecipients)},
 			wantCount: 0,
 		},
 		{
 			name:      "MatchEmptyRecipientName with sender",
-			filter:    MessageFilter{EmptyValueTarget: viewTypePtr(ViewRecipientNames), Sender: "alice@example.com"},
+			filter:    MessageFilter{EmptyValueTargets: emptyTargets(ViewRecipientNames), Sender: "alice@example.com"},
 			wantCount: 0,
 		},
 		{
@@ -393,7 +400,7 @@ func TestListMessages_MatchEmptySenderName_NotExists(t *testing.T) {
 
 	env.AddMessage(dbtest.MessageOpts{Subject: "Ghost Message", SentAt: "2024-06-01 10:00:00"})
 
-	filter := MessageFilter{EmptyValueTarget: viewTypePtr(ViewSenderNames)}
+	filter := MessageFilter{EmptyValueTargets: emptyTargets(ViewSenderNames)}
 	messages := env.MustListMessages(filter)
 
 	if len(messages) != 1 {
@@ -420,7 +427,7 @@ func TestMatchEmptySenderName_MixedFromRecipients(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	filter := MessageFilter{EmptyValueTarget: viewTypePtr(ViewSenderNames)}
+	filter := MessageFilter{EmptyValueTargets: emptyTargets(ViewSenderNames)}
 	messages := env.MustListMessages(filter)
 
 	for _, m := range messages {
@@ -434,8 +441,8 @@ func TestMatchEmptySenderName_CombinedWithDomain(t *testing.T) {
 	env := newTestEnvWithEmptyBuckets(t)
 
 	filter := MessageFilter{
-		EmptyValueTarget: viewTypePtr(ViewSenderNames),
-		Domain:           "example.com",
+		EmptyValueTargets: emptyTargets(ViewSenderNames),
+		Domain:            "example.com",
 	}
 	messages := env.MustListMessages(filter)
 
@@ -472,8 +479,8 @@ func TestGetGmailIDsByFilter_RecipientName_WithMatchEmptyRecipient(t *testing.T)
 	env := newTestEnv(t)
 
 	filter := MessageFilter{
-		RecipientName:    "Bob Jones",
-		EmptyValueTarget: viewTypePtr(ViewRecipients),
+		RecipientName:     "Bob Jones",
+		EmptyValueTargets: emptyTargets(ViewRecipients),
 	}
 	ids, err := env.Engine.GetGmailIDsByFilter(env.Ctx, filter)
 	if err != nil {
@@ -557,7 +564,7 @@ func TestListMessages_MatchEmptyFilters(t *testing.T) {
 	}{
 		{
 			name:      "Empty sender name",
-			filter:    MessageFilter{EmptyValueTarget: viewTypePtr(ViewSenderNames)},
+			filter:    MessageFilter{EmptyValueTargets: emptyTargets(ViewSenderNames)},
 			wantCount: 1,
 			validate: func(t *testing.T, msgs []MessageSummary) {
 				if msgs[0].Subject != "No Sender" {
@@ -567,7 +574,7 @@ func TestListMessages_MatchEmptyFilters(t *testing.T) {
 		},
 		{
 			name:      "Empty sender",
-			filter:    MessageFilter{EmptyValueTarget: viewTypePtr(ViewSenders)},
+			filter:    MessageFilter{EmptyValueTargets: emptyTargets(ViewSenders)},
 			wantCount: 1,
 			validate: func(t *testing.T, msgs []MessageSummary) {
 				if msgs[0].Subject != "No Sender" {
@@ -577,22 +584,22 @@ func TestListMessages_MatchEmptyFilters(t *testing.T) {
 		},
 		{
 			name:      "Empty recipient",
-			filter:    MessageFilter{EmptyValueTarget: viewTypePtr(ViewRecipients)},
+			filter:    MessageFilter{EmptyValueTargets: emptyTargets(ViewRecipients)},
 			wantCount: 2,
 		},
 		{
 			name:      "Empty domain",
-			filter:    MessageFilter{EmptyValueTarget: viewTypePtr(ViewDomains)},
+			filter:    MessageFilter{EmptyValueTargets: emptyTargets(ViewDomains)},
 			wantCount: 2,
 		},
 		{
 			name:      "Empty label",
-			filter:    MessageFilter{EmptyValueTarget: viewTypePtr(ViewLabels)},
+			filter:    MessageFilter{EmptyValueTargets: emptyTargets(ViewLabels)},
 			wantCount: 4,
 		},
 		{
 			name:      "Empty label combined with sender",
-			filter:    MessageFilter{EmptyValueTarget: viewTypePtr(ViewLabels), Sender: "alice@example.com"},
+			filter:    MessageFilter{EmptyValueTargets: emptyTargets(ViewLabels), Sender: "alice@example.com"},
 			wantCount: 2,
 			validate: func(t *testing.T, msgs []MessageSummary) {
 				subjects := make(map[string]bool)
@@ -609,7 +616,7 @@ func TestListMessages_MatchEmptyFilters(t *testing.T) {
 		},
 		{
 			name:   "Empty recipient name includes no-recipients message",
-			filter: MessageFilter{EmptyValueTarget: viewTypePtr(ViewRecipientNames)},
+			filter: MessageFilter{EmptyValueTargets: emptyTargets(ViewRecipientNames)},
 			validate: func(t *testing.T, msgs []MessageSummary) {
 				if len(msgs) == 0 {
 					t.Fatal("expected at least 1 message with empty recipient name, got 0")
@@ -627,7 +634,7 @@ func TestListMessages_MatchEmptyFilters(t *testing.T) {
 		},
 		{
 			name:      "EmptyValueTarget=ViewSenders alone",
-			filter:    MessageFilter{EmptyValueTarget: viewTypePtr(ViewSenders)},
+			filter:    MessageFilter{EmptyValueTargets: emptyTargets(ViewSenders)},
 			wantCount: 1,
 			validate: func(t *testing.T, msgs []MessageSummary) {
 				if msgs[0].Subject != "No Sender" {
@@ -654,9 +661,9 @@ func TestRecipientAndRecipientNameAndMatchEmptyRecipient(t *testing.T) {
 	env := newTestEnv(t)
 
 	filter := MessageFilter{
-		Recipient:        "bob@company.org",
-		RecipientName:    "Bob Jones",
-		EmptyValueTarget: viewTypePtr(ViewRecipients),
+		Recipient:         "bob@company.org",
+		RecipientName:     "Bob Jones",
+		EmptyValueTargets: emptyTargets(ViewRecipients),
 	}
 
 	messages := env.MustListMessages(filter)
@@ -740,4 +747,107 @@ func TestRecipientNameFilter_IncludesBCC(t *testing.T) {
 			t.Errorf("expected 1 message, got %d", len(messages))
 		}
 	})
+}
+
+// TestMultipleEmptyTargets verifies that drilling from one empty bucket into another
+// preserves both empty constraints. This tests the fix for the bug where
+// EmptyValueTarget could only hold one dimension.
+func TestMultipleEmptyTargets(t *testing.T) {
+	env := newTestEnvWithEmptyBuckets(t)
+
+	// Scenario: User drills into "empty sender names" then into "empty labels".
+	// The filter should find messages that have BOTH empty sender name AND no labels.
+	filter := MessageFilter{
+		EmptyValueTargets: emptyTargets(ViewSenderNames, ViewLabels),
+	}
+
+	messages := env.MustListMessages(filter)
+
+	// From the test fixture, "No Sender" has no sender name AND no labels.
+	// It should be the only message matching both constraints.
+	if len(messages) != 1 {
+		t.Errorf("expected 1 message matching both empty sender name AND empty labels, got %d", len(messages))
+		for _, m := range messages {
+			t.Logf("  got: id=%d subject=%q", m.ID, m.Subject)
+		}
+	}
+
+	if len(messages) == 1 && messages[0].Subject != "No Sender" {
+		t.Errorf("expected 'No Sender', got %q", messages[0].Subject)
+	}
+
+	// Test another constraint: empty senders AND empty recipients.
+	// "No Sender" has no FromID AND no ToIDs, so it matches both constraints.
+	filter2 := MessageFilter{
+		EmptyValueTargets: emptyTargets(ViewSenders, ViewRecipients),
+	}
+
+	messages2 := env.MustListMessages(filter2)
+
+	// "No Sender" has BOTH empty sender AND empty recipients
+	if len(messages2) != 1 {
+		t.Errorf("expected 1 message matching both empty senders AND empty recipients, got %d", len(messages2))
+		for _, m := range messages2 {
+			t.Logf("  got: id=%d subject=%q", m.ID, m.Subject)
+		}
+	}
+
+	if len(messages2) == 1 && messages2[0].Subject != "No Sender" {
+		t.Errorf("expected 'No Sender', got %q", messages2[0].Subject)
+	}
+
+	// Test constraint: empty recipients AND empty labels.
+	// From the fixture, none of the added empty-bucket messages have labels,
+	// so both "No Sender" (no recipients, no labels) and "No Recipients" (no recipients, no labels) match.
+	filter3 := MessageFilter{
+		EmptyValueTargets: emptyTargets(ViewRecipients, ViewLabels),
+	}
+
+	messages3 := env.MustListMessages(filter3)
+
+	// Both "No Sender" and "No Recipients" have no recipients AND no labels
+	if len(messages3) != 2 {
+		t.Errorf("expected 2 messages matching empty recipients AND empty labels, got %d", len(messages3))
+		for _, m := range messages3 {
+			t.Logf("  got: id=%d subject=%q", m.ID, m.Subject)
+		}
+	}
+
+	// Verify the subjects - order may vary
+	subjects := make(map[string]bool)
+	for _, m := range messages3 {
+		subjects[m.Subject] = true
+	}
+	if !subjects["No Sender"] || !subjects["No Recipients"] {
+		t.Errorf("expected both 'No Sender' and 'No Recipients', got %v", subjects)
+	}
+
+	// Test truly exclusive constraint: combine empty senders with a specific label
+	// "No Sender" has no sender but also no labels, so combining with Label should return 0
+	filter4 := MessageFilter{
+		EmptyValueTargets: emptyTargets(ViewSenders),
+		Label:             "INBOX",
+	}
+
+	messages4 := env.MustListMessages(filter4)
+
+	// No message has both empty sender AND label INBOX
+	if len(messages4) != 0 {
+		t.Errorf("expected 0 messages matching empty senders AND label INBOX, got %d", len(messages4))
+		for _, m := range messages4 {
+			t.Logf("  got: id=%d subject=%q", m.ID, m.Subject)
+		}
+	}
+
+	// Also test via SubAggregate: drilling from empty senders + labels into domains view
+	rows, err := env.Engine.SubAggregate(env.Ctx, filter, ViewDomains, DefaultAggregateOptions())
+	if err != nil {
+		t.Fatalf("SubAggregate with multiple empty targets: %v", err)
+	}
+
+	// "No Sender" has no sender so no domain - expect empty or just the empty bucket
+	// Since it has no sender, there's no domain to aggregate on
+	if len(rows) != 0 {
+		t.Errorf("expected 0 domain sub-aggregate rows for no-sender message, got %d", len(rows))
+	}
 }
