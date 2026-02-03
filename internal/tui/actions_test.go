@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -41,12 +42,13 @@ func newTestController(t *testing.T, gmailIDs ...string) *ActionController {
 }
 
 type stageArgs struct {
-	aggregates map[string]bool
-	selection  map[int64]bool
-	view       query.ViewType
-	accountID  *int64
-	accounts   []query.AccountInfo
-	messages   []query.MessageSummary
+	aggregates  map[string]bool
+	selection   map[int64]bool
+	view        query.ViewType
+	accountID   *int64
+	accounts    []query.AccountInfo
+	messages    []query.MessageSummary
+	drillFilter *query.MessageFilter
 }
 
 func stageForDeletion(t *testing.T, ctrl *ActionController, args stageArgs) *deletion.Manifest {
@@ -54,7 +56,7 @@ func stageForDeletion(t *testing.T, ctrl *ActionController, args stageArgs) *del
 	view := args.view
 	manifest, err := ctrl.StageForDeletion(
 		args.aggregates, args.selection, view, args.accountID, args.accounts,
-		view, "", query.TimeYear, args.messages,
+		view, "", query.TimeYear, args.messages, args.drillFilter,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -112,7 +114,7 @@ func TestStageForDeletion_NoSelection(t *testing.T) {
 
 	_, err := ctrl.StageForDeletion(
 		nil, nil, query.ViewSenders, nil, nil,
-		query.ViewSenders, "", query.TimeYear, nil,
+		query.ViewSenders, "", query.TimeYear, nil, nil,
 	)
 	if err == nil {
 		t.Fatal("expected error for empty selection")
@@ -180,6 +182,64 @@ func TestStageForDeletion_AccountFilter(t *testing.T) {
 	})
 	if manifest.Filters.Account != "test@gmail.com" {
 		t.Errorf("expected account 'test@gmail.com', got %q", manifest.Filters.Account)
+	}
+}
+
+func TestStageForDeletion_DrillFilterApplied(t *testing.T) {
+	// Simulate: drill into sender "alice@example.com", switch to time view,
+	// select "2024-01". The filter should include both sender AND time period.
+	var capturedFilter query.MessageFilter
+	engine := &querytest.MockEngine{
+		GetGmailIDsByFilterFunc: func(_ context.Context, f query.MessageFilter) ([]string, error) {
+			capturedFilter = f
+			return []string{"gid1", "gid2"}, nil
+		},
+	}
+	env := NewControllerTestEnv(t, engine)
+
+	drillFilter := &query.MessageFilter{
+		Sender: "alice@example.com",
+	}
+
+	manifest := stageForDeletion(t, env.Ctrl, stageArgs{
+		aggregates:  testutil.StringSet("2024-01"),
+		view:        query.ViewTime,
+		drillFilter: drillFilter,
+	})
+
+	// Verify the filter passed to the engine includes both drill context and selection
+	if capturedFilter.Sender != "alice@example.com" {
+		t.Errorf("expected drill filter sender 'alice@example.com', got %q", capturedFilter.Sender)
+	}
+	if capturedFilter.TimePeriod != "2024-01" {
+		t.Errorf("expected time period '2024-01', got %q", capturedFilter.TimePeriod)
+	}
+	if len(manifest.GmailIDs) != 2 {
+		t.Errorf("expected 2 gmail IDs, got %d", len(manifest.GmailIDs))
+	}
+}
+
+func TestStageForDeletion_NoDrillFilter(t *testing.T) {
+	// Without drill filter, only the aggregate selection filter is applied.
+	var capturedFilter query.MessageFilter
+	engine := &querytest.MockEngine{
+		GetGmailIDsByFilterFunc: func(_ context.Context, f query.MessageFilter) ([]string, error) {
+			capturedFilter = f
+			return []string{"gid1"}, nil
+		},
+	}
+	env := NewControllerTestEnv(t, engine)
+
+	stageForDeletion(t, env.Ctrl, stageArgs{
+		aggregates: testutil.StringSet("2024-01"),
+		view:       query.ViewTime,
+	})
+
+	if capturedFilter.Sender != "" {
+		t.Errorf("expected no sender filter, got %q", capturedFilter.Sender)
+	}
+	if capturedFilter.TimePeriod != "2024-01" {
+		t.Errorf("expected time period '2024-01', got %q", capturedFilter.TimePeriod)
 	}
 }
 

@@ -50,7 +50,7 @@ func (c *ActionController) SaveManifest(manifest *deletion.Manifest) error {
 }
 
 // StageForDeletion prepares messages for deletion based on selection.
-func (c *ActionController) StageForDeletion(aggregateSelection map[string]bool, messageSelection map[int64]bool, aggregateViewType query.ViewType, accountFilter *int64, accounts []query.AccountInfo, currentViewType query.ViewType, currentFilterKey string, timeGranularity query.TimeGranularity, messages []query.MessageSummary) (*deletion.Manifest, error) {
+func (c *ActionController) StageForDeletion(aggregateSelection map[string]bool, messageSelection map[int64]bool, aggregateViewType query.ViewType, accountFilter *int64, accounts []query.AccountInfo, currentViewType query.ViewType, currentFilterKey string, timeGranularity query.TimeGranularity, messages []query.MessageSummary, drillFilter *query.MessageFilter) (*deletion.Manifest, error) {
 	// Collect Gmail IDs to delete
 	gmailIDSet := make(map[string]bool)
 	ctx := context.Background()
@@ -58,9 +58,12 @@ func (c *ActionController) StageForDeletion(aggregateSelection map[string]bool, 
 	// From selected aggregates - resolve to Gmail IDs via query engine
 	if len(aggregateSelection) > 0 {
 		for key := range aggregateSelection {
-			filter := query.MessageFilter{
-				SourceID: accountFilter,
+			// Start with drill-down filter as base (preserves parent context)
+			var filter query.MessageFilter
+			if drillFilter != nil {
+				filter = *drillFilter
 			}
+			filter.SourceID = accountFilter
 
 			switch aggregateViewType {
 			case query.ViewSenders:

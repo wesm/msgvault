@@ -96,8 +96,8 @@ type Model struct {
 	breadcrumbs []navigationSnapshot
 
 	// Global Stats (not view specific)
-	stats        *query.TotalStats // Global stats
-	accounts     []query.AccountInfo
+	stats    *query.TotalStats // Global stats
+	accounts []query.AccountInfo
 
 	// Account filter (nil = all accounts)
 	accountFilter *int64
@@ -106,7 +106,7 @@ type Model struct {
 	attachmentFilter bool
 
 	// Pagination config
-	pageSize     int // Rows visible per page
+	pageSize int // Rows visible per page
 
 	// Selection state
 	selection selectionState
@@ -126,23 +126,23 @@ type Model struct {
 	height int
 
 	// Loading state
-	loading      bool
-	err          error
-	spinnerFrame int  // Current frame index into spinnerFrames
+	loading       bool
+	err           error
+	spinnerFrame  int  // Current frame index into spinnerFrames
 	spinnerActive bool // True when spinner tick is running
 
 	// Request tracking to ignore stale async results
-	aggregateRequestID   uint64 // Current request ID for aggregate data
-	loadRequestID        uint64 // Current request ID for message list
-	detailRequestID      uint64 // Current request ID for message detail
-	searchRequestID      uint64 // Current request ID for search results
-	
+	aggregateRequestID uint64 // Current request ID for aggregate data
+	loadRequestID      uint64 // Current request ID for message list
+	detailRequestID    uint64 // Current request ID for message detail
+	searchRequestID    uint64 // Current request ID for search results
+
 	// Search state
-	searchMode        searchModeKind      // Fast (Parquet) or Deep (FTS5)
-	searchInput       textinput.Model     // Text input for search query
-	searchTotalCount  int64               // Total matching messages (for pagination display)
-	searchOffset      int                 // Current offset for pagination
-	searchLoadingMore bool                // True when loading additional results
+	searchMode        searchModeKind  // Fast (Parquet) or Deep (FTS5)
+	searchInput       textinput.Model // Text input for search query
+	searchTotalCount  int64           // Total matching messages (for pagination display)
+	searchOffset      int             // Current offset for pagination
+	searchLoadingMore bool            // True when loading additional results
 
 	// Navigation restoration state
 	restorePosition bool // When true, don't reset cursor/scroll on data load (used by goBack)
@@ -207,7 +207,7 @@ func New(engine query.Engine, opts Options) Model {
 			msgSortField:     query.MessageSortByDate,
 			msgSortDirection: query.SortDesc,
 		},
-		pageSize:         20,
+		pageSize:      20,
 		loading:       true,
 		spinnerActive: true,
 		selection: selectionState{
@@ -614,7 +614,7 @@ func (m Model) loadThreadMessages(conversationID int64) tea.Cmd {
 		filter := query.MessageFilter{
 			ConversationID: &conversationID,
 			SortField:      query.MessageSortByDate,
-			SortDirection:  query.SortAsc,          // Chronological order for threads
+			SortDirection:  query.SortAsc,            // Chronological order for threads
 			Limit:          m.threadMessageLimit + 1, // Request one extra to detect truncation
 		}
 		messages, err := m.engine.ListMessages(context.Background(), filter)
@@ -861,7 +861,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.searchTotalCount = msg.totalCount
 				m.cursor = 0
 				m.scrollOffset = 0
-					// Set contextStats for search results to update header metrics
+				// Set contextStats for search results to update header metrics
 				// Preserve TotalSize/AttachmentCount if already set from drill-down
 				// (drill-down sets these from the aggregate row before loading search results)
 				hasDrillDownStats := m.contextStats != nil &&
@@ -1066,10 +1066,16 @@ func (m *Model) updateDetailLineCount() {
 
 // stageForDeletion prepares messages for deletion via the ActionController.
 func (m Model) stageForDeletion() (tea.Model, tea.Cmd) {
+	var drillFilter *query.MessageFilter
+	if m.hasDrillFilter() {
+		f := m.drillFilter
+		drillFilter = &f
+	}
 	manifest, err := m.actions.StageForDeletion(
 		m.selection.aggregateKeys, m.selection.messageIDs,
 		m.selection.aggregateViewType, m.accountFilter, m.accounts,
 		m.viewType, m.filterKey, m.timeGranularity, m.messages,
+		drillFilter,
 	)
 	if err != nil {
 		m.modal = modalDeleteResult
@@ -1208,4 +1214,3 @@ func (m Model) exportAttachments() (tea.Model, tea.Cmd) {
 	m.exportSelection = nil
 	return m, cmd
 }
-
