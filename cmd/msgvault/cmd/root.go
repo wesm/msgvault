@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -51,8 +52,8 @@ in a single binary.`,
 	},
 }
 
-func Execute() error {
-	return rootCmd.Execute()
+func ExecuteContext(ctx context.Context) error {
+	return rootCmd.ExecuteContext(ctx)
 }
 
 // oauthSetupHint is the common help text for OAuth configuration issues.
