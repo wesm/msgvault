@@ -1,6 +1,7 @@
 package query
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -403,13 +404,10 @@ func TestSQLiteEngine_Aggregate_InvalidViewType(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := env.Engine.Aggregate(env.Ctx, tt.viewType, DefaultAggregateOptions())
 			if err == nil {
-				t.Error("expected error for invalid ViewType, got nil")
+				t.Fatal("expected error for invalid ViewType, got nil")
 			}
-			if err != nil {
-				errMsg := err.Error()
-				if errMsg != "unsupported view type: Unknown" && errMsg != "unsupported view type: -1" && errMsg != "unsupported view type: 999" && errMsg != "unsupported view type: 7" {
-					t.Errorf("expected 'unsupported view type' error, got: %v", err)
-				}
+			if !strings.Contains(err.Error(), "unsupported view type") {
+				t.Errorf("expected 'unsupported view type' error, got: %v", err)
 			}
 		})
 	}
@@ -434,13 +432,10 @@ func TestSQLiteEngine_SubAggregate_InvalidViewType(t *testing.T) {
 			filter := MessageFilter{Sender: "alice@example.com"}
 			_, err := env.Engine.SubAggregate(env.Ctx, filter, tt.viewType, DefaultAggregateOptions())
 			if err == nil {
-				t.Error("expected error for invalid ViewType, got nil")
+				t.Fatal("expected error for invalid ViewType, got nil")
 			}
-			if err != nil {
-				errMsg := err.Error()
-				if errMsg != "unsupported view type: Unknown" && errMsg != "unsupported view type: -1" && errMsg != "unsupported view type: 999" && errMsg != "unsupported view type: 7" {
-					t.Errorf("expected 'unsupported view type' error, got: %v", err)
-				}
+			if !strings.Contains(err.Error(), "unsupported view type") {
+				t.Errorf("expected 'unsupported view type' error, got: %v", err)
 			}
 		})
 	}
