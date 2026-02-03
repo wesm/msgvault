@@ -159,7 +159,11 @@ func mutateSliceElement(t *testing.T, slice reflect.Value, idx int) {
 				elem.Set(reflect.Zero(elem.Type()))
 			}
 		} else if elem.Elem().CanSet() {
-			mutateValue(t, elem.Elem())
+			if !mutateValue(t, elem.Elem()) {
+				// mutateValue failed (e.g., pointer to nil interface/func);
+				// set pointer to nil to guarantee a change
+				elem.Set(reflect.Zero(elem.Type()))
+			}
 		} else {
 			// Last resort: set pointer to nil
 			elem.Set(reflect.Zero(elem.Type()))
@@ -215,10 +219,15 @@ func mutateValue(t *testing.T, v reflect.Value) bool {
 		return false
 	case reflect.Map:
 		if v.IsNil() {
+			// Set to a non-nil empty map (semantic change from nil)
 			v.Set(reflect.MakeMap(v.Type()))
+		} else if v.Len() == 0 {
+			// Non-nil empty map: toggle to nil to guarantee semantic change
+			v.Set(reflect.Zero(v.Type()))
 		} else {
-			// Clear the map by setting to a new empty map
-			v.Set(reflect.MakeMap(v.Type()))
+			// Non-empty map: delete one key to guarantee semantic change
+			keys := v.MapKeys()
+			v.SetMapIndex(keys[0], reflect.Value{})
 		}
 	case reflect.Interface:
 		if v.IsNil() {
@@ -257,4 +266,96 @@ func mutateStruct(t *testing.T, v reflect.Value) bool {
 		}
 	}
 	return false
+}
+
+// TestMutateValueMapEdgeCases verifies that map mutations produce semantic changes
+// for all map states: nil, empty non-nil, and non-empty.
+func TestMutateValueMapEdgeCases(t *testing.T) {
+	t.Run("nil map becomes non-nil", func(t *testing.T) {
+		var m map[string]int
+		v := reflect.ValueOf(&m).Elem()
+		if !mutateValue(t, v) {
+			t.Fatal("mutateValue returned false for nil map")
+		}
+		if m == nil {
+			t.Error("expected nil map to become non-nil after mutation")
+		}
+	})
+
+	t.Run("empty non-nil map becomes nil", func(t *testing.T) {
+		m := make(map[string]int)
+		v := reflect.ValueOf(&m).Elem()
+		if !mutateValue(t, v) {
+			t.Fatal("mutateValue returned false for empty map")
+		}
+		if m != nil {
+			t.Error("expected empty non-nil map to become nil after mutation")
+		}
+	})
+
+	t.Run("non-empty map loses a key", func(t *testing.T) {
+		m := map[string]int{"a": 1, "b": 2}
+		v := reflect.ValueOf(&m).Elem()
+		originalLen := len(m)
+		if !mutateValue(t, v) {
+			t.Fatal("mutateValue returned false for non-empty map")
+		}
+		if len(m) >= originalLen {
+			t.Errorf("expected map length to decrease, got %d (was %d)", len(m), originalLen)
+		}
+	})
+}
+
+// TestMutateValuePointerToNilInterface verifies that pointers to nil interfaces
+// are handled by falling back to setting the pointer to nil.
+func TestMutateValuePointerToNilInterface(t *testing.T) {
+	type container struct {
+		Iface any
+	}
+	c := &container{Iface: nil} // pointer to struct with nil interface
+	v := reflect.ValueOf(c).Elem().Field(0)
+
+	// mutateValue on a nil interface should return false
+	if mutateValue(t, v) {
+		t.Error("expected mutateValue to return false for nil interface")
+	}
+}
+
+// TestMutateValuePointerToNilFunc verifies that pointers to nil funcs
+// are handled correctly.
+func TestMutateValuePointerToNilFunc(t *testing.T) {
+	type container struct {
+		Fn func()
+	}
+	c := &container{Fn: nil}
+	v := reflect.ValueOf(c).Elem().Field(0)
+
+	// mutateValue on a nil func should return false
+	if mutateValue(t, v) {
+		t.Error("expected mutateValue to return false for nil func")
+	}
+}
+
+// TestMutateSliceElementPointerFallback verifies that mutateSliceElement
+// falls back to nil when mutateValue fails for the pointed-to value.
+func TestMutateSliceElementPointerFallback(t *testing.T) {
+	// Create a slice of pointers to interfaces (which can be nil)
+	type wrapper struct {
+		Val any
+	}
+	w := &wrapper{Val: nil}
+	slice := []*wrapper{w}
+	sliceVal := reflect.ValueOf(&slice).Elem()
+
+	// mutateSliceElement should succeed by setting the pointer to nil
+	// when it can't mutate the underlying nil interface
+	mutateSliceElement(t, sliceVal, 0)
+
+	// The pointer should now be nil (fallback behavior)
+	if slice[0] != nil {
+		// Or it allocated a new wrapper - either way, it's different from original
+		if slice[0] == w {
+			t.Error("expected slice element to be mutated")
+		}
+	}
 }
