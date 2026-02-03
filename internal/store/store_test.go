@@ -24,9 +24,9 @@ func TestStore_Open(t *testing.T) {
 }
 
 func TestStore_GetStats_Empty(t *testing.T) {
-	st := testutil.NewTestStore(t)
+	f := storetest.New(t)
 
-	stats, err := st.GetStats()
+	stats, err := f.Store.GetStats()
 	testutil.MustNoErr(t, err, "GetStats()")
 
 	if stats.MessageCount != 0 {
@@ -623,9 +623,9 @@ func TestStore_GetLastSuccessfulSync_None(t *testing.T) {
 }
 
 func TestStore_GetSourceByIdentifier_NotFound(t *testing.T) {
-	st := testutil.NewTestStore(t)
+	f := storetest.New(t)
 
-	source, err := st.GetSourceByIdentifier("nonexistent@example.com")
+	source, err := f.Store.GetSourceByIdentifier("nonexistent@example.com")
 	testutil.MustNoErr(t, err, "GetSourceByIdentifier()")
 	if source != nil {
 		t.Errorf("expected nil source, got %+v", source)
