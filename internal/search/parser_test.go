@@ -14,180 +14,212 @@ func TestParse(t *testing.T) {
 		want  Query
 	}
 
-	testGroups := map[string][]testCase{
-		"BasicOperators": {
-			{
-				name:  "from operator",
-				query: "from:alice@example.com",
-				want:  Query{FromAddrs: []string{"alice@example.com"}},
-			},
-			{
-				name:  "to operator",
-				query: "to:bob@example.com",
-				want:  Query{ToAddrs: []string{"bob@example.com"}},
-			},
-			{
-				name:  "multiple from",
-				query: "from:alice@example.com from:bob@example.com",
-				want:  Query{FromAddrs: []string{"alice@example.com", "bob@example.com"}},
-			},
-			{
-				name:  "bare text",
-				query: "hello world",
-				want:  Query{TextTerms: []string{"hello", "world"}},
-			},
-			{
-				name:  "quoted phrase",
-				query: `"hello world"`,
-				want:  Query{TextTerms: []string{"hello world"}},
-			},
-			{
-				name:  "mixed operators and text",
-				query: "from:alice@example.com meeting notes",
-				want: Query{
-					FromAddrs: []string{"alice@example.com"},
-					TextTerms: []string{"meeting", "notes"},
+	type testGroup struct {
+		name  string
+		tests []testCase
+	}
+
+	testGroups := []testGroup{
+		{
+			name: "BasicOperators",
+			tests: []testCase{
+				{
+					name:  "from operator",
+					query: "from:alice@example.com",
+					want:  Query{FromAddrs: []string{"alice@example.com"}},
+				},
+				{
+					name:  "to operator",
+					query: "to:bob@example.com",
+					want:  Query{ToAddrs: []string{"bob@example.com"}},
+				},
+				{
+					name:  "multiple from",
+					query: "from:alice@example.com from:bob@example.com",
+					want:  Query{FromAddrs: []string{"alice@example.com", "bob@example.com"}},
+				},
+				{
+					name:  "bare text",
+					query: "hello world",
+					want:  Query{TextTerms: []string{"hello", "world"}},
+				},
+				{
+					name:  "quoted phrase",
+					query: `"hello world"`,
+					want:  Query{TextTerms: []string{"hello world"}},
+				},
+				{
+					name:  "mixed operators and text",
+					query: "from:alice@example.com meeting notes",
+					want: Query{
+						FromAddrs: []string{"alice@example.com"},
+						TextTerms: []string{"meeting", "notes"},
+					},
 				},
 			},
 		},
-		"QuotedValues": {
-			{
-				name:  "subject with quoted phrase",
-				query: `subject:"meeting notes"`,
-				want:  Query{SubjectTerms: []string{"meeting notes"}},
-			},
-			{
-				name:  "subject with quoted phrase and other terms",
-				query: `subject:"project update" from:alice@example.com`,
-				want: Query{
-					SubjectTerms: []string{"project update"},
-					FromAddrs:    []string{"alice@example.com"},
+		{
+			name: "QuotedValues",
+			tests: []testCase{
+				{
+					name:  "subject with quoted phrase",
+					query: `subject:"meeting notes"`,
+					want:  Query{SubjectTerms: []string{"meeting notes"}},
 				},
-			},
-			{
-				name:  "label with quoted value containing spaces",
-				query: `label:"My Important Label"`,
-				want:  Query{Labels: []string{"My Important Label"}},
-			},
-			{
-				name:  "mixed quoted and unquoted",
-				query: `subject:urgent subject:"very important" search term`,
-				want: Query{
-					SubjectTerms: []string{"urgent", "very important"},
-					TextTerms:    []string{"search", "term"},
+				{
+					name:  "subject with quoted phrase and other terms",
+					query: `subject:"project update" from:alice@example.com`,
+					want: Query{
+						SubjectTerms: []string{"project update"},
+						FromAddrs:    []string{"alice@example.com"},
+					},
 				},
-			},
-			{
-				name:  "from with quoted display name style (edge case)",
-				query: `from:"alice@example.com"`,
-				want:  Query{FromAddrs: []string{"alice@example.com"}},
-			},
-		},
-		"QuotedPhrasesWithColons": {
-			{
-				name:  "quoted phrase with colon",
-				query: `"foo:bar"`,
-				want:  Query{TextTerms: []string{"foo:bar"}},
-			},
-			{
-				name:  "quoted phrase with time",
-				query: `"meeting at 10:30"`,
-				want:  Query{TextTerms: []string{"meeting at 10:30"}},
-			},
-			{
-				name:  "quoted phrase with URL-like content",
-				query: `"check http://example.com"`,
-				want:  Query{TextTerms: []string{"check http://example.com"}},
-			},
-			{
-				name:  "quoted phrase with multiple colons",
-				query: `"a:b:c:d"`,
-				want:  Query{TextTerms: []string{"a:b:c:d"}},
-			},
-			{
-				name:  "quoted colon phrase mixed with real operator",
-				query: `from:alice@example.com "subject:not an operator"`,
-				want: Query{
-					FromAddrs: []string{"alice@example.com"},
-					TextTerms: []string{"subject:not an operator"},
+				{
+					name:  "label with quoted value containing spaces",
+					query: `label:"My Important Label"`,
+					want:  Query{Labels: []string{"My Important Label"}},
 				},
-			},
-			{
-				name:  "operator followed by quoted colon phrase",
-				query: `"re: meeting notes" from:bob@example.com`,
-				want: Query{
-					TextTerms: []string{"re: meeting notes"},
-					FromAddrs: []string{"bob@example.com"},
+				{
+					name:  "mixed quoted and unquoted",
+					query: `subject:urgent subject:"very important" search term`,
+					want: Query{
+						SubjectTerms: []string{"urgent", "very important"},
+						TextTerms:    []string{"search", "term"},
+					},
+				},
+				{
+					name:  "from with quoted display name style (edge case)",
+					query: `from:"alice@example.com"`,
+					want:  Query{FromAddrs: []string{"alice@example.com"}},
 				},
 			},
 		},
-		"Labels": {
-			{
-				name:  "multiple labels",
-				query: "label:INBOX l:work",
-				want:  Query{Labels: []string{"INBOX", "work"}},
-			},
-		},
-		"Subject": {
-			{
-				name:  "simple subject",
-				query: "subject:urgent",
-				want:  Query{SubjectTerms: []string{"urgent"}},
-			},
-		},
-		"HasAttachment": {
-			{
-				name:  "has attachment",
-				query: "has:attachment",
-				want:  Query{HasAttachment: ptr.Bool(true)},
-			},
-		},
-		"Dates": {
-			{
-				name:  "after and before dates",
-				query: "after:2024-01-15 before:2024-06-30",
-				want: Query{
-					AfterDate:  ptr.Time(ptr.Date(2024, 1, 15)),
-					BeforeDate: ptr.Time(ptr.Date(2024, 6, 30)),
+		{
+			name: "QuotedPhrasesWithColons",
+			tests: []testCase{
+				{
+					name:  "quoted phrase with colon",
+					query: `"foo:bar"`,
+					want:  Query{TextTerms: []string{"foo:bar"}},
+				},
+				{
+					name:  "quoted phrase with time",
+					query: `"meeting at 10:30"`,
+					want:  Query{TextTerms: []string{"meeting at 10:30"}},
+				},
+				{
+					name:  "quoted phrase with URL-like content",
+					query: `"check http://example.com"`,
+					want:  Query{TextTerms: []string{"check http://example.com"}},
+				},
+				{
+					name:  "quoted phrase with multiple colons",
+					query: `"a:b:c:d"`,
+					want:  Query{TextTerms: []string{"a:b:c:d"}},
+				},
+				{
+					name:  "quoted colon phrase mixed with real operator",
+					query: `from:alice@example.com "subject:not an operator"`,
+					want: Query{
+						FromAddrs: []string{"alice@example.com"},
+						TextTerms: []string{"subject:not an operator"},
+					},
+				},
+				{
+					name:  "operator followed by quoted colon phrase",
+					query: `"re: meeting notes" from:bob@example.com`,
+					want: Query{
+						TextTerms: []string{"re: meeting notes"},
+						FromAddrs: []string{"bob@example.com"},
+					},
 				},
 			},
 		},
-		"Sizes": {
-			{
-				name:  "larger than 5M",
-				query: "larger:5M",
-				want:  Query{LargerThan: ptr.Int64(5 * 1024 * 1024)},
-			},
-			{
-				name:  "smaller than 100K",
-				query: "smaller:100K",
-				want:  Query{SmallerThan: ptr.Int64(100 * 1024)},
-			},
-			{
-				name:  "larger than 1G",
-				query: "larger:1G",
-				want:  Query{LargerThan: ptr.Int64(1024 * 1024 * 1024)},
+		{
+			name: "Labels",
+			tests: []testCase{
+				{
+					name:  "multiple labels",
+					query: "label:INBOX l:work",
+					want:  Query{Labels: []string{"INBOX", "work"}},
+				},
 			},
 		},
-		"ComplexQuery": {
-			{
-				name:  "complex query",
-				query: `from:alice@example.com to:bob@example.com subject:meeting has:attachment after:2024-01-01 "project report"`,
-				want: Query{
-					FromAddrs:     []string{"alice@example.com"},
-					ToAddrs:       []string{"bob@example.com"},
-					SubjectTerms:  []string{"meeting"},
-					TextTerms:     []string{"project report"},
-					HasAttachment: ptr.Bool(true),
-					AfterDate:     ptr.Time(ptr.Date(2024, 1, 1)),
+		{
+			name: "Subject",
+			tests: []testCase{
+				{
+					name:  "simple subject",
+					query: "subject:urgent",
+					want:  Query{SubjectTerms: []string{"urgent"}},
+				},
+			},
+		},
+		{
+			name: "HasAttachment",
+			tests: []testCase{
+				{
+					name:  "has attachment",
+					query: "has:attachment",
+					want:  Query{HasAttachment: ptr.Bool(true)},
+				},
+			},
+		},
+		{
+			name: "Dates",
+			tests: []testCase{
+				{
+					name:  "after and before dates",
+					query: "after:2024-01-15 before:2024-06-30",
+					want: Query{
+						AfterDate:  ptr.Time(ptr.Date(2024, 1, 15)),
+						BeforeDate: ptr.Time(ptr.Date(2024, 6, 30)),
+					},
+				},
+			},
+		},
+		{
+			name: "Sizes",
+			tests: []testCase{
+				{
+					name:  "larger than 5M",
+					query: "larger:5M",
+					want:  Query{LargerThan: ptr.Int64(5 * 1024 * 1024)},
+				},
+				{
+					name:  "smaller than 100K",
+					query: "smaller:100K",
+					want:  Query{SmallerThan: ptr.Int64(100 * 1024)},
+				},
+				{
+					name:  "larger than 1G",
+					query: "larger:1G",
+					want:  Query{LargerThan: ptr.Int64(1024 * 1024 * 1024)},
+				},
+			},
+		},
+		{
+			name: "ComplexQuery",
+			tests: []testCase{
+				{
+					name:  "complex query",
+					query: `from:alice@example.com to:bob@example.com subject:meeting has:attachment after:2024-01-01 "project report"`,
+					want: Query{
+						FromAddrs:     []string{"alice@example.com"},
+						ToAddrs:       []string{"bob@example.com"},
+						SubjectTerms:  []string{"meeting"},
+						TextTerms:     []string{"project report"},
+						HasAttachment: ptr.Bool(true),
+						AfterDate:     ptr.Time(ptr.Date(2024, 1, 1)),
+					},
 				},
 			},
 		},
 	}
 
-	for groupName, tests := range testGroups {
-		t.Run(groupName, func(t *testing.T) {
-			for _, tt := range tests {
+	for _, group := range testGroups {
+		t.Run(group.name, func(t *testing.T) {
+			for _, tt := range group.tests {
 				t.Run(tt.name, func(t *testing.T) {
 					got := Parse(tt.query)
 					assertQueryEqual(t, *got, tt.want)
