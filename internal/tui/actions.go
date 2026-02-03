@@ -120,9 +120,10 @@ func (c *ActionController) resolveGmailIDs(dctx DeletionContext) ([]string, erro
 // buildFilterForAggregate constructs a MessageFilter for a single aggregate key.
 func (c *ActionController) buildFilterForAggregate(key string, dctx DeletionContext) query.MessageFilter {
 	// Start with drill-down filter as base (preserves parent context)
+	// Use Clone() to deep-copy the filter, preventing shared map mutation.
 	var filter query.MessageFilter
 	if dctx.DrillFilter != nil {
-		filter = *dctx.DrillFilter
+		filter = dctx.DrillFilter.Clone()
 	}
 	if dctx.AccountFilter != nil {
 		filter.SourceID = dctx.AccountFilter

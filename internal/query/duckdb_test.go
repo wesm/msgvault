@@ -1593,6 +1593,78 @@ func TestDuckDBEngine_ListMessages_MultipleEmptyTargets(t *testing.T) {
 	}
 }
 
+// TestDuckDBEngine_SubAggregate_MultipleEmptyTargets verifies that SubAggregate
+// correctly handles multiple empty-dimension constraints when drilling down.
+func TestDuckDBEngine_SubAggregate_MultipleEmptyTargets(t *testing.T) {
+	engine := newEmptyBucketsEngine(t)
+	ctx := context.Background()
+
+	// Test 1: SubAggregate with empty sender constraint, then aggregate by labels.
+	// msg3 "No Sender" has no sender but has label INBOX.
+	filter1 := MessageFilter{
+		EmptyValueTargets: map[ViewType]bool{ViewSenders: true},
+	}
+
+	rows, err := engine.SubAggregate(ctx, filter1, ViewLabels, DefaultAggregateOptions())
+	if err != nil {
+		t.Fatalf("SubAggregate with empty sender -> labels: %v", err)
+	}
+
+	// msg3 has label INBOX, so we expect one row with key="INBOX" and count=1
+	if len(rows) != 1 {
+		t.Errorf("expected 1 label sub-aggregate row for empty sender, got %d", len(rows))
+		for _, r := range rows {
+			t.Logf("  key=%q count=%d", r.Key, r.Count)
+		}
+	} else if rows[0].Key != "INBOX" || rows[0].Count != 1 {
+		t.Errorf("expected INBOX with count=1, got key=%q count=%d", rows[0].Key, rows[0].Count)
+	}
+
+	// Test 2: SubAggregate with multiple empty constraints.
+	// Combine empty sender + empty labels, then aggregate by domains.
+	// No messages satisfy both constraints, so result should be empty.
+	filter2 := MessageFilter{
+		EmptyValueTargets: map[ViewType]bool{
+			ViewSenders: true,
+			ViewLabels:  true,
+		},
+	}
+
+	rows2, err := engine.SubAggregate(ctx, filter2, ViewDomains, DefaultAggregateOptions())
+	if err != nil {
+		t.Fatalf("SubAggregate with empty sender + labels -> domains: %v", err)
+	}
+
+	// No messages match both constraints, so no domain rows
+	if len(rows2) != 0 {
+		t.Errorf("expected 0 domain sub-aggregate rows for empty sender + labels, got %d", len(rows2))
+		for _, r := range rows2 {
+			t.Logf("  key=%q count=%d", r.Key, r.Count)
+		}
+	}
+
+	// Test 3: SubAggregate from empty recipients to senders.
+	// msg4 "No Recipients" has no recipients, sender is alice.
+	filter3 := MessageFilter{
+		EmptyValueTargets: map[ViewType]bool{ViewRecipients: true},
+	}
+
+	rows3, err := engine.SubAggregate(ctx, filter3, ViewSenders, DefaultAggregateOptions())
+	if err != nil {
+		t.Fatalf("SubAggregate with empty recipients -> senders: %v", err)
+	}
+
+	// msg4 has sender alice@example.com
+	if len(rows3) != 1 {
+		t.Errorf("expected 1 sender sub-aggregate row for empty recipients, got %d", len(rows3))
+		for _, r := range rows3 {
+			t.Logf("  key=%q count=%d", r.Key, r.Count)
+		}
+	} else if rows3[0].Key != "alice@example.com" || rows3[0].Count != 1 {
+		t.Errorf("expected alice@example.com with count=1, got key=%q count=%d", rows3[0].Key, rows3[0].Count)
+	}
+}
+
 // TestDuckDBEngine_GetGmailIDsByFilter_NoParquet verifies error when analyticsDir is empty.
 func TestDuckDBEngine_GetGmailIDsByFilter_NoParquet(t *testing.T) {
 	// Create engine without Parquet

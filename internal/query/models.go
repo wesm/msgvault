@@ -253,9 +253,28 @@ func (f *MessageFilter) SetEmptyTarget(v ViewType) {
 	f.EmptyValueTargets[v] = true
 }
 
-// HasEmptyTargets returns true if any empty targets are set.
+// HasEmptyTargets returns true if any empty targets are active (set to true).
 func (f *MessageFilter) HasEmptyTargets() bool {
-	return len(f.EmptyValueTargets) > 0
+	for _, active := range f.EmptyValueTargets {
+		if active {
+			return true
+		}
+	}
+	return false
+}
+
+// Clone returns a deep copy of the MessageFilter.
+// This is necessary because EmptyValueTargets is a map, and a simple struct
+// copy would share the underlying map between the original and copy.
+func (f MessageFilter) Clone() MessageFilter {
+	clone := f
+	if f.EmptyValueTargets != nil {
+		clone.EmptyValueTargets = make(map[ViewType]bool, len(f.EmptyValueTargets))
+		for k, v := range f.EmptyValueTargets {
+			clone.EmptyValueTargets[k] = v
+		}
+	}
+	return clone
 }
 
 // AggregateOptions configures an aggregate query.

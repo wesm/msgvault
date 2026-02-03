@@ -15,6 +15,114 @@ func emptyTargets(views ...ViewType) map[ViewType]bool {
 	return m
 }
 
+// TestMessageFilter_Clone verifies that Clone creates an independent copy
+// of the filter, especially the EmptyValueTargets map.
+func TestMessageFilter_Clone(t *testing.T) {
+	// Create original filter with EmptyValueTargets
+	original := MessageFilter{
+		Sender: "alice@example.com",
+		Label:  "INBOX",
+		EmptyValueTargets: map[ViewType]bool{
+			ViewSenders: true,
+		},
+	}
+
+	// Clone it
+	clone := original.Clone()
+
+	// Verify scalar fields are copied
+	if clone.Sender != "alice@example.com" {
+		t.Errorf("expected Sender 'alice@example.com', got %q", clone.Sender)
+	}
+	if clone.Label != "INBOX" {
+		t.Errorf("expected Label 'INBOX', got %q", clone.Label)
+	}
+
+	// Verify EmptyValueTargets is deeply copied
+	if !clone.MatchesEmpty(ViewSenders) {
+		t.Error("clone should have ViewSenders in EmptyValueTargets")
+	}
+
+	// Mutate the clone's map
+	clone.SetEmptyTarget(ViewLabels)
+
+	// Verify original is NOT affected
+	if original.MatchesEmpty(ViewLabels) {
+		t.Error("original should NOT have ViewLabels after mutating clone")
+	}
+
+	// Mutate the original's map
+	original.SetEmptyTarget(ViewDomains)
+
+	// Verify clone is NOT affected
+	if clone.MatchesEmpty(ViewDomains) {
+		t.Error("clone should NOT have ViewDomains after mutating original")
+	}
+}
+
+// TestMessageFilter_Clone_NilMap verifies Clone handles nil EmptyValueTargets.
+func TestMessageFilter_Clone_NilMap(t *testing.T) {
+	original := MessageFilter{Sender: "bob@example.com"}
+	clone := original.Clone()
+
+	if clone.Sender != "bob@example.com" {
+		t.Errorf("expected Sender 'bob@example.com', got %q", clone.Sender)
+	}
+	if clone.EmptyValueTargets != nil {
+		t.Errorf("expected nil EmptyValueTargets, got %v", clone.EmptyValueTargets)
+	}
+
+	// Mutating clone should not affect original
+	clone.SetEmptyTarget(ViewSenders)
+	if original.EmptyValueTargets != nil {
+		t.Errorf("original EmptyValueTargets should still be nil")
+	}
+}
+
+// TestMessageFilter_HasEmptyTargets verifies HasEmptyTargets checks for true values.
+func TestMessageFilter_HasEmptyTargets(t *testing.T) {
+	tests := []struct {
+		name   string
+		filter MessageFilter
+		want   bool
+	}{
+		{
+			name:   "nil map",
+			filter: MessageFilter{},
+			want:   false,
+		},
+		{
+			name:   "empty map",
+			filter: MessageFilter{EmptyValueTargets: map[ViewType]bool{}},
+			want:   false,
+		},
+		{
+			name:   "map with only false values",
+			filter: MessageFilter{EmptyValueTargets: map[ViewType]bool{ViewSenders: false, ViewLabels: false}},
+			want:   false,
+		},
+		{
+			name:   "map with one true value",
+			filter: MessageFilter{EmptyValueTargets: map[ViewType]bool{ViewSenders: true}},
+			want:   true,
+		},
+		{
+			name:   "map with mixed true and false",
+			filter: MessageFilter{EmptyValueTargets: map[ViewType]bool{ViewSenders: false, ViewLabels: true}},
+			want:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.filter.HasEmptyTargets()
+			if got != tt.want {
+				t.Errorf("HasEmptyTargets() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestListMessages_Filters(t *testing.T) {
 	env := newTestEnv(t)
 
