@@ -8,16 +8,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/gogs/chardet"
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/mime"
 	"github.com/wesm/msgvault/internal/store"
-	"golang.org/x/text/encoding"
-	"golang.org/x/text/encoding/charmap"
-	"golang.org/x/text/encoding/japanese"
-	"golang.org/x/text/encoding/korean"
-	"golang.org/x/text/encoding/simplifiedchinese"
-	"golang.org/x/text/encoding/traditionalchinese"
+	"github.com/wesm/msgvault/internal/textutil"
 )
 
 var repairEncodingCmd = &cobra.Command{
@@ -239,7 +233,7 @@ func repairMessageFields(s *store.Store, stats *repairStats) error {
 			if parsed != nil && utf8.ValidString(parsed.Subject) {
 				repair.newSubject = sql.NullString{String: parsed.Subject, Valid: true}
 			} else {
-				repair.newSubject = sql.NullString{String: ensureValidUTF8(subject.String), Valid: true}
+				repair.newSubject = sql.NullString{String: textutil.EnsureUTF8(subject.String), Valid: true}
 			}
 			needsRepair = true
 			stats.subjects++
@@ -253,7 +247,7 @@ func repairMessageFields(s *store.Store, stats *repairStats) error {
 			if parsed != nil && utf8.ValidString(parsed.GetBodyText()) {
 				repair.newBody = sql.NullString{String: parsed.GetBodyText(), Valid: true}
 			} else {
-				repair.newBody = sql.NullString{String: ensureValidUTF8(bodyText.String), Valid: true}
+				repair.newBody = sql.NullString{String: textutil.EnsureUTF8(bodyText.String), Valid: true}
 			}
 			needsRepair = true
 			stats.bodyTexts++
@@ -267,7 +261,7 @@ func repairMessageFields(s *store.Store, stats *repairStats) error {
 			if parsed != nil && utf8.ValidString(parsed.BodyHTML) {
 				repair.newHTML = sql.NullString{String: parsed.BodyHTML, Valid: true}
 			} else {
-				repair.newHTML = sql.NullString{String: ensureValidUTF8(bodyHTML.String), Valid: true}
+				repair.newHTML = sql.NullString{String: textutil.EnsureUTF8(bodyHTML.String), Valid: true}
 			}
 			needsRepair = true
 			stats.bodyHTMLs++
@@ -275,7 +269,7 @@ func repairMessageFields(s *store.Store, stats *repairStats) error {
 
 		// Snippet (from Gmail API, not in raw MIME)
 		if snippet.Valid && !utf8.ValidString(snippet.String) {
-			repair.newSnippet = sql.NullString{String: ensureValidUTF8(snippet.String), Valid: true}
+			repair.newSnippet = sql.NullString{String: textutil.EnsureUTF8(snippet.String), Valid: true}
 			needsRepair = true
 			stats.snippets++
 		}
@@ -395,7 +389,7 @@ func repairDisplayNames(s *store.Store, stats *repairStats) error {
 			}
 
 			if !utf8.ValidString(name) {
-				repairs = append(repairs, nameRepair{id: id, newName: ensureValidUTF8(name)})
+				repairs = append(repairs, nameRepair{id: id, newName: textutil.EnsureUTF8(name)})
 				stats.displayNames++
 
 				// Apply batch when full
@@ -526,7 +520,7 @@ func repairOtherStrings(s *store.Store, stats *repairStats) error {
 			}
 
 			if !utf8.ValidString(value) {
-				repairs = append(repairs, repair{id: id, newValue: ensureValidUTF8(value)})
+				repairs = append(repairs, repair{id: id, newValue: textutil.EnsureUTF8(value)})
 				*table.counter++
 
 				if len(repairs) >= batchSize {
@@ -582,22 +576,6 @@ func tryParseMIME(rawData []byte, compression sql.NullString) *mime.Message {
 	return parsed
 }
 
-// ensureValidUTF8 converts a string to valid UTF-8 using charset detection
-func ensureValidUTF8(s string) string {
-	if utf8.ValidString(s) {
-		return s
-	}
-
-	// Try charset detection and conversion
-	decoded, err := detectAndDecode([]byte(s))
-	if err == nil {
-		return decoded
-	}
-
-	// Last resort: replace invalid bytes
-	return sanitizeUTF8(s)
-}
-
 // byteReader wraps a byte slice for use with zlib.NewReader
 type byteReader struct {
 	data []byte
@@ -611,99 +589,6 @@ func (r *byteReader) Read(p []byte) (n int, err error) {
 	n = copy(p, r.data[r.pos:])
 	r.pos += n
 	return n, nil
-}
-
-// sanitizeUTF8 replaces invalid UTF-8 bytes with the replacement character.
-func sanitizeUTF8(s string) string {
-	var sb strings.Builder
-	sb.Grow(len(s))
-	for i := 0; i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		if r == utf8.RuneError && size == 1 {
-			sb.WriteRune('\ufffd')
-			i++
-		} else {
-			sb.WriteRune(r)
-			i += size
-		}
-	}
-	return sb.String()
-}
-
-// detectAndDecode attempts to detect the charset of the given bytes and decode to UTF-8.
-func detectAndDecode(data []byte) (string, error) {
-	if utf8.Valid(data) {
-		return string(data), nil
-	}
-
-	// Try charset detection first (only useful for longer samples)
-	if len(data) > 20 {
-		detector := chardet.NewTextDetector()
-		result, err := detector.DetectBest(data)
-		if err == nil && result.Confidence >= 50 {
-			if enc := getEncodingByName(result.Charset); enc != nil {
-				decoded, err := enc.NewDecoder().Bytes(data)
-				if err == nil && utf8.Valid(decoded) {
-					return string(decoded), nil
-				}
-			}
-		}
-	}
-
-	// Try common encodings in order
-	encodings := []encoding.Encoding{
-		charmap.Windows1252,
-		charmap.ISO8859_1,
-		charmap.ISO8859_15,
-		japanese.ShiftJIS,
-		japanese.EUCJP,
-		korean.EUCKR,
-		simplifiedchinese.GBK,
-		traditionalchinese.Big5,
-	}
-
-	for _, enc := range encodings {
-		decoded, err := enc.NewDecoder().Bytes(data)
-		if err == nil && utf8.Valid(decoded) {
-			return string(decoded), nil
-		}
-	}
-
-	return "", fmt.Errorf("could not decode to valid UTF-8")
-}
-
-// getEncodingByName returns an encoding for the given IANA charset name.
-func getEncodingByName(name string) encoding.Encoding {
-	switch name {
-	case "windows-1252", "CP1252", "cp1252":
-		return charmap.Windows1252
-	case "ISO-8859-1", "iso-8859-1", "latin1", "latin-1":
-		return charmap.ISO8859_1
-	case "ISO-8859-15", "iso-8859-15", "latin9":
-		return charmap.ISO8859_15
-	case "ISO-8859-2", "iso-8859-2", "latin2":
-		return charmap.ISO8859_2
-	case "Shift_JIS", "shift_jis", "shift-jis", "sjis":
-		return japanese.ShiftJIS
-	case "EUC-JP", "euc-jp", "eucjp":
-		return japanese.EUCJP
-	case "ISO-2022-JP", "iso-2022-jp":
-		return japanese.ISO2022JP
-	case "EUC-KR", "euc-kr", "euckr":
-		return korean.EUCKR
-	case "GB2312", "gb2312", "GBK", "gbk":
-		return simplifiedchinese.GBK
-	case "GB18030", "gb18030":
-		return simplifiedchinese.GB18030
-	case "Big5", "big5", "big-5":
-		return traditionalchinese.Big5
-	case "KOI8-R", "koi8-r":
-		return charmap.KOI8R
-	case "KOI8-U", "koi8-u":
-		return charmap.KOI8U
-	default:
-		return nil
-	}
 }
 
 func init() {
