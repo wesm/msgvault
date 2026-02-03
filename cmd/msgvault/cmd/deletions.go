@@ -500,8 +500,7 @@ func (p *CLIDeletionProgress) OnProgress(processed, succeeded, failed int) {
 		status += fmt.Sprintf("  (%d failed)", failed)
 	}
 	status += fmt.Sprintf("  %s", eta)
-	// Pad with spaces to clear previous longer lines
-	fmt.Printf("%-80s", status)
+	fmt.Printf("\r\033[K%s", status)
 }
 
 func (p *CLIDeletionProgress) progressBar(pct float64, width int) string {
@@ -523,7 +522,7 @@ func (p *CLIDeletionProgress) progressBar(pct float64, width int) string {
 func (p *CLIDeletionProgress) OnComplete(succeeded, failed int) {
 	elapsed := time.Since(p.startTime)
 	// Clear the progress line
-	fmt.Printf("\r%-80s\r", "")
+	fmt.Print("\r\033[K")
 	if failed == 0 {
 		fmt.Printf("  Done: %d deleted in %s\n", succeeded, p.formatDuration(elapsed))
 	} else {
