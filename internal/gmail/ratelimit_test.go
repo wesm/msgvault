@@ -13,6 +13,7 @@ type mockClock struct {
 	current     time.Time
 	timers      []mockTimer
 	timerNotify chan struct{}
+	notifyOnce  sync.Once
 }
 
 type mockTimer struct {
@@ -27,6 +28,16 @@ func newMockClock() *mockClock {
 	}
 }
 
+// ensureNotifyChannel lazily initializes timerNotify to prevent blocking on a
+// nil channel if mockClock{} is instantiated directly without newMockClock().
+func (c *mockClock) ensureNotifyChannel() {
+	c.notifyOnce.Do(func() {
+		if c.timerNotify == nil {
+			c.timerNotify = make(chan struct{}, 1)
+		}
+	})
+}
+
 func (c *mockClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -34,6 +45,7 @@ func (c *mockClock) Now() time.Time {
 }
 
 func (c *mockClock) After(d time.Duration) <-chan time.Time {
+	c.ensureNotifyChannel()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	ch := make(chan time.Time, 1)
@@ -61,6 +73,7 @@ func (c *mockClock) TimerCount() int {
 // waitForTimers blocks until the mock clock has at least n pending timers.
 func waitForTimers(t *testing.T, clk *mockClock, n int) {
 	t.Helper()
+	clk.ensureNotifyChannel()
 	timeout := time.After(2 * time.Second)
 	for clk.TimerCount() < n {
 		select {
@@ -134,6 +147,7 @@ func (f *rlFixture) assertAvailable(t *testing.T, expected float64) {
 // timer on the mock clock or complete immediately.
 func (f *rlFixture) acquireAsync(t *testing.T, ctx context.Context, op Operation) <-chan error {
 	t.Helper()
+	f.clk.ensureNotifyChannel()
 	timersBefore := f.clk.TimerCount()
 	ch := make(chan error, 1)
 	done := make(chan struct{})
@@ -459,5 +473,21 @@ func TestRateLimiter_Acquire_WaitsForThrottle(t *testing.T) {
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("Acquire() did not complete after advancing clock past throttle")
+	}
+}
+
+func TestMockClock_ZeroValueSafe(t *testing.T) {
+	// Verify that a zero-value mockClock{} won't block forever due to nil channel.
+	clk := &mockClock{}
+
+	// After should work without hanging
+	ch := clk.After(10 * time.Millisecond)
+	if ch == nil {
+		t.Fatal("After() returned nil channel")
+	}
+
+	// timerNotify should be lazily initialized
+	if clk.timerNotify == nil {
+		t.Fatal("timerNotify should be initialized after After() call")
 	}
 }
