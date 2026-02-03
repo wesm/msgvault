@@ -205,6 +205,28 @@ func TestHasScopeMetadata(t *testing.T) {
 	}
 }
 
+func TestSanitizeEmail(t *testing.T) {
+	tests := []struct {
+		email string
+		want  string
+	}{
+		{"user@gmail.com", "user@gmail.com"},
+		{"user/slash@gmail.com", "user_slash@gmail.com"},
+		{"user\\backslash@gmail.com", "user_backslash@gmail.com"},
+		{"user..dots@gmail.com", "user_dots@gmail.com"},
+		{"../../../etc/passwd", "______etc_passwd"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.email, func(t *testing.T) {
+			got := sanitizeEmail(tt.email)
+			if got != tt.want {
+				t.Errorf("sanitizeEmail(%q) = %q, want %q", tt.email, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNewCallbackHandler(t *testing.T) {
 	mgr := setupTestManager(t, Scopes)
 

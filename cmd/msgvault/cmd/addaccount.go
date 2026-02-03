@@ -29,7 +29,7 @@ Example:
 
 		// For --headless, just show instructions (no OAuth config needed)
 		if headless {
-			oauth.PrintHeadlessInstructions(email)
+			oauth.PrintHeadlessInstructions(email, cfg.TokensDir())
 			return nil
 		}
 

@@ -84,7 +84,12 @@ func (m *Manager) HasToken(email string) bool {
 // PrintHeadlessInstructions prints setup instructions for headless servers.
 // Google's device flow does not support Gmail scopes, so users must authorize
 // on a machine with a browser and copy the token file.
-func PrintHeadlessInstructions(email string) {
+// tokensDir should be the configured tokens directory (e.g., cfg.TokensDir()).
+func PrintHeadlessInstructions(email, tokensDir string) {
+	// Use same sanitization as tokenPath for consistency
+	tokenFile := sanitizeEmail(email) + ".json"
+	tokenPath := filepath.Join(tokensDir, tokenFile)
+
 	fmt.Println()
 	fmt.Println("=== Headless Server Setup ===")
 	fmt.Println()
@@ -98,7 +103,7 @@ func PrintHeadlessInstructions(email string) {
 	fmt.Println()
 	fmt.Println("Step 2: Copy the token file to your headless server:")
 	fmt.Println()
-	fmt.Printf("    scp ~/.msgvault/tokens/%s.json user@server:~/.msgvault/tokens/\n", email)
+	fmt.Printf("    scp %s user@server:%s\n", tokenPath, tokenPath)
 	fmt.Println()
 	fmt.Println("Step 3: On the headless server, register the account:")
 	fmt.Println()
@@ -107,6 +112,14 @@ func PrintHeadlessInstructions(email string) {
 	fmt.Println("The token will be detected and the account registered. No browser needed.")
 	fmt.Println("All msgvault commands (sync, tui, etc.) will work normally.")
 	fmt.Println()
+}
+
+// sanitizeEmail sanitizes an email for use in a filename.
+func sanitizeEmail(email string) string {
+	safe := strings.ReplaceAll(email, "/", "_")
+	safe = strings.ReplaceAll(safe, "\\", "_")
+	safe = strings.ReplaceAll(safe, "..", "_")
+	return safe
 }
 
 // Authorize performs the browser OAuth flow for a new account.
@@ -280,11 +293,7 @@ func (m *Manager) saveToken(email string, token *oauth2.Token, scopes []string) 
 // tokenPath returns the path to the token file for an email.
 // The email is sanitized to prevent path traversal attacks.
 func (m *Manager) tokenPath(email string) string {
-	// Sanitize email to prevent path traversal
-	// Replace characters that could be used for path traversal
-	safe := strings.ReplaceAll(email, "/", "_")
-	safe = strings.ReplaceAll(safe, "\\", "_")
-	safe = strings.ReplaceAll(safe, "..", "_")
+	safe := sanitizeEmail(email)
 
 	// Ensure the final path is within tokensDir
 	path := filepath.Join(m.tokensDir, safe+".json")
