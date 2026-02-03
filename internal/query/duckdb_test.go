@@ -28,9 +28,8 @@ func newEmptyBucketsEngine(t *testing.T) *DuckDBEngine {
 // newSQLiteEngine creates a DuckDBEngine backed by the standard SQLite test data.
 func newSQLiteEngine(t *testing.T) *DuckDBEngine {
 	t.Helper()
-	sqliteDB := setupTestDB(t)
-	t.Cleanup(func() { sqliteDB.Close() })
-	engine, err := NewDuckDBEngine("", "", sqliteDB)
+	env := newTestEnv(t)
+	engine, err := NewDuckDBEngine("", "", env.DB)
 	if err != nil {
 		t.Fatalf("NewDuckDBEngine: %v", err)
 	}
@@ -184,12 +183,11 @@ func buildStandardTestData(t *testing.T) *TestDataBuilder {
 // SQLiteEngine code handles both direct SQLite and DuckDB-delegated calls.
 func TestDuckDBEngine_SQLiteEngineReuse(t *testing.T) {
 	// Set up test SQLite database
-	sqliteDB := setupTestDB(t)
-	defer sqliteDB.Close()
+	env := newTestEnv(t)
 
 	// Create DuckDBEngine with sqliteDB but no Parquet (empty analytics dir)
 	// We pass empty string for analyticsDir since we're only testing the SQLite path
-	engine, err := NewDuckDBEngine("", "", sqliteDB)
+	engine, err := NewDuckDBEngine("", "", env.DB)
 	if err != nil {
 		t.Fatalf("NewDuckDBEngine: %v", err)
 	}
@@ -298,10 +296,9 @@ func TestDuckDBEngine_SearchFromAddrs(t *testing.T) {
 // - If Search created per-call engines, ftsChecked on sharedEngine would stay false
 // - The pointer check ensures engine.sqliteEngine wasn't swapped
 func TestDuckDBEngine_SQLiteEngineFTSCacheReuse(t *testing.T) {
-	sqliteDB := setupTestDB(t)
-	defer sqliteDB.Close()
+	env := newTestEnv(t)
 
-	engine, err := NewDuckDBEngine("", "", sqliteDB)
+	engine, err := NewDuckDBEngine("", "", env.DB)
 	if err != nil {
 		t.Fatalf("NewDuckDBEngine: %v", err)
 	}
@@ -441,16 +438,15 @@ func TestDuckDBEngine_GetMessageWithAttachments(t *testing.T) {
 // TestDuckDBEngine_DeletedMessagesExcluded verifies that deleted messages
 // are excluded when using the sqliteEngine path.
 func TestDuckDBEngine_DeletedMessagesIncluded(t *testing.T) {
-	sqliteDB := setupTestDB(t)
-	t.Cleanup(func() { sqliteDB.Close() })
+	env := newTestEnv(t)
 
 	// Mark message 1 as deleted
-	_, err := sqliteDB.Exec("UPDATE messages SET deleted_from_source_at = datetime('now') WHERE id = 1")
+	_, err := env.DB.Exec("UPDATE messages SET deleted_from_source_at = datetime('now') WHERE id = 1")
 	if err != nil {
 		t.Fatalf("mark deleted: %v", err)
 	}
 
-	engine, err := NewDuckDBEngine("", "", sqliteDB)
+	engine, err := NewDuckDBEngine("", "", env.DB)
 	if err != nil {
 		t.Fatalf("NewDuckDBEngine: %v", err)
 	}

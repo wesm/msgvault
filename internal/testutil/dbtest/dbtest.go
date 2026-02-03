@@ -138,6 +138,18 @@ func (tdb *TestDB) SeedStandardDataSet() {
 	}
 }
 
+// MustLookupParticipant returns the ID of the participant with the given email,
+// failing the test if not found.
+func (tdb *TestDB) MustLookupParticipant(email string) int64 {
+	tdb.T.Helper()
+	var id int64
+	err := tdb.DB.QueryRow("SELECT id FROM participants WHERE email_address = ?", email).Scan(&id)
+	if err != nil {
+		tdb.T.Fatalf("MustLookupParticipant(%q): %v", email, err)
+	}
+	return id
+}
+
 // ---------------------------------------------------------------------------
 // Builder helpers
 // ---------------------------------------------------------------------------

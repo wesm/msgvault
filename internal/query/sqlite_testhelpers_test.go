@@ -2,7 +2,6 @@ package query
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/search"
@@ -14,15 +13,6 @@ type testEnv struct {
 	*dbtest.TestDB
 	Engine *SQLiteEngine
 	Ctx    context.Context
-}
-
-// setupTestDB creates an in-memory SQLite database with the production schema and
-// standard test data. Use newTestEnv for tests that need builder helpers.
-func setupTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	tdb := dbtest.NewTestDB(t, "../store/schema.sql")
-	tdb.SeedStandardDataSet()
-	return tdb.DB
 }
 
 // newTestEnv creates a test environment with an in-memory SQLite database and test data.
@@ -82,48 +72,41 @@ type aggExpectation struct {
 	Count int64
 }
 
-// assertRow finds a single key in the aggregate rows and asserts its count.
-// It also fails if the key appears more than once (duplicate detection).
-func assertRow(t *testing.T, rows []AggregateRow, key string, count int64) {
+// aggRowMap builds a map from key to count, failing on duplicate keys.
+func aggRowMap(t *testing.T, rows []AggregateRow) map[string]int64 {
 	t.Helper()
-	found := 0
+	m := make(map[string]int64, len(rows))
 	for _, r := range rows {
-		if r.Key == key {
-			found++
-			if found > 1 {
-				t.Errorf("key %q appears multiple times in results", key)
-			}
-			if r.Count != count {
-				t.Errorf("key %q: expected count %d, got %d", key, count, r.Count)
-			}
+		if _, exists := m[r.Key]; exists {
+			t.Errorf("duplicate key %q in results", r.Key)
 		}
+		m[r.Key] = r.Count
 	}
-	if found == 0 {
-		t.Errorf("key %q not found in results", key)
-	}
-}
-
-// assertNoDuplicateKeys fails if any key appears more than once in the rows.
-func assertNoDuplicateKeys(t *testing.T, rows []AggregateRow) {
-	t.Helper()
-	seen := make(map[string]int)
-	for _, r := range rows {
-		seen[r.Key]++
-	}
-	for key, n := range seen {
-		if n > 1 {
-			t.Errorf("duplicate key %q appears %d times in results", key, n)
-		}
-	}
+	return m
 }
 
 // assertRowsContain verifies that a subset of expected key/count pairs exist
 // in the aggregate rows (order-independent). Also checks for duplicate keys.
 func assertRowsContain(t *testing.T, rows []AggregateRow, want []aggExpectation) {
 	t.Helper()
-	assertNoDuplicateKeys(t, rows)
+	m := aggRowMap(t, rows)
 	for _, w := range want {
-		assertRow(t, rows, w.Key, w.Count)
+		if got, ok := m[w.Key]; !ok {
+			t.Errorf("key %q not found in results", w.Key)
+		} else if got != w.Count {
+			t.Errorf("key %q: expected count %d, got %d", w.Key, w.Count, got)
+		}
+	}
+}
+
+// assertRow finds a single key in the aggregate rows and asserts its count.
+func assertRow(t *testing.T, rows []AggregateRow, key string, count int64) {
+	t.Helper()
+	m := aggRowMap(t, rows)
+	if got, ok := m[key]; !ok {
+		t.Errorf("key %q not found in results", key)
+	} else if got != count {
+		t.Errorf("key %q: expected count %d, got %d", key, count, got)
 	}
 }
 
@@ -132,7 +115,7 @@ func assertRowsContain(t *testing.T, rows []AggregateRow, want []aggExpectation)
 // Also checks for duplicate keys.
 func assertAggRows(t *testing.T, rows []AggregateRow, want []aggExpectation) {
 	t.Helper()
-	assertNoDuplicateKeys(t, rows)
+	aggRowMap(t, rows) // checks for duplicates
 	if len(rows) != len(want) {
 		t.Errorf("expected %d aggregate rows, got %d", len(want), len(rows))
 	}
@@ -176,6 +159,10 @@ func newTestEnvWithEmptyBuckets(t *testing.T) *testEnv {
 
 	env := newTestEnv(t)
 
+	// Resolve participant IDs dynamically to avoid coupling to seed order.
+	aliceID := env.MustLookupParticipant("alice@example.com")
+	bobID := env.MustLookupParticipant("bob@company.org")
+
 	// Participant with empty domain
 	emptyDomainID := env.AddParticipant(dbtest.ParticipantOpts{
 		Email:       dbtest.StrPtr("nodomain@"),
@@ -193,7 +180,7 @@ func newTestEnvWithEmptyBuckets(t *testing.T) *testEnv {
 	env.AddMessage(dbtest.MessageOpts{
 		Subject: "No Recipients",
 		SentAt:  "2024-04-02 10:00:00",
-		FromID:  1, // Alice
+		FromID:  aliceID,
 	})
 
 	// Message with empty domain sender (msg8)
@@ -201,15 +188,15 @@ func newTestEnvWithEmptyBuckets(t *testing.T) *testEnv {
 		Subject: "Empty Domain",
 		SentAt:  "2024-04-03 10:00:00",
 		FromID:  emptyDomainID,
-		ToIDs:   []int64{1}, // Alice
+		ToIDs:   []int64{aliceID},
 	})
 
 	// Message with no labels (msg9)
 	env.AddMessage(dbtest.MessageOpts{
 		Subject: "No Labels",
 		SentAt:  "2024-04-04 10:00:00",
-		FromID:  1,          // Alice
-		ToIDs:   []int64{2}, // Bob
+		FromID:  aliceID,
+		ToIDs:   []int64{bobID},
 	})
 
 	return env
