@@ -176,12 +176,27 @@ func (m *Manager) deviceFlow(ctx context.Context) (*oauth2.Token, error) {
 	// Request device code
 	resp, err := http.PostForm(deviceEndpoint, map[string][]string{
 		"client_id": {m.config.ClientID},
-		"scope":     {scopesToString(Scopes)},
+		"scope":     {scopesToString(m.config.Scopes)},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("request device code: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// Try to read error details from body
+		var errResp struct {
+			Error     string `json:"error"`
+			ErrorDesc string `json:"error_description"`
+		}
+		if json.NewDecoder(resp.Body).Decode(&errResp) == nil && errResp.Error != "" {
+			if errResp.Error == "invalid_client" {
+				return nil, fmt.Errorf("device flow not supported: %s\n\nTo use --headless, your OAuth client must be configured as 'TVs and Limited Input devices' type in Google Cloud Console.\nAlternatively, use the browser flow without --headless from a machine with a browser", errResp.ErrorDesc)
+			}
+			return nil, fmt.Errorf("device code request failed (HTTP %d): %s - %s", resp.StatusCode, errResp.Error, errResp.ErrorDesc)
+		}
+		return nil, fmt.Errorf("device code request failed with HTTP %d", resp.StatusCode)
+	}
 
 	var deviceResp struct {
 		DeviceCode      string `json:"device_code"`
@@ -189,9 +204,24 @@ func (m *Manager) deviceFlow(ctx context.Context) (*oauth2.Token, error) {
 		VerificationURL string `json:"verification_url"`
 		ExpiresIn       int    `json:"expires_in"`
 		Interval        int    `json:"interval"`
+		Error           string `json:"error"`
+		ErrorDesc       string `json:"error_description"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&deviceResp); err != nil {
 		return nil, fmt.Errorf("parse device response: %w", err)
+	}
+
+	// Check for error in response
+	if deviceResp.Error != "" {
+		if deviceResp.Error == "invalid_client" {
+			return nil, fmt.Errorf("device flow not supported: %s\n\nTo use --headless, your OAuth client must be configured as 'TVs and Limited Input devices' type in Google Cloud Console.\nAlternatively, use the browser flow without --headless from a machine with a browser", deviceResp.ErrorDesc)
+		}
+		return nil, fmt.Errorf("device code request failed: %s - %s", deviceResp.Error, deviceResp.ErrorDesc)
+	}
+
+	// Validate required fields
+	if deviceResp.VerificationURL == "" || deviceResp.UserCode == "" {
+		return nil, fmt.Errorf("device code response missing required fields (verification_url or user_code)")
 	}
 
 	// Display instructions to user
