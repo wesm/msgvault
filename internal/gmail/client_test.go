@@ -142,15 +142,33 @@ func TestDecodeBase64URL(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "URL-safe characters padded",
-			input:   "Pz8_", // "???" requires padding (3 bytes -> 4 chars), contains _ (URL-safe)
+			name:    "URL-safe underscore unpadded",
+			input:   "Pz8_", // "???" is exactly 3 bytes -> 4 chars, no padding needed
 			want:    []byte("???"),
 			wantErr: false,
 		},
 		{
-			name:    "URL-safe dash with padding",
-			input:   "Pj4-", // ">>>" requires padding, contains - (URL-safe)
+			name:    "URL-safe dash unpadded",
+			input:   "Pj4-", // ">>>" is exactly 3 bytes -> 4 chars, no padding needed
 			want:    []byte(">>>"),
+			wantErr: false,
+		},
+		{
+			name:    "URL-safe dash with padding (1 byte)",
+			input:   "-A==", // 0xf8 - exercises URLEncoding path with URL-safe char
+			want:    []byte{0xf8},
+			wantErr: false,
+		},
+		{
+			name:    "URL-safe underscore with padding (1 byte)",
+			input:   "_w==", // 0xff - exercises URLEncoding path with URL-safe char
+			want:    []byte{0xff},
+			wantErr: false,
+		},
+		{
+			name:    "URL-safe dash with single pad (2 bytes)",
+			input:   "A-A=", // 0x03 0xe0 - exercises URLEncoding with single = and URL-safe char
+			want:    []byte{0x03, 0xe0},
 			wantErr: false,
 		},
 		{
