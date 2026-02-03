@@ -343,6 +343,8 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 
 		batch := manifest.GmailIDs[i:end]
 
+		e.logger.Info("deleting batch", "start", i, "end", end, "size", len(batch))
+
 		if err := e.client.BatchDeleteMessages(ctx, batch); err != nil {
 			// If it's a permission/scope error, save checkpoint and return
 			// immediately — falling back to individual deletes would fail

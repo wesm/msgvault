@@ -460,6 +460,7 @@ func (p *CLIDeletionProgress) OnStart(total int) {
 	p.total = total
 	p.startTime = time.Now()
 	p.lastPrint = time.Now()
+	fmt.Printf("  Progress: 0/%d (0.0%%) | Succeeded: 0 | Failed: 0", total)
 }
 
 func (p *CLIDeletionProgress) OnProgress(processed, succeeded, failed int) {
@@ -469,8 +470,20 @@ func (p *CLIDeletionProgress) OnProgress(processed, succeeded, failed int) {
 	p.lastPrint = time.Now()
 
 	pct := float64(processed) / float64(p.total) * 100
-	fmt.Printf("\r  Progress: %d/%d (%.1f%%) | Succeeded: %d | Failed: %d    ",
-		processed, p.total, pct, succeeded, failed)
+	elapsed := time.Since(p.startTime)
+	var eta string
+	if processed > 0 {
+		remaining := time.Duration(float64(elapsed) / float64(processed) * float64(p.total-processed))
+		if remaining < time.Minute {
+			eta = fmt.Sprintf("%ds", int(remaining.Seconds()))
+		} else {
+			eta = fmt.Sprintf("%dm%ds", int(remaining.Minutes()), int(remaining.Seconds())%60)
+		}
+	} else {
+		eta = "..."
+	}
+	fmt.Printf("\r  Progress: %d/%d (%.1f%%) | Succeeded: %d | Failed: %d | ETA: %s    ",
+		processed, p.total, pct, succeeded, failed, eta)
 }
 
 func (p *CLIDeletionProgress) OnComplete(succeeded, failed int) {
