@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/query"
@@ -25,6 +26,33 @@ func createAttachmentFile(t *testing.T, root string, content []byte) string {
 		t.Fatal(err)
 	}
 	return hash
+}
+
+func TestFormatExportResult_WriteErrorWithCount(t *testing.T) {
+	// Test that WriteError flag causes failure message even when Count > 0
+	stats := ExportStats{
+		Count:      5,
+		Size:       1024,
+		WriteError: true,
+		Errors:     []string{"zip finalization error: disk full"},
+		ZipPath:    "", // Empty because zip was removed
+	}
+
+	result := FormatExportResult(stats)
+
+	// Should report failure, not success
+	if !strings.Contains(result, "Export failed due to write errors") {
+		t.Errorf("expected failure message, got: %s", result)
+	}
+	if !strings.Contains(result, "Zip file removed") {
+		t.Errorf("expected 'Zip file removed', got: %s", result)
+	}
+	if strings.Contains(result, "Exported 5 attachment") {
+		t.Errorf("should not report success count when WriteError is true, got: %s", result)
+	}
+	if strings.Contains(result, "Saved to:") {
+		t.Errorf("should not show 'Saved to:' when WriteError is true, got: %s", result)
+	}
 }
 
 func TestAttachments(t *testing.T) {

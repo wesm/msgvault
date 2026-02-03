@@ -15,10 +15,11 @@ import (
 
 // ExportStats contains structured results of an attachment export operation.
 type ExportStats struct {
-	Count   int
-	Size    int64
-	Errors  []string
-	ZipPath string
+	Count      int
+	Size       int64
+	Errors     []string
+	ZipPath    string
+	WriteError bool // true if a write error occurred and the zip was removed
 }
 
 // Attachments exports the given attachments into a zip file.
@@ -65,6 +66,7 @@ func Attachments(zipFilename, attachmentsDir string, attachments []query.Attachm
 
 	if stats.Count == 0 || writeError {
 		os.Remove(zipFilename)
+		stats.WriteError = writeError
 		return stats
 	}
 
@@ -75,16 +77,21 @@ func Attachments(zipFilename, attachmentsDir string, attachments []query.Attachm
 
 // FormatExportResult formats ExportStats into a human-readable string for display.
 func FormatExportResult(stats ExportStats) string {
-	if stats.Count == 0 {
+	// Write error is fatal - zip was removed regardless of count
+	if stats.WriteError {
+		msg := "Export failed due to write errors. Zip file removed."
 		if len(stats.Errors) > 0 {
-			// Check if any errors indicate write failures
-			for _, e := range stats.Errors {
-				if strings.Contains(e, "zip write error") || strings.Contains(e, "zip finalization") || strings.Contains(e, "file close") {
-					return "Export failed due to write errors. Zip file removed.\n\nErrors:\n" + strings.Join(stats.Errors, "\n")
-				}
-			}
+			msg += "\n\nErrors:\n" + strings.Join(stats.Errors, "\n")
 		}
-		return "No attachments exported.\n\nErrors:\n" + strings.Join(stats.Errors, "\n")
+		return msg
+	}
+
+	if stats.Count == 0 {
+		msg := "No attachments exported."
+		if len(stats.Errors) > 0 {
+			msg += "\n\nErrors:\n" + strings.Join(stats.Errors, "\n")
+		}
+		return msg
 	}
 
 	result := fmt.Sprintf("Exported %d attachment(s) (%s)\n\nSaved to:\n%s",
