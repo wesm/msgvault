@@ -220,8 +220,11 @@ func (m *Manager) deviceFlow(ctx context.Context) (*oauth2.Token, error) {
 	}
 
 	// Validate required fields
-	if deviceResp.VerificationURL == "" || deviceResp.UserCode == "" {
-		return nil, fmt.Errorf("device code response missing required fields (verification_url or user_code)")
+	if deviceResp.VerificationURL == "" || deviceResp.UserCode == "" || deviceResp.DeviceCode == "" {
+		return nil, fmt.Errorf("device code response missing required fields (verification_url, user_code, or device_code)")
+	}
+	if deviceResp.ExpiresIn <= 0 {
+		return nil, fmt.Errorf("device code response has invalid expires_in: %d", deviceResp.ExpiresIn)
 	}
 
 	// Display instructions to user
