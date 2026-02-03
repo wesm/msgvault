@@ -573,45 +573,32 @@ func TestInstallBinaryTo(t *testing.T) {
 
 	t.Run("backup restored on copy failure", func(t *testing.T) {
 		if runtime.GOOS == "windows" {
-			t.Skip("POSIX directory permissions not enforced on Windows")
+			t.Skip("POSIX file permissions not enforced on Windows")
 		}
 		t.Parallel()
 		tmpDir := t.TempDir()
 
-		// Create source binary
+		// Create source binary but make it unreadable to cause copy to fail
+		// after the backup rename succeeds
 		srcPath := filepath.Join(tmpDir, "new_binary")
-		if err := os.WriteFile(srcPath, []byte("new content"), 0644); err != nil {
+		if err := os.WriteFile(srcPath, []byte("new content"), 0000); err != nil {
 			t.Fatalf("failed to create source: %v", err)
 		}
-
-		// Create a subdirectory for the destination
-		binDir := filepath.Join(tmpDir, "bin")
-		if err := os.MkdirAll(binDir, 0755); err != nil {
-			t.Fatalf("failed to create bin dir: %v", err)
-		}
+		t.Cleanup(func() {
+			_ = os.Chmod(srcPath, 0644) // Restore for cleanup
+		})
 
 		// Create existing binary
-		dstPath := filepath.Join(binDir, "msgvault")
+		dstPath := filepath.Join(tmpDir, "msgvault")
 		if err := os.WriteFile(dstPath, []byte("old content"), 0755); err != nil {
 			t.Fatalf("failed to create existing binary: %v", err)
 		}
 
-		// Make directory read-only to cause copy to fail
-		if err := os.Chmod(binDir, 0555); err != nil {
-			t.Fatalf("failed to chmod bin dir: %v", err)
-		}
-		t.Cleanup(func() {
-			_ = os.Chmod(binDir, 0755) // Restore for cleanup
-		})
-
-		// Attempt install - should fail
+		// Attempt install - should fail during copy (not rename)
 		err := installBinaryTo(srcPath, dstPath)
 		if err == nil {
-			t.Fatal("expected installBinaryTo to fail with read-only directory")
+			t.Fatal("expected installBinaryTo to fail with unreadable source")
 		}
-
-		// Restore permissions to check result
-		_ = os.Chmod(binDir, 0755)
 
 		// Verify original was restored from backup
 		content, err := os.ReadFile(dstPath)

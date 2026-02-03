@@ -562,9 +562,10 @@ func isNewer(v1, v2 string) bool {
 	return semver.Compare(sv1, sv2) > 0
 }
 
-// prereleaseNumericPattern matches non-dotted prerelease identifiers with trailing digits
-// (e.g., "rc10", "beta2", "alpha1") to normalize them for proper numeric comparison.
-var prereleaseNumericPattern = regexp.MustCompile(`([a-zA-Z]+)(\d+)`)
+// prereleaseNumericPattern matches prerelease identifiers consisting of letters followed
+// by digits (e.g., "rc10", "beta2", "alpha1") to normalize them for proper numeric comparison.
+// The pattern is anchored to avoid partial matches within identifiers like "rc10a".
+var prereleaseNumericPattern = regexp.MustCompile(`^([A-Za-z]+)(\d+)$`)
 
 // normalizeSemver converts a version string to semver format for comparison.
 // Git-describe versions are converted to their base version.
@@ -578,20 +579,42 @@ func normalizeSemver(v string) string {
 		v = gitDescribePattern.ReplaceAllString(v, "")
 	}
 
-	// Normalize non-dotted prerelease identifiers to dotted format for numeric comparison.
+	// Normalize prerelease identifiers to dotted format for numeric comparison.
 	// Per semver spec, "rc10" is compared lexicographically (so rc10 < rc2).
 	// By converting to "rc.10", the numeric part is compared as an integer.
+	// Each dot-separated identifier is processed independently.
 	if idx := strings.Index(v, "-"); idx > 0 {
 		base := v[:idx]
 		prerelease := v[idx+1:]
-		// Only normalize if it's a simple identifier like "rc10", not already dotted
-		if !strings.Contains(prerelease, ".") {
-			prerelease = prereleaseNumericPattern.ReplaceAllString(prerelease, "$1.$2")
-		}
+		prerelease = normalizePrereleaseIdentifiers(prerelease)
 		v = base + "-" + prerelease
 	}
 
 	return "v" + v
+}
+
+// normalizePrereleaseIdentifiers processes each dot-separated prerelease identifier
+// and normalizes identifiers like "rc10" to "rc.10" for proper numeric comparison.
+// Identifiers with leading zeros in the numeric part are skipped to avoid creating
+// invalid semver numeric identifiers.
+func normalizePrereleaseIdentifiers(prerelease string) string {
+	parts := strings.Split(prerelease, ".")
+	var result []string
+	for _, part := range parts {
+		if matches := prereleaseNumericPattern.FindStringSubmatch(part); matches != nil {
+			letters, digits := matches[1], matches[2]
+			// Skip normalization if the numeric part has leading zeros,
+			// as that would create an invalid semver numeric identifier.
+			if len(digits) > 1 && digits[0] == '0' {
+				result = append(result, part)
+			} else {
+				result = append(result, letters, digits)
+			}
+		} else {
+			result = append(result, part)
+		}
+	}
+	return strings.Join(result, ".")
 }
 
 // FormatSize formats bytes as a human-readable string.
