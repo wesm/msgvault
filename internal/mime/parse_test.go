@@ -40,56 +40,18 @@ func assertSubject(t *testing.T, msg *Message, want string) {
 	}
 }
 
-// assertStringSliceEqual delegates to testemail.AssertStringSliceEqual.
-func assertStringSliceEqual(t *testing.T, got, want []string, label string) {
+// assertAddress checks that got[idx] has the expected email and (optionally) domain.
+func assertAddress(t *testing.T, got []Address, idx int, wantEmail, wantDomain string) {
 	t.Helper()
-	testemail.AssertStringSliceEqual(t, got, want, label)
-}
-
-// assertParseDateOK checks that parseDate succeeds and returns a non-zero time.
-func assertParseDateOK(t *testing.T, input string) {
-	t.Helper()
-	got, err := parseDate(input)
-	if err != nil {
-		t.Errorf("parseDate(%q) unexpected error: %v", input, err)
+	if idx >= len(got) {
+		t.Fatalf("Address index %d out of bounds (len %d)", idx, len(got))
 	}
-	if got.IsZero() {
-		t.Errorf("parseDate(%q) returned zero time, expected parsed date", input)
+	if got[idx].Email != wantEmail {
+		t.Errorf("Address[%d].Email = %q, want %q", idx, got[idx].Email, wantEmail)
 	}
-}
-
-// assertParseDateZero checks that parseDate returns zero time without error.
-func assertParseDateZero(t *testing.T, input string) {
-	t.Helper()
-	got, err := parseDate(input)
-	if err != nil {
-		t.Errorf("parseDate(%q) unexpected error: %v (should return zero time, not error)", input, err)
+	if wantDomain != "" && got[idx].Domain != wantDomain {
+		t.Errorf("Address[%d].Domain = %q, want %q", idx, got[idx].Domain, wantDomain)
 	}
-	if !got.IsZero() {
-		t.Errorf("parseDate(%q) = %v, expected zero time for invalid input", input, got)
-	}
-}
-
-// assertParseDateUTC checks that parseDate returns the expected UTC time.
-func assertParseDateUTC(t *testing.T, input string, want time.Time) {
-	t.Helper()
-	got, err := parseDate(input)
-	if err != nil {
-		t.Fatalf("parseDate(%q) unexpected error: %v", input, err)
-	}
-	if got.Location() != time.UTC {
-		t.Errorf("parseDate(%q) returned location %v, want UTC", input, got.Location())
-	}
-	if !got.Equal(want) {
-		t.Errorf("parseDate(%q) = %v, want %v", input, got, want)
-	}
-}
-
-// logParseDiagnostics logs To addresses and parsing errors for debugging.
-func logParseDiagnostics(t *testing.T, msg *Message) {
-	t.Helper()
-	t.Logf("To addresses: %v", msg.To)
-	t.Logf("Parsing errors: %v", msg.Errors)
 }
 
 func TestExtractDomain(t *testing.T) {
@@ -130,7 +92,7 @@ func TestParseReferences(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
 			got := parseReferences(tc.input)
-			assertStringSliceEqual(t, got, tc.want, "parseReferences("+tc.input+")")
+			testemail.AssertStringSliceEqual(t, got, tc.want, "parseReferences("+tc.input+")")
 		})
 	}
 }
@@ -140,52 +102,58 @@ func TestParseDate(t *testing.T) {
 	// This is intentional - malformed dates are common in email and
 	// shouldn't fail the entire parse.
 
-	// Valid RFC date formats should parse successfully
-	validDates := []struct {
-		input string
-	}{
-		{"Mon, 02 Jan 2006 15:04:05 -0700"},
-		{"Mon, 2 Jan 2006 15:04:05 MST"},
-		{"02 Jan 2006 15:04:05 -0700"},
-		{"Mon, 02 Jan 2006 15:04:05 -0700 (PST)"},
-		{"Mon,  2 Dec 2024 11:42:03 +0000 (UTC)"}, // Double space after comma (real-world case)
-		{"2006-01-02T15:04:05Z"},                  // ISO 8601 UTC
-		{"2006-01-02T15:04:05-07:00"},             // ISO 8601 with offset
-		{"2006-01-02 15:04:05 -0700"},             // SQL-like with timezone
-		{"2006-01-02 15:04:05"},                   // SQL-like without timezone (assumes UTC)
-	}
-
-	for _, tc := range validDates {
-		t.Run("valid/"+tc.input, func(t *testing.T) {
-			assertParseDateOK(t, tc.input)
-		})
-	}
-
-	// Invalid/unparseable dates should return zero time without error
-	invalidDates := []struct {
+	tests := []struct {
 		name  string
 		input string
+		want  time.Time // Zero value means we expect parse failure
 	}{
-		{"empty", ""},
-		{"garbage", "not a date"},
-		{"date_only", "2006-01-02"},
-		{"spelled_month", "January 2, 2006"},
+		// Valid RFC date formats
+		{"RFC1123Z", "Mon, 02 Jan 2006 15:04:05 -0700",
+			time.Date(2006, 1, 2, 22, 4, 5, 0, time.UTC)},
+		{"RFC1123 named zone", "Mon, 2 Jan 2006 15:04:05 MST",
+			time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)}, // MST treated as UTC offset 0 by Go
+		{"no weekday", "02 Jan 2006 15:04:05 -0700",
+			time.Date(2006, 1, 2, 22, 4, 5, 0, time.UTC)},
+		{"parenthesized zone", "Mon, 02 Jan 2006 15:04:05 -0700 (PST)",
+			time.Date(2006, 1, 2, 22, 4, 5, 0, time.UTC)},
+		{"double space after comma", "Mon,  2 Dec 2024 11:42:03 +0000 (UTC)",
+			time.Date(2024, 12, 2, 11, 42, 3, 0, time.UTC)},
+		{"ISO 8601 UTC", "2006-01-02T15:04:05Z",
+			time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)},
+		{"ISO 8601 offset", "2006-01-02T15:04:05-07:00",
+			time.Date(2006, 1, 2, 22, 4, 5, 0, time.UTC)},
+		{"SQL-like with tz", "2006-01-02 15:04:05 -0700",
+			time.Date(2006, 1, 2, 22, 4, 5, 0, time.UTC)},
+		{"SQL-like no tz", "2006-01-02 15:04:05",
+			time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)},
+
+		// Invalid/unparseable dates should return zero time
+		{"empty", "", time.Time{}},
+		{"garbage", "not a date", time.Time{}},
+		{"date only", "2006-01-02", time.Time{}},
+		{"spelled month", "January 2, 2006", time.Time{}},
 	}
 
-	for _, tc := range invalidDates {
-		t.Run("invalid/"+tc.name, func(t *testing.T) {
-			assertParseDateZero(t, tc.input)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseDate(tc.input)
+			if err != nil {
+				t.Fatalf("parseDate(%q) unexpected error: %v", tc.input, err)
+			}
+			if tc.want.IsZero() {
+				if !got.IsZero() {
+					t.Errorf("parseDate(%q) = %v, want zero time", tc.input, got)
+				}
+				return
+			}
+			if !got.Equal(tc.want) {
+				t.Errorf("parseDate(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+			if got.Location() != time.UTC {
+				t.Errorf("parseDate(%q) location = %v, want UTC", tc.input, got.Location())
+			}
 		})
 	}
-
-	// Verify parsed values are converted to UTC
-	// 15:04:05 -0700 = 22:04:05 UTC
-	assertParseDateUTC(t, "Mon, 02 Jan 2006 15:04:05 -0700",
-		time.Date(2006, 1, 2, 22, 4, 5, 0, time.UTC))
-
-	// Verify double-space handling with parenthesized timezone
-	assertParseDateUTC(t, "Mon,  2 Dec 2024 11:42:03 +0000 (UTC)",
-		time.Date(2024, 12, 2, 11, 42, 3, 0, time.UTC))
 }
 
 func TestStripHTML(t *testing.T) {
@@ -307,23 +275,12 @@ func TestParse_MinimalMessage(t *testing.T) {
 		},
 	})
 
-	if len(msg.From) != 1 || msg.From[0].Email != "sender@example.com" {
-		t.Errorf("From = %v, want sender@example.com", msg.From)
-	}
-
-	if len(msg.To) != 1 || msg.To[0].Email != "recipient@example.com" {
-		t.Errorf("To = %v, want recipient@example.com", msg.To)
-	}
-
+	assertAddress(t, msg.From, 0, "sender@example.com", "example.com")
+	assertAddress(t, msg.To, 0, "recipient@example.com", "")
 	assertSubject(t, msg, "Test")
 
 	if msg.BodyText != "Body text" {
 		t.Errorf("BodyText = %q, want %q", msg.BodyText, "Body text")
-	}
-
-	// Verify domain extraction worked
-	if msg.From[0].Domain != "example.com" {
-		t.Errorf("From domain = %q, want %q", msg.From[0].Domain, "example.com")
 	}
 }
 
@@ -368,26 +325,30 @@ func TestParse_RFC2822GroupAddress(t *testing.T) {
 		Body: "Body",
 	})
 
-	// Group with no addresses should result in empty To list
-	logParseDiagnostics(t, msg)
-
-	// Should not crash - that's the main requirement
 	assertSubject(t, msg, "Test")
+
+	// Group with no members should result in empty To list
+	if len(msg.To) != 0 {
+		t.Errorf("To = %v, want empty slice for undisclosed-recipients group", msg.To)
+	}
 }
 
 // TestParse_RFC2822GroupAddressWithMembers verifies group with actual addresses.
 func TestParse_RFC2822GroupAddressWithMembers(t *testing.T) {
-	// Group with member addresses
 	msg := parseEmail(t, emailOptions{
 		To:   "team: alice@example.com, bob@example.com;",
 		Body: "Body",
 	})
 
-	logParseDiagnostics(t, msg)
-
-	// Ideally we'd extract alice and bob from the group
-	// Let's see how enmime handles this
 	assertSubject(t, msg, "Test")
+
+	// Verify enmime flattens the group into individual recipients
+	wantEmails := []string{"alice@example.com", "bob@example.com"}
+	gotEmails := make([]string, len(msg.To))
+	for i, addr := range msg.To {
+		gotEmails[i] = addr.Email
+	}
+	testemail.AssertStringSliceEqual(t, gotEmails, wantEmails, "Group Members")
 }
 
 // TestIsBodyPart_ContentTypeWithParams tests that Content-Type with charset
