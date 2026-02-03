@@ -65,19 +65,33 @@ func AssertContainsAll(t *testing.T, got string, subs []string) {
 
 // AssertStringSet asserts that got contains exactly the expected strings,
 // ignoring order. Useful when the slice order is non-deterministic.
+// Duplicates are counted: ["a", "a"] does not match ["a", "b"].
 func AssertStringSet(t *testing.T, got []string, want ...string) {
 	t.Helper()
 	if len(got) != len(want) {
 		t.Errorf("got %d items %v, want %d items %v", len(got), got, len(want), want)
 		return
 	}
-	wantSet := make(map[string]bool, len(want))
-	for _, s := range want {
-		wantSet[s] = true
-	}
+
+	// Count occurrences in both slices
+	gotCounts := make(map[string]int, len(got))
 	for _, s := range got {
-		if !wantSet[s] {
-			t.Errorf("unexpected item %q in %v (want %v)", s, got, want)
+		gotCounts[s]++
+	}
+	wantCounts := make(map[string]int, len(want))
+	for _, s := range want {
+		wantCounts[s]++
+	}
+
+	// Check for missing or extra items
+	for s, wantN := range wantCounts {
+		if gotN := gotCounts[s]; gotN != wantN {
+			t.Errorf("item %q: got %d occurrences, want %d (got %v, want %v)", s, gotN, wantN, got, want)
+		}
+	}
+	for s, gotN := range gotCounts {
+		if _, ok := wantCounts[s]; !ok {
+			t.Errorf("unexpected item %q (%d occurrences) in %v (want %v)", s, gotN, got, want)
 		}
 	}
 }
