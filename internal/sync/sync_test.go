@@ -54,10 +54,10 @@ func TestFullSyncResume(t *testing.T) {
 		MessagesTotal: 4,
 		HistoryID:     12346,
 	}
-	env.Mock.AddMessage("msg1", testMIME, []string{"INBOX"})
-	env.Mock.AddMessage("msg2", testMIME, []string{"INBOX"})
-	env.Mock.AddMessage("msg3", testMIME, []string{"INBOX"})
-	env.Mock.AddMessage("msg4", testMIME, []string{"INBOX"})
+	env.Mock.AddMessage("msg1", testMIME(), []string{"INBOX"})
+	env.Mock.AddMessage("msg2", testMIME(), []string{"INBOX"})
+	env.Mock.AddMessage("msg3", testMIME(), []string{"INBOX"})
+	env.Mock.AddMessage("msg4", testMIME(), []string{"INBOX"})
 
 	summary2 := runFullSync(t, env)
 	assertSummary(t, summary2, 0, -1, -1, -1)
@@ -245,8 +245,8 @@ func TestIncrementalSyncWithChanges(t *testing.T) {
 
 	env.Mock.Profile.MessagesTotal = 10
 	env.Mock.Profile.HistoryID = 12350
-	env.Mock.AddMessage("new-msg-1", testMIME, []string{"INBOX"})
-	env.Mock.AddMessage("new-msg-2", testMIME, []string{"INBOX"})
+	env.Mock.AddMessage("new-msg-1", testMIME(), []string{"INBOX"})
+	env.Mock.AddMessage("new-msg-2", testMIME(), []string{"INBOX"})
 
 	env.SetHistory(12350,
 		historyAdded("new-msg-1"),
@@ -303,7 +303,7 @@ func TestIncrementalSyncWithLabelAdded(t *testing.T) {
 	env := newTestEnv(t)
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12340
-	env.Mock.AddMessage("msg1", testMIME, []string{"INBOX"})
+	env.Mock.AddMessage("msg1", testMIME(), []string{"INBOX"})
 
 	runFullSync(t, env)
 
@@ -319,7 +319,7 @@ func TestIncrementalSyncWithLabelRemoved(t *testing.T) {
 	env := newTestEnv(t)
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12340
-	env.Mock.AddMessage("msg1", testMIME, []string{"INBOX", "STARRED"})
+	env.Mock.AddMessage("msg1", testMIME(), []string{"INBOX", "STARRED"})
 
 	runFullSync(t, env)
 
@@ -343,7 +343,7 @@ func TestIncrementalSyncLabelAddedToNewMessage(t *testing.T) {
 
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12350
-	env.Mock.AddMessage("new-msg", testMIME, []string{"INBOX", "STARRED"})
+	env.Mock.AddMessage("new-msg", testMIME(), []string{"INBOX", "STARRED"})
 
 	env.SetHistory(12350, historyLabelAdded("new-msg", "STARRED"))
 
@@ -372,7 +372,7 @@ func TestFullSyncWithAttachment(t *testing.T) {
 	env := newTestEnv(t)
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12345
-	env.Mock.AddMessage("msg-with-attachment", testMIMEWithAttachment, []string{"INBOX"})
+	env.Mock.AddMessage("msg-with-attachment", testMIMEWithAttachment(), []string{"INBOX"})
 
 	attachDir := withAttachmentsDir(t, env)
 
@@ -409,8 +409,8 @@ func TestFullSyncAttachmentDeduplication(t *testing.T) {
 	env := newTestEnv(t)
 	env.Mock.Profile.MessagesTotal = 2
 	env.Mock.Profile.HistoryID = 12345
-	env.Mock.AddMessage("msg1-attach", testMIMEWithAttachment, []string{"INBOX"})
-	env.Mock.AddMessage("msg2-attach", testMIMEWithAttachment, []string{"INBOX"})
+	env.Mock.AddMessage("msg1-attach", testMIMEWithAttachment(), []string{"INBOX"})
+	env.Mock.AddMessage("msg2-attach", testMIMEWithAttachment(), []string{"INBOX"})
 
 	attachDir := withAttachmentsDir(t, env)
 
@@ -426,7 +426,7 @@ func TestFullSyncNoSubject(t *testing.T) {
 	env := newTestEnv(t)
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12345
-	env.Mock.AddMessage("msg-no-subject", testMIMENoSubject, []string{"INBOX"})
+	env.Mock.AddMessage("msg-no-subject", testMIMENoSubject(), []string{"INBOX"})
 
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, 1, -1, -1, -1)
@@ -436,7 +436,7 @@ func TestFullSyncMultipleRecipients(t *testing.T) {
 	env := newTestEnv(t)
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12345
-	env.Mock.AddMessage("msg-multi-recip", testMIMEMultipleRecipients, []string{"INBOX"})
+	env.Mock.AddMessage("msg-multi-recip", testMIMEMultipleRecipients(), []string{"INBOX"})
 
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, 1, -1, -1, -1)
@@ -446,7 +446,7 @@ func TestFullSyncWithMIMEParseError(t *testing.T) {
 	env := newTestEnv(t)
 	env.Mock.Profile.MessagesTotal = 2
 	env.Mock.Profile.HistoryID = 12345
-	env.Mock.AddMessage("msg-good", testMIME, []string{"INBOX"})
+	env.Mock.AddMessage("msg-good", testMIME(), []string{"INBOX"})
 	env.Mock.Messages["msg-bad"] = &gmail.RawMessage{
 		ID:           "msg-bad",
 		ThreadID:     "thread_msg-bad",
@@ -468,7 +468,7 @@ func TestFullSyncMessageFetchError(t *testing.T) {
 	env := newTestEnv(t)
 	env.Mock.Profile.MessagesTotal = 2
 	env.Mock.Profile.HistoryID = 12345
-	env.Mock.AddMessage("msg-good", testMIME, []string{"INBOX"})
+	env.Mock.AddMessage("msg-good", testMIME(), []string{"INBOX"})
 
 	env.Mock.MessagePages = [][]string{{"msg-good", "msg-missing"}}
 
@@ -560,7 +560,7 @@ func TestFullSyncDuplicateRecipients(t *testing.T) {
 	env := newTestEnv(t)
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12345
-	env.Mock.AddMessage("msg-dup-recip", testMIMEDuplicateRecipients, []string{"INBOX"})
+	env.Mock.AddMessage("msg-dup-recip", testMIMEDuplicateRecipients(), []string{"INBOX"})
 
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, 1, 0, -1, -1)
@@ -606,7 +606,7 @@ func TestFullSyncEmptyRawMIME(t *testing.T) {
 	env.Mock.Profile.MessagesTotal = 2
 	env.Mock.Profile.HistoryID = 12345
 
-	env.Mock.AddMessage("msg-good", testMIME, []string{"INBOX"})
+	env.Mock.AddMessage("msg-good", testMIME(), []string{"INBOX"})
 	env.Mock.Messages["msg-empty-raw"] = &gmail.RawMessage{
 		ID:           "msg-empty-raw",
 		ThreadID:     "thread-empty-raw",
@@ -629,8 +629,8 @@ func TestFullSyncEmptyThreadID(t *testing.T) {
 		ID:           "msg-no-thread",
 		ThreadID:     "",
 		LabelIDs:     []string{"INBOX"},
-		Raw:          testMIME,
-		SizeEstimate: int64(len(testMIME)),
+		Raw:          testMIME(),
+		SizeEstimate: int64(len(testMIME())),
 	}
 	env.Mock.MessagePages = [][]string{{"msg-no-thread"}}
 
@@ -652,8 +652,8 @@ func TestFullSyncListEmptyThreadIDRawPresent(t *testing.T) {
 		ID:           "msg-list-empty",
 		ThreadID:     "actual-thread-from-raw",
 		LabelIDs:     []string{"INBOX"},
-		Raw:          testMIME,
-		SizeEstimate: int64(len(testMIME)),
+		Raw:          testMIME(),
+		SizeEstimate: int64(len(testMIME())),
 	}
 	env.Mock.MessagePages = [][]string{{"msg-list-empty"}}
 
@@ -669,7 +669,7 @@ func TestAttachmentFilePermissions(t *testing.T) {
 	env := newTestEnv(t)
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12345
-	env.Mock.AddMessage("msg-with-attachment", testMIMEWithAttachment, []string{"INBOX"})
+	env.Mock.AddMessage("msg-with-attachment", testMIMEWithAttachment(), []string{"INBOX"})
 
 	attachDir := withAttachmentsDir(t, env)
 

@@ -111,7 +111,7 @@ func seedMessages(env *TestEnv, total int64, historyID uint64, msgs ...string) {
 	env.Mock.Profile.MessagesTotal = total
 	env.Mock.Profile.HistoryID = historyID
 	for _, id := range msgs {
-		env.Mock.AddMessage(id, testMIME, []string{"INBOX"})
+		env.Mock.AddMessage(id, testMIME(), []string{"INBOX"})
 	}
 }
 
@@ -362,7 +362,7 @@ func seedPagedMessages(env *TestEnv, total int, pageSize int, prefix string) {
 	var page []string
 	for i := 1; i <= total; i++ {
 		id := fmt.Sprintf("%s%d", prefix, i)
-		env.Mock.AddMessage(id, testMIME, []string{"INBOX"})
+		env.Mock.AddMessage(id, testMIME(), []string{"INBOX"})
 		page = append(page, id)
 		if len(page) == pageSize {
 			pages = append(pages, page)
