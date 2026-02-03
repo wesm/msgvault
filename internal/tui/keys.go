@@ -12,56 +12,10 @@ import (
 func (m Model) handleInlineSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
-		// Finalize search, exit inline mode, keep results
-		m.inlineSearchActive = false
-		m.inlineSearchLoading = false
-		queryStr := m.searchInput.Value()
-		if queryStr == "" {
-			// Empty search clears filter - restore from snapshot if available
-			m.searchQuery = ""
-			m.searchRequestID++
-			if m.level == levelMessageList && m.preSearchMessages != nil {
-				return m, m.restorePreSearchSnapshot()
-			}
-			m.contextStats = nil
-			if m.level == levelMessageList {
-				m.loadRequestID++
-				return m, m.loadMessages()
-			}
-			m.aggregateRequestID++
-			return m, m.loadData()
-		}
-		m.searchQuery = queryStr
-		// In message list view, execute search to show results
-		if m.level == levelMessageList {
-			m.searchFilter = m.drillFilter
-			m.searchFilter.SourceID = m.accountFilter
-			m.searchFilter.WithAttachmentsOnly = m.attachmentFilter
-			m.searchRequestID++
-			m.loading = true
-			spinCmd := m.startSpinner()
-			return m, tea.Batch(spinCmd, m.loadSearch(queryStr))
-		}
-		// In aggregate views, results already showing from debounced search
-		return m, nil
+		return m.commitInlineSearch()
 
 	case "esc":
-		// Cancel search, exit inline mode, clear partial search
-		m.inlineSearchActive = false
-		m.inlineSearchLoading = false
-		m.searchInput.SetValue("")
-		m.searchQuery = ""
-		m.searchRequestID++
-		if m.level == levelMessageList && m.preSearchMessages != nil {
-			return m, m.restorePreSearchSnapshot()
-		}
-		m.contextStats = nil
-		if m.level == levelMessageList {
-			m.loadRequestID++
-			return m, m.loadMessages()
-		}
-		m.aggregateRequestID++
-		return m, m.loadData()
+		return m.cancelInlineSearch()
 
 	case "ctrl+c":
 		m.quitting = true
@@ -240,124 +194,29 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Drill down - go to message list for selected aggregate
 	case "enter":
 		if len(m.rows) > 0 && m.cursor < len(m.rows) {
-			m.transitionBuffer = m.renderView() // Freeze screen until data loads
-			m.pushBreadcrumb()
-
-			selectedRow := m.rows[m.cursor]
-			m.contextStats = &query.TotalStats{
-				MessageCount:    selectedRow.Count,
-				TotalSize:       selectedRow.TotalSize,
-				AttachmentSize:  selectedRow.AttachmentSize,
-				AttachmentCount: selectedRow.AttachmentCount,
-			}
-
-			key := selectedRow.Key
-
-			if !isSub {
-				// Top-level: create fresh drill filter
-				m.drillViewType = m.viewType
-				m.drillFilter = query.MessageFilter{
-					SourceID:            m.accountFilter,
-					WithAttachmentsOnly: m.attachmentFilter,
-					TimeRange:           query.TimeRange{Granularity: m.timeGranularity},
-				}
-			}
-
-			// Set filter field on drillFilter (accumulates for sub-agg)
-			switch m.viewType {
-			case query.ViewSenders:
-				m.drillFilter.Sender = key
-				if key == "" {
-					m.drillFilter.SetEmptyTarget(query.ViewSenders)
-				}
-			case query.ViewSenderNames:
-				m.drillFilter.SenderName = key
-				if key == "" {
-					m.drillFilter.SetEmptyTarget(query.ViewSenderNames)
-				}
-			case query.ViewRecipients:
-				m.drillFilter.Recipient = key
-				if key == "" {
-					m.drillFilter.SetEmptyTarget(query.ViewRecipients)
-				}
-			case query.ViewRecipientNames:
-				m.drillFilter.RecipientName = key
-				if key == "" {
-					m.drillFilter.SetEmptyTarget(query.ViewRecipientNames)
-				}
-			case query.ViewDomains:
-				m.drillFilter.Domain = key
-				if key == "" {
-					m.drillFilter.SetEmptyTarget(query.ViewDomains)
-				}
-			case query.ViewLabels:
-				m.drillFilter.Label = key
-				if key == "" {
-					m.drillFilter.SetEmptyTarget(query.ViewLabels)
-				}
-			case query.ViewTime:
-				m.drillFilter.TimeRange.Period = key
-				m.drillFilter.TimeRange.Granularity = m.timeGranularity
-			}
-
-			m.filterKey = key
-			m.allMessages = false
-			m.level = levelMessageList
-			m.cursor = 0
-			m.scrollOffset = 0
-			m.messages = nil // Clear stale messages from previous drill-down
-			m.loading = true
-			m.err = nil
-			// Only clear selection on top-level drill-down (sub-agg didn't clear before)
-			if !isSub {
-				m.selection.aggregateKeys = make(map[string]bool)
-				m.selection.messageIDs = make(map[int64]bool)
-			}
-
-			// Clear search on drill-down: the drill filter already
-			// constrains to the correct subset. The breadcrumb
-			// preserves the outer search for back-navigation.
-			// Increment searchRequestID to invalidate any in-flight
-			// search responses from the aggregate level.
-			m.searchQuery = ""
-			m.searchRequestID++
-
-			m.loadRequestID++
-			return m, m.loadMessages()
+			return m.enterDrillDown(m.rows[m.cursor])
 		}
 
 	// View switching - 'g' cycles through groupings, Tab also works
 	// Sub-agg skips the drill view type (can't sub-group by the same dimension)
 	case "g", "tab":
-		m.viewType = (m.viewType + 1) % 7
-		if isSub && m.viewType == m.drillViewType {
-			m.viewType = (m.viewType + 1) % 7
+		skipView := query.ViewType(-1)
+		if isSub {
+			skipView = m.drillViewType
 		}
-		m.selection.aggregateKeys = make(map[string]bool)
-		m.selection.aggregateViewType = m.viewType
-		m.cursor = 0
-		m.scrollOffset = 0
+		m.cycleViewType(true, skipView)
+		m.resetViewState()
 		m.loading = true
 		m.aggregateRequestID++
 		return m, m.loadData()
 
 	case "shift+tab":
-		if m.viewType == 0 {
-			m.viewType = 6
-		} else {
-			m.viewType--
+		skipView := query.ViewType(-1)
+		if isSub {
+			skipView = m.drillViewType
 		}
-		if isSub && m.viewType == m.drillViewType {
-			if m.viewType == 0 {
-				m.viewType = 6
-			} else {
-				m.viewType--
-			}
-		}
-		m.selection.aggregateKeys = make(map[string]bool)
-		m.selection.aggregateViewType = m.viewType
-		m.cursor = 0
-		m.scrollOffset = 0
+		m.cycleViewType(false, skipView)
+		m.resetViewState()
 		m.loading = true
 		m.aggregateRequestID++
 		return m, m.loadData()
@@ -371,10 +230,7 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		} else {
 			m.viewType = query.ViewTime
-			m.selection.aggregateKeys = make(map[string]bool)
-			m.selection.aggregateViewType = m.viewType
-			m.cursor = 0
-			m.scrollOffset = 0
+			m.resetViewState()
 		}
 		m.loading = true
 		m.aggregateRequestID++
@@ -460,16 +316,7 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		// Always clear an active search before navigating back
 		if m.searchQuery != "" {
-			m.searchQuery = ""
-			m.searchFilter = query.MessageFilter{}
-			m.searchInput.SetValue("")
-			m.searchRequestID++
-			if m.preSearchMessages != nil {
-				return m, m.restorePreSearchSnapshot()
-			}
-			m.contextStats = nil
-			m.loadRequestID++
-			return m, m.loadMessages()
+			return m.clearMessageListSearch()
 		}
 		return m.goBack()
 
@@ -942,154 +789,306 @@ func (m Model) handleThreadViewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.modal {
 	case modalDeleteConfirm:
-		switch msg.String() {
-		case "y", "Y":
-			// Confirm deletion - save manifest
-			return m.confirmDeletion()
-		case "n", "N", "esc":
-			// Cancel
-			m.modal = modalNone
-			m.pendingManifest = nil
-		}
-
+		return m.handleDeleteConfirmKeys(msg)
 	case modalDeleteResult:
-		// Any key dismisses the result
-		m.modal = modalNone
-		m.modalResult = ""
-
+		return m.handleDeleteResultKeys()
 	case modalQuitConfirm:
-		switch msg.String() {
-		case "y", "Y", "enter":
-			m.quitting = true
-			return m, tea.Quit
-		case "n", "N", "esc", "q":
-			m.modal = modalNone
-		}
-
+		return m.handleQuitConfirmKeys(msg)
 	case modalAccountSelector:
-		maxIdx := len(m.accounts) // 0 = All Accounts, then accounts
-		switch msg.String() {
-		case "up", "k":
-			if m.modalCursor > 0 {
-				m.modalCursor--
-			}
-		case "down", "j":
-			if m.modalCursor < maxIdx {
-				m.modalCursor++
-			}
-		case "enter":
-			// Apply selection with bounds check
-			if m.modalCursor == 0 || m.modalCursor > len(m.accounts) {
-				m.accountFilter = nil // All accounts (or fallback if out of bounds)
-			} else {
-				accID := m.accounts[m.modalCursor-1].ID
-				m.accountFilter = &accID
-			}
-			m.modal = modalNone
-			m.loading = true
-			m.aggregateRequestID++
-			// Reload data with new account filter
-			return m, tea.Batch(m.loadData(), m.loadStats())
-		case "esc":
-			m.modal = modalNone
-		}
-
+		return m.handleAccountSelectorKeys(msg)
 	case modalAttachmentFilter:
-		switch msg.String() {
-		case "up", "k":
-			if m.modalCursor > 0 {
-				m.modalCursor--
-			}
-		case "down", "j":
-			if m.modalCursor < 1 {
-				m.modalCursor++
-			}
-		case "enter":
-			// Apply selection
-			m.attachmentFilter = (m.modalCursor == 1)
-			m.modal = modalNone
-			m.loading = true
-			// Reload data and stats based on view level
-			if m.level == levelMessageList {
-				m.loadRequestID++
-				return m, tea.Batch(m.loadMessages(), m.loadStats())
-			}
-			// In aggregate view, reload aggregates and stats
-			m.aggregateRequestID++
-			return m, tea.Batch(m.loadData(), m.loadStats())
-		case "esc":
-			m.modal = modalNone
-		}
-
+		return m.handleAttachmentFilterKeys(msg)
 	case modalExportAttachments:
-		if m.messageDetail == nil || len(m.messageDetail.Attachments) == 0 {
-			m.modal = modalNone
-			return m, nil
-		}
-		maxIdx := len(m.messageDetail.Attachments) - 1
-		switch msg.String() {
-		case "up", "k":
-			if m.exportCursor > 0 {
-				m.exportCursor--
-			}
-		case "down", "j":
-			if m.exportCursor < maxIdx {
-				m.exportCursor++
-			}
-		case " ": // Space toggles selection
-			m.exportSelection[m.exportCursor] = !m.exportSelection[m.exportCursor]
-		case "a": // Select all
-			for i := range m.messageDetail.Attachments {
-				m.exportSelection[i] = true
-			}
-		case "n": // Select none
-			for i := range m.messageDetail.Attachments {
-				m.exportSelection[i] = false
-			}
-		case "enter":
-			// Export selected attachments
-			return m.exportAttachments()
-		case "esc":
-			m.modal = modalNone
-			m.exportSelection = nil
-		}
-
+		return m.handleExportAttachmentsKeys(msg)
 	case modalExportResult:
-		// Any key closes the result modal
-		m.modal = modalNone
-		m.modalResult = ""
-
+		return m.handleExportResultKeys()
 	case modalHelp:
-		switch msg.String() {
-		case "down", "j":
-			m.helpScroll++
-		case "up", "k":
-			if m.helpScroll > 0 {
-				m.helpScroll--
-			}
-		case "pgdown":
-			m.helpScroll += 10
-		case "pgup":
-			m.helpScroll -= 10
-			if m.helpScroll < 0 {
-				m.helpScroll = 0
-			}
-		default:
-			// Any other key closes help
-			m.modal = modalNone
+		return m.handleHelpKeys(msg)
+	}
+	return m, nil
+}
+
+func (m Model) handleDeleteConfirmKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		return m.confirmDeletion()
+	case "n", "N", "esc":
+		m.modal = modalNone
+		m.pendingManifest = nil
+	}
+	return m, nil
+}
+
+func (m Model) handleDeleteResultKeys() (tea.Model, tea.Cmd) {
+	// Any key dismisses the result
+	m.modal = modalNone
+	m.modalResult = ""
+	return m, nil
+}
+
+func (m Model) handleQuitConfirmKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y", "enter":
+		m.quitting = true
+		return m, tea.Quit
+	case "n", "N", "esc", "q":
+		m.modal = modalNone
+	}
+	return m, nil
+}
+
+func (m Model) handleAccountSelectorKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	maxIdx := len(m.accounts) // 0 = All Accounts, then accounts
+	switch msg.String() {
+	case "up", "k":
+		if m.modalCursor > 0 {
+			m.modalCursor--
+		}
+	case "down", "j":
+		if m.modalCursor < maxIdx {
+			m.modalCursor++
+		}
+	case "enter":
+		// Apply selection with bounds check
+		if m.modalCursor == 0 || m.modalCursor > len(m.accounts) {
+			m.accountFilter = nil // All accounts (or fallback if out of bounds)
+		} else {
+			accID := m.accounts[m.modalCursor-1].ID
+			m.accountFilter = &accID
+		}
+		m.modal = modalNone
+		m.loading = true
+		m.aggregateRequestID++
+		return m, tea.Batch(m.loadData(), m.loadStats())
+	case "esc":
+		m.modal = modalNone
+	}
+	return m, nil
+}
+
+func (m Model) handleAttachmentFilterKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.modalCursor > 0 {
+			m.modalCursor--
+		}
+	case "down", "j":
+		if m.modalCursor < 1 {
+			m.modalCursor++
+		}
+	case "enter":
+		m.attachmentFilter = (m.modalCursor == 1)
+		m.modal = modalNone
+		m.loading = true
+		if m.level == levelMessageList {
+			m.loadRequestID++
+			return m, tea.Batch(m.loadMessages(), m.loadStats())
+		}
+		m.aggregateRequestID++
+		return m, tea.Batch(m.loadData(), m.loadStats())
+	case "esc":
+		m.modal = modalNone
+	}
+	return m, nil
+}
+
+func (m Model) handleExportAttachmentsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.messageDetail == nil || len(m.messageDetail.Attachments) == 0 {
+		m.modal = modalNone
+		return m, nil
+	}
+	maxIdx := len(m.messageDetail.Attachments) - 1
+	switch msg.String() {
+	case "up", "k":
+		if m.exportCursor > 0 {
+			m.exportCursor--
+		}
+	case "down", "j":
+		if m.exportCursor < maxIdx {
+			m.exportCursor++
+		}
+	case " ": // Space toggles selection
+		m.exportSelection[m.exportCursor] = !m.exportSelection[m.exportCursor]
+	case "a": // Select all
+		for i := range m.messageDetail.Attachments {
+			m.exportSelection[i] = true
+		}
+	case "n": // Select none
+		for i := range m.messageDetail.Attachments {
+			m.exportSelection[i] = false
+		}
+	case "enter":
+		return m.exportAttachments()
+	case "esc":
+		m.modal = modalNone
+		m.exportSelection = nil
+	}
+	return m, nil
+}
+
+func (m Model) handleExportResultKeys() (tea.Model, tea.Cmd) {
+	// Any key closes the result modal
+	m.modal = modalNone
+	m.modalResult = ""
+	return m, nil
+}
+
+func (m Model) handleHelpKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "down", "j":
+		m.helpScroll++
+	case "up", "k":
+		if m.helpScroll > 0 {
+			m.helpScroll--
+		}
+	case "pgdown":
+		m.helpScroll += 10
+	case "pgup":
+		m.helpScroll -= 10
+		if m.helpScroll < 0 {
 			m.helpScroll = 0
 		}
-		// Clamp scroll to prevent overscroll
-		if maxScroll := len(rawHelpLines) - m.helpMaxVisible(); maxScroll > 0 {
-			if m.helpScroll > maxScroll {
-				m.helpScroll = maxScroll
-			}
+	default:
+		// Any other key closes help
+		m.modal = modalNone
+		m.helpScroll = 0
+		return m, nil
+	}
+	// Clamp scroll to prevent overscroll
+	if maxScroll := len(rawHelpLines) - m.helpMaxVisible(); maxScroll > 0 {
+		if m.helpScroll > maxScroll {
+			m.helpScroll = maxScroll
+		}
+	} else {
+		m.helpScroll = 0
+	}
+	return m, nil
+}
+
+// cycleViewType cycles the view type forward or backward, optionally skipping a view.
+// skipView is the view type to skip (e.g., drillViewType in sub-aggregate mode), or -1 to skip none.
+func (m *Model) cycleViewType(forward bool, skipView query.ViewType) {
+	numViews := int(query.ViewTypeCount)
+	if forward {
+		m.viewType = (m.viewType + 1) % query.ViewType(numViews)
+		if skipView >= 0 && m.viewType == skipView {
+			m.viewType = (m.viewType + 1) % query.ViewType(numViews)
+		}
+	} else {
+		if m.viewType == 0 {
+			m.viewType = query.ViewType(numViews - 1)
 		} else {
-			m.helpScroll = 0
+			m.viewType--
+		}
+		if skipView >= 0 && m.viewType == skipView {
+			if m.viewType == 0 {
+				m.viewType = query.ViewType(numViews - 1)
+			} else {
+				m.viewType--
+			}
+		}
+	}
+}
+
+// resetViewState resets cursor and selection state after a view type change.
+func (m *Model) resetViewState() {
+	m.selection.aggregateKeys = make(map[string]bool)
+	m.selection.aggregateViewType = m.viewType
+	m.cursor = 0
+	m.scrollOffset = 0
+}
+
+// setDrillFilterForView sets the appropriate filter field on drillFilter based on the current viewType.
+func (m *Model) setDrillFilterForView(key string) {
+	switch m.viewType {
+	case query.ViewSenders:
+		m.drillFilter.Sender = key
+		if key == "" {
+			m.drillFilter.SetEmptyTarget(query.ViewSenders)
+		}
+	case query.ViewSenderNames:
+		m.drillFilter.SenderName = key
+		if key == "" {
+			m.drillFilter.SetEmptyTarget(query.ViewSenderNames)
+		}
+	case query.ViewRecipients:
+		m.drillFilter.Recipient = key
+		if key == "" {
+			m.drillFilter.SetEmptyTarget(query.ViewRecipients)
+		}
+	case query.ViewRecipientNames:
+		m.drillFilter.RecipientName = key
+		if key == "" {
+			m.drillFilter.SetEmptyTarget(query.ViewRecipientNames)
+		}
+	case query.ViewDomains:
+		m.drillFilter.Domain = key
+		if key == "" {
+			m.drillFilter.SetEmptyTarget(query.ViewDomains)
+		}
+	case query.ViewLabels:
+		m.drillFilter.Label = key
+		if key == "" {
+			m.drillFilter.SetEmptyTarget(query.ViewLabels)
+		}
+	case query.ViewTime:
+		m.drillFilter.TimeRange.Period = key
+		m.drillFilter.TimeRange.Granularity = m.timeGranularity
+	}
+}
+
+// enterDrillDown handles the drill-down from aggregate view to message list.
+func (m Model) enterDrillDown(row query.AggregateRow) (tea.Model, tea.Cmd) {
+	isSub := m.level == levelDrillDown
+
+	m.transitionBuffer = m.renderView() // Freeze screen until data loads
+	m.pushBreadcrumb()
+
+	m.contextStats = &query.TotalStats{
+		MessageCount:    row.Count,
+		TotalSize:       row.TotalSize,
+		AttachmentSize:  row.AttachmentSize,
+		AttachmentCount: row.AttachmentCount,
+	}
+
+	if !isSub {
+		// Top-level: create fresh drill filter
+		m.drillViewType = m.viewType
+		m.drillFilter = query.MessageFilter{
+			SourceID:            m.accountFilter,
+			WithAttachmentsOnly: m.attachmentFilter,
+			TimeRange:           query.TimeRange{Granularity: m.timeGranularity},
 		}
 	}
 
-	return m, nil
+	// Set filter field on drillFilter (accumulates for sub-agg)
+	m.setDrillFilterForView(row.Key)
+
+	m.filterKey = row.Key
+	m.allMessages = false
+	m.level = levelMessageList
+	m.cursor = 0
+	m.scrollOffset = 0
+	m.messages = nil // Clear stale messages from previous drill-down
+	m.loading = true
+	m.err = nil
+
+	// Only clear selection on top-level drill-down (sub-agg didn't clear before)
+	if !isSub {
+		m.selection.aggregateKeys = make(map[string]bool)
+		m.selection.messageIDs = make(map[int64]bool)
+	}
+
+	// Clear search on drill-down: the drill filter already
+	// constrains to the correct subset. The breadcrumb
+	// preserves the outer search for back-navigation.
+	// Increment searchRequestID to invalidate any in-flight
+	// search responses from the aggregate level.
+	m.searchQuery = ""
+	m.searchRequestID++
+
+	m.loadRequestID++
+	return m, m.loadMessages()
 }
 
 func (m *Model) openAccountSelector() {
@@ -1116,6 +1115,85 @@ func (m *Model) openAttachmentFilter() {
 	} else {
 		m.modalCursor = 0 // "All Messages"
 	}
+}
+
+// exitInlineSearchMode resets inline search UI state without changing filter state.
+func (m *Model) exitInlineSearchMode() {
+	m.inlineSearchActive = false
+	m.inlineSearchLoading = false
+}
+
+// clearSearchState clears search query and invalidates pending requests.
+func (m *Model) clearSearchState() {
+	m.searchQuery = ""
+	m.searchRequestID++
+	m.contextStats = nil
+}
+
+// reloadCurrentView triggers a data reload based on the current level.
+func (m Model) reloadCurrentView() (tea.Model, tea.Cmd) {
+	if m.level == levelMessageList {
+		m.loadRequestID++
+		return m, m.loadMessages()
+	}
+	m.aggregateRequestID++
+	return m, m.loadData()
+}
+
+// commitInlineSearch finalizes the search and exits inline mode.
+func (m Model) commitInlineSearch() (tea.Model, tea.Cmd) {
+	m.exitInlineSearchMode()
+	queryStr := m.searchInput.Value()
+
+	if queryStr == "" {
+		// Empty search clears filter - restore from snapshot if available
+		m.clearSearchState()
+		if m.level == levelMessageList && m.preSearchMessages != nil {
+			return m, m.restorePreSearchSnapshot()
+		}
+		return m.reloadCurrentView()
+	}
+
+	m.searchQuery = queryStr
+	// In message list view, execute search to show results
+	if m.level == levelMessageList {
+		m.searchFilter = m.drillFilter
+		m.searchFilter.SourceID = m.accountFilter
+		m.searchFilter.WithAttachmentsOnly = m.attachmentFilter
+		m.searchRequestID++
+		m.loading = true
+		spinCmd := m.startSpinner()
+		return m, tea.Batch(spinCmd, m.loadSearch(queryStr))
+	}
+	// In aggregate views, results already showing from debounced search
+	return m, nil
+}
+
+// cancelInlineSearch cancels the search and restores previous state.
+func (m Model) cancelInlineSearch() (tea.Model, tea.Cmd) {
+	m.exitInlineSearchMode()
+	m.searchInput.SetValue("")
+	m.clearSearchState()
+
+	if m.level == levelMessageList && m.preSearchMessages != nil {
+		return m, m.restorePreSearchSnapshot()
+	}
+	return m.reloadCurrentView()
+}
+
+// clearMessageListSearch clears an active search in message list view and restores previous state.
+func (m Model) clearMessageListSearch() (tea.Model, tea.Cmd) {
+	m.searchQuery = ""
+	m.searchFilter = query.MessageFilter{}
+	m.searchInput.SetValue("")
+	m.searchRequestID++
+
+	if m.preSearchMessages != nil {
+		return m, m.restorePreSearchSnapshot()
+	}
+	m.contextStats = nil
+	m.loadRequestID++
+	return m, m.loadMessages()
 }
 
 // restorePreSearchSnapshot restores the cached message list state from before

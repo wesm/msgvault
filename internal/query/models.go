@@ -88,6 +88,9 @@ const (
 	ViewDomains
 	ViewLabels
 	ViewTime
+
+	// ViewTypeCount is the total number of view types. Must be last.
+	ViewTypeCount
 )
 
 func (v ViewType) String() string {
