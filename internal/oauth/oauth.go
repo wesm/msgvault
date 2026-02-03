@@ -442,7 +442,7 @@ func NewManagerWithScopes(clientSecretsPath, tokensDir string, logger *slog.Logg
 		return nil, fmt.Errorf("read client secrets: %w", err)
 	}
 
-	config, err := google.ConfigFromJSON(data, scopes...)
+	config, err := parseClientSecrets(data, scopes)
 	if err != nil {
 		return nil, fmt.Errorf("parse client secrets: %w", err)
 	}
@@ -455,6 +455,58 @@ func NewManagerWithScopes(clientSecretsPath, tokensDir string, logger *slog.Logg
 		config:    config,
 		tokensDir: tokensDir,
 		logger:    logger,
+	}, nil
+}
+
+// parseClientSecrets parses Google OAuth client secrets JSON.
+// Handles both "Desktop application" (with redirect_uris) and
+// "TVs and Limited Input devices" (without redirect_uris) client types.
+func parseClientSecrets(data []byte, scopes []string) (*oauth2.Config, error) {
+	// Try standard parsing first (works for Desktop apps with redirect URIs)
+	config, err := google.ConfigFromJSON(data, scopes...)
+	if err == nil {
+		return config, nil
+	}
+
+	// If that fails, try parsing manually for TV/device clients without redirect URIs
+	var secrets struct {
+		Installed *struct {
+			ClientID     string `json:"client_id"`
+			ClientSecret string `json:"client_secret"`
+			AuthURI      string `json:"auth_uri"`
+			TokenURI     string `json:"token_uri"`
+		} `json:"installed"`
+		Web *struct {
+			ClientID     string `json:"client_id"`
+			ClientSecret string `json:"client_secret"`
+			AuthURI      string `json:"auth_uri"`
+			TokenURI     string `json:"token_uri"`
+		} `json:"web"`
+	}
+
+	if jsonErr := json.Unmarshal(data, &secrets); jsonErr != nil {
+		return nil, fmt.Errorf("invalid client secrets JSON: %w", jsonErr)
+	}
+
+	// Check installed (Desktop/TV) clients first, then web
+	creds := secrets.Installed
+	if creds == nil {
+		creds = secrets.Web
+	}
+	if creds == nil || creds.ClientID == "" || creds.ClientSecret == "" {
+		return nil, fmt.Errorf("client secrets missing client_id or client_secret")
+	}
+
+	// Build config manually - use empty redirect URI for device flow clients
+	return &oauth2.Config{
+		ClientID:     creds.ClientID,
+		ClientSecret: creds.ClientSecret,
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  creds.AuthURI,
+			TokenURL: creds.TokenURI,
+		},
+		RedirectURL: "urn:ietf:wg:oauth:2.0:oob", // Out-of-band redirect for device flow
+		Scopes:      scopes,
 	}, nil
 }
 
