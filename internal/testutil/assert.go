@@ -6,27 +6,32 @@ import (
 	"unicode/utf8"
 )
 
-// StringSet builds a map[string]bool from the given keys.
+// MakeSet builds a map[T]bool from the given items.
 // Useful for constructing selection sets in tests.
-func StringSet(keys ...string) map[string]bool {
-	m := make(map[string]bool, len(keys))
-	for _, k := range keys {
-		m[k] = true
+func MakeSet[T comparable](items ...T) map[T]bool {
+	m := make(map[T]bool, len(items))
+	for _, item := range items {
+		m[item] = true
 	}
 	return m
 }
 
-// IDSet builds a map[int64]bool from the given IDs.
-// Useful for constructing ID selection sets in tests.
-func IDSet(ids ...int64) map[int64]bool {
-	m := make(map[int64]bool, len(ids))
-	for _, id := range ids {
-		m[id] = true
+// AssertEqualSlices compares two slices element-by-element.
+func AssertEqualSlices[T comparable](t *testing.T, got []T, want ...T) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Errorf("got len %d, want %d: %v", len(got), len(want), got)
+		return
 	}
-	return m
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("at index %d: got %v, want %v", i, got[i], want[i])
+		}
+	}
 }
 
 // AssertStrings compares two string slices element-by-element.
+// It provides nicer %q formatting for string values.
 func AssertStrings(t *testing.T, got []string, want ...string) {
 	t.Helper()
 	if len(got) != len(want) {

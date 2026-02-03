@@ -72,7 +72,7 @@ func TestStageForDeletion_FromAggregateSelection(t *testing.T) {
 	ctrl := newTestController(t, "gid1", "gid2", "gid3")
 
 	manifest := stageForDeletion(t, ctrl, stageArgs{
-		aggregates: testutil.StringSet("alice@example.com"),
+		aggregates: testutil.MakeSet("alice@example.com"),
 		view:       query.ViewSenders,
 	})
 
@@ -95,7 +95,7 @@ func TestStageForDeletion_FromMessageSelection(t *testing.T) {
 	}
 
 	manifest := stageForDeletion(t, ctrl, stageArgs{
-		selection: testutil.IDSet(10, 30),
+		selection: testutil.MakeSet[int64](10, 30),
 		view:      query.ViewSenders,
 		messages:  messages,
 	})
@@ -124,7 +124,7 @@ func TestStageForDeletion_NoSelection(t *testing.T) {
 func TestStageForDeletion_MultipleAggregates_DeterministicFilter(t *testing.T) {
 	ctrl := newTestController(t, "gid1")
 
-	agg := testutil.StringSet("charlie@example.com", "alice@example.com", "bob@example.com")
+	agg := testutil.MakeSet("charlie@example.com", "alice@example.com", "bob@example.com")
 
 	for i := 0; i < 10; i++ {
 		manifest := stageForDeletion(t, ctrl, stageArgs{aggregates: agg, view: query.ViewSenders})
@@ -158,7 +158,7 @@ func TestStageForDeletion_ViewTypes(t *testing.T) {
 			ctrl := newTestController(t, "gid1")
 
 			manifest := stageForDeletion(t, ctrl, stageArgs{
-				aggregates: testutil.StringSet(tt.key),
+				aggregates: testutil.MakeSet(tt.key),
 				view:       tt.viewType,
 			})
 			tt.check(t, manifest.Filters)
@@ -175,7 +175,7 @@ func TestStageForDeletion_AccountFilter(t *testing.T) {
 	}
 
 	manifest := stageForDeletion(t, ctrl, stageArgs{
-		aggregates: testutil.StringSet("sender@x.com"),
+		aggregates: testutil.MakeSet("sender@x.com"),
 		view:       query.ViewSenders,
 		accountID:  &accountID,
 		accounts:   accounts,
@@ -202,7 +202,7 @@ func TestStageForDeletion_DrillFilterApplied(t *testing.T) {
 	}
 
 	manifest := stageForDeletion(t, env.Ctrl, stageArgs{
-		aggregates:  testutil.StringSet("2024-01"),
+		aggregates:  testutil.MakeSet("2024-01"),
 		view:        query.ViewTime,
 		drillFilter: drillFilter,
 	})
@@ -231,7 +231,7 @@ func TestStageForDeletion_NoDrillFilter(t *testing.T) {
 	env := NewControllerTestEnv(t, engine)
 
 	stageForDeletion(t, env.Ctrl, stageArgs{
-		aggregates: testutil.StringSet("2024-01"),
+		aggregates: testutil.MakeSet("2024-01"),
 		view:       query.ViewTime,
 	})
 
