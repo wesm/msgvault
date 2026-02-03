@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/oauth2"
 )
@@ -277,12 +278,12 @@ func TestNewCallbackHandler(t *testing.T) {
 					t.Error("expected code on codeChan, got nothing")
 				}
 			} else {
-				// Ensure no unexpected code was sent
+				// Ensure no unexpected code was sent (use timeout to catch late sends)
 				select {
 				case code := <-codeChan:
 					t.Errorf("unexpected code on codeChan: %q", code)
-				default:
-					// expected: channel is empty
+				case <-time.After(10 * time.Millisecond):
+					// expected: no value arrived
 				}
 			}
 
@@ -297,12 +298,12 @@ func TestNewCallbackHandler(t *testing.T) {
 					t.Error("expected error on errChan, got nothing")
 				}
 			} else {
-				// Ensure no unexpected error was sent
+				// Ensure no unexpected error was sent (use timeout to catch late sends)
 				select {
 				case err := <-errChan:
 					t.Errorf("unexpected error on errChan: %v", err)
-				default:
-					// expected: channel is empty
+				case <-time.After(10 * time.Millisecond):
+					// expected: no value arrived
 				}
 			}
 		})
