@@ -1,6 +1,7 @@
 package query
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -411,6 +412,62 @@ func TestSQLiteEngine_Aggregate_InvalidViewType(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAggregateDeterministicOrderOnTies verifies that when aggregate values tie
+// (e.g., two labels with equal counts), results are sorted deterministically by key ASC.
+// This prevents flaky tests and non-deterministic UI ordering.
+func TestAggregateDeterministicOrderOnTies(t *testing.T) {
+	tdb := dbtest.NewTestDB(t, "../store/schema.sql")
+
+	// Create minimal test data: 1 source, 1 conversation, 2 participants
+	_, err := tdb.DB.Exec(`
+		INSERT INTO sources (id, source_type, identifier, display_name) VALUES
+			(1, 'gmail', 'test@gmail.com', 'Test Account');
+		INSERT INTO conversations (id, source_id, source_conversation_id, conversation_type, title) VALUES
+			(1, 1, 'thread1', 'email_thread', 'Test Thread');
+		INSERT INTO participants (id, email_address, display_name, domain) VALUES
+			(1, 'alice@example.com', 'Alice', 'example.com'),
+			(2, 'bob@example.com', 'Bob', 'example.com');
+	`)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Create labels with names that would sort differently than insertion order
+	// "Zebra" inserted first, "Apple" inserted second - both will have count=1
+	zebraID := tdb.AddLabel(dbtest.LabelOpts{Name: "Zebra"})
+	appleID := tdb.AddLabel(dbtest.LabelOpts{Name: "Apple"})
+
+	// Add one message with both labels
+	msgID := tdb.AddMessage(dbtest.MessageOpts{
+		Subject: "Test",
+		SentAt:  "2024-01-01 10:00:00",
+		FromID:  1,
+		ToIDs:   []int64{2},
+	})
+	tdb.AddMessageLabel(msgID, zebraID)
+	tdb.AddMessageLabel(msgID, appleID)
+
+	env := &testEnv{
+		TestDB: tdb,
+		Engine: NewSQLiteEngine(tdb.DB),
+		Ctx:    context.Background(),
+	}
+
+	// Default sort is by count DESC. Both labels have count=1, so they should
+	// be ordered by key ASC as secondary sort: Apple before Zebra.
+	opts := DefaultAggregateOptions()
+	rows, err := env.Engine.Aggregate(env.Ctx, ViewLabels, opts)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+
+	// Verify exact order: Apple (count=1) then Zebra (count=1)
+	assertAggRows(t, rows, []aggExpectation{
+		{"Apple", 1},
+		{"Zebra", 1},
+	})
 }
 
 // TestSQLiteEngine_SubAggregate_InvalidViewType verifies that invalid ViewType values
