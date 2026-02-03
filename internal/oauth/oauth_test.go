@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/oauth2"
@@ -261,7 +262,7 @@ func TestNewCallbackHandler(t *testing.T) {
 			}
 
 			body := rec.Body.String()
-			if tt.wantBodyContains != "" && !contains(body, tt.wantBodyContains) {
+			if tt.wantBodyContains != "" && !strings.Contains(body, tt.wantBodyContains) {
 				t.Errorf("body = %q, want to contain %q", body, tt.wantBodyContains)
 			}
 
@@ -275,6 +276,14 @@ func TestNewCallbackHandler(t *testing.T) {
 				default:
 					t.Error("expected code on codeChan, got nothing")
 				}
+			} else {
+				// Ensure no unexpected code was sent
+				select {
+				case code := <-codeChan:
+					t.Errorf("unexpected code on codeChan: %q", code)
+				default:
+					// expected: channel is empty
+				}
 			}
 
 			// Check for expected error
@@ -287,21 +296,15 @@ func TestNewCallbackHandler(t *testing.T) {
 				default:
 					t.Error("expected error on errChan, got nothing")
 				}
+			} else {
+				// Ensure no unexpected error was sent
+				select {
+				case err := <-errChan:
+					t.Errorf("unexpected error on errChan: %v", err)
+				default:
+					// expected: channel is empty
+				}
 			}
 		})
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && searchString(s, substr)))
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
