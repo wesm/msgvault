@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -247,6 +248,45 @@ func trashOpts(batchSize int) *ExecuteOptions {
 		Method:    MethodTrash,
 		BatchSize: batchSize,
 		Resume:    true,
+	}
+}
+
+// SimulateScopeError injects an insufficient scope error for a specific message ID.
+func (c *TestContext) SimulateScopeError(msgID string) {
+	scopeErr := fmt.Errorf("googleapi: Error 403: Insufficient Permission: ACCESS_TOKEN_SCOPE_INSUFFICIENT")
+	c.MockAPI.TrashErrors[msgID] = scopeErr
+	c.MockAPI.DeleteErrors[msgID] = scopeErr
+}
+
+// SimulateBatchScopeError sets the batch delete operation to fail with a scope error.
+func (c *TestContext) SimulateBatchScopeError() {
+	c.MockAPI.BatchDeleteError = fmt.Errorf("googleapi: Error 403: Insufficient Permission: ACCESS_TOKEN_SCOPE_INSUFFICIENT")
+}
+
+// AssertInProgressCount verifies the number of in-progress manifests.
+func (c *TestContext) AssertInProgressCount(want int) {
+	c.t.Helper()
+	inProgress, err := c.Mgr.ListInProgress()
+	if err != nil {
+		c.t.Fatalf("ListInProgress() error = %v", err)
+	}
+	if len(inProgress) != want {
+		c.t.Errorf("ListInProgress() = %d, want %d", len(inProgress), want)
+	}
+}
+
+// AssertManifestLastProcessedIndex verifies the persisted LastProcessedIndex.
+func (c *TestContext) AssertManifestLastProcessedIndex(id string, want int) {
+	c.t.Helper()
+	m, _, err := c.Mgr.GetManifest(id)
+	if err != nil {
+		c.t.Fatalf("GetManifest(%q) failed: %v", id, err)
+	}
+	if m.Execution == nil {
+		c.t.Fatalf("manifest %q has nil Execution", id)
+	}
+	if m.Execution.LastProcessedIndex != want {
+		c.t.Errorf("LastProcessedIndex = %d, want %d", m.Execution.LastProcessedIndex, want)
 	}
 }
 
@@ -668,4 +708,72 @@ func TestNullProgress_AllMethods(t *testing.T) {
 	p.OnProgress(50, 40, 10)
 	p.OnComplete(90, 10)
 	// If we get here without panic, the test passes
+}
+
+// TestExecutor_Execute_ScopeError verifies that scope errors propagate immediately
+// and checkpoint state is saved.
+func TestExecutor_Execute_ScopeError(t *testing.T) {
+	ctx := NewTestContext(t)
+	ctx.SimulateScopeError("msg1")
+
+	manifest := ctx.CreateManifest("scope error test", []string{"msg0", "msg1", "msg2"})
+
+	err := ctx.Execute(manifest.ID)
+	if err == nil {
+		t.Fatal("Execute() should return error for scope error")
+	}
+	if !strings.Contains(err.Error(), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+		t.Errorf("error should contain scope message, got: %v", err)
+	}
+
+	ctx.AssertNotCompleted()
+	ctx.AssertInProgressCount(1)
+	// msg0 succeeded, msg1 hit scope error — checkpoint should be at index 1
+	ctx.AssertManifestLastProcessedIndex(manifest.ID, 1)
+	ctx.AssertManifestExecution(manifest.ID, 1, 0)
+}
+
+// TestExecutor_ExecuteBatch_ScopeError verifies that batch scope errors propagate
+// immediately and checkpoint state is saved.
+func TestExecutor_ExecuteBatch_ScopeError(t *testing.T) {
+	ctx := NewTestContext(t)
+	ctx.SimulateBatchScopeError()
+
+	manifest := ctx.CreateManifest("batch scope error", []string{"msg0", "msg1", "msg2"})
+
+	err := ctx.ExecuteBatch(manifest.ID)
+	if err == nil {
+		t.Fatal("ExecuteBatch() should return error for scope error")
+	}
+	if !strings.Contains(err.Error(), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+		t.Errorf("error should contain scope message, got: %v", err)
+	}
+
+	ctx.AssertNotCompleted()
+	ctx.AssertInProgressCount(1)
+	ctx.AssertManifestLastProcessedIndex(manifest.ID, 0)
+}
+
+// TestExecutor_ExecuteBatch_FallbackScopeError verifies that scope errors during
+// individual delete fallback propagate with correct per-item checkpoint.
+func TestExecutor_ExecuteBatch_FallbackScopeError(t *testing.T) {
+	ctx := NewTestContext(t)
+	ctx.SimulateBatchDeleteError() // Force fallback to individual deletes
+	ctx.SimulateScopeError("msg2") // Third message hits scope error
+
+	manifest := ctx.CreateManifest("fallback scope error", []string{"msg0", "msg1", "msg2", "msg3"})
+
+	err := ctx.ExecuteBatch(manifest.ID)
+	if err == nil {
+		t.Fatal("ExecuteBatch() should return error for scope error in fallback")
+	}
+	if !strings.Contains(err.Error(), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+		t.Errorf("error should contain scope message, got: %v", err)
+	}
+
+	ctx.AssertNotCompleted()
+	ctx.AssertInProgressCount(1)
+	// msg0 and msg1 succeeded, msg2 hit scope error at index 2
+	ctx.AssertManifestLastProcessedIndex(manifest.ID, 2)
+	ctx.AssertManifestExecution(manifest.ID, 2, 0)
 }

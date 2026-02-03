@@ -362,8 +362,12 @@ func (m *Manager) CancelManifest(id string) error {
 	// Try pending first, then in_progress
 	for _, dir := range []string{m.PendingDir(), m.InProgressDir()} {
 		path := filepath.Join(dir, id+".json")
-		if err := os.Remove(path); err == nil {
+		err := os.Remove(path)
+		if err == nil {
 			return nil
+		}
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", path, err)
 		}
 	}
 	return fmt.Errorf("manifest %s not found in pending or in_progress", id)

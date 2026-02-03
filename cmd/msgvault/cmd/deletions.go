@@ -112,11 +112,13 @@ Examples:
 
 		if cancelAll {
 			count := 0
+			var listErrors []error
 			for _, listFn := range []func() ([]*deletion.Manifest, error){
 				manager.ListPending, manager.ListInProgress,
 			} {
 				manifests, err := listFn()
 				if err != nil {
+					listErrors = append(listErrors, err)
 					continue
 				}
 				for _, m := range manifests {
@@ -128,7 +130,15 @@ Examples:
 					}
 				}
 			}
+			if len(listErrors) > 0 {
+				for _, e := range listErrors {
+					fmt.Fprintf(os.Stderr, "Warning: failed to list batches: %v\n", e)
+				}
+			}
 			if count == 0 {
+				if len(listErrors) > 0 {
+					return fmt.Errorf("could not list batches to cancel")
+				}
 				fmt.Println("No pending or in-progress batches to cancel.")
 			} else {
 				fmt.Printf("Cancelled %d batch(es).\n", count)
@@ -515,7 +525,7 @@ func promptScopeEscalation(ctx context.Context, oauthMgr *oauth.Manager, account
 		} else {
 			fmt.Println("Cancelled.")
 		}
-		return fmt.Errorf("scope escalation cancelled")
+		return nil
 	}
 
 	// Delete old token and re-authorize

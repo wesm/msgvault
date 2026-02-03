@@ -366,7 +366,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 							e.logger.Warn("failed to mark message as deleted in DB", "gmail_id", gmailID, "error", markErr)
 						}
 					} else if isInsufficientScopeError(delErr) {
-						manifest.Execution.LastProcessedIndex = i
+						manifest.Execution.LastProcessedIndex = i + j
 						manifest.Execution.Succeeded = succeeded
 						manifest.Execution.Failed = failed
 						_ = manifest.Save(path)
