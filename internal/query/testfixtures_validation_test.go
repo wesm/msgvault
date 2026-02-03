@@ -67,12 +67,22 @@ func TestTestDataBuilder_ValidationFailures(t *testing.T) {
 
 func TestAddMessage_UsesFirstSource(t *testing.T) {
 	b := NewTestDataBuilder(t)
-	b.AddSource("a@test.com")
-	id := b.AddMessage(MessageOpt{Subject: "test"})
-	if id != 1 {
-		t.Errorf("expected message ID 1, got %d", id)
+	srcID := b.AddSource("a@test.com")
+	b.AddSource("b@test.com") // Add a second source to ensure first is selected
+	msgID := b.AddMessage(MessageOpt{Subject: "test"})
+	if msgID != 1 {
+		t.Errorf("expected message ID 1, got %d", msgID)
 	}
 
+	// Verify the message uses the first source ID (not the second)
+	if len(b.messages) != 1 {
+		t.Fatalf("expected 1 message in builder, got %d", len(b.messages))
+	}
+	if b.messages[0].SourceID != srcID {
+		t.Errorf("expected message to use first source ID %d, got %d", srcID, b.messages[0].SourceID)
+	}
+
+	// Also verify through the engine that the data is correctly built
 	engine := b.BuildEngine()
 	defer engine.Close()
 
