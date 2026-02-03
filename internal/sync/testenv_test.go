@@ -2,7 +2,6 @@ package sync
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -68,8 +67,8 @@ func newTestEnv(t *testing.T, opt ...*Options) *TestEnv {
 	}
 }
 
-// SetupSource creates a source and sets its sync cursor, returning the source.
-func (e *TestEnv) SetupSource(t *testing.T, historyID string) *store.Source {
+// CreateSourceWithHistory creates a source and sets its sync cursor for incremental sync tests.
+func (e *TestEnv) CreateSourceWithHistory(t *testing.T, historyID string) *store.Source {
 	t.Helper()
 	source, err := e.Store.GetOrCreateSource("gmail", e.Mock.Profile.EmailAddress)
 	if err != nil {
@@ -81,8 +80,8 @@ func (e *TestEnv) SetupSource(t *testing.T, historyID string) *store.Source {
 	return source
 }
 
-// MustCreateSource creates a source without setting a sync cursor.
-func (e *TestEnv) MustCreateSource(t *testing.T) *store.Source {
+// CreateSource creates a source without setting a sync cursor (for full sync tests).
+func (e *TestEnv) CreateSource(t *testing.T) *store.Source {
 	t.Helper()
 	source, err := e.Store.GetOrCreateSource("gmail", e.Mock.Profile.EmailAddress)
 	if err != nil {
@@ -135,20 +134,32 @@ func runIncrementalSync(t *testing.T, env *TestEnv) *gmail.SyncSummary {
 	return summary
 }
 
-// assertSummary checks common SyncSummary fields. Use -1 to skip a check.
-func assertSummary(t *testing.T, s *gmail.SyncSummary, added, errors, skipped, found int64) {
+// WantSummary specifies expected SyncSummary values. Nil fields are not checked.
+type WantSummary struct {
+	Added   *int64
+	Errors  *int64
+	Skipped *int64
+	Found   *int64
+}
+
+// intPtr returns a pointer to an int64 value for use in WantSummary.
+func intPtr(v int64) *int64 { return &v }
+
+// assertSummary checks SyncSummary fields against expected values.
+// Only non-nil fields in want are checked.
+func assertSummary(t *testing.T, s *gmail.SyncSummary, want WantSummary) {
 	t.Helper()
-	if added >= 0 && s.MessagesAdded != added {
-		t.Errorf("expected %d messages added, got %d", added, s.MessagesAdded)
+	if want.Added != nil && s.MessagesAdded != *want.Added {
+		t.Errorf("expected %d messages added, got %d", *want.Added, s.MessagesAdded)
 	}
-	if errors >= 0 && s.Errors != errors {
-		t.Errorf("expected %d errors, got %d", errors, s.Errors)
+	if want.Errors != nil && s.Errors != *want.Errors {
+		t.Errorf("expected %d errors, got %d", *want.Errors, s.Errors)
 	}
-	if skipped >= 0 && s.MessagesSkipped != skipped {
-		t.Errorf("expected %d messages skipped, got %d", skipped, s.MessagesSkipped)
+	if want.Skipped != nil && s.MessagesSkipped != *want.Skipped {
+		t.Errorf("expected %d messages skipped, got %d", *want.Skipped, s.MessagesSkipped)
 	}
-	if found >= 0 && s.MessagesFound != found {
-		t.Errorf("expected %d messages found, got %d", found, s.MessagesFound)
+	if want.Found != nil && s.MessagesFound != *want.Found {
+		t.Errorf("expected %d messages found, got %d", *want.Found, s.MessagesFound)
 	}
 }
 
@@ -214,14 +225,9 @@ func withAttachmentsDir(t *testing.T, env *TestEnv) string {
 // assertRecipientCount checks the count of recipients of a given type for a message.
 func assertRecipientCount(t *testing.T, st *store.Store, sourceMessageID, recipType string, want int) {
 	t.Helper()
-	var count int
-	err := st.DB().QueryRow(st.Rebind(`
-		SELECT COUNT(*) FROM message_recipients mr
-		JOIN messages m ON mr.message_id = m.id
-		WHERE m.source_message_id = ? AND mr.recipient_type = ?
-	`), sourceMessageID, recipType).Scan(&count)
+	count, err := st.InspectRecipientCount(sourceMessageID, recipType)
 	if err != nil {
-		t.Fatalf("query %s recipient count for %s: %v", recipType, sourceMessageID, err)
+		t.Fatalf("InspectRecipientCount(%s, %s): %v", sourceMessageID, recipType, err)
 	}
 	if count != want {
 		t.Errorf("expected %d %s recipients for %s, got %d", want, recipType, sourceMessageID, count)
@@ -231,15 +237,9 @@ func assertRecipientCount(t *testing.T, st *store.Store, sourceMessageID, recipT
 // assertDisplayName checks the display name for a recipient of a message.
 func assertDisplayName(t *testing.T, st *store.Store, sourceMessageID, recipType, email, want string) {
 	t.Helper()
-	var displayName string
-	err := st.DB().QueryRow(st.Rebind(`
-		SELECT mr.display_name FROM message_recipients mr
-		JOIN messages m ON mr.message_id = m.id
-		JOIN participants p ON mr.participant_id = p.id
-		WHERE m.source_message_id = ? AND mr.recipient_type = ? AND p.email_address = ?
-	`), sourceMessageID, recipType, email).Scan(&displayName)
+	displayName, err := st.InspectDisplayName(sourceMessageID, recipType, email)
 	if err != nil {
-		t.Fatalf("query display name for %s/%s/%s: %v", sourceMessageID, recipType, email, err)
+		t.Fatalf("InspectDisplayName(%s, %s, %s): %v", sourceMessageID, recipType, email, err)
 	}
 	if displayName != want {
 		t.Errorf("expected display name %q for %s/%s/%s, got %q", want, sourceMessageID, recipType, email, displayName)
@@ -249,17 +249,14 @@ func assertDisplayName(t *testing.T, st *store.Store, sourceMessageID, recipType
 // assertDeletedFromSource checks whether a message has deleted_from_source_at set.
 func assertDeletedFromSource(t *testing.T, st *store.Store, sourceMessageID string, wantDeleted bool) {
 	t.Helper()
-	var deletedAt sql.NullTime
-	err := st.DB().QueryRow(st.Rebind(
-		"SELECT deleted_from_source_at FROM messages WHERE source_message_id = ?"),
-		sourceMessageID).Scan(&deletedAt)
+	deleted, err := st.InspectDeletedFromSource(sourceMessageID)
 	if err != nil {
-		t.Fatalf("query deleted_from_source_at for %s: %v", sourceMessageID, err)
+		t.Fatalf("InspectDeletedFromSource(%s): %v", sourceMessageID, err)
 	}
-	if wantDeleted && !deletedAt.Valid {
+	if wantDeleted && !deleted {
 		t.Errorf("%s should have deleted_from_source_at set", sourceMessageID)
 	}
-	if !wantDeleted && deletedAt.Valid {
+	if !wantDeleted && deleted {
 		t.Errorf("%s should NOT have deleted_from_source_at set", sourceMessageID)
 	}
 }
@@ -267,13 +264,9 @@ func assertDeletedFromSource(t *testing.T, st *store.Store, sourceMessageID stri
 // assertBodyContains checks that a message's body_text contains the given substring.
 func assertBodyContains(t *testing.T, st *store.Store, sourceMessageID, substr string) {
 	t.Helper()
-	var bodyText string
-	err := st.DB().QueryRow(st.Rebind(`
-		SELECT mb.body_text FROM message_bodies mb
-		JOIN messages m ON m.id = mb.message_id
-		WHERE m.source_message_id = ?`), sourceMessageID).Scan(&bodyText)
+	bodyText, err := st.InspectBodyText(sourceMessageID)
 	if err != nil {
-		t.Fatalf("query body for %s: %v", sourceMessageID, err)
+		t.Fatalf("InspectBodyText(%s): %v", sourceMessageID, err)
 	}
 	if !strings.Contains(bodyText, substr) {
 		t.Errorf("expected body of %s to contain %q, got: %s", sourceMessageID, substr, bodyText)
@@ -283,15 +276,11 @@ func assertBodyContains(t *testing.T, st *store.Store, sourceMessageID, substr s
 // assertRawDataExists checks that raw MIME data exists for a message.
 func assertRawDataExists(t *testing.T, st *store.Store, sourceMessageID string) {
 	t.Helper()
-	var rawData []byte
-	err := st.DB().QueryRow(st.Rebind(`
-		SELECT raw_data FROM message_raw mr
-		JOIN messages m ON m.id = mr.message_id
-		WHERE m.source_message_id = ?`), sourceMessageID).Scan(&rawData)
+	exists, err := st.InspectRawDataExists(sourceMessageID)
 	if err != nil {
-		t.Fatalf("query raw data for %s: %v", sourceMessageID, err)
+		t.Fatalf("InspectRawDataExists(%s): %v", sourceMessageID, err)
 	}
-	if len(rawData) == 0 {
+	if !exists {
 		t.Errorf("expected raw MIME data to be preserved for %s", sourceMessageID)
 	}
 }
@@ -299,14 +288,9 @@ func assertRawDataExists(t *testing.T, st *store.Store, sourceMessageID string) 
 // assertThreadSourceID checks the source_conversation_id for a message's thread.
 func assertThreadSourceID(t *testing.T, st *store.Store, sourceMessageID, wantThreadID string) {
 	t.Helper()
-	var threadSourceID string
-	err := st.DB().QueryRow(st.Rebind(`
-		SELECT c.source_conversation_id FROM conversations c
-		JOIN messages m ON m.conversation_id = c.id
-		WHERE m.source_message_id = ?
-	`), sourceMessageID).Scan(&threadSourceID)
+	threadSourceID, err := st.InspectThreadSourceID(sourceMessageID)
 	if err != nil {
-		t.Fatalf("query thread for %s: %v", sourceMessageID, err)
+		t.Fatalf("InspectThreadSourceID(%s): %v", sourceMessageID, err)
 	}
 	if threadSourceID != wantThreadID {
 		t.Errorf("expected thread source_conversation_id = %q for %s, got %q", wantThreadID, sourceMessageID, threadSourceID)
@@ -316,12 +300,9 @@ func assertThreadSourceID(t *testing.T, st *store.Store, sourceMessageID, wantTh
 // assertDateFallback checks that sent_at equals internal_date and contains expected substrings.
 func assertDateFallback(t *testing.T, st *store.Store, sourceMessageID, wantDatePart, wantTimePart string) {
 	t.Helper()
-	var sentAt, internalDate string
-	err := st.DB().QueryRow(st.Rebind(
-		"SELECT sent_at, internal_date FROM messages WHERE source_message_id = ?"),
-		sourceMessageID).Scan(&sentAt, &internalDate)
+	sentAt, internalDate, err := st.InspectMessageDates(sourceMessageID)
 	if err != nil {
-		t.Fatalf("query dates for %s: %v", sourceMessageID, err)
+		t.Fatalf("InspectMessageDates(%s): %v", sourceMessageID, err)
 	}
 	if sentAt == "" {
 		t.Errorf("%s: sent_at should not be empty", sourceMessageID)

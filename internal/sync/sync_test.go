@@ -18,7 +18,7 @@ func TestFullSync(t *testing.T) {
 	env.Mock.Messages["msg3"].LabelIDs = []string{"SENT"}
 
 	summary := runFullSync(t, env)
-	assertSummary(t, summary, 3, 0, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(3), Errors: intPtr(0)})
 	if summary.FinalHistoryID != 12345 {
 		t.Errorf("expected history ID 12345, got %d", summary.FinalHistoryID)
 	}
@@ -35,7 +35,7 @@ func TestFullSyncResume(t *testing.T) {
 	seedPagedMessages(env, 4, 2, "msg")
 
 	summary1 := runFullSync(t, env)
-	assertSummary(t, summary1, 4, -1, -1, -1)
+	assertSummary(t, summary1, WantSummary{Added: intPtr(4)})
 
 	// Second sync should skip already-synced messages
 	env.Mock.Reset()
@@ -50,7 +50,7 @@ func TestFullSyncResume(t *testing.T) {
 	env.Mock.AddMessage("msg4", testMIME(), []string{"INBOX"})
 
 	summary2 := runFullSync(t, env)
-	assertSummary(t, summary2, 0, -1, -1, -1)
+	assertSummary(t, summary2, WantSummary{Added: intPtr(0)})
 }
 
 func TestFullSyncWithErrors(t *testing.T) {
@@ -61,7 +61,7 @@ func TestFullSyncWithErrors(t *testing.T) {
 	env.Mock.GetMessageError["msg2"] = &gmail.NotFoundError{Path: "/messages/msg2"}
 
 	summary := runFullSync(t, env)
-	assertSummary(t, summary, 2, 1, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(2), Errors: intPtr(1)})
 }
 
 func TestMIMEParsing(t *testing.T) {
@@ -89,7 +89,7 @@ func TestMIMEParsing(t *testing.T) {
 	})
 
 	summary := runFullSync(t, env)
-	assertSummary(t, summary, 1, -1, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(1)})
 	assertAttachmentCount(t, env.Store, 1)
 }
 
@@ -99,7 +99,7 @@ func TestFullSyncEmptyInbox(t *testing.T) {
 	env.Mock.Profile.HistoryID = 12345
 
 	summary := runFullSync(t, env)
-	assertSummary(t, summary, 0, -1, -1, 0)
+	assertSummary(t, summary, WantSummary{Added: intPtr(0), Found: intPtr(0)})
 }
 
 func TestFullSyncProfileError(t *testing.T) {
@@ -121,7 +121,7 @@ func TestFullSyncAllDuplicates(t *testing.T) {
 
 	// Second sync with same messages - all should be skipped
 	summary := runFullSync(t, env)
-	assertSummary(t, summary, 0, -1, 3, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(0), Skipped: intPtr(3)})
 }
 
 func TestFullSyncNoResume(t *testing.T) {
@@ -136,7 +136,7 @@ func TestFullSyncNoResume(t *testing.T) {
 	if summary.WasResumed {
 		t.Error("expected WasResumed to be false with NoResume option")
 	}
-	assertSummary(t, summary, 2, -1, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(2)})
 }
 
 func TestFullSyncAllErrors(t *testing.T) {
@@ -148,7 +148,7 @@ func TestFullSyncAllErrors(t *testing.T) {
 	env.Mock.GetMessageError["msg3"] = &gmail.NotFoundError{Path: "/messages/msg3"}
 
 	summary := runFullSync(t, env)
-	assertSummary(t, summary, 0, 3, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(0), Errors: intPtr(3)})
 }
 
 func TestFullSyncWithQuery(t *testing.T) {
@@ -164,7 +164,7 @@ func TestFullSyncWithQuery(t *testing.T) {
 	if env.Mock.LastQuery != "before:2024/06/01" {
 		t.Errorf("expected query %q, got %q", "before:2024/06/01", env.Mock.LastQuery)
 	}
-	assertSummary(t, summary, 2, -1, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(2)})
 }
 
 func TestFullSyncPagination(t *testing.T) {
@@ -173,7 +173,7 @@ func TestFullSyncPagination(t *testing.T) {
 	seedPagedMessages(env, 6, 2, "msg")
 
 	summary := runFullSync(t, env)
-	assertSummary(t, summary, 6, -1, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(6)})
 	assertListMessagesCalls(t, env, 3)
 }
 
@@ -207,7 +207,7 @@ func TestIncrementalSyncNoSource(t *testing.T) {
 func TestIncrementalSyncNoHistoryID(t *testing.T) {
 	env := newTestEnv(t)
 
-	env.MustCreateSource(t)
+	env.CreateSource(t)
 
 	_, err := env.Syncer.Incremental(env.Context, testEmail)
 	if err == nil {
@@ -217,18 +217,18 @@ func TestIncrementalSyncNoHistoryID(t *testing.T) {
 
 func TestIncrementalSyncAlreadyUpToDate(t *testing.T) {
 	env := newTestEnv(t)
-	env.SetupSource(t, "12345")
+	env.CreateSourceWithHistory(t, "12345")
 
 	env.Mock.Profile.MessagesTotal = 10
 	env.Mock.Profile.HistoryID = 12345 // Same as cursor
 
 	summary := runIncrementalSync(t, env)
-	assertSummary(t, summary, 0, -1, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(0)})
 }
 
 func TestIncrementalSyncWithChanges(t *testing.T) {
 	env := newTestEnv(t)
-	env.SetupSource(t, "12340")
+	env.CreateSourceWithHistory(t, "12340")
 
 	env.Mock.Profile.MessagesTotal = 10
 	env.Mock.Profile.HistoryID = 12350
@@ -241,7 +241,7 @@ func TestIncrementalSyncWithChanges(t *testing.T) {
 	)
 
 	summary := runIncrementalSync(t, env)
-	assertSummary(t, summary, 2, -1, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(2)})
 }
 
 func TestIncrementalSyncWithDeletions(t *testing.T) {
@@ -254,7 +254,7 @@ func TestIncrementalSyncWithDeletions(t *testing.T) {
 	env.SetHistory(12350, historyDeleted("msg1"))
 
 	summary := runIncrementalSync(t, env)
-	assertSummary(t, summary, -1, -1, -1, 1)
+	assertSummary(t, summary, WantSummary{Found: intPtr(1)})
 
 	// Verify deletion was persisted
 	assertDeletedFromSource(t, env.Store, "msg1", true)
@@ -263,7 +263,7 @@ func TestIncrementalSyncWithDeletions(t *testing.T) {
 
 func TestIncrementalSyncHistoryExpired(t *testing.T) {
 	env := newTestEnv(t)
-	env.SetupSource(t, "1000")
+	env.CreateSourceWithHistory(t, "1000")
 
 	env.Mock.Profile.MessagesTotal = 10
 	env.Mock.Profile.HistoryID = 12350
@@ -277,7 +277,7 @@ func TestIncrementalSyncHistoryExpired(t *testing.T) {
 
 func TestIncrementalSyncProfileError(t *testing.T) {
 	env := newTestEnv(t)
-	env.SetupSource(t, "12345")
+	env.CreateSourceWithHistory(t, "12345")
 	env.Mock.ProfileError = fmt.Errorf("auth failed")
 
 	_, err := env.Syncer.Incremental(env.Context, testEmail)
@@ -299,7 +299,7 @@ func TestIncrementalSyncWithLabelAdded(t *testing.T) {
 	env.Mock.Messages["msg1"].LabelIDs = []string{"INBOX", "STARRED"}
 
 	summary := runIncrementalSync(t, env)
-	assertSummary(t, summary, -1, -1, -1, 1)
+	assertSummary(t, summary, WantSummary{Found: intPtr(1)})
 }
 
 func TestIncrementalSyncWithLabelRemoved(t *testing.T) {
@@ -315,12 +315,12 @@ func TestIncrementalSyncWithLabelRemoved(t *testing.T) {
 	env.Mock.Messages["msg1"].LabelIDs = []string{"INBOX"}
 
 	summary := runIncrementalSync(t, env)
-	assertSummary(t, summary, -1, -1, -1, 1)
+	assertSummary(t, summary, WantSummary{Found: intPtr(1)})
 }
 
 func TestIncrementalSyncLabelAddedToNewMessage(t *testing.T) {
 	env := newTestEnv(t)
-	source := env.SetupSource(t, "12340")
+	source := env.CreateSourceWithHistory(t, "12340")
 	if _, err := env.Store.EnsureLabel(source.ID, "INBOX", "Inbox", "system"); err != nil {
 		t.Fatalf("EnsureLabel INBOX: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestIncrementalSyncLabelAddedToNewMessage(t *testing.T) {
 
 func TestIncrementalSyncLabelRemovedFromMissingMessage(t *testing.T) {
 	env := newTestEnv(t)
-	env.SetupSource(t, "12340")
+	env.CreateSourceWithHistory(t, "12340")
 
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12350
@@ -352,7 +352,7 @@ func TestIncrementalSyncLabelRemovedFromMissingMessage(t *testing.T) {
 	env.SetHistory(12350, historyLabelRemoved("unknown-msg", "STARRED"))
 
 	summary := runIncrementalSync(t, env)
-	assertSummary(t, summary, 0, -1, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(0)})
 }
 
 func TestFullSyncWithAttachment(t *testing.T) {
@@ -364,7 +364,7 @@ func TestFullSyncWithAttachment(t *testing.T) {
 	attachDir := withAttachmentsDir(t, env)
 
 	summary := runFullSync(t, env)
-	assertSummary(t, summary, 1, -1, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(1)})
 
 	if _, err := os.Stat(attachDir); os.IsNotExist(err) {
 		t.Error("attachments directory should have been created")
@@ -454,7 +454,7 @@ func TestFullSync_MessageVariations(t *testing.T) {
 			env.Mock.Messages["msg"].Raw = tt.mime()
 
 			summary := runFullSync(t, env)
-			assertSummary(t, summary, 1, 0, -1, -1)
+			assertSummary(t, summary, WantSummary{Added: intPtr(1), Errors: intPtr(0)})
 			assertMessageCount(t, env.Store, 1)
 
 			if tt.check != nil {
@@ -479,7 +479,7 @@ func TestFullSyncWithMIMEParseError(t *testing.T) {
 	}
 
 	summary := runFullSync(t, env)
-	assertSummary(t, summary, 2, 0, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(2), Errors: intPtr(0)})
 
 	// Verify the bad message was stored with placeholder content
 	assertBodyContains(t, env.Store, "msg-bad", "MIME parsing failed")
@@ -495,12 +495,12 @@ func TestFullSyncMessageFetchError(t *testing.T) {
 	env.Mock.MessagePages = [][]string{{"msg-good", "msg-missing"}}
 
 	summary := runFullSync(t, env)
-	assertSummary(t, summary, 1, -1, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(1)})
 }
 
 func TestIncrementalSyncLabelsError(t *testing.T) {
 	env := newTestEnv(t)
-	env.SetupSource(t, "12340")
+	env.CreateSourceWithHistory(t, "12340")
 
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12350
@@ -517,7 +517,7 @@ func TestFullSyncResumeWithCursor(t *testing.T) {
 	env.Mock.Profile.HistoryID = 12345
 	seedPagedMessages(env, 4, 2, "msg")
 
-	source := env.MustCreateSource(t)
+	source := env.CreateSource(t)
 
 	// Process just page 1
 	env.Mock.MessagePages = [][]string{{"msg1", "msg2"}}
@@ -553,7 +553,7 @@ func TestFullSyncResumeWithCursor(t *testing.T) {
 	if summary.ResumedFromToken != "page_1" {
 		t.Errorf("expected ResumedFromToken = 'page_1', got %q", summary.ResumedFromToken)
 	}
-	assertSummary(t, summary, 4, -1, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(4)})
 
 	assertListMessagesCalls(t, env, 1)
 	assertMessageCount(t, env.Store, 4)
@@ -599,7 +599,7 @@ func TestFullSyncEmptyRawMIME(t *testing.T) {
 	}
 
 	summary := runFullSync(t, env)
-	assertSummary(t, summary, 1, 1, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(1), Errors: intPtr(1)})
 }
 
 func TestFullSyncEmptyThreadID(t *testing.T) {
@@ -618,7 +618,7 @@ func TestFullSyncEmptyThreadID(t *testing.T) {
 	env.Mock.MessagePages = [][]string{{"msg-no-thread"}}
 
 	summary := runFullSync(t, env)
-	assertSummary(t, summary, 1, 0, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(1), Errors: intPtr(0)})
 
 	assertThreadSourceID(t, env.Store, "msg-no-thread", "msg-no-thread")
 }
@@ -641,7 +641,7 @@ func TestFullSyncListEmptyThreadIDRawPresent(t *testing.T) {
 	env.Mock.MessagePages = [][]string{{"msg-list-empty"}}
 
 	summary := runFullSync(t, env)
-	assertSummary(t, summary, 1, 0, -1, -1)
+	assertSummary(t, summary, WantSummary{Added: intPtr(1), Errors: intPtr(0)})
 
 	assertThreadSourceID(t, env.Store, "msg-list-empty", "actual-thread-from-raw")
 }
