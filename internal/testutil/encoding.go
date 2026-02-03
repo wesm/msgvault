@@ -109,10 +109,10 @@ func cloneBytes(b []byte) []byte {
 // reflection. This is intentional. Reflection-based "automatic" copying:
 // - Adds complexity (handling unexported fields, nil slices, etc.)
 // - Requires extensive test coverage for the reflection code itself
-// - Solves a problem that doesn't exist (forgetting a field is caught by the compiler)
+// - Is not worth it for a test helper with infrequent field additions
 //
 // If you add a new field to EncodedSamplesT, add a corresponding line here.
-// The compiler will remind you if you forget (unkeyed struct literal).
+// TestEncodedSamplesNonEmpty will catch any missing []byte fields.
 func EncodedSamples() EncodedSamplesT {
 	return EncodedSamplesT{
 		ShiftJIS_Konnichiwa:     cloneBytes(encodedSamples.ShiftJIS_Konnichiwa),
