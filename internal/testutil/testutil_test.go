@@ -111,3 +111,81 @@ func TestWriteFileWithValidPaths(t *testing.T) {
 		})
 	}
 }
+
+func TestAssertStringSet(t *testing.T) {
+	tests := []struct {
+		name       string
+		got        []string
+		want       []string
+		shouldFail bool
+	}{
+		{
+			name:       "exact match",
+			got:        []string{"a", "b", "c"},
+			want:       []string{"a", "b", "c"},
+			shouldFail: false,
+		},
+		{
+			name:       "different order",
+			got:        []string{"c", "a", "b"},
+			want:       []string{"a", "b", "c"},
+			shouldFail: false,
+		},
+		{
+			name:       "duplicates match",
+			got:        []string{"a", "a"},
+			want:       []string{"a", "a"},
+			shouldFail: false,
+		},
+		{
+			name:       "duplicates mismatch different elements",
+			got:        []string{"a", "a"},
+			want:       []string{"a", "b"},
+			shouldFail: true,
+		},
+		{
+			name:       "duplicates mismatch different counts",
+			got:        []string{"a", "a", "b"},
+			want:       []string{"a", "b", "b"},
+			shouldFail: true,
+		},
+		{
+			name:       "empty slices match",
+			got:        []string{},
+			want:       []string{},
+			shouldFail: false,
+		},
+		{
+			name:       "length mismatch",
+			got:        []string{"a"},
+			want:       []string{"a", "b"},
+			shouldFail: true,
+		},
+		{
+			name:       "multiple duplicates match",
+			got:        []string{"a", "b", "a", "b", "c"},
+			want:       []string{"b", "a", "c", "a", "b"},
+			shouldFail: false,
+		},
+		{
+			name:       "unexpected element",
+			got:        []string{"a", "b", "c"},
+			want:       []string{"a", "b", "d"},
+			shouldFail: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockT := &testing.T{}
+			AssertStringSet(mockT, tt.got, tt.want...)
+			if mockT.Failed() != tt.shouldFail {
+				if tt.shouldFail {
+					t.Errorf("expected AssertStringSet to fail for got=%v, want=%v", tt.got, tt.want)
+				} else {
+					t.Errorf("expected AssertStringSet to pass for got=%v, want=%v", tt.got, tt.want)
+				}
+			}
+		})
+	}
+}
