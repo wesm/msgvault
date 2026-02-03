@@ -7,35 +7,56 @@ import (
 )
 
 const (
-	dbTimeLayout = "2006-01-02 15:04:05"
-
 	SyncStatusRunning   = "running"
 	SyncStatusCompleted = "completed"
 	SyncStatusFailed    = "failed"
 )
+
+// dbTimeLayouts lists formats used by SQLite/go-sqlite3 for timestamp storage.
+// go-sqlite3 may return RFC3339 for DATETIME columns on file-based databases,
+// while datetime('now') returns the space-separated format.
+var dbTimeLayouts = []string{
+	"2006-01-02 15:04:05",                 // SQLite datetime('now') format
+	time.RFC3339,                          // go-sqlite3 DATETIME column format
+	"2006-01-02T15:04:05Z",                // RFC3339 without timezone offset
+	"2006-01-02T15:04:05.999999999Z07:00", // RFC3339Nano
+}
 
 // scanner is satisfied by both *sql.Row and *sql.Rows.
 type scanner interface {
 	Scan(dest ...interface{}) error
 }
 
-func parseNullTime(ns sql.NullString) sql.NullTime {
-	if !ns.Valid {
-		return sql.NullTime{}
+// parseDBTime attempts to parse a timestamp string using known SQLite/go-sqlite3 formats.
+func parseDBTime(s string) (time.Time, error) {
+	for _, layout := range dbTimeLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
 	}
-	t, err := time.Parse(dbTimeLayout, ns.String)
-	if err != nil {
-		return sql.NullTime{}
-	}
-	return sql.NullTime{Time: t, Valid: true}
+	return time.Time{}, fmt.Errorf("unrecognized timestamp format %q", s)
 }
 
-func parseTime(ns sql.NullString) time.Time {
+func parseNullTime(ns sql.NullString) (sql.NullTime, error) {
 	if !ns.Valid {
-		return time.Time{}
+		return sql.NullTime{}, nil
 	}
-	t, _ := time.Parse(dbTimeLayout, ns.String)
-	return t
+	t, err := parseDBTime(ns.String)
+	if err != nil {
+		return sql.NullTime{}, err
+	}
+	return sql.NullTime{Time: t, Valid: true}, nil
+}
+
+func parseTime(ns sql.NullString, field string) (time.Time, error) {
+	if !ns.Valid {
+		return time.Time{}, nil
+	}
+	t, err := parseDBTime(ns.String)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%s: %w", field, err)
+	}
+	return t, nil
 }
 
 func scanSource(sc scanner) (*Source, error) {
@@ -50,9 +71,18 @@ func scanSource(sc scanner) (*Source, error) {
 		return nil, err
 	}
 
-	source.LastSyncAt = parseNullTime(lastSyncAt)
-	source.CreatedAt = parseTime(createdAt)
-	source.UpdatedAt = parseTime(updatedAt)
+	source.LastSyncAt, err = parseNullTime(lastSyncAt)
+	if err != nil {
+		return nil, fmt.Errorf("source %d: last_sync_at: %w", source.ID, err)
+	}
+	source.CreatedAt, err = parseTime(createdAt, "created_at")
+	if err != nil {
+		return nil, fmt.Errorf("source %d: %w", source.ID, err)
+	}
+	source.UpdatedAt, err = parseTime(updatedAt, "updated_at")
+	if err != nil {
+		return nil, fmt.Errorf("source %d: %w", source.ID, err)
+	}
 
 	return &source, nil
 }
@@ -71,8 +101,14 @@ func scanSyncRun(sc scanner) (*SyncRun, error) {
 		return nil, err
 	}
 
-	run.StartedAt, _ = time.Parse(dbTimeLayout, startedAt)
-	run.CompletedAt = parseNullTime(completedAt)
+	run.StartedAt, err = parseDBTime(startedAt)
+	if err != nil {
+		return nil, fmt.Errorf("sync_run %d: parse started_at %q: %w", run.ID, startedAt, err)
+	}
+	run.CompletedAt, err = parseNullTime(completedAt)
+	if err != nil {
+		return nil, fmt.Errorf("sync_run %d: completed_at: %w", run.ID, err)
+	}
 
 	return &run, nil
 }
