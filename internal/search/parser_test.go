@@ -191,14 +191,41 @@ func TestParse(t *testing.T) {
 }
 
 func TestParse_RelativeDates(t *testing.T) {
-	q := Parse("newer_than:7d")
-	expected := time.Now().UTC().AddDate(0, 0, -7)
-	if q.AfterDate == nil {
-		t.Fatal("AfterDate: expected not nil")
+	fixedNow := time.Date(2025, 6, 15, 0, 0, 0, 0, time.UTC)
+	p := &Parser{Now: func() time.Time { return fixedNow }}
+
+	tests := []struct {
+		name  string
+		query string
+		want  Query
+	}{
+		{
+			name:  "newer_than days",
+			query: "newer_than:7d",
+			want:  Query{AfterDate: ptr.Time(ptr.Date(2025, 6, 8))},
+		},
+		{
+			name:  "older_than weeks",
+			query: "older_than:2w",
+			want:  Query{BeforeDate: ptr.Time(ptr.Date(2025, 6, 1))},
+		},
+		{
+			name:  "newer_than months",
+			query: "newer_than:1m",
+			want:  Query{AfterDate: ptr.Time(ptr.Date(2025, 5, 15))},
+		},
+		{
+			name:  "older_than years",
+			query: "older_than:1y",
+			want:  Query{BeforeDate: ptr.Time(ptr.Date(2024, 6, 15))},
+		},
 	}
-	diff := q.AfterDate.Sub(expected)
-	if diff < -time.Second || diff > time.Second {
-		t.Errorf("AfterDate: got %v, expected within 1s of %v", *q.AfterDate, expected)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := p.Parse(tt.query)
+			assertQueryEqual(t, *got, tt.want)
+		})
 	}
 }
 
