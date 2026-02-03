@@ -245,6 +245,66 @@ func (s *Store) UpdateSourceSyncCursor(sourceID int64, cursor string) error {
 	return err
 }
 
+// ListSources returns all sources, optionally filtered by source type.
+// Pass an empty string to return all sources.
+func (s *Store) ListSources(sourceType string) ([]*Source, error) {
+	var rows *sql.Rows
+	var err error
+
+	if sourceType != "" {
+		rows, err = s.db.Query(`
+			SELECT id, source_type, identifier, display_name, google_user_id,
+			       last_sync_at, sync_cursor, created_at, updated_at
+			FROM sources
+			WHERE source_type = ?
+			ORDER BY identifier
+		`, sourceType)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, source_type, identifier, display_name, google_user_id,
+			       last_sync_at, sync_cursor, created_at, updated_at
+			FROM sources
+			ORDER BY identifier
+		`)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list sources: %w", err)
+	}
+	defer rows.Close()
+
+	var sources []*Source
+	for rows.Next() {
+		var source Source
+		var lastSyncAt, createdAt, updatedAt sql.NullString
+
+		err := rows.Scan(
+			&source.ID, &source.SourceType, &source.Identifier, &source.DisplayName,
+			&source.GoogleUserID, &lastSyncAt, &source.SyncCursor, &createdAt, &updatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan source: %w", err)
+		}
+
+		if lastSyncAt.Valid {
+			t, _ := time.Parse("2006-01-02 15:04:05", lastSyncAt.String)
+			source.LastSyncAt = sql.NullTime{Time: t, Valid: true}
+		}
+		if createdAt.Valid {
+			source.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt.String)
+		}
+		if updatedAt.Valid {
+			source.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt.String)
+		}
+
+		sources = append(sources, &source)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sources: %w", err)
+	}
+
+	return sources, nil
+}
+
 // GetSourceByIdentifier returns a source by its identifier (email address).
 func (s *Store) GetSourceByIdentifier(identifier string) (*Source, error) {
 	row := s.db.QueryRow(`

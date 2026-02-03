@@ -24,26 +24,27 @@ var (
 )
 
 var syncFullCmd = &cobra.Command{
-	Use:   "sync-full <email>",
-	Short: "Perform a full sync of a Gmail account",
+	Use:   "sync-full [email]",
+	Short: "Perform a full sync of Gmail accounts",
 	Long: `Perform a full synchronization of a Gmail account.
 
 Downloads all messages matching the query (or all messages if no query).
 Supports resumption from interruption - just run again to continue.
+
+If no email is specified, syncs all configured accounts sequentially.
 
 Date filters:
   --after 2024-01-01     Only messages on or after this date
   --before 2024-12-31    Only messages before this date
 
 Examples:
+  msgvault sync-full                             # Sync all accounts
   msgvault sync-full you@gmail.com
   msgvault sync-full you@gmail.com --after 2024-01-01
   msgvault sync-full you@gmail.com --query "from:someone@example.com"
-  msgvault sync-full you@gmail.com --noresume  # Force fresh sync`,
-	Args: cobra.ExactArgs(1),
+  msgvault sync-full you@gmail.com --noresume    # Force fresh sync`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		email := args[0]
-
 		// Validate config
 		if cfg.OAuth.ClientSecrets == "" {
 			return errOAuthNotConfigured()
@@ -61,10 +62,34 @@ Examples:
 			return fmt.Errorf("init schema: %w", err)
 		}
 
-		// Create OAuth manager and get token source
+		// Create OAuth manager
 		oauthMgr, err := oauth.NewManager(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger)
 		if err != nil {
 			return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
+		}
+
+		// Determine which accounts to sync
+		var emails []string
+		if len(args) == 1 {
+			emails = []string{args[0]}
+		} else {
+			sources, err := s.ListSources("gmail")
+			if err != nil {
+				return fmt.Errorf("list sources: %w", err)
+			}
+			if len(sources) == 0 {
+				return fmt.Errorf("no accounts configured - run 'add-account' first")
+			}
+			for _, src := range sources {
+				if !oauthMgr.HasToken(src.Identifier) {
+					fmt.Printf("Skipping %s (no OAuth token - run 'add-account' first)\n", src.Identifier)
+					continue
+				}
+				emails = append(emails, src.Identifier)
+			}
+			if len(emails) == 0 {
+				return fmt.Errorf("no accounts have valid OAuth tokens - run 'add-account' first")
+			}
 		}
 
 		// Set up context with cancellation
@@ -80,80 +105,104 @@ Examples:
 			cancel()
 		}()
 
-		tokenSource, err := oauthMgr.TokenSource(ctx, email)
-		if err != nil {
-			return fmt.Errorf("get token source: %w (run 'add-account' first)", err)
-		}
-
-		// Create Gmail client
-		rateLimiter := gmail.NewRateLimiter(float64(cfg.Sync.RateLimitQPS))
-		client := gmail.NewClient(tokenSource,
-			gmail.WithLogger(logger),
-			gmail.WithRateLimiter(rateLimiter),
-		)
-		defer client.Close()
-
-		// Build query from flags
-		query := buildSyncQuery()
-
-		// Set up sync options
-		opts := sync.DefaultOptions()
-		opts.Query = query
-		opts.NoResume = syncNoResume
-		opts.AttachmentsDir = cfg.AttachmentsDir()
-
-		// Create syncer with progress reporter
-		syncer := sync.New(client, s, opts).
-			WithLogger(logger).
-			WithProgress(&CLIProgress{})
-
-		// Run sync
-		startTime := time.Now()
-		fmt.Printf("Starting full sync for %s\n", email)
-		if query != "" {
-			fmt.Printf("Query: %s\n", query)
-		}
-		fmt.Println()
-
-		summary, err := syncer.Full(ctx, email)
-		if err != nil {
+		var syncErrors []string
+		for _, email := range emails {
 			if ctx.Err() != nil {
-				// Interrupted - this is OK, checkpoint was saved
-				fmt.Println("\nSync interrupted. Run again to resume.")
-				return nil
+				break
 			}
-			return fmt.Errorf("sync failed: %w", err)
+
+			if err := runFullSync(ctx, s, oauthMgr, email); err != nil {
+				syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", email, err))
+				continue
+			}
 		}
 
-		// Print summary
-		fmt.Println()
-		fmt.Println("Sync complete!")
-		fmt.Printf("  Duration:      %s\n", summary.Duration.Round(time.Second))
-		fmt.Printf("  Messages:      %d found, %d added, %d skipped\n",
-			summary.MessagesFound, summary.MessagesAdded, summary.MessagesSkipped)
-		fmt.Printf("  Downloaded:    %.2f MB\n", float64(summary.BytesDownloaded)/(1024*1024))
-		if summary.Errors > 0 {
-			fmt.Printf("  Errors:        %d\n", summary.Errors)
+		if len(syncErrors) > 0 {
+			fmt.Println()
+			fmt.Println("Errors:")
+			for _, e := range syncErrors {
+				fmt.Printf("  %s\n", e)
+			}
+			return fmt.Errorf("%d account(s) failed to sync", len(syncErrors))
 		}
-		if summary.WasResumed {
-			fmt.Printf("  (Resumed from checkpoint)\n")
-		}
-
-		// Print timing stats
-		if summary.MessagesAdded > 0 {
-			messagesPerSec := float64(summary.MessagesAdded) / summary.Duration.Seconds()
-			fmt.Printf("  Rate:          %.1f messages/sec\n", messagesPerSec)
-		}
-
-		elapsed := time.Since(startTime)
-		logger.Info("sync completed",
-			"email", email,
-			"messages_added", summary.MessagesAdded,
-			"elapsed", elapsed,
-		)
 
 		return nil
 	},
+}
+
+func runFullSync(ctx context.Context, s *store.Store, oauthMgr *oauth.Manager, email string) error {
+	tokenSource, err := oauthMgr.TokenSource(ctx, email)
+	if err != nil {
+		return fmt.Errorf("get token source: %w (run 'add-account' first)", err)
+	}
+
+	// Create Gmail client
+	rateLimiter := gmail.NewRateLimiter(float64(cfg.Sync.RateLimitQPS))
+	client := gmail.NewClient(tokenSource,
+		gmail.WithLogger(logger),
+		gmail.WithRateLimiter(rateLimiter),
+	)
+	defer client.Close()
+
+	// Build query from flags
+	query := buildSyncQuery()
+
+	// Set up sync options
+	opts := sync.DefaultOptions()
+	opts.Query = query
+	opts.NoResume = syncNoResume
+	opts.AttachmentsDir = cfg.AttachmentsDir()
+
+	// Create syncer with progress reporter
+	syncer := sync.New(client, s, opts).
+		WithLogger(logger).
+		WithProgress(&CLIProgress{})
+
+	// Run sync
+	startTime := time.Now()
+	fmt.Printf("Starting full sync for %s\n", email)
+	if query != "" {
+		fmt.Printf("Query: %s\n", query)
+	}
+	fmt.Println()
+
+	summary, err := syncer.Full(ctx, email)
+	if err != nil {
+		if ctx.Err() != nil {
+			fmt.Println("\nSync interrupted. Run again to resume.")
+			return nil
+		}
+		return fmt.Errorf("sync failed: %w", err)
+	}
+
+	// Print summary
+	fmt.Println()
+	fmt.Println("Sync complete!")
+	fmt.Printf("  Duration:      %s\n", summary.Duration.Round(time.Second))
+	fmt.Printf("  Messages:      %d found, %d added, %d skipped\n",
+		summary.MessagesFound, summary.MessagesAdded, summary.MessagesSkipped)
+	fmt.Printf("  Downloaded:    %.2f MB\n", float64(summary.BytesDownloaded)/(1024*1024))
+	if summary.Errors > 0 {
+		fmt.Printf("  Errors:        %d\n", summary.Errors)
+	}
+	if summary.WasResumed {
+		fmt.Printf("  (Resumed from checkpoint)\n")
+	}
+
+	// Print timing stats
+	if summary.MessagesAdded > 0 {
+		messagesPerSec := float64(summary.MessagesAdded) / summary.Duration.Seconds()
+		fmt.Printf("  Rate:          %.1f messages/sec\n", messagesPerSec)
+	}
+
+	elapsed := time.Since(startTime)
+	logger.Info("sync completed",
+		"email", email,
+		"messages_added", summary.MessagesAdded,
+		"elapsed", elapsed,
+	)
+
+	return nil
 }
 
 // buildSyncQuery constructs a Gmail search query from flags.
