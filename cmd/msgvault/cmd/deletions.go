@@ -488,6 +488,9 @@ func (p *CLIDeletionProgress) formatDuration(d time.Duration) string {
 }
 
 func (p *CLIDeletionProgress) OnProgress(processed, succeeded, failed int) {
+	if p.total <= 0 {
+		return
+	}
 	if time.Since(p.lastPrint) < 500*time.Millisecond {
 		return
 	}
