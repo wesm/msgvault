@@ -20,23 +20,17 @@ func TestNewTestStore(t *testing.T) {
 	}
 }
 
-// validRelativePaths is a shared fixture of relative paths that should pass
+// validRelativePaths returns a fresh slice of relative paths that should pass
 // validation and be writable. Used by TestValidateRelativePath and
 // TestWriteFileWithValidPaths.
-var validRelativePaths = []string{
-	"simple.txt",
-	"subdir/file.txt",
-	"a/b/c/deep.txt",
-	"file-with-dots.test.txt",
-	"./current.txt",
-}
-
-// writeFileAndAssertExists writes a file and asserts it exists, returning the path.
-func writeFileAndAssertExists(t *testing.T, dir, rel string, content []byte) string {
-	t.Helper()
-	path := WriteFile(t, dir, rel, content)
-	MustExist(t, path)
-	return path
+func validRelativePaths() []string {
+	return []string{
+		"simple.txt",
+		"subdir/file.txt",
+		"a/b/c/deep.txt",
+		"file-with-dots.test.txt",
+		"./current.txt",
+	}
 }
 
 func TestWriteFileAndReadBack(t *testing.T) {
@@ -47,13 +41,13 @@ func TestWriteFileAndReadBack(t *testing.T) {
 func TestWriteFileSubdir(t *testing.T) {
 	dir := t.TempDir()
 
-	writeFileAndAssertExists(t, dir, "subdir/nested/test.txt", []byte("nested content"))
+	WriteAndVerifyFile(t, dir, "subdir/nested/test.txt", []byte("nested content"))
 	MustExist(t, filepath.Join(dir, "subdir", "nested"))
 }
 
 func TestMustExist(t *testing.T) {
 	dir := t.TempDir()
-	writeFileAndAssertExists(t, dir, "exists.txt", []byte("data"))
+	WriteAndVerifyFile(t, dir, "exists.txt", []byte("data"))
 	MustExist(t, dir)
 }
 
@@ -77,7 +71,7 @@ func TestValidateRelativePath(t *testing.T) {
 	}
 
 	// Valid paths from shared fixture
-	for _, path := range validRelativePaths {
+	for _, path := range validRelativePaths() {
 		t.Run("valid "+path, func(t *testing.T) {
 			if err := validateRelativePath(dir, path); err != nil {
 				t.Errorf("validateRelativePath(%q) unexpected error: %v", path, err)
@@ -107,9 +101,9 @@ func TestPathTraversalCasesReturnsFreshSlice(t *testing.T) {
 func TestWriteFileWithValidPaths(t *testing.T) {
 	dir := t.TempDir()
 
-	for _, name := range validRelativePaths {
+	for _, name := range validRelativePaths() {
 		t.Run(name, func(t *testing.T) {
-			writeFileAndAssertExists(t, dir, name, []byte("data"))
+			WriteAndVerifyFile(t, dir, name, []byte("data"))
 		})
 	}
 }
