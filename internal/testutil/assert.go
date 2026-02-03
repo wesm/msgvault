@@ -62,3 +62,12 @@ func AssertContainsAll(t *testing.T, got string, subs []string) {
 		}
 	}
 }
+
+// MustNoErr fails the test immediately if err is non-nil.
+// Use this for setup operations where failure means the test cannot proceed.
+func MustNoErr(t *testing.T, err error, msg string) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("%s: %v", msg, err)
+	}
+}

@@ -1,7 +1,6 @@
 package testutil
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -18,19 +17,6 @@ func TestNewTestStore(t *testing.T) {
 	// Fresh database should have no messages
 	if stats.MessageCount != 0 {
 		t.Errorf("expected 0 messages, got %d", stats.MessageCount)
-	}
-}
-
-func TestTempDir(t *testing.T) {
-	dir := TempDir(t)
-
-	// Verify directory exists
-	info, err := os.Stat(dir)
-	if err != nil {
-		t.Fatalf("stat temp dir: %v", err)
-	}
-	if !info.IsDir() {
-		t.Errorf("expected directory, got file")
 	}
 }
 
@@ -54,32 +40,32 @@ func writeFileAndAssertExists(t *testing.T, dir, rel string, content []byte) str
 }
 
 func TestWriteFileAndReadBack(t *testing.T) {
-	dir := TempDir(t)
+	dir := t.TempDir()
 	WriteAndVerifyFile(t, dir, "test.txt", []byte("hello world"))
 }
 
 func TestWriteFileSubdir(t *testing.T) {
-	dir := TempDir(t)
+	dir := t.TempDir()
 
 	writeFileAndAssertExists(t, dir, "subdir/nested/test.txt", []byte("nested content"))
 	MustExist(t, filepath.Join(dir, "subdir", "nested"))
 }
 
 func TestMustExist(t *testing.T) {
-	dir := TempDir(t)
+	dir := t.TempDir()
 	writeFileAndAssertExists(t, dir, "exists.txt", []byte("data"))
 	MustExist(t, dir)
 }
 
 func TestMustNotExist(t *testing.T) {
-	dir := TempDir(t)
+	dir := t.TempDir()
 
 	// Should not panic for non-existent path
 	MustNotExist(t, filepath.Join(dir, "does-not-exist.txt"))
 }
 
 func TestValidateRelativePath(t *testing.T) {
-	dir := TempDir(t)
+	dir := t.TempDir()
 
 	// Invalid paths from shared fixture
 	for _, tt := range PathTraversalCases() {
@@ -119,7 +105,7 @@ func TestPathTraversalCasesReturnsFreshSlice(t *testing.T) {
 }
 
 func TestWriteFileWithValidPaths(t *testing.T) {
-	dir := TempDir(t)
+	dir := t.TempDir()
 
 	for _, name := range validRelativePaths {
 		t.Run(name, func(t *testing.T) {
