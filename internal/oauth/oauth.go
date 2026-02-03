@@ -103,7 +103,7 @@ func PrintHeadlessInstructions(email, tokensDir string) {
 	fmt.Println()
 	fmt.Println("Step 2: Copy the token file to your headless server:")
 	fmt.Println()
-	fmt.Printf("    scp %s user@server:%s\n", tokenPath, tokenPath)
+	fmt.Printf("    scp '%s' user@server:'%s'\n", tokenPath, tokenPath)
 	fmt.Println()
 	fmt.Println("Step 3: On the headless server, register the account:")
 	fmt.Println()
