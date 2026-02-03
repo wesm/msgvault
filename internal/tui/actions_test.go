@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -323,5 +324,96 @@ func TestExportAttachments_ErrBehavior(t *testing.T) {
 				t.Errorf("expected Err to be nil, got %v", result.Err)
 			}
 		})
+	}
+}
+
+func TestExportAttachments_PartialSuccess(t *testing.T) {
+	// Partial success: one valid file exports, one missing file fails.
+	// Err should be nil because stats.Count > 0 (some files succeeded).
+	env := newTestEnv(t)
+
+	// Create a valid attachment file
+	validHash := "abc123def456ghi789"
+	attachmentsDir := filepath.Join(env.Dir, "attachments")
+	hashDir := filepath.Join(attachmentsDir, validHash[:2])
+	if err := os.MkdirAll(hashDir, 0o755); err != nil {
+		t.Fatalf("failed to create hash dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(hashDir, validHash), []byte("test content"), 0o644); err != nil {
+		t.Fatalf("failed to write attachment: %v", err)
+	}
+
+	detail := &query.MessageDetail{
+		ID:      1,
+		Subject: "Test",
+		Attachments: []query.AttachmentInfo{
+			{ID: 1, Filename: "valid.pdf", ContentHash: validHash},
+			{ID: 2, Filename: "missing.pdf", ContentHash: "nonexistent12345"},
+		},
+	}
+	selection := map[int]bool{0: true, 1: true}
+
+	cmd := env.Ctrl.ExportAttachments(detail, selection)
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd")
+	}
+
+	msg := cmd()
+	result, ok := msg.(ExportResultMsg)
+	if !ok {
+		t.Fatalf("expected ExportResultMsg, got %T", msg)
+	}
+
+	// Partial success should NOT set Err
+	if result.Err != nil {
+		t.Errorf("expected Err to be nil for partial success, got %v", result.Err)
+	}
+
+	// Result should contain both success info and error details
+	if result.Result == "" {
+		t.Error("expected non-empty Result")
+	}
+}
+
+func TestExportAttachments_FullSuccess(t *testing.T) {
+	// Full success: all attachments export without errors.
+	env := newTestEnv(t)
+
+	// Create a valid attachment file
+	validHash := "abc123def456ghi789"
+	attachmentsDir := filepath.Join(env.Dir, "attachments")
+	hashDir := filepath.Join(attachmentsDir, validHash[:2])
+	if err := os.MkdirAll(hashDir, 0o755); err != nil {
+		t.Fatalf("failed to create hash dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(hashDir, validHash), []byte("test content"), 0o644); err != nil {
+		t.Fatalf("failed to write attachment: %v", err)
+	}
+
+	detail := &query.MessageDetail{
+		ID:      1,
+		Subject: "Test",
+		Attachments: []query.AttachmentInfo{
+			{ID: 1, Filename: "valid.pdf", ContentHash: validHash},
+		},
+	}
+	selection := map[int]bool{0: true}
+
+	cmd := env.Ctrl.ExportAttachments(detail, selection)
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd")
+	}
+
+	msg := cmd()
+	result, ok := msg.(ExportResultMsg)
+	if !ok {
+		t.Fatalf("expected ExportResultMsg, got %T", msg)
+	}
+
+	if result.Err != nil {
+		t.Errorf("expected Err to be nil for full success, got %v", result.Err)
+	}
+	if result.Result == "" {
+		t.Error("expected non-empty Result")
 	}
 }

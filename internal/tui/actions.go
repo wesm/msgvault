@@ -232,7 +232,10 @@ func (c *ActionController) ExportAttachments(detail *query.MessageDetail, select
 	return func() tea.Msg {
 		stats := export.Attachments(zipFilename, attachmentsDir, selectedAttachments)
 		msg := ExportResultMsg{Result: export.FormatExportResult(stats)}
-		if stats.WriteError || len(stats.Errors) > 0 {
+		// Only set Err for true failures: write errors or zero exported files.
+		// Partial success (some files exported, some errors) should show the
+		// detailed Result which includes both the success info and error list.
+		if stats.WriteError || stats.Count == 0 {
 			msg.Err = fmt.Errorf("export failed")
 		}
 		return msg
