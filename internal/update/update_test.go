@@ -222,6 +222,38 @@ func TestIsDevBuildVersion(t *testing.T) {
 	}
 }
 
+func TestNormalizePrereleaseIdentifiers(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		prerelease string
+		want       string
+	}{
+		{"simple rc with number", "rc10", "rc.10"},
+		{"simple beta with number", "beta2", "beta.2"},
+		{"alpha with number", "alpha1", "alpha.1"},
+		{"multi-part rc10.1 normalizes to rc.10.1", "rc10.1", "rc.10.1"},
+		{"mixed identifiers alpha10.beta2", "alpha10.beta2", "alpha.10.beta.2"},
+		{"alphanumeric suffix rc10a stays unchanged", "rc10a", "rc10a"},
+		{"leading zeros rc01 stays unchanged", "rc01", "rc01"},
+		{"leading zeros beta007 stays unchanged", "beta007", "beta007"},
+		{"pure numeric stays unchanged", "1", "1"},
+		{"pure numeric multi stays unchanged", "1.2.3", "1.2.3"},
+		{"already dotted rc.10 stays unchanged", "rc.10", "rc.10"},
+		{"no number suffix stays unchanged", "alpha", "alpha"},
+		{"empty string", "", ""},
+		{"complex mixed", "pre10.rc2.beta05", "pre.10.rc.2.beta05"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := normalizePrereleaseIdentifiers(tt.prerelease)
+			testutil.AssertEqual(t, got, tt.want)
+		})
+	}
+}
+
 func TestIsNewer(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
