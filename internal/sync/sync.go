@@ -37,6 +37,12 @@ type Options struct {
 
 	// AttachmentsDir is where to store attachments
 	AttachmentsDir string
+
+	// Limit caps the number of messages scanned per sync (0 = unlimited).
+	// Enforced by truncating the message ID list before downloading content.
+	// The API listing call (which returns lightweight IDs, not bodies) may
+	// return more IDs than the limit; only the truncated set is fetched.
+	Limit int
 }
 
 // DefaultOptions returns sensible defaults.
@@ -273,6 +279,17 @@ func (s *Syncer) Full(ctx context.Context, email string) (*gmail.SyncSummary, er
 			break
 		}
 
+		// Enforce limit by truncating before the expensive content download
+		if s.opts.Limit > 0 {
+			remaining := int64(s.opts.Limit) - state.checkpoint.MessagesProcessed
+			if remaining <= 0 {
+				break
+			}
+			if int64(len(listResp.Messages)) > remaining {
+				listResp.Messages = listResp.Messages[:remaining]
+			}
+		}
+
 		// Process batch
 		result, err := s.processBatch(ctx, source.ID, listResp, labelMap, state.checkpoint, summary)
 		if err != nil {
@@ -298,6 +315,11 @@ func (s *Syncer) Full(ctx context.Context, email string) (*gmail.SyncSummary, er
 		state.checkpoint.PageToken = pageToken
 		if err := s.store.UpdateSyncCheckpoint(state.syncID, state.checkpoint); err != nil {
 			s.logger.Warn("failed to save checkpoint", "error", err)
+		}
+
+		// Stop if we've hit the limit
+		if s.opts.Limit > 0 && state.checkpoint.MessagesProcessed >= int64(s.opts.Limit) {
+			break
 		}
 
 		// No more pages

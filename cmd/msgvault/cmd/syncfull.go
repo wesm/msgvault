@@ -45,6 +45,10 @@ Examples:
   msgvault sync-full you@gmail.com --noresume    # Force fresh sync`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if syncLimit < 0 {
+			return fmt.Errorf("--limit must be a positive number")
+		}
+
 		// Validate config
 		if cfg.OAuth.ClientSecrets == "" {
 			return errOAuthNotConfigured()
@@ -151,6 +155,7 @@ func runFullSync(ctx context.Context, s *store.Store, oauthMgr *oauth.Manager, e
 	opts := sync.DefaultOptions()
 	opts.Query = query
 	opts.NoResume = syncNoResume
+	opts.Limit = syncLimit
 	opts.AttachmentsDir = cfg.AttachmentsDir()
 
 	// Create syncer with progress reporter
