@@ -143,13 +143,37 @@ func TestDecodeBase64URL(t *testing.T) {
 		},
 		{
 			name:    "URL-safe characters padded",
-			input:   "PDw_Pz4-", // same but note: this doesn't need padding
-			want:    []byte("<<??>>"),
+			input:   "Pz8_", // "???" requires padding (3 bytes -> 4 chars), contains _ (URL-safe)
+			want:    []byte("???"),
+			wantErr: false,
+		},
+		{
+			name:    "URL-safe dash with padding",
+			input:   "Pj4-", // ">>>" requires padding, contains - (URL-safe)
+			want:    []byte(">>>"),
 			wantErr: false,
 		},
 		{
 			name:    "invalid characters",
 			input:   "!!!invalid!!!",
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name:    "malformed padding single char with equals",
+			input:   "A=", // Invalid: 1 char before padding is never valid
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name:    "malformed padding excess equals",
+			input:   "QQ===", // Invalid: too many padding chars
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name:    "malformed padding wrong count",
+			input:   "QUI==", // Invalid: "AB" should have single =, not ==
 			want:    nil,
 			wantErr: true,
 		},

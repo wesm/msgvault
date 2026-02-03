@@ -256,8 +256,14 @@ type rawMessageResponse struct {
 
 // decodeBase64URL decodes a base64url-encoded string, tolerating optional padding.
 // Gmail typically returns unpadded base64url, but this function handles both cases.
+// If padding is present, it validates that padding is correct (rejects malformed padding).
 func decodeBase64URL(s string) ([]byte, error) {
-	return base64.RawURLEncoding.DecodeString(strings.TrimRight(s, "="))
+	if strings.ContainsRune(s, '=') {
+		// Input has padding - use URLEncoding which validates padding correctness
+		return base64.URLEncoding.DecodeString(s)
+	}
+	// No padding - use RawURLEncoding for unpadded base64url
+	return base64.RawURLEncoding.DecodeString(s)
 }
 
 type historyMessageChange struct {
