@@ -35,7 +35,7 @@ func isSQLiteError(err error, substr string) bool {
 		return strings.Contains(sqliteErr.Error(), substr)
 	}
 	var sqliteErrPtr *sqlite3.Error
-	if errors.As(err, &sqliteErrPtr) {
+	if errors.As(err, &sqliteErrPtr) && sqliteErrPtr != nil {
 		return strings.Contains(sqliteErrPtr.Error(), substr)
 	}
 	return false
