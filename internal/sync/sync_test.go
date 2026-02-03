@@ -608,12 +608,13 @@ func TestFullSyncEmptyThreadID(t *testing.T) {
 	env.Mock.Profile.HistoryID = 12345
 	env.Mock.UseRawThreadID = true
 
+	raw := testMIME()
 	env.Mock.Messages["msg-no-thread"] = &gmail.RawMessage{
 		ID:           "msg-no-thread",
 		ThreadID:     "",
 		LabelIDs:     []string{"INBOX"},
-		Raw:          testMIME(),
-		SizeEstimate: int64(len(testMIME())),
+		Raw:          raw,
+		SizeEstimate: int64(len(raw)),
 	}
 	env.Mock.MessagePages = [][]string{{"msg-no-thread"}}
 
@@ -628,6 +629,7 @@ func TestFullSyncListEmptyThreadIDRawPresent(t *testing.T) {
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12345
 
+	raw := testMIME()
 	env.Mock.ListThreadIDOverride = map[string]string{
 		"msg-list-empty": "",
 	}
@@ -635,8 +637,8 @@ func TestFullSyncListEmptyThreadIDRawPresent(t *testing.T) {
 		ID:           "msg-list-empty",
 		ThreadID:     "actual-thread-from-raw",
 		LabelIDs:     []string{"INBOX"},
-		Raw:          testMIME(),
-		SizeEstimate: int64(len(testMIME())),
+		Raw:          raw,
+		SizeEstimate: int64(len(raw)),
 	}
 	env.Mock.MessagePages = [][]string{{"msg-list-empty"}}
 
