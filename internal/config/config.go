@@ -125,7 +125,12 @@ func expandPath(path string) string {
 		if path == "~" {
 			return home
 		}
-		return filepath.Join(home, path[2:])
+		// Trim leading slashes from the suffix to handle cases like "~//foo"
+		suffix := path[2:]
+		for len(suffix) > 0 && (suffix[0] == '/' || suffix[0] == os.PathSeparator) {
+			suffix = suffix[1:]
+		}
+		return filepath.Join(home, suffix)
 	}
 	return path
 }

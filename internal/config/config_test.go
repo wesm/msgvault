@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -16,6 +17,7 @@ func TestExpandPath(t *testing.T) {
 		name     string
 		input    string
 		expected string
+		unixOnly bool // skip on Windows (uses Unix-style absolute paths)
 	}{
 		{
 			name:     "empty string",
@@ -45,12 +47,13 @@ func TestExpandPath(t *testing.T) {
 		{
 			name:     "tilde with double slash",
 			input:    "~//foo",
-			expected: filepath.Join(home, "/foo"),
+			expected: filepath.Join(home, "foo"),
 		},
 		{
 			name:     "absolute path unchanged",
 			input:    "/var/log/test",
 			expected: "/var/log/test",
+			unixOnly: true,
 		},
 		{
 			name:     "relative path unchanged",
@@ -61,6 +64,7 @@ func TestExpandPath(t *testing.T) {
 			name:     "tilde in middle not expanded",
 			input:    "/home/~user/foo",
 			expected: "/home/~user/foo",
+			unixOnly: true,
 		},
 		{
 			name:     "nested path after tilde",
@@ -71,6 +75,9 @@ func TestExpandPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.unixOnly && runtime.GOOS == "windows" {
+				t.Skip("skipping Unix-specific path test on Windows")
+			}
 			got := expandPath(tt.input)
 			if got != tt.expected {
 				t.Errorf("expandPath(%q) = %q, want %q", tt.input, got, tt.expected)
@@ -80,13 +87,9 @@ func TestExpandPath(t *testing.T) {
 }
 
 func TestLoadEmptyPath(t *testing.T) {
-	// Save original env and restore after test
-	origHome := os.Getenv("MSGVAULT_HOME")
-	defer os.Setenv("MSGVAULT_HOME", origHome)
-
 	// Use a temp directory as MSGVAULT_HOME
 	tmpDir := t.TempDir()
-	os.Setenv("MSGVAULT_HOME", tmpDir)
+	t.Setenv("MSGVAULT_HOME", tmpDir)
 
 	// Load with empty path should use defaults
 	cfg, err := Load("")
@@ -113,13 +116,9 @@ func TestLoadEmptyPath(t *testing.T) {
 }
 
 func TestLoadWithConfigFile(t *testing.T) {
-	// Save original env and restore after test
-	origHome := os.Getenv("MSGVAULT_HOME")
-	defer os.Setenv("MSGVAULT_HOME", origHome)
-
 	// Use a temp directory as MSGVAULT_HOME
 	tmpDir := t.TempDir()
-	os.Setenv("MSGVAULT_HOME", tmpDir)
+	t.Setenv("MSGVAULT_HOME", tmpDir)
 
 	// Create a config file with custom values
 	configPath := filepath.Join(tmpDir, "config.toml")
@@ -164,13 +163,9 @@ rate_limit_qps = 10
 }
 
 func TestNewDefaultConfig(t *testing.T) {
-	// Save original env and restore after test
-	origHome := os.Getenv("MSGVAULT_HOME")
-	defer os.Setenv("MSGVAULT_HOME", origHome)
-
 	// Use a temp directory as MSGVAULT_HOME
 	tmpDir := t.TempDir()
-	os.Setenv("MSGVAULT_HOME", tmpDir)
+	t.Setenv("MSGVAULT_HOME", tmpDir)
 
 	cfg := NewDefaultConfig()
 
