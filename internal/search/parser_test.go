@@ -293,13 +293,23 @@ func TestParser_NilNow(t *testing.T) {
 	// Should not panic and should return a valid result
 	q := p.Parse("newer_than:1d")
 	if q.AfterDate == nil {
-		t.Error("Parser{Now: nil}.Parse(\"newer_than:1d\") should set AfterDate")
+		t.Fatal("Parser{Now: nil}.Parse(\"newer_than:1d\") should set AfterDate")
 	}
 
-	// Verify the date is roughly correct (within the last 2 days to account for timing)
-	expectedAfter := time.Now().UTC().AddDate(0, 0, -2)
-	if q.AfterDate.Before(expectedAfter) {
-		t.Errorf("AfterDate %v is too far in the past (expected after %v)", q.AfterDate, expectedAfter)
+	now := time.Now().UTC()
+	// AfterDate should be within a tight window around now-24h
+	// Allow some tolerance for test execution time: between now-36h and now-12h
+	earliestExpected := now.Add(-36 * time.Hour)
+	latestExpected := now.Add(-12 * time.Hour)
+
+	if q.AfterDate.Before(earliestExpected) {
+		t.Errorf("AfterDate %v is too far in the past (expected after %v)", q.AfterDate, earliestExpected)
+	}
+	if q.AfterDate.After(latestExpected) {
+		t.Errorf("AfterDate %v is too recent (expected before %v)", q.AfterDate, latestExpected)
+	}
+	if q.AfterDate.After(now) {
+		t.Errorf("AfterDate %v is in the future", q.AfterDate)
 	}
 }
 
