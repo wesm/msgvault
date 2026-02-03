@@ -243,13 +243,13 @@ Examples:
 		}
 
 		if len(manifests) == 0 {
-			fmt.Println("No pending deletions to execute.")
+			fmt.Println("No staged deletions.")
 			return nil
 		}
 
 		// --list: show pending batches and exit
 		if deleteList {
-			fmt.Printf("Pending deletions: %d batch(es)\n\n", len(manifests))
+			fmt.Printf("Staged deletions: %d batch(es)\n\n", len(manifests))
 			fmt.Printf("  %-25s  %-12s  %10s  %s\n", "ID", "Status", "Messages", "Description")
 			fmt.Printf("  %-25s  %-12s  %10s  %s\n", "---", "------", "--------", "-----------")
 			totalMessages := 0
