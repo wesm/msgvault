@@ -420,23 +420,11 @@ func TestSQLiteEngine_Aggregate_InvalidViewType(t *testing.T) {
 func TestAggregateDeterministicOrderOnTies(t *testing.T) {
 	tdb := dbtest.NewTestDB(t, "../store/schema.sql")
 
-	// Create minimal test data: 1 source, 1 conversation, 2 participants
-	_, err := tdb.DB.Exec(`
-		INSERT INTO sources (id, source_type, identifier, display_name) VALUES
-			(1, 'gmail', 'test@gmail.com', 'Test Account');
-		INSERT INTO conversations (id, source_id, source_conversation_id, conversation_type, title) VALUES
-			(1, 1, 'thread1', 'email_thread', 'Test Thread');
-		INSERT INTO participants (id, email_address, display_name, domain) VALUES
-			(1, 'alice@example.com', 'Alice', 'example.com'),
-			(2, 'bob@example.com', 'Bob', 'example.com');
-	`)
-	if err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	// Resolve participant IDs dynamically to avoid coupling to seed order.
-	aliceID := tdb.MustLookupParticipant("alice@example.com")
-	bobID := tdb.MustLookupParticipant("bob@example.com")
+	// Create minimal test data using helpers to avoid hardcoded IDs.
+	tdb.AddSource(dbtest.SourceOpts{Identifier: "test@gmail.com", DisplayName: "Test Account"})
+	tdb.AddConversation(dbtest.ConversationOpts{Title: "Test Thread"})
+	aliceID := tdb.AddParticipant(dbtest.ParticipantOpts{Email: dbtest.StrPtr("alice@example.com"), DisplayName: dbtest.StrPtr("Alice"), Domain: "example.com"})
+	bobID := tdb.AddParticipant(dbtest.ParticipantOpts{Email: dbtest.StrPtr("bob@example.com"), DisplayName: dbtest.StrPtr("Bob"), Domain: "example.com"})
 
 	// Create labels with names that would sort differently than insertion order
 	// "Zebra" inserted first, "Apple" inserted second - both will have count=1
