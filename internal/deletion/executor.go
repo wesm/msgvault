@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/wesm/msgvault/internal/gmail"
@@ -16,6 +17,17 @@ import (
 func isNotFoundError(err error) bool {
 	var notFound *gmail.NotFoundError
 	return errors.As(err, &notFound)
+}
+
+// isInsufficientScopeError checks if an error is due to missing OAuth scopes.
+func isInsufficientScopeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "ACCESS_TOKEN_SCOPE_INSUFFICIENT") ||
+		strings.Contains(msg, "insufficient authentication scopes") ||
+		strings.Contains(msg, "Insufficient Permission")
 }
 
 // Progress reports deletion progress.
@@ -167,6 +179,10 @@ func (e *Executor) Execute(ctx context.Context, manifestID string, opts *Execute
 				if markErr := e.store.MarkMessageDeletedByGmailID(manifest.Execution.Method == MethodDelete, gmailID); markErr != nil {
 					e.logger.Warn("failed to mark deleted in DB", "gmail_id", gmailID, "error", markErr)
 				}
+			} else if isInsufficientScopeError(err) {
+				// Scope errors should propagate immediately — every subsequent
+				// message will fail for the same reason.
+				return fmt.Errorf("delete message: %w", err)
 			} else {
 				e.logger.Warn("failed to delete message", "gmail_id", gmailID, "error", err)
 				failed++
@@ -323,7 +339,12 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 		batch := manifest.GmailIDs[i:end]
 
 		if err := e.client.BatchDeleteMessages(ctx, batch); err != nil {
-			e.logger.Warn("batch delete failed", "start_index", i, "error", err)
+			// If it's a permission/scope error, return immediately — falling back
+			// to individual deletes would fail for the same reason.
+			if isInsufficientScopeError(err) {
+				return fmt.Errorf("batch delete: %w", err)
+			}
+			e.logger.Warn("batch delete failed, falling back to individual deletes", "start_index", i, "error", err)
 			// Fall back to individual deletes
 			for _, gmailID := range batch {
 				if delErr := e.client.DeleteMessage(ctx, gmailID); delErr != nil {
