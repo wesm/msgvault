@@ -648,6 +648,332 @@ func TestFullSyncListEmptyThreadIDRawPresent(t *testing.T) {
 	assertThreadSourceID(t, env.Store, "msg-list-empty", "actual-thread-from-raw")
 }
 
+// Tests for initSyncState
+
+func TestInitSyncState_NewSync(t *testing.T) {
+	env := newTestEnv(t)
+	source := env.CreateSource(t)
+
+	state, err := env.Syncer.initSyncState(source.ID)
+	if err != nil {
+		t.Fatalf("initSyncState: %v", err)
+	}
+
+	if state.wasResumed {
+		t.Error("expected wasResumed = false for new sync")
+	}
+	if state.pageToken != "" {
+		t.Errorf("expected empty pageToken, got %q", state.pageToken)
+	}
+	if state.syncID == 0 {
+		t.Error("expected non-zero syncID")
+	}
+	if state.checkpoint.MessagesProcessed != 0 {
+		t.Errorf("expected MessagesProcessed = 0, got %d", state.checkpoint.MessagesProcessed)
+	}
+}
+
+func TestInitSyncState_Resume(t *testing.T) {
+	env := newTestEnv(t)
+	source := env.CreateSource(t)
+
+	// Create an active sync with checkpoint
+	syncID, err := env.Store.StartSync(source.ID, "full")
+	if err != nil {
+		t.Fatalf("StartSync: %v", err)
+	}
+	checkpoint := &store.Checkpoint{
+		PageToken:         "resume_token_123",
+		MessagesProcessed: 50,
+		MessagesAdded:     45,
+		MessagesUpdated:   3,
+		ErrorsCount:       2,
+	}
+	if err := env.Store.UpdateSyncCheckpoint(syncID, checkpoint); err != nil {
+		t.Fatalf("UpdateSyncCheckpoint: %v", err)
+	}
+
+	state, err := env.Syncer.initSyncState(source.ID)
+	if err != nil {
+		t.Fatalf("initSyncState: %v", err)
+	}
+
+	if !state.wasResumed {
+		t.Error("expected wasResumed = true")
+	}
+	if state.pageToken != "resume_token_123" {
+		t.Errorf("expected pageToken = 'resume_token_123', got %q", state.pageToken)
+	}
+	if state.syncID != syncID {
+		t.Errorf("expected syncID = %d, got %d", syncID, state.syncID)
+	}
+	if state.checkpoint.MessagesProcessed != 50 {
+		t.Errorf("expected MessagesProcessed = 50, got %d", state.checkpoint.MessagesProcessed)
+	}
+	if state.checkpoint.MessagesAdded != 45 {
+		t.Errorf("expected MessagesAdded = 45, got %d", state.checkpoint.MessagesAdded)
+	}
+}
+
+func TestInitSyncState_NoResumeOption(t *testing.T) {
+	env := newTestEnv(t)
+	env.SetOptions(t, func(o *Options) {
+		o.NoResume = true
+	})
+	source := env.CreateSource(t)
+
+	// Create an active sync with checkpoint
+	syncID, err := env.Store.StartSync(source.ID, "full")
+	if err != nil {
+		t.Fatalf("StartSync: %v", err)
+	}
+	checkpoint := &store.Checkpoint{
+		PageToken:         "resume_token_123",
+		MessagesProcessed: 50,
+	}
+	if err := env.Store.UpdateSyncCheckpoint(syncID, checkpoint); err != nil {
+		t.Fatalf("UpdateSyncCheckpoint: %v", err)
+	}
+
+	state, err := env.Syncer.initSyncState(source.ID)
+	if err != nil {
+		t.Fatalf("initSyncState: %v", err)
+	}
+
+	if state.wasResumed {
+		t.Error("expected wasResumed = false with NoResume option")
+	}
+	if state.pageToken != "" {
+		t.Errorf("expected empty pageToken with NoResume, got %q", state.pageToken)
+	}
+	if state.syncID == syncID {
+		t.Error("expected new syncID, not the existing one")
+	}
+}
+
+// Tests for processBatch
+
+func TestProcessBatch_EmptyBatch(t *testing.T) {
+	env := newTestEnv(t)
+	source := env.CreateSource(t)
+	labelMap := make(map[string]int64)
+	checkpoint := &store.Checkpoint{}
+	summary := &gmail.SyncSummary{}
+
+	listResp := &gmail.MessageListResponse{
+		Messages: nil,
+	}
+
+	result, err := env.Syncer.processBatch(env.Context, source.ID, listResp, labelMap, checkpoint, summary)
+	if err != nil {
+		t.Fatalf("processBatch: %v", err)
+	}
+
+	if result.processed != 0 {
+		t.Errorf("expected processed = 0, got %d", result.processed)
+	}
+	if result.added != 0 {
+		t.Errorf("expected added = 0, got %d", result.added)
+	}
+	if result.skipped != 0 {
+		t.Errorf("expected skipped = 0, got %d", result.skipped)
+	}
+}
+
+func TestProcessBatch_AllNew(t *testing.T) {
+	env := newTestEnv(t)
+	source := env.CreateSource(t)
+	labelMap, _ := env.Store.EnsureLabelsBatch(source.ID, map[string]store.LabelInfo{
+		"INBOX": {Name: "Inbox", Type: "system"},
+	})
+	checkpoint := &store.Checkpoint{}
+	summary := &gmail.SyncSummary{}
+
+	env.Mock.AddMessage("msg1", testMIME(), []string{"INBOX"})
+	env.Mock.AddMessage("msg2", testMIME(), []string{"INBOX"})
+
+	listResp := &gmail.MessageListResponse{
+		Messages: []gmail.MessageID{
+			{ID: "msg1", ThreadID: "thread1"},
+			{ID: "msg2", ThreadID: "thread2"},
+		},
+	}
+
+	result, err := env.Syncer.processBatch(env.Context, source.ID, listResp, labelMap, checkpoint, summary)
+	if err != nil {
+		t.Fatalf("processBatch: %v", err)
+	}
+
+	if result.processed != 2 {
+		t.Errorf("expected processed = 2, got %d", result.processed)
+	}
+	if result.added != 2 {
+		t.Errorf("expected added = 2, got %d", result.added)
+	}
+	if result.skipped != 0 {
+		t.Errorf("expected skipped = 0, got %d", result.skipped)
+	}
+}
+
+func TestProcessBatch_AllExisting(t *testing.T) {
+	env := newTestEnv(t)
+	seedMessages(env, 2, 12345, "msg1", "msg2")
+
+	// First sync to add messages
+	runFullSync(t, env)
+
+	source, _ := env.Store.GetOrCreateSource("gmail", testEmail)
+	labelMap, _ := env.Store.EnsureLabelsBatch(source.ID, map[string]store.LabelInfo{
+		"INBOX": {Name: "Inbox", Type: "system"},
+	})
+	checkpoint := &store.Checkpoint{}
+	summary := &gmail.SyncSummary{}
+
+	listResp := &gmail.MessageListResponse{
+		Messages: []gmail.MessageID{
+			{ID: "msg1", ThreadID: "thread1"},
+			{ID: "msg2", ThreadID: "thread2"},
+		},
+	}
+
+	result, err := env.Syncer.processBatch(env.Context, source.ID, listResp, labelMap, checkpoint, summary)
+	if err != nil {
+		t.Fatalf("processBatch: %v", err)
+	}
+
+	if result.processed != 2 {
+		t.Errorf("expected processed = 2, got %d", result.processed)
+	}
+	if result.added != 0 {
+		t.Errorf("expected added = 0 (all existing), got %d", result.added)
+	}
+	if result.skipped != 2 {
+		t.Errorf("expected skipped = 2, got %d", result.skipped)
+	}
+}
+
+func TestProcessBatch_MixedNewAndExisting(t *testing.T) {
+	env := newTestEnv(t)
+	seedMessages(env, 1, 12345, "msg1")
+
+	// First sync to add msg1
+	runFullSync(t, env)
+
+	source, _ := env.Store.GetOrCreateSource("gmail", testEmail)
+	labelMap, _ := env.Store.EnsureLabelsBatch(source.ID, map[string]store.LabelInfo{
+		"INBOX": {Name: "Inbox", Type: "system"},
+	})
+	checkpoint := &store.Checkpoint{}
+	summary := &gmail.SyncSummary{}
+
+	// Add msg2 to mock
+	env.Mock.AddMessage("msg2", testMIME(), []string{"INBOX"})
+
+	listResp := &gmail.MessageListResponse{
+		Messages: []gmail.MessageID{
+			{ID: "msg1", ThreadID: "thread1"},
+			{ID: "msg2", ThreadID: "thread2"},
+		},
+	}
+
+	result, err := env.Syncer.processBatch(env.Context, source.ID, listResp, labelMap, checkpoint, summary)
+	if err != nil {
+		t.Fatalf("processBatch: %v", err)
+	}
+
+	if result.processed != 2 {
+		t.Errorf("expected processed = 2, got %d", result.processed)
+	}
+	if result.added != 1 {
+		t.Errorf("expected added = 1, got %d", result.added)
+	}
+	if result.skipped != 1 {
+		t.Errorf("expected skipped = 1, got %d", result.skipped)
+	}
+}
+
+func TestProcessBatch_OldestDatePropagation(t *testing.T) {
+	env := newTestEnv(t)
+	source := env.CreateSource(t)
+	labelMap, _ := env.Store.EnsureLabelsBatch(source.ID, map[string]store.LabelInfo{
+		"INBOX": {Name: "Inbox", Type: "system"},
+	})
+	checkpoint := &store.Checkpoint{}
+	summary := &gmail.SyncSummary{}
+
+	// Add messages with specific internal dates
+	// msg1: Jan 15, 2024, msg2: Jan 10, 2024 (older)
+	env.Mock.Messages["msg1"] = &gmail.RawMessage{
+		ID:           "msg1",
+		ThreadID:     "thread1",
+		LabelIDs:     []string{"INBOX"},
+		Raw:          testMIME(),
+		InternalDate: 1705320000000, // 2024-01-15T12:00:00Z
+	}
+	env.Mock.Messages["msg2"] = &gmail.RawMessage{
+		ID:           "msg2",
+		ThreadID:     "thread2",
+		LabelIDs:     []string{"INBOX"},
+		Raw:          testMIME(),
+		InternalDate: 1704888000000, // 2024-01-10T12:00:00Z
+	}
+
+	listResp := &gmail.MessageListResponse{
+		Messages: []gmail.MessageID{
+			{ID: "msg1", ThreadID: "thread1"},
+			{ID: "msg2", ThreadID: "thread2"},
+		},
+	}
+
+	result, err := env.Syncer.processBatch(env.Context, source.ID, listResp, labelMap, checkpoint, summary)
+	if err != nil {
+		t.Fatalf("processBatch: %v", err)
+	}
+
+	// oldestDate should be Jan 10, 2024
+	if result.oldestDate.IsZero() {
+		t.Error("expected oldestDate to be set")
+	}
+	expectedYear, expectedMonth, expectedDay := 2024, 1, 10
+	gotYear, gotMonth, gotDay := result.oldestDate.Year(), int(result.oldestDate.Month()), result.oldestDate.Day()
+	if gotYear != expectedYear || gotMonth != expectedMonth || gotDay != expectedDay {
+		t.Errorf("expected oldestDate = 2024-01-10, got %d-%02d-%02d", gotYear, gotMonth, gotDay)
+	}
+}
+
+func TestProcessBatch_ErrorsCount(t *testing.T) {
+	env := newTestEnv(t)
+	source := env.CreateSource(t)
+	labelMap, _ := env.Store.EnsureLabelsBatch(source.ID, map[string]store.LabelInfo{
+		"INBOX": {Name: "Inbox", Type: "system"},
+	})
+	checkpoint := &store.Checkpoint{}
+	summary := &gmail.SyncSummary{}
+
+	env.Mock.AddMessage("msg1", testMIME(), []string{"INBOX"})
+	// msg2 will return nil (simulating fetch failure)
+	env.Mock.GetMessageError["msg2"] = &gmail.NotFoundError{Path: "/messages/msg2"}
+
+	listResp := &gmail.MessageListResponse{
+		Messages: []gmail.MessageID{
+			{ID: "msg1", ThreadID: "thread1"},
+			{ID: "msg2", ThreadID: "thread2"},
+		},
+	}
+
+	result, err := env.Syncer.processBatch(env.Context, source.ID, listResp, labelMap, checkpoint, summary)
+	if err != nil {
+		t.Fatalf("processBatch: %v", err)
+	}
+
+	if result.added != 1 {
+		t.Errorf("expected added = 1, got %d", result.added)
+	}
+	if checkpoint.ErrorsCount != 1 {
+		t.Errorf("expected ErrorsCount = 1, got %d", checkpoint.ErrorsCount)
+	}
+}
+
 // TestAttachmentFilePermissions verifies that attachment files are saved with
 // restrictive permissions (0600) to protect email content.
 func TestAttachmentFilePermissions(t *testing.T) {

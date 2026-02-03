@@ -123,6 +123,9 @@ func GetEncodingByName(name string) encoding.Encoding {
 // TruncateRunes truncates a string to maxRunes runes (not bytes), adding "..." if truncated.
 // This is UTF-8 safe and won't split multi-byte characters.
 func TruncateRunes(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
 	runes := []rune(s)
 	if len(runes) <= maxRunes {
 		return s
@@ -135,7 +138,9 @@ func TruncateRunes(s string, maxRunes int) string {
 
 // FirstLine returns the first line of a string.
 // Useful for extracting clean error messages from multi-line outputs.
+// Leading newlines are trimmed before extracting the first line.
 func FirstLine(s string) string {
+	s = strings.TrimLeft(s, "\r\n")
 	if idx := strings.Index(s, "\n"); idx >= 0 {
 		return s[:idx]
 	}

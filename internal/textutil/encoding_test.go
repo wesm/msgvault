@@ -412,6 +412,10 @@ func TestTruncateRunes(t *testing.T) {
 		{"UTF-8 no truncate", "你好世界", 4, "你好世界"}, // 4 runes, no truncation needed
 		{"UTF-8 truncate", "你好世界！", 4, "你..."},
 		{"emoji", "Hello 👋 World", 9, "Hello ..."},
+		{"max 0", "Hello", 0, ""},
+		{"max negative", "Hello", -1, ""},
+		{"max 1", "Hello", 1, "H"},
+		{"max 2", "Hello", 2, "He"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -434,6 +438,11 @@ func TestFirstLine(t *testing.T) {
 		{"empty string", "", ""},
 		{"trailing newline", "Hello\n", "Hello"},
 		{"only newline", "\n", ""},
+		{"leading newline", "\nSecond\nThird", "Second"},
+		{"multiple leading newlines", "\n\n\nFourth", "Fourth"},
+		{"leading carriage return", "\r\nSecond", "Second"},
+		{"mixed leading newlines", "\r\n\n\rThird", "Third"},
+		{"only newlines", "\n\n\n", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
