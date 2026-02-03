@@ -63,6 +63,25 @@ func AssertContainsAll(t *testing.T, got string, subs []string) {
 	}
 }
 
+// AssertStringSet asserts that got contains exactly the expected strings,
+// ignoring order. Useful when the slice order is non-deterministic.
+func AssertStringSet(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Errorf("got %d items %v, want %d items %v", len(got), got, len(want), want)
+		return
+	}
+	wantSet := make(map[string]bool, len(want))
+	for _, s := range want {
+		wantSet[s] = true
+	}
+	for _, s := range got {
+		if !wantSet[s] {
+			t.Errorf("unexpected item %q in %v (want %v)", s, got, want)
+		}
+	}
+}
+
 // MustNoErr fails the test immediately if err is non-nil.
 // Use this for setup operations where failure means the test cannot proceed.
 func MustNoErr(t *testing.T, err error, msg string) {

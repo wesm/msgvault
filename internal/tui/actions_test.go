@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"path/filepath"
-	"sort"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/deletion"
@@ -14,6 +13,7 @@ import (
 
 // ControllerTestEnv encapsulates common setup for ActionController tests.
 type ControllerTestEnv struct {
+	t    *testing.T
 	Ctrl *ActionController
 	Dir  string
 	Mgr  *deletion.Manager
@@ -29,16 +29,16 @@ func NewControllerTestEnv(t *testing.T, engine *querytest.MockEngine) *Controlle
 		t.Fatalf("NewManager: %v", err)
 	}
 	return &ControllerTestEnv{
+		t:    t,
 		Ctrl: NewActionController(engine, dir, mgr),
 		Dir:  dir,
 		Mgr:  mgr,
 	}
 }
 
-func newTestController(t *testing.T, gmailIDs ...string) *ActionController {
+func newTestEnv(t *testing.T, gmailIDs ...string) *ControllerTestEnv {
 	t.Helper()
-	env := NewControllerTestEnv(t, &querytest.MockEngine{GmailIDs: gmailIDs})
-	return env.Ctrl
+	return NewControllerTestEnv(t, &querytest.MockEngine{GmailIDs: gmailIDs})
 }
 
 type stageArgs struct {
@@ -52,13 +52,15 @@ type stageArgs struct {
 	drillFilter     *query.MessageFilter
 }
 
-func stageForDeletion(t *testing.T, ctrl *ActionController, args stageArgs) *deletion.Manifest {
-	t.Helper()
+// StageForDeletion is a test helper that calls the controller's StageForDeletion
+// method with sensible defaults, failing the test on error.
+func (e *ControllerTestEnv) StageForDeletion(args stageArgs) *deletion.Manifest {
+	e.t.Helper()
 	granularity := args.timeGranularity
 	if granularity == 0 {
 		granularity = query.TimeYear
 	}
-	manifest, err := ctrl.StageForDeletion(DeletionContext{
+	manifest, err := e.Ctrl.StageForDeletion(DeletionContext{
 		AggregateSelection: args.aggregates,
 		MessageSelection:   args.selection,
 		AggregateViewType:  args.view,
@@ -69,7 +71,7 @@ func stageForDeletion(t *testing.T, ctrl *ActionController, args stageArgs) *del
 		DrillFilter:        args.drillFilter,
 	})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		e.t.Fatalf("unexpected error: %v", err)
 	}
 	return manifest
 }
@@ -79,9 +81,9 @@ func msgSummary(id int64, sourceID string) query.MessageSummary {
 }
 
 func TestStageForDeletion_FromAggregateSelection(t *testing.T) {
-	ctrl := newTestController(t, "gid1", "gid2", "gid3")
+	env := newTestEnv(t, "gid1", "gid2", "gid3")
 
-	manifest := stageForDeletion(t, ctrl, stageArgs{
+	manifest := env.StageForDeletion(stageArgs{
 		aggregates: testutil.MakeSet("alice@example.com"),
 		view:       query.ViewSenders,
 	})
@@ -96,7 +98,7 @@ func TestStageForDeletion_FromAggregateSelection(t *testing.T) {
 }
 
 func TestStageForDeletion_FromMessageSelection(t *testing.T) {
-	ctrl := newTestController(t)
+	env := newTestEnv(t)
 
 	messages := []query.MessageSummary{
 		msgSummary(10, "gid_a"),
@@ -104,25 +106,19 @@ func TestStageForDeletion_FromMessageSelection(t *testing.T) {
 		msgSummary(30, "gid_c"),
 	}
 
-	manifest := stageForDeletion(t, ctrl, stageArgs{
+	manifest := env.StageForDeletion(stageArgs{
 		selection: testutil.MakeSet[int64](10, 30),
 		view:      query.ViewSenders,
 		messages:  messages,
 	})
 
-	ids := make([]string, len(manifest.GmailIDs))
-	copy(ids, manifest.GmailIDs)
-	sort.Strings(ids)
-
-	if len(ids) != 2 || ids[0] != "gid_a" || ids[1] != "gid_c" {
-		t.Errorf("expected [gid_a gid_c], got %v", ids)
-	}
+	testutil.AssertStringSet(t, manifest.GmailIDs, "gid_a", "gid_c")
 }
 
 func TestStageForDeletion_NoSelection(t *testing.T) {
-	ctrl := newTestController(t)
+	env := newTestEnv(t)
 
-	_, err := ctrl.StageForDeletion(DeletionContext{
+	_, err := env.Ctrl.StageForDeletion(DeletionContext{
 		AggregateViewType: query.ViewSenders,
 		TimeGranularity:   query.TimeYear,
 	})
@@ -132,12 +128,12 @@ func TestStageForDeletion_NoSelection(t *testing.T) {
 }
 
 func TestStageForDeletion_MultipleAggregates_DeterministicFilter(t *testing.T) {
-	ctrl := newTestController(t, "gid1")
+	env := newTestEnv(t, "gid1")
 
 	agg := testutil.MakeSet("charlie@example.com", "alice@example.com", "bob@example.com")
 
 	for i := 0; i < 10; i++ {
-		manifest := stageForDeletion(t, ctrl, stageArgs{aggregates: agg, view: query.ViewSenders})
+		manifest := env.StageForDeletion(stageArgs{aggregates: agg, view: query.ViewSenders})
 		testutil.AssertStrings(t, manifest.Filters.Senders, "alice@example.com", "bob@example.com", "charlie@example.com")
 	}
 }
@@ -165,9 +161,9 @@ func TestStageForDeletion_ViewTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctrl := newTestController(t, "gid1")
+			env := newTestEnv(t, "gid1")
 
-			manifest := stageForDeletion(t, ctrl, stageArgs{
+			manifest := env.StageForDeletion(stageArgs{
 				aggregates: testutil.MakeSet(tt.key),
 				view:       tt.viewType,
 			})
@@ -177,14 +173,14 @@ func TestStageForDeletion_ViewTypes(t *testing.T) {
 }
 
 func TestStageForDeletion_AccountFilter(t *testing.T) {
-	ctrl := newTestController(t, "gid1")
+	env := newTestEnv(t, "gid1")
 
 	accountID := int64(42)
 	accounts := []query.AccountInfo{
 		{ID: 42, Identifier: "test@gmail.com"},
 	}
 
-	manifest := stageForDeletion(t, ctrl, stageArgs{
+	manifest := env.StageForDeletion(stageArgs{
 		aggregates: testutil.MakeSet("sender@x.com"),
 		view:       query.ViewSenders,
 		accountID:  &accountID,
@@ -211,7 +207,7 @@ func TestStageForDeletion_DrillFilterApplied(t *testing.T) {
 		Sender: "alice@example.com",
 	}
 
-	manifest := stageForDeletion(t, env.Ctrl, stageArgs{
+	manifest := env.StageForDeletion(stageArgs{
 		aggregates:  testutil.MakeSet("2024-01"),
 		view:        query.ViewTime,
 		drillFilter: drillFilter,
@@ -240,7 +236,7 @@ func TestStageForDeletion_NoDrillFilter(t *testing.T) {
 	}
 	env := NewControllerTestEnv(t, engine)
 
-	stageForDeletion(t, env.Ctrl, stageArgs{
+	env.StageForDeletion(stageArgs{
 		aggregates: testutil.MakeSet("2024-01"),
 		view:       query.ViewTime,
 	})
@@ -254,21 +250,21 @@ func TestStageForDeletion_NoDrillFilter(t *testing.T) {
 }
 
 func TestExportAttachments_NilDetail(t *testing.T) {
-	ctrl := newTestController(t)
-	cmd := ctrl.ExportAttachments(nil, nil)
+	env := newTestEnv(t)
+	cmd := env.Ctrl.ExportAttachments(nil, nil)
 	if cmd != nil {
 		t.Error("expected nil cmd for nil detail")
 	}
 }
 
 func TestExportAttachments_NoSelection(t *testing.T) {
-	ctrl := newTestController(t)
+	env := newTestEnv(t)
 	detail := &query.MessageDetail{
 		Attachments: []query.AttachmentInfo{
 			{ID: 1, Filename: "file.pdf", ContentHash: "abc123"},
 		},
 	}
-	cmd := ctrl.ExportAttachments(detail, map[int]bool{})
+	cmd := env.Ctrl.ExportAttachments(detail, map[int]bool{})
 	if cmd != nil {
 		t.Error("expected nil cmd for empty selection")
 	}
