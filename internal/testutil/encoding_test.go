@@ -7,11 +7,16 @@ import (
 
 func TestEncodedSamplesDefensiveCopy(t *testing.T) {
 	first := EncodedSamples()
-	original := make([]byte, len(first.ShiftJIS_Konnichiwa))
-	copy(original, first.ShiftJIS_Konnichiwa)
+	target := first.ShiftJIS_Konnichiwa
+
+	if len(target) == 0 {
+		t.Fatal("ShiftJIS_Konnichiwa sample is empty, cannot test mutation")
+	}
+
+	original := bytes.Clone(target)
 
 	// Mutate the returned slice.
-	first.ShiftJIS_Konnichiwa[0] = 0xFF
+	first.ShiftJIS_Konnichiwa[0] ^= 0xFF
 
 	// A second call must return the original, unmodified bytes.
 	second := EncodedSamples()
