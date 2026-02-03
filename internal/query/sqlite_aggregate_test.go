@@ -420,9 +420,10 @@ func TestSQLiteEngine_Aggregate_InvalidViewType(t *testing.T) {
 func TestAggregateDeterministicOrderOnTies(t *testing.T) {
 	tdb := dbtest.NewTestDB(t, "../store/schema.sql")
 
-	// Create minimal test data using helpers to avoid hardcoded IDs.
-	tdb.AddSource(dbtest.SourceOpts{Identifier: "test@gmail.com", DisplayName: "Test Account"})
-	tdb.AddConversation(dbtest.ConversationOpts{Title: "Test Thread"})
+	// Create minimal test data using helpers, explicitly threading IDs to avoid
+	// implicit coupling to helper defaults or auto-increment assumptions.
+	sourceID := tdb.AddSource(dbtest.SourceOpts{Identifier: "test@gmail.com", DisplayName: "Test Account"})
+	convID := tdb.AddConversation(dbtest.ConversationOpts{SourceID: sourceID, Title: "Test Thread"})
 	aliceID := tdb.AddParticipant(dbtest.ParticipantOpts{Email: dbtest.StrPtr("alice@example.com"), DisplayName: dbtest.StrPtr("Alice"), Domain: "example.com"})
 	bobID := tdb.AddParticipant(dbtest.ParticipantOpts{Email: dbtest.StrPtr("bob@example.com"), DisplayName: dbtest.StrPtr("Bob"), Domain: "example.com"})
 
@@ -433,10 +434,12 @@ func TestAggregateDeterministicOrderOnTies(t *testing.T) {
 
 	// Add one message with both labels
 	msgID := tdb.AddMessage(dbtest.MessageOpts{
-		Subject: "Test",
-		SentAt:  "2024-01-01 10:00:00",
-		FromID:  aliceID,
-		ToIDs:   []int64{bobID},
+		Subject:        "Test",
+		SentAt:         "2024-01-01 10:00:00",
+		FromID:         aliceID,
+		ToIDs:          []int64{bobID},
+		SourceID:       sourceID,
+		ConversationID: convID,
 	})
 	tdb.AddMessageLabel(msgID, zebraID)
 	tdb.AddMessageLabel(msgID, appleID)
