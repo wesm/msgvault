@@ -3,6 +3,7 @@ package gmail
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"testing"
 )
 
@@ -46,24 +47,28 @@ func (b *GmailErrorBuilder) WithDetail(reason string) *GmailErrorBuilder {
 	return b
 }
 
+// toReasonMaps converts a string slice into a slice of {"reason": s} maps.
+func toReasonMaps(items []string) []map[string]string {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]map[string]string, len(items))
+	for i, item := range items {
+		out[i] = map[string]string{"reason": item}
+	}
+	return out
+}
+
 // Build serializes the error to JSON bytes.
 func (b *GmailErrorBuilder) Build() []byte {
 	inner := map[string]any{"code": b.code}
 	if b.message != "" {
 		inner["message"] = b.message
 	}
-	if len(b.reasons) > 0 {
-		errs := make([]map[string]string, len(b.reasons))
-		for i, r := range b.reasons {
-			errs[i] = map[string]string{"reason": r}
-		}
+	if errs := toReasonMaps(b.reasons); errs != nil {
 		inner["errors"] = errs
 	}
-	if len(b.details) > 0 {
-		dets := make([]map[string]string, len(b.details))
-		for i, r := range b.details {
-			dets[i] = map[string]string{"reason": r}
-		}
+	if dets := toReasonMaps(b.details); dets != nil {
 		inner["details"] = dets
 	}
 	data, err := json.Marshal(map[string]any{"error": inner})
@@ -81,32 +86,32 @@ func TestIsRateLimitError(t *testing.T) {
 	}{
 		{
 			name: "RateLimitExceeded",
-			body: NewGmailError(403).WithReason(reasonRateLimitExceeded).Build(),
+			body: NewGmailError(http.StatusForbidden).WithReason(reasonRateLimitExceeded).Build(),
 			want: true,
 		},
 		{
 			name: "RateLimitExceededByMessage",
-			body: NewGmailError(403).WithMessage(quotaExceededMsg).WithReason(reasonRateLimitExceeded).Build(),
+			body: NewGmailError(http.StatusForbidden).WithMessage(quotaExceededMsg).WithReason(reasonRateLimitExceeded).Build(),
 			want: true,
 		},
 		{
 			name: "RateLimitExceededUpperCase",
-			body: NewGmailError(403).WithDetail(reasonRateLimitExceededUC).Build(),
+			body: NewGmailError(http.StatusForbidden).WithDetail(reasonRateLimitExceededUC).Build(),
 			want: true,
 		},
 		{
 			name: "QuotaExceeded",
-			body: NewGmailError(403).WithMessage(quotaExceededMsg).Build(),
+			body: NewGmailError(http.StatusForbidden).WithMessage(quotaExceededMsg).Build(),
 			want: true,
 		},
 		{
 			name: "UserRateLimitExceeded",
-			body: NewGmailError(403).WithReason(reasonUserRateLimitExceeded).Build(),
+			body: NewGmailError(http.StatusForbidden).WithReason(reasonUserRateLimitExceeded).Build(),
 			want: true,
 		},
 		{
 			name: "PermissionDenied",
-			body: NewGmailError(403).WithReason(reasonForbidden).Build(),
+			body: NewGmailError(http.StatusForbidden).WithReason(reasonForbidden).Build(),
 			want: false,
 		},
 		{
