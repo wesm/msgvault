@@ -66,7 +66,7 @@ func AssertContainsAll(t *testing.T, got string, subs []string) {
 // AssertStringSet asserts that got contains exactly the expected strings,
 // ignoring order. Useful when the slice order is non-deterministic.
 // Duplicates are counted: ["a", "a"] does not match ["a", "b"].
-func AssertStringSet(t *testing.T, got []string, want ...string) {
+func AssertStringSet(t testing.TB, got []string, want ...string) {
 	t.Helper()
 	if len(got) != len(want) {
 		t.Errorf("got %d items %v, want %d items %v", len(got), got, len(want), want)
