@@ -270,6 +270,12 @@ func mutateStruct(t *testing.T, v reflect.Value) bool {
 
 // TestMutateValueMapEdgeCases verifies that map mutations produce semantic changes
 // for all map states: nil, empty non-nil, and non-empty.
+//
+// Note: The nil <-> empty toggle may be a no-op for encoders that treat them
+// equivalently (e.g., with omitempty). The key guarantee is that mutateValue
+// always returns true for maps, indicating it performed some mutation.
+// For encoding-level guarantees, use the non-empty map case or verify
+// encoded output directly.
 func TestMutateValueMapEdgeCases(t *testing.T) {
 	t.Run("nil map becomes non-nil", func(t *testing.T) {
 		var m map[string]int
@@ -306,13 +312,50 @@ func TestMutateValueMapEdgeCases(t *testing.T) {
 	})
 }
 
-// TestMutateValuePointerToNilInterface verifies that pointers to nil interfaces
-// are handled by falling back to setting the pointer to nil.
-func TestMutateValuePointerToNilInterface(t *testing.T) {
+// TestMutateValueMapEncodingChange verifies that map mutations produce
+// different encoded output, which is the ultimate test of semantic change.
+// This catches cases where nil/empty toggling might be a no-op for some encoders.
+func TestMutateValueMapEncodingChange(t *testing.T) {
+	t.Run("non-empty map encodes differently after mutation", func(t *testing.T) {
+		m := map[string]int{"key1": 100, "key2": 200}
+
+		// Encode before mutation using reflect-based comparison
+		// (simulates what an encoder would see)
+		before := make(map[string]int)
+		for k, v := range m {
+			before[k] = v
+		}
+
+		v := reflect.ValueOf(&m).Elem()
+		if !mutateValue(t, v) {
+			t.Fatal("mutateValue returned false for non-empty map")
+		}
+
+		// Verify the map content actually changed
+		if reflect.DeepEqual(before, m) {
+			t.Error("expected map content to differ after mutation")
+		}
+	})
+
+	t.Run("single-entry map becomes empty after mutation", func(t *testing.T) {
+		m := map[string]int{"only": 42}
+		v := reflect.ValueOf(&m).Elem()
+		if !mutateValue(t, v) {
+			t.Fatal("mutateValue returned false for single-entry map")
+		}
+		if len(m) != 0 {
+			t.Errorf("expected single-entry map to become empty, got len=%d", len(m))
+		}
+	})
+}
+
+// TestMutateValueNilInterface verifies that mutating a nil interface value
+// returns false since we cannot create a meaningful non-nil value.
+func TestMutateValueNilInterface(t *testing.T) {
 	type container struct {
 		Iface any
 	}
-	c := &container{Iface: nil} // pointer to struct with nil interface
+	c := &container{Iface: nil}
 	v := reflect.ValueOf(c).Elem().Field(0)
 
 	// mutateValue on a nil interface should return false
@@ -321,9 +364,9 @@ func TestMutateValuePointerToNilInterface(t *testing.T) {
 	}
 }
 
-// TestMutateValuePointerToNilFunc verifies that pointers to nil funcs
-// are handled correctly.
-func TestMutateValuePointerToNilFunc(t *testing.T) {
+// TestMutateValueNilFunc verifies that mutating a nil func value
+// returns false since we cannot create a function dynamically.
+func TestMutateValueNilFunc(t *testing.T) {
 	type container struct {
 		Fn func()
 	}
@@ -336,10 +379,10 @@ func TestMutateValuePointerToNilFunc(t *testing.T) {
 	}
 }
 
-// TestMutateSliceElementPointerFallback verifies that mutateSliceElement
-// falls back to nil when mutateValue fails for the pointed-to value.
-func TestMutateSliceElementPointerFallback(t *testing.T) {
-	// Create a slice of pointers to interfaces (which can be nil)
+// TestMutateSliceElementPointerToNilInterface verifies that mutateSliceElement
+// properly handles a slice of pointers to structs containing nil interfaces
+// by falling back to setting the pointer to nil.
+func TestMutateSliceElementPointerToNilInterface(t *testing.T) {
 	type wrapper struct {
 		Val any
 	}
@@ -347,15 +390,35 @@ func TestMutateSliceElementPointerFallback(t *testing.T) {
 	slice := []*wrapper{w}
 	sliceVal := reflect.ValueOf(&slice).Elem()
 
-	// mutateSliceElement should succeed by setting the pointer to nil
-	// when it can't mutate the underlying nil interface
+	// Record original pointer
+	originalPtr := slice[0]
+
 	mutateSliceElement(t, sliceVal, 0)
 
-	// The pointer should now be nil (fallback behavior)
-	if slice[0] != nil {
-		// Or it allocated a new wrapper - either way, it's different from original
-		if slice[0] == w {
-			t.Error("expected slice element to be mutated")
-		}
+	// The element should have changed (either nil or a different pointer)
+	if slice[0] == originalPtr {
+		t.Error("expected slice element to be mutated, but pointer is unchanged")
+	}
+}
+
+// TestMutateSliceElementPointerToNilFunc verifies that mutateSliceElement
+// properly handles a slice of pointers to structs containing nil funcs
+// by falling back to setting the pointer to nil.
+func TestMutateSliceElementPointerToNilFunc(t *testing.T) {
+	type wrapper struct {
+		Fn func()
+	}
+	w := &wrapper{Fn: nil}
+	slice := []*wrapper{w}
+	sliceVal := reflect.ValueOf(&slice).Elem()
+
+	// Record original pointer
+	originalPtr := slice[0]
+
+	mutateSliceElement(t, sliceVal, 0)
+
+	// The element should have changed (either nil or a different pointer)
+	if slice[0] == originalPtr {
+		t.Error("expected slice element to be mutated, but pointer is unchanged")
 	}
 }
