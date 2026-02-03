@@ -459,7 +459,8 @@ func standardStats() *query.TotalStats {
 }
 
 // newTestModelWithRows creates a test model pre-populated with aggregate rows.
-// This helper uses the TestModelBuilder internally for consistency.
+// The model is returned with loading=false since data is present.
+// Use NewBuilder().WithRows(...).WithLoading(true) if you need loading=true.
 func newTestModelWithRows(rows []query.AggregateRow) Model {
 	return NewBuilder().
 		WithRows(rows...).
