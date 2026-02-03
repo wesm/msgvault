@@ -61,56 +61,40 @@ func requireAggregateRow(t *testing.T, rows []AggregateRow, key string) Aggregat
 	return AggregateRow{}
 }
 
-// assertMessageIDs checks that the returned messages have exactly the expected IDs (order-independent).
-func assertMessageIDs(t *testing.T, messages []MessageSummary, wantIDs []int64) {
+// assertSetEqual checks that got and want contain the same elements, ignoring order.
+func assertSetEqual[T comparable](t *testing.T, got, want []T) {
 	t.Helper()
-	got := make(map[int64]bool)
-	for _, msg := range messages {
-		if got[msg.ID] {
-			t.Errorf("duplicate message ID %d", msg.ID)
+	gotSet := make(map[T]bool)
+	for _, v := range got {
+		if gotSet[v] {
+			t.Errorf("duplicate element %v", v)
 		}
-		got[msg.ID] = true
+		gotSet[v] = true
 	}
-	want := make(map[int64]bool)
-	for _, id := range wantIDs {
-		want[id] = true
+	wantSet := make(map[T]bool)
+	for _, v := range want {
+		wantSet[v] = true
 	}
-	for id := range want {
-		if !got[id] {
-			t.Errorf("missing expected message ID %d", id)
+	for v := range wantSet {
+		if !gotSet[v] {
+			t.Errorf("missing expected element %v", v)
 		}
 	}
-	for id := range got {
-		if !want[id] {
-			t.Errorf("unexpected message ID %d", id)
+	for v := range gotSet {
+		if !wantSet[v] {
+			t.Errorf("unexpected element %v", v)
 		}
 	}
 }
 
-// assertStringIDs checks that the returned string IDs match expected (order-independent).
-func assertStringIDs(t *testing.T, got []string, want []string) {
+// assertMessageIDs checks that the returned messages have exactly the expected IDs (order-independent).
+func assertMessageIDs(t *testing.T, messages []MessageSummary, wantIDs []int64) {
 	t.Helper()
-	gotSet := make(map[string]bool)
-	for _, id := range got {
-		if gotSet[id] {
-			t.Errorf("duplicate ID %s", id)
-		}
-		gotSet[id] = true
+	got := make([]int64, len(messages))
+	for i, msg := range messages {
+		got[i] = msg.ID
 	}
-	wantSet := make(map[string]bool)
-	for _, id := range want {
-		wantSet[id] = true
-	}
-	for id := range wantSet {
-		if !gotSet[id] {
-			t.Errorf("missing expected ID %s", id)
-		}
-	}
-	for id := range gotSet {
-		if !wantSet[id] {
-			t.Errorf("unexpected ID %s", id)
-		}
-	}
+	assertSetEqual(t, got, wantIDs)
 }
 
 // assertSubjects checks that the returned messages have exactly the expected subjects (order-independent).
@@ -705,25 +689,16 @@ func TestDuckDBEngine_GetGmailIDsByFilter_SenderName(t *testing.T) {
 
 func TestDuckDBEngine_AggregateBySenderName_EmptyStringFallback(t *testing.T) {
 	// Build Parquet data with an empty-string and whitespace display_name
-	engine := createEngineFromBuilder(t, newParquetBuilder(t).
-		addTable("messages", "messages/year=2024", "data.parquet", messagesCols, `
-			(1::BIGINT, 1::BIGINT, 'msg1', 100::BIGINT, 'Hello', 'Snippet', TIMESTAMP '2024-01-15 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1),
-			(2::BIGINT, 1::BIGINT, 'msg2', 101::BIGINT, 'World', 'Snippet', TIMESTAMP '2024-01-16 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1)
-		`).
-		addTable("sources", "sources", "sources.parquet", sourcesCols, `
-			(1::BIGINT, 'test@gmail.com')
-		`).
-		addTable("participants", "participants", "participants.parquet", participantsCols, `
-			(1::BIGINT, 'empty@test.com', 'test.com', ''),
-			(2::BIGINT, 'spaces@test.com', 'test.com', '   ')
-		`).
-		addTable("message_recipients", "message_recipients", "message_recipients.parquet", messageRecipientsCols, `
-			(1::BIGINT, 1::BIGINT, 'from', 'Empty'),
-			(2::BIGINT, 2::BIGINT, 'from', 'Spaces')
-		`).
-		addEmptyTable("labels", "labels", "labels.parquet", labelsCols, `(1::BIGINT, 'x')`).
-		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
-		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`))
+	b := NewTestDataBuilder(t)
+	b.AddSource("test@gmail.com")
+	empty := b.AddParticipant("empty@test.com", "test.com", "")
+	spaces := b.AddParticipant("spaces@test.com", "test.com", "   ")
+	msg1 := b.AddMessage(MessageOpt{Subject: "Hello", SentAt: makeDate(2024, 1, 15), SizeEstimate: 1000})
+	msg2 := b.AddMessage(MessageOpt{Subject: "World", SentAt: makeDate(2024, 1, 16), SizeEstimate: 1000})
+	b.AddFrom(msg1, empty, "Empty")
+	b.AddFrom(msg2, spaces, "Spaces")
+	b.SetEmptyAttachments()
+	engine := b.BuildEngine()
 
 	ctx := context.Background()
 	results, err := engine.AggregateBySenderName(ctx, DefaultAggregateOptions())
@@ -750,23 +725,14 @@ func TestDuckDBEngine_AggregateBySenderName_EmptyStringFallback(t *testing.T) {
 
 func TestDuckDBEngine_ListMessages_MatchEmptySenderName(t *testing.T) {
 	// Build Parquet data with a message that has no sender
-	engine := createEngineFromBuilder(t, newParquetBuilder(t).
-		addTable("messages", "messages/year=2024", "data.parquet", messagesCols, `
-			(1::BIGINT, 1::BIGINT, 'msg1', 100::BIGINT, 'Has Sender', 'Snippet', TIMESTAMP '2024-01-15 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1),
-			(2::BIGINT, 1::BIGINT, 'msg2', 101::BIGINT, 'No Sender', 'Snippet', TIMESTAMP '2024-01-16 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1)
-		`).
-		addTable("sources", "sources", "sources.parquet", sourcesCols, `
-			(1::BIGINT, 'test@gmail.com')
-		`).
-		addTable("participants", "participants", "participants.parquet", participantsCols, `
-			(1::BIGINT, 'alice@test.com', 'test.com', 'Alice')
-		`).
-		addTable("message_recipients", "message_recipients", "message_recipients.parquet", messageRecipientsCols, `
-			(1::BIGINT, 1::BIGINT, 'from', 'Alice')
-		`).
-		addEmptyTable("labels", "labels", "labels.parquet", labelsCols, `(1::BIGINT, 'x')`).
-		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
-		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`))
+	b := NewTestDataBuilder(t)
+	b.AddSource("test@gmail.com")
+	alice := b.AddParticipant("alice@test.com", "test.com", "Alice")
+	msg1 := b.AddMessage(MessageOpt{Subject: "Has Sender", SentAt: makeDate(2024, 1, 15), SizeEstimate: 1000})
+	_ = b.AddMessage(MessageOpt{Subject: "No Sender", SentAt: makeDate(2024, 1, 16), SizeEstimate: 1000})
+	b.AddFrom(msg1, alice, "Alice")
+	b.SetEmptyAttachments()
+	engine := b.BuildEngine()
 
 	ctx := context.Background()
 	// msg2 has no 'from' recipient, so MatchEmptySenderName should find it
@@ -1371,7 +1337,7 @@ func TestDuckDBEngine_GetGmailIDsByFilter(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetGmailIDsByFilter: %v", err)
 			}
-			assertStringIDs(t, ids, tt.wantIDs)
+			assertSetEqual(t, ids, tt.wantIDs)
 		})
 	}
 }
@@ -1631,7 +1597,7 @@ func TestDuckDBEngine_GetGmailIDsByFilter_EmptyFilter(t *testing.T) {
 		t.Fatalf("GetGmailIDsByFilter with empty filter: %v", err)
 	}
 
-	assertStringIDs(t, ids, []string{"msg1", "msg2", "msg3", "msg4", "msg5"})
+	assertSetEqual(t, ids, []string{"msg1", "msg2", "msg3", "msg4", "msg5"})
 }
 
 // TestDuckDBEngine_GetGmailIDsByFilter_CombinedNoMatch verifies empty results for
