@@ -648,7 +648,7 @@ func TestListMessages_MatchEmptyFilters(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			messages := env.MustListMessages(tt.filter)
 			if tt.wantCount > 0 && len(messages) != tt.wantCount {
-				t.Errorf("got %d messages, want %d", len(messages), tt.wantCount)
+				t.Fatalf("got %d messages, want %d", len(messages), tt.wantCount)
 			}
 			if tt.validate != nil {
 				tt.validate(t, messages)
@@ -688,12 +688,13 @@ func TestRecipientNameFilter_IncludesBCC(t *testing.T) {
 	sp := dbtest.StrPtr
 	aliceID := env.AddParticipant(dbtest.ParticipantOpts{Email: sp("alice-bcc@example.com"), DisplayName: sp("Alice Sender"), Domain: "example.com"})
 	secretID := env.AddParticipant(dbtest.ParticipantOpts{Email: sp("secret@example.com"), DisplayName: sp("Secret Bob"), Domain: "example.com"})
+	bobID := env.MustLookupParticipant("bob@company.org")
 
 	env.AddMessage(dbtest.MessageOpts{
 		Subject: "BCC Test Subject",
 		SentAt:  "2024-01-15 10:00:00",
 		FromID:  aliceID,
-		ToIDs:   []int64{2}, // Bob from standard data
+		ToIDs:   []int64{bobID},
 		BccIDs:  []int64{secretID},
 	})
 
