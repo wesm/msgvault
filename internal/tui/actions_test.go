@@ -269,3 +269,59 @@ func TestExportAttachments_NoSelection(t *testing.T) {
 		t.Error("expected nil cmd for empty selection")
 	}
 }
+
+func TestExportAttachments_ErrBehavior(t *testing.T) {
+	tests := []struct {
+		name        string
+		attachments []query.AttachmentInfo
+		wantErr     bool
+	}{
+		{
+			name: "invalid content hash sets Err",
+			attachments: []query.AttachmentInfo{
+				{ID: 1, Filename: "file.pdf", ContentHash: ""},
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing file sets Err",
+			attachments: []query.AttachmentInfo{
+				{ID: 1, Filename: "file.pdf", ContentHash: "abc123def456"},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newTestEnv(t)
+			detail := &query.MessageDetail{
+				ID:          1,
+				Subject:     "Test",
+				Attachments: tt.attachments,
+			}
+			selection := make(map[int]bool)
+			for i := range tt.attachments {
+				selection[i] = true
+			}
+
+			cmd := env.Ctrl.ExportAttachments(detail, selection)
+			if cmd == nil {
+				t.Fatal("expected non-nil cmd")
+			}
+
+			msg := cmd()
+			result, ok := msg.(ExportResultMsg)
+			if !ok {
+				t.Fatalf("expected ExportResultMsg, got %T", msg)
+			}
+
+			if tt.wantErr && result.Err == nil {
+				t.Error("expected Err to be set")
+			}
+			if !tt.wantErr && result.Err != nil {
+				t.Errorf("expected Err to be nil, got %v", result.Err)
+			}
+		})
+	}
+}
