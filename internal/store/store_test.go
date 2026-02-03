@@ -774,3 +774,60 @@ func TestStore_GetRandomMessageIDs_ExcludesDeleted(t *testing.T) {
 		t.Errorf("len(ids) = %d, want 3 (5 total - 2 deleted)", len(ids))
 	}
 }
+
+func TestStore_ReplaceMessageRecipients_LargeBatch(t *testing.T) {
+	f := storetest.New(t)
+
+	msgID := f.CreateMessage("msg-large-recipients")
+
+	// Create 300 participants (exceeds SQLite limit of ~249 rows with 4 params each)
+	const numRecipients = 300
+	participantIDs := make([]int64, numRecipients)
+	displayNames := make([]string, numRecipients)
+	for i := 0; i < numRecipients; i++ {
+		email := fmt.Sprintf("user%d@example.com", i)
+		pid := f.EnsureParticipant(email, fmt.Sprintf("User %d", i), "example.com")
+		participantIDs[i] = pid
+		displayNames[i] = fmt.Sprintf("User %d", i)
+	}
+
+	// This should work without hitting SQLite parameter limit
+	err := f.Store.ReplaceMessageRecipients(msgID, "to", participantIDs, displayNames)
+	testutil.MustNoErr(t, err, "ReplaceMessageRecipients(300 recipients)")
+
+	f.AssertRecipientCount(msgID, "to", numRecipients)
+
+	// Replace with a different large batch to ensure chunked delete+insert works
+	err = f.Store.ReplaceMessageRecipients(msgID, "to", participantIDs[:150], displayNames[:150])
+	testutil.MustNoErr(t, err, "ReplaceMessageRecipients(150 recipients)")
+
+	f.AssertRecipientCount(msgID, "to", 150)
+}
+
+func TestStore_ReplaceMessageLabels_LargeBatch(t *testing.T) {
+	f := storetest.New(t)
+
+	msgID := f.CreateMessage("msg-large-labels")
+
+	// Create 600 labels (exceeds SQLite limit of ~499 rows with 2 params each)
+	const numLabels = 600
+	labelIDs := make([]int64, numLabels)
+	for i := 0; i < numLabels; i++ {
+		sourceLabelID := fmt.Sprintf("Label_%d", i)
+		lid, err := f.Store.EnsureLabel(f.Source.ID, sourceLabelID, fmt.Sprintf("Label %d", i), "user")
+		testutil.MustNoErr(t, err, "EnsureLabel")
+		labelIDs[i] = lid
+	}
+
+	// This should work without hitting SQLite parameter limit
+	err := f.Store.ReplaceMessageLabels(msgID, labelIDs)
+	testutil.MustNoErr(t, err, "ReplaceMessageLabels(600 labels)")
+
+	f.AssertLabelCount(msgID, numLabels)
+
+	// Replace with a different large batch to ensure chunked delete+insert works
+	err = f.Store.ReplaceMessageLabels(msgID, labelIDs[:250])
+	testutil.MustNoErr(t, err, "ReplaceMessageLabels(250 labels)")
+
+	f.AssertLabelCount(msgID, 250)
+}

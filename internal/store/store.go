@@ -121,6 +121,34 @@ func queryInChunks[T any](db *sql.DB, ids []T, prefixArgs []interface{}, queryTe
 	return nil
 }
 
+// insertInChunks executes a multi-value INSERT in chunks to stay within SQLite's
+// parameter limit (999). The valuesPerRow specifies how many parameters are in
+// each VALUES tuple (e.g., 4 for "(?, ?, ?, ?)"). The valueBuilder function
+// generates the VALUES placeholders and args for each chunk of indices.
+func insertInChunks(tx *sql.Tx, totalRows int, valuesPerRow int, queryPrefix string, valueBuilder func(start, end int) ([]string, []interface{})) error {
+	// SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999
+	// Leave some margin for safety
+	const maxParams = 900
+	chunkSize := maxParams / valuesPerRow
+	if chunkSize < 1 {
+		chunkSize = 1
+	}
+
+	for i := 0; i < totalRows; i += chunkSize {
+		end := i + chunkSize
+		if end > totalRows {
+			end = totalRows
+		}
+
+		values, args := valueBuilder(i, end)
+		query := queryPrefix + strings.Join(values, ",")
+		if _, err := tx.Exec(query, args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Rebind converts a query with ? placeholders to the appropriate format
 // for the current database driver. Currently SQLite-only (no conversion needed).
 // When PostgreSQL support is added, this will convert ? to $1, $2, etc.

@@ -292,21 +292,21 @@ func (s *Store) ReplaceMessageRecipients(messageID int64, recipientType string, 
 			return nil
 		}
 
-		values := make([]string, len(participantIDs))
-		args := make([]interface{}, 0, len(participantIDs)*4)
-		for i, pid := range participantIDs {
-			values[i] = "(?, ?, ?, ?)"
-			displayName := ""
-			if i < len(displayNames) {
-				displayName = displayNames[i]
-			}
-			args = append(args, messageID, pid, recipientType, displayName)
-		}
-
-		query := fmt.Sprintf("INSERT INTO message_recipients (message_id, participant_id, recipient_type, display_name) VALUES %s",
-			strings.Join(values, ","))
-		_, err = tx.Exec(query, args...)
-		return err
+		return insertInChunks(tx, len(participantIDs), 4,
+			"INSERT INTO message_recipients (message_id, participant_id, recipient_type, display_name) VALUES ",
+			func(start, end int) ([]string, []interface{}) {
+				values := make([]string, end-start)
+				args := make([]interface{}, 0, (end-start)*4)
+				for i := start; i < end; i++ {
+					values[i-start] = "(?, ?, ?, ?)"
+					displayName := ""
+					if i < len(displayNames) {
+						displayName = displayNames[i]
+					}
+					args = append(args, messageID, participantIDs[i], recipientType, displayName)
+				}
+				return values, args
+			})
 	})
 }
 
@@ -390,17 +390,17 @@ func (s *Store) ReplaceMessageLabels(messageID int64, labelIDs []int64) error {
 			return nil
 		}
 
-		values := make([]string, len(labelIDs))
-		args := make([]interface{}, 0, len(labelIDs)*2)
-		for i, lid := range labelIDs {
-			values[i] = "(?, ?)"
-			args = append(args, messageID, lid)
-		}
-
-		query := fmt.Sprintf("INSERT INTO message_labels (message_id, label_id) VALUES %s",
-			strings.Join(values, ","))
-		_, err = tx.Exec(query, args...)
-		return err
+		return insertInChunks(tx, len(labelIDs), 2,
+			"INSERT INTO message_labels (message_id, label_id) VALUES ",
+			func(start, end int) ([]string, []interface{}) {
+				values := make([]string, end-start)
+				args := make([]interface{}, 0, (end-start)*2)
+				for i := start; i < end; i++ {
+					values[i-start] = "(?, ?)"
+					args = append(args, messageID, labelIDs[i])
+				}
+				return values, args
+			})
 	})
 }
 
