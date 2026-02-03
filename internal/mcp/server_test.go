@@ -19,6 +19,24 @@ import (
 // toolHandler is the function signature for MCP tool handler methods.
 type toolHandler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
 
+// Response types for runTool generic calls.
+type statsResponse struct {
+	Stats    query.TotalStats    `json:"stats"`
+	Accounts []query.AccountInfo `json:"accounts"`
+}
+
+type attachmentResponse struct {
+	Filename      string `json:"filename"`
+	MimeType      string `json:"mime_type"`
+	Size          int64  `json:"size"`
+	ContentBase64 string `json:"content_base64"`
+}
+
+// newTestHandlers creates a handlers instance with the given mock engine.
+func newTestHandlers(eng *querytest.MockEngine) *handlers {
+	return &handlers{engine: eng}
+}
+
 // callToolDirect invokes a handler directly with the given arguments and returns the raw result.
 func callToolDirect(t *testing.T, name string, fn toolHandler, args map[string]any) *mcp.CallToolResult {
 	t.Helper()
@@ -74,7 +92,7 @@ func TestSearchMessages(t *testing.T) {
 			testutil.NewMessageSummary(1).WithSubject("Hello").WithFromEmail("alice@example.com").Build(),
 		},
 	}
-	h := &handlers{engine: eng}
+	h := newTestHandlers(eng)
 
 	t.Run("valid query", func(t *testing.T) {
 		msgs := runTool[[]query.MessageSummary](t, "search_messages", h.searchMessages, map[string]any{"query": "from:alice"})
@@ -95,7 +113,7 @@ func TestSearchFallbackToFTS(t *testing.T) {
 			testutil.NewMessageSummary(2).WithSubject("Body match").WithFromEmail("bob@example.com").Build(),
 		},
 	}
-	h := &handlers{engine: eng}
+	h := newTestHandlers(eng)
 
 	msgs := runTool[[]query.MessageSummary](t, "search_messages", h.searchMessages, map[string]any{"query": "important meeting notes"})
 	if len(msgs) != 1 || msgs[0].ID != 2 {
@@ -109,7 +127,7 @@ func TestGetMessage(t *testing.T) {
 			42: testutil.NewMessageDetail(42).WithSubject("Test Message").WithBodyText("Hello world").BuildPtr(),
 		},
 	}
-	h := &handlers{engine: eng}
+	h := newTestHandlers(eng)
 
 	t.Run("found", func(t *testing.T) {
 		msg := runTool[query.MessageDetail](t, "get_message", h.getMessage, map[string]any{"id": float64(42)})
@@ -147,12 +165,9 @@ func TestGetStats(t *testing.T) {
 			{ID: 2, Identifier: "bob@gmail.com"},
 		},
 	}
-	h := &handlers{engine: eng}
+	h := newTestHandlers(eng)
 
-	resp := runTool[struct {
-		Stats    query.TotalStats    `json:"stats"`
-		Accounts []query.AccountInfo `json:"accounts"`
-	}](t, "get_stats", h.getStats, map[string]any{})
+	resp := runTool[statsResponse](t, "get_stats", h.getStats, map[string]any{})
 
 	if resp.Stats.MessageCount != 1000 {
 		t.Fatalf("unexpected message count: %d", resp.Stats.MessageCount)
@@ -169,7 +184,7 @@ func TestAggregate(t *testing.T) {
 			{Key: "bob@example.com", Count: 50, TotalSize: 25000},
 		},
 	}
-	h := &handlers{engine: eng}
+	h := newTestHandlers(eng)
 
 	for _, groupBy := range []string{"sender", "recipient", "domain", "label", "time"} {
 		t.Run(groupBy, func(t *testing.T) {
@@ -200,7 +215,7 @@ func TestListMessages(t *testing.T) {
 			testutil.NewMessageSummary(1).WithSubject("Test").WithFromEmail("alice@example.com").Build(),
 		},
 	}
-	h := &handlers{engine: eng}
+	h := newTestHandlers(eng)
 
 	t.Run("valid filters", func(t *testing.T) {
 		msgs := runTool[[]query.MessageSummary](t, "list_messages", h.listMessages, map[string]any{
@@ -228,8 +243,7 @@ func TestListMessages(t *testing.T) {
 }
 
 func TestAggregateInvalidDates(t *testing.T) {
-	eng := &querytest.MockEngine{}
-	h := &handlers{engine: eng}
+	h := newTestHandlers(&querytest.MockEngine{})
 
 	errorCases := []struct {
 		name string
@@ -272,12 +286,7 @@ func TestGetAttachment(t *testing.T) {
 	h := &handlers{engine: eng, attachmentsDir: tmpDir}
 
 	t.Run("valid", func(t *testing.T) {
-		resp := runTool[struct {
-			Filename      string `json:"filename"`
-			MimeType      string `json:"mime_type"`
-			Size          int64  `json:"size"`
-			ContentBase64 string `json:"content_base64"`
-		}](t, "get_attachment", h.getAttachment, map[string]any{"attachment_id": float64(10)})
+		resp := runTool[attachmentResponse](t, "get_attachment", h.getAttachment, map[string]any{"attachment_id": float64(10)})
 
 		if resp.Filename != "report.pdf" {
 			t.Fatalf("unexpected filename: %s", resp.Filename)
@@ -294,7 +303,8 @@ func TestGetAttachment(t *testing.T) {
 		}
 	})
 
-	errorCases := []struct {
+	// Error cases using the shared engine/handler.
+	sharedErrorCases := []struct {
 		name string
 		args map[string]any
 	}{
@@ -303,81 +313,81 @@ func TestGetAttachment(t *testing.T) {
 		{"not found", map[string]any{"attachment_id": float64(999)}},
 		{"missing hash", map[string]any{"attachment_id": float64(11)}},
 	}
-	for _, tt := range errorCases {
+	for _, tt := range sharedErrorCases {
 		t.Run(tt.name, func(t *testing.T) {
 			runToolExpectError(t, "get_attachment", h.getAttachment, tt.args)
 		})
 	}
 
-	t.Run("invalid content hash (path traversal)", func(t *testing.T) {
-		eng2 := &querytest.MockEngine{
-			Attachments: map[int64]*query.AttachmentInfo{
-				30: {ID: 30, Filename: "evil.pdf", MimeType: "application/pdf", Size: 100, ContentHash: "../../etc/passwd"},
-			},
-		}
-		h2 := &handlers{engine: eng2, attachmentsDir: tmpDir}
-		r := runToolExpectError(t, "get_attachment", h2.getAttachment, map[string]any{"attachment_id": float64(30)})
-		if txt := resultText(t, r); txt != "attachment has invalid content hash" {
-			t.Fatalf("unexpected error: %s", txt)
-		}
-	})
-
-	t.Run("non-hex content hash", func(t *testing.T) {
-		eng2 := &querytest.MockEngine{
-			Attachments: map[int64]*query.AttachmentInfo{
-				31: {ID: 31, Filename: "bad.pdf", MimeType: "application/pdf", Size: 100, ContentHash: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"},
-			},
-		}
-		h2 := &handlers{engine: eng2, attachmentsDir: tmpDir}
-		runToolExpectError(t, "get_attachment", h2.getAttachment, map[string]any{"attachment_id": float64(31)})
-	})
-
-	t.Run("attachmentsDir not configured", func(t *testing.T) {
-		eng2 := &querytest.MockEngine{
-			Attachments: map[int64]*query.AttachmentInfo{
-				10: {ID: 10, Filename: "report.pdf", MimeType: "application/pdf", Size: 100, ContentHash: hash},
-			},
-		}
-		h2 := &handlers{engine: eng2, attachmentsDir: ""}
-		runToolExpectError(t, "get_attachment", h2.getAttachment, map[string]any{"attachment_id": float64(10)})
-	})
+	// Error cases requiring custom engine/handler configuration.
+	customErrorCases := []struct {
+		name        string
+		attachments map[int64]*query.AttachmentInfo
+		attDir      string
+		args        map[string]any
+		errContains string // if non-empty, assert error text contains this
+	}{
+		{
+			name:        "invalid content hash (path traversal)",
+			attachments: map[int64]*query.AttachmentInfo{30: {ID: 30, Filename: "evil.pdf", MimeType: "application/pdf", Size: 100, ContentHash: "../../etc/passwd"}},
+			attDir:      tmpDir,
+			args:        map[string]any{"attachment_id": float64(30)},
+			errContains: "invalid content hash",
+		},
+		{
+			name:        "non-hex content hash",
+			attachments: map[int64]*query.AttachmentInfo{31: {ID: 31, Filename: "bad.pdf", MimeType: "application/pdf", Size: 100, ContentHash: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"}},
+			attDir:      tmpDir,
+			args:        map[string]any{"attachment_id": float64(31)},
+		},
+		{
+			name:        "attachmentsDir not configured",
+			attachments: map[int64]*query.AttachmentInfo{10: {ID: 10, Filename: "report.pdf", MimeType: "application/pdf", Size: 100, ContentHash: hash}},
+			attDir:      "",
+			args:        map[string]any{"attachment_id": float64(10)},
+		},
+		{
+			name:        "file not on disk",
+			attachments: map[int64]*query.AttachmentInfo{20: {ID: 20, Filename: "gone.pdf", MimeType: "application/pdf", Size: 100, ContentHash: "deadbeef1234567890abcdef1234567890abcdef1234567890abcdef12345678"}},
+			attDir:      tmpDir,
+			args:        map[string]any{"attachment_id": float64(20)},
+		},
+	}
+	for _, tt := range customErrorCases {
+		t.Run(tt.name, func(t *testing.T) {
+			h2 := &handlers{
+				engine:         &querytest.MockEngine{Attachments: tt.attachments},
+				attachmentsDir: tt.attDir,
+			}
+			r := runToolExpectError(t, "get_attachment", h2.getAttachment, tt.args)
+			if tt.errContains != "" {
+				if txt := resultText(t, r); !strings.Contains(txt, tt.errContains) {
+					t.Fatalf("expected error containing %q, got: %s", tt.errContains, txt)
+				}
+			}
+		})
+	}
 
 	t.Run("oversized attachment", func(t *testing.T) {
 		bigHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-		bigDir := filepath.Join(tmpDir, bigHash[:2])
-		if err := os.MkdirAll(bigDir, 0o755); err != nil {
+		createAttachmentFixture(t, tmpDir, bigHash, nil)
+		bigPath := filepath.Join(tmpDir, bigHash[:2], bigHash)
+		if err := os.Truncate(bigPath, maxAttachmentSize+1); err != nil {
 			t.Fatal(err)
 		}
-		bigFile, err := os.Create(filepath.Join(bigDir, bigHash))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := bigFile.Truncate(maxAttachmentSize + 1); err != nil {
-			bigFile.Close()
-			t.Fatal(err)
-		}
-		bigFile.Close()
 
-		eng2 := &querytest.MockEngine{
-			Attachments: map[int64]*query.AttachmentInfo{
-				40: {ID: 40, Filename: "huge.bin", MimeType: "application/octet-stream", Size: maxAttachmentSize + 1, ContentHash: bigHash},
+		h2 := &handlers{
+			engine: &querytest.MockEngine{
+				Attachments: map[int64]*query.AttachmentInfo{
+					40: {ID: 40, Filename: "huge.bin", MimeType: "application/octet-stream", Size: maxAttachmentSize + 1, ContentHash: bigHash},
+				},
 			},
+			attachmentsDir: tmpDir,
 		}
-		h2 := &handlers{engine: eng2, attachmentsDir: tmpDir}
 		r := runToolExpectError(t, "get_attachment", h2.getAttachment, map[string]any{"attachment_id": float64(40)})
 		if txt := resultText(t, r); !strings.Contains(txt, "too large") {
 			t.Fatalf("expected 'too large' error, got: %s", txt)
 		}
-	})
-
-	t.Run("file not on disk", func(t *testing.T) {
-		eng2 := &querytest.MockEngine{
-			Attachments: map[int64]*query.AttachmentInfo{
-				20: {ID: 20, Filename: "gone.pdf", MimeType: "application/pdf", Size: 100, ContentHash: "deadbeef1234567890abcdef1234567890abcdef1234567890abcdef12345678"},
-			},
-		}
-		h2 := &handlers{engine: eng2, attachmentsDir: tmpDir}
-		runToolExpectError(t, "get_attachment", h2.getAttachment, map[string]any{"attachment_id": float64(20)})
 	})
 }
 
