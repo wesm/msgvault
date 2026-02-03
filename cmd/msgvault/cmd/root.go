@@ -52,6 +52,14 @@ in a single binary.`,
 	},
 }
 
+// Execute runs the root command with a background context.
+// Prefer ExecuteContext for signal-aware execution.
+func Execute() error {
+	return ExecuteContext(context.Background())
+}
+
+// ExecuteContext runs the root command with the given context,
+// enabling graceful shutdown when the context is cancelled.
 func ExecuteContext(ctx context.Context) error {
 	return rootCmd.ExecuteContext(ctx)
 }
