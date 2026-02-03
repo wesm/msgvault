@@ -155,14 +155,13 @@ func (st *statsTracker) install(eng *querytest.MockEngine) {
 
 // TestStatsUpdateOnDrillDown verifies stats are reloaded when drilling into a subgroup.
 func TestStatsUpdateOnDrillDown(t *testing.T) {
-	engine := newMockEngine(
-		[]query.AggregateRow{
+	engine := newMockEngine(MockConfig{
+		Rows: []query.AggregateRow{
 			{Key: "alice@example.com", Count: 100, TotalSize: 500000},
 			{Key: "bob@example.com", Count: 50, TotalSize: 250000},
 		},
-		[]query.MessageSummary{{ID: 1, Subject: "Test"}},
-		nil, nil,
-	)
+		Messages: []query.MessageSummary{{ID: 1, Subject: "Test"}},
+	})
 	tracker := &statsTracker{}
 	tracker.install(engine)
 
@@ -208,7 +207,7 @@ func TestContextStatsSetOnDrillDown(t *testing.T) {
 		{Key: "alice@example.com", Count: 100, TotalSize: 500000, AttachmentSize: 100000},
 		{Key: "bob@example.com", Count: 50, TotalSize: 250000, AttachmentSize: 50000},
 	}
-	engine := newMockEngine(rows, []query.MessageSummary{{ID: 1, Subject: "Test"}}, nil, nil)
+	engine := newMockEngine(MockConfig{Rows: rows, Messages: []query.MessageSummary{{ID: 1, Subject: "Test"}}})
 
 	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	model.rows = rows

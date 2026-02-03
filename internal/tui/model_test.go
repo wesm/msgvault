@@ -22,7 +22,7 @@ func TestModel_Init_ReturnsNonNilCmd(t *testing.T) {
 
 func TestModel_Init_SetsLoadingState(t *testing.T) {
 	// A fresh model via New() starts with loading=true
-	engine := newMockEngine(nil, nil, nil, nil)
+	engine := newMockEngine(MockConfig{})
 	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
 	if !model.loading {
 		t.Error("expected loading=true for fresh model")
@@ -34,7 +34,7 @@ func TestModel_Init_SetsLoadingState(t *testing.T) {
 // =============================================================================
 
 func TestNew_SetsDefaults(t *testing.T) {
-	engine := newMockEngine(nil, nil, nil, nil)
+	engine := newMockEngine(MockConfig{})
 	model := New(engine, Options{DataDir: "/tmp/test", Version: "v1.0"})
 
 	if model.version != "v1.0" {
@@ -64,7 +64,7 @@ func TestNew_SetsDefaults(t *testing.T) {
 }
 
 func TestNew_OverridesLimits(t *testing.T) {
-	engine := newMockEngine(nil, nil, nil, nil)
+	engine := newMockEngine(MockConfig{})
 	model := New(engine, Options{
 		DataDir:            "/tmp/test",
 		Version:            "test",

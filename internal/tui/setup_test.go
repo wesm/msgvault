@@ -42,22 +42,32 @@ func stripANSI(s string) string {
 	return ansiPattern.ReplaceAllString(s, "")
 }
 
+// MockConfig holds configuration for creating a mock engine in tests.
+// Using a struct instead of positional arguments makes tests more readable
+// and easier to extend as the engine interface evolves.
+type MockConfig struct {
+	Rows     []query.AggregateRow
+	Messages []query.MessageSummary
+	Detail   *query.MessageDetail
+	GmailIDs []string
+}
+
 // newMockEngine creates a querytest.MockEngine configured for TUI testing.
 // The messages slice is returned from ListMessages, Search, SearchFast, and
 // SearchFastCount, matching the legacy mockEngine behavior.
-func newMockEngine(rows []query.AggregateRow, messages []query.MessageSummary, detail *query.MessageDetail, gmailIDs []string) *querytest.MockEngine {
+func newMockEngine(cfg MockConfig) *querytest.MockEngine {
 	eng := &querytest.MockEngine{
-		AggregateRows:     rows,
-		ListResults:       messages,
-		SearchResults:     messages,
-		SearchFastResults: messages,
-		GmailIDs:          gmailIDs,
+		AggregateRows:     cfg.Rows,
+		ListResults:       cfg.Messages,
+		SearchResults:     cfg.Messages,
+		SearchFastResults: cfg.Messages,
+		GmailIDs:          cfg.GmailIDs,
 	}
 	eng.GetMessageFunc = func(_ context.Context, _ int64) (*query.MessageDetail, error) {
-		return detail, nil
+		return cfg.Detail, nil
 	}
 	eng.SearchFastCountFunc = func(_ context.Context, _ *search.Query, _ query.MessageFilter) (int64, error) {
-		return int64(len(messages)), nil
+		return int64(len(cfg.Messages)), nil
 	}
 	return eng
 }
@@ -212,86 +222,110 @@ func (b *TestModelBuilder) WithContextStats(stats *query.TotalStats) *TestModelB
 }
 
 func (b *TestModelBuilder) Build() Model {
-	engine := newMockEngine(b.rows, b.messages, b.messageDetail, b.gmailIDs)
+	engine := newMockEngine(MockConfig{
+		Rows:     b.rows,
+		Messages: b.messages,
+		Detail:   b.messageDetail,
+		GmailIDs: b.gmailIDs,
+	})
 
 	model := New(engine, Options{DataDir: b.dataDir, Version: b.version})
-	model.width = b.width
-	model.height = b.height
-	if b.rawPageSize {
-		model.pageSize = b.pageSize
-	} else if b.pageSize > 0 {
-		model.pageSize = b.pageSize
-	} else {
-		model.pageSize = b.height - 5
-		if model.pageSize < 1 {
-			model.pageSize = 1
-		}
-	}
 
-	// Pre-populate data if provided
+	b.configureDimensions(&model)
+	b.configureData(&model)
+	b.configureState(&model)
+
+	return model
+}
+
+// calculatePageSize determines the page size based on builder configuration.
+func (b *TestModelBuilder) calculatePageSize() int {
+	if b.rawPageSize {
+		return b.pageSize
+	}
+	if b.pageSize > 0 {
+		return b.pageSize
+	}
+	size := b.height - 5
+	if size < 1 {
+		return 1
+	}
+	return size
+}
+
+// configureDimensions sets width, height, and pageSize on the model.
+func (b *TestModelBuilder) configureDimensions(m *Model) {
+	m.width = b.width
+	m.height = b.height
+	m.pageSize = b.calculatePageSize()
+}
+
+// configureData pre-populates the model with test data (rows, messages, detail).
+func (b *TestModelBuilder) configureData(m *Model) {
 	if len(b.rows) > 0 {
-		model.rows = b.rows
+		m.rows = b.rows
 	}
 	if len(b.messages) > 0 {
-		model.messages = b.messages
+		m.messages = b.messages
 	}
 	if b.messageDetail != nil {
-		model.messageDetail = b.messageDetail
+		m.messageDetail = b.messageDetail
 	}
+}
 
+// configureState applies loading, level, viewType, accounts, modal, filters, and selection.
+func (b *TestModelBuilder) configureState(m *Model) {
 	// Loading: explicit if set, otherwise false only when data is provided
 	if b.loading != nil {
-		model.loading = *b.loading
+		m.loading = *b.loading
 	} else if len(b.rows) > 0 || len(b.messages) > 0 || b.messageDetail != nil {
-		model.loading = false
+		m.loading = false
 	}
 
 	if b.level != levelAggregates {
-		model.level = b.level
+		m.level = b.level
 	}
 
 	if b.viewType != 0 {
-		model.viewType = b.viewType
+		m.viewType = b.viewType
 	}
 
 	if len(b.accounts) > 0 {
-		model.accounts = b.accounts
+		m.accounts = b.accounts
 	}
 
 	if b.modal != nil {
-		model.modal = *b.modal
+		m.modal = *b.modal
 	}
 
 	if b.accountFilter != nil {
-		model.accountFilter = b.accountFilter
+		m.accountFilter = b.accountFilter
 	}
 
 	if b.stats != nil {
-		model.stats = b.stats
+		m.stats = b.stats
 	}
 
 	if b.contextStats != nil {
-		model.contextStats = b.contextStats
+		m.contextStats = b.contextStats
 	}
 
 	if b.activeSearchMode != nil {
-		model.inlineSearchActive = true
-		model.searchMode = *b.activeSearchMode
-		model.searchInput.SetValue(b.activeSearchQuery)
+		m.inlineSearchActive = true
+		m.searchMode = *b.activeSearchMode
+		m.searchInput.SetValue(b.activeSearchQuery)
 	}
 
 	if b.selectedAggregates != nil {
 		for _, k := range b.selectedAggregates.keys {
-			model.selection.aggregateKeys[k] = true
+			m.selection.aggregateKeys[k] = true
 		}
 		if b.selectedAggregates.viewType != 0 {
-			model.selection.aggregateViewType = b.selectedAggregates.viewType
+			m.selection.aggregateViewType = b.selectedAggregates.viewType
 		} else {
-			model.selection.aggregateViewType = model.viewType
+			m.selection.aggregateViewType = m.viewType
 		}
 	}
-
-	return model
 }
 
 // sendKey sends a key message to the model and returns the updated concrete Model.
@@ -422,30 +456,22 @@ func standardStats() *query.TotalStats {
 	return &query.TotalStats{MessageCount: 1000, TotalSize: 5000000, AttachmentCount: 50}
 }
 
-// newTestModel creates a Model with common test defaults.
-// The returned model has standard width/height and is ready for testing.
-func newTestModel(engine *querytest.MockEngine) Model {
-	model := New(engine, Options{DataDir: "/tmp/test", Version: "test123"})
-	model.width = 100
-	model.height = 24
-	model.pageSize = 10
-	return model
-}
-
 // newTestModelWithRows creates a test model pre-populated with aggregate rows.
+// This helper uses the TestModelBuilder internally for consistency.
 func newTestModelWithRows(rows []query.AggregateRow) Model {
-	engine := newMockEngine(rows, nil, nil, nil)
-	model := newTestModel(engine)
-	model.rows = rows
-	return model
+	return NewBuilder().
+		WithRows(rows...).
+		WithPageSize(10).
+		Build()
 }
 
 // newTestModelAtLevel creates a test model at the specified navigation level.
+// This helper uses the TestModelBuilder internally for consistency.
 func newTestModelAtLevel(level viewLevel) Model {
-	engine := newMockEngine(nil, nil, nil, nil)
-	model := newTestModel(engine)
-	model.level = level
-	return model
+	return NewBuilder().
+		WithLevel(level).
+		WithPageSize(10).
+		Build()
 }
 
 // withSearchQuery sets a search query on the model.

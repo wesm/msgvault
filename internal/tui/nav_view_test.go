@@ -1086,12 +1086,11 @@ func TestRecipientNamesBreadcrumbRoundTrip(t *testing.T) {
 // viewType as GroupBy in StatsOptions when search is active. This ensures the
 // DuckDB engine searches the correct key columns for 1:N views.
 func TestLoadDataSetsGroupByInStatsOpts(t *testing.T) {
-	engine := newMockEngine(
-		[]query.AggregateRow{
+	engine := newMockEngine(MockConfig{
+		Rows: []query.AggregateRow{
 			{Key: "bob@example.com", Count: 10, TotalSize: 5000},
 		},
-		nil, nil, nil,
-	)
+	})
 	tracker := &statsTracker{result: &query.TotalStats{MessageCount: 10, TotalSize: 5000}}
 	tracker.install(engine)
 
