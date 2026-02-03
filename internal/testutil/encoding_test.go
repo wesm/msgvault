@@ -35,12 +35,18 @@ func TestEncodedSamplesAllSliceFieldsDeepCopied(t *testing.T) {
 	refVal := reflect.ValueOf(reference)
 	mutVal := reflect.ValueOf(&mutated).Elem()
 
-	// Mutate all byte slice fields in the mutated copy
+	// Mutate all slice fields in the mutated copy
 	for i := 0; i < mutVal.NumField(); i++ {
 		field := mutVal.Field(i)
 		if field.Kind() == reflect.Slice && field.Len() > 0 {
-			// Mutate the first byte
-			field.Index(0).Set(reflect.ValueOf(field.Index(0).Interface().(byte) ^ 0xFF))
+			// Handle different slice element types
+			if field.Type().Elem().Kind() == reflect.Uint8 {
+				// For []byte, mutate the first byte
+				field.Index(0).Set(reflect.ValueOf(field.Index(0).Interface().(byte) ^ 0xFF))
+			} else {
+				// For other slice types, set the first element to a new zero value
+				field.Index(0).Set(reflect.Zero(field.Type().Elem()))
+			}
 		}
 	}
 
@@ -54,11 +60,9 @@ func TestEncodedSamplesAllSliceFieldsDeepCopied(t *testing.T) {
 		freshField := freshVal.Field(i)
 
 		if refField.Kind() == reflect.Slice {
-			refBytes := refField.Bytes()
-			freshBytes := freshField.Bytes()
-			if !bytes.Equal(refBytes, freshBytes) {
-				t.Errorf("Field %s was affected by mutation: original %x, got %x",
-					fieldName, refBytes, freshBytes)
+			// Use DeepEqual for generic slice comparison (works for []byte and other types)
+			if !reflect.DeepEqual(refField.Interface(), freshField.Interface()) {
+				t.Errorf("Field %s was affected by mutation", fieldName)
 			}
 		} else if refField.Kind() == reflect.String {
 			if refField.String() != freshField.String() {
@@ -80,6 +84,11 @@ func TestEncodedSamplesAllFieldsCopied(t *testing.T) {
 		fieldName := original.Type().Field(i).Name
 		origField := original.Field(i)
 		copyField := copied.Field(i)
+
+		// Skip unexported fields (reflect cannot access them)
+		if !origField.CanInterface() {
+			continue
+		}
 
 		switch origField.Kind() {
 		case reflect.Slice:

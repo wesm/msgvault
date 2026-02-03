@@ -139,7 +139,11 @@ func EncodedSamples() EncodedSamplesT {
 			// Strings are immutable, direct copy is safe
 			dstField.SetString(srcField.String())
 		default:
-			// For any other assignable types, copy directly
+			// For any other assignable types, copy directly.
+			// Note: This performs a shallow copy for reference types (maps, pointers,
+			// channels). If such fields are added to EncodedSamplesT, they will share
+			// state across calls. Currently, the struct only contains []byte and string
+			// fields, which are properly deep-copied above.
 			dstField.Set(srcField)
 		}
 	}
