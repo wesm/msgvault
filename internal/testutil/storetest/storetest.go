@@ -97,6 +97,69 @@ func (f *Fixture) StartSync() int64 {
 	return syncID
 }
 
+// --- Query helpers ---
+
+// MessageFields holds a subset of message columns for test verification.
+type MessageFields struct {
+	Subject        string
+	Snippet        string
+	HasAttachments bool
+}
+
+// GetMessageFields returns selected fields of a message by ID.
+func (f *Fixture) GetMessageFields(msgID int64) MessageFields {
+	f.T.Helper()
+	var mf MessageFields
+	err := f.Store.DB().QueryRow(
+		f.Store.Rebind("SELECT subject, snippet, has_attachments FROM messages WHERE id = ?"), msgID,
+	).Scan(&mf.Subject, &mf.Snippet, &mf.HasAttachments)
+	testutil.MustNoErr(f.T, err, "GetMessageFields")
+	return mf
+}
+
+// GetMessageBody returns the body_text and body_html for a message.
+func (f *Fixture) GetMessageBody(msgID int64) (sql.NullString, sql.NullString) {
+	f.T.Helper()
+	var bodyText, bodyHTML sql.NullString
+	err := f.Store.DB().QueryRow(
+		"SELECT body_text, body_html FROM message_bodies WHERE message_id = ?", msgID,
+	).Scan(&bodyText, &bodyHTML)
+	testutil.MustNoErr(f.T, err, "GetMessageBody")
+	return bodyText, bodyHTML
+}
+
+// GetSyncRun returns the status and error_message for a sync run by ID.
+func (f *Fixture) GetSyncRun(syncID int64) (status, errorMsg string) {
+	f.T.Helper()
+	err := f.Store.DB().QueryRow(
+		f.Store.Rebind("SELECT status, error_message FROM sync_runs WHERE id = ?"), syncID,
+	).Scan(&status, &errorMsg)
+	testutil.MustNoErr(f.T, err, "GetSyncRun")
+	return status, errorMsg
+}
+
+// GetSingleLabelID returns the label_id for a message that should have exactly one label.
+func (f *Fixture) GetSingleLabelID(msgID int64) int64 {
+	f.T.Helper()
+	var labelID int64
+	err := f.Store.DB().QueryRow(
+		f.Store.Rebind("SELECT label_id FROM message_labels WHERE message_id = ?"), msgID,
+	).Scan(&labelID)
+	testutil.MustNoErr(f.T, err, "GetSingleLabelID")
+	return labelID
+}
+
+// GetSingleRecipientID returns the participant_id for a message+type that should have exactly one recipient.
+func (f *Fixture) GetSingleRecipientID(msgID int64, typ string) int64 {
+	f.T.Helper()
+	var pid int64
+	err := f.Store.DB().QueryRow(
+		f.Store.Rebind("SELECT participant_id FROM message_recipients WHERE message_id = ? AND recipient_type = ?"), msgID, typ,
+	).Scan(&pid)
+	testutil.MustNoErr(f.T, err, "GetSingleRecipientID")
+	return pid
+}
+
 // --- Assertion helpers ---
 
 // AssertLabelCount asserts the number of labels attached to a message.

@@ -152,20 +152,15 @@ func TestStore_UpsertMessage(t *testing.T) {
 			}
 
 			// Verify updated fields are persisted
-			var gotSubject, gotSnippet string
-			var gotHasAttach bool
-			err = f.Store.DB().QueryRow(
-				`SELECT subject, snippet, has_attachments FROM messages WHERE id = ?`, msgID,
-			).Scan(&gotSubject, &gotSnippet, &gotHasAttach)
-			testutil.MustNoErr(t, err, "query updated message")
-			if gotSubject != "Updated Subject" {
-				t.Errorf("subject = %q, want %q", gotSubject, "Updated Subject")
+			got := f.GetMessageFields(msgID)
+			if got.Subject != "Updated Subject" {
+				t.Errorf("subject = %q, want %q", got.Subject, "Updated Subject")
 			}
-			if gotSnippet != "Updated snippet" {
-				t.Errorf("snippet = %q, want %q", gotSnippet, "Updated snippet")
+			if got.Snippet != "Updated snippet" {
+				t.Errorf("snippet = %q, want %q", got.Snippet, "Updated snippet")
 			}
-			if gotHasAttach != msg.HasAttachments {
-				t.Errorf("has_attachments = %v, want %v", gotHasAttach, msg.HasAttachments)
+			if got.HasAttachments != msg.HasAttachments {
+				t.Errorf("has_attachments = %v, want %v", got.HasAttachments, msg.HasAttachments)
 			}
 
 			// Verify stats show exactly one message
@@ -225,27 +220,23 @@ func TestStore_MessageRaw(t *testing.T) {
 }
 
 func TestStore_Participant(t *testing.T) {
-	st := testutil.NewTestStore(t)
+	f := storetest.New(t)
 
 	// Create participant
-	pid, err := st.EnsureParticipant("alice@example.com", "Alice Smith", "example.com")
-	testutil.MustNoErr(t, err, "EnsureParticipant()")
-
+	pid := f.EnsureParticipant("alice@example.com", "Alice Smith", "example.com")
 	if pid == 0 {
 		t.Error("participant ID should be non-zero")
 	}
 
-	// Get same participant
-	pid2, err := st.EnsureParticipant("alice@example.com", "Alice", "example.com")
-	testutil.MustNoErr(t, err, "EnsureParticipant() second call")
-
+	// Get same participant (should return existing)
+	pid2 := f.EnsureParticipant("alice@example.com", "Alice", "example.com")
 	if pid2 != pid {
 		t.Errorf("second call ID = %d, want %d", pid2, pid)
 	}
 }
 
 func TestStore_EnsureParticipantsBatch(t *testing.T) {
-	st := testutil.NewTestStore(t)
+	f := storetest.New(t)
 
 	addresses := []mime.Address{
 		{Email: "alice@example.com", Name: "Alice", Domain: "example.com"},
@@ -253,7 +244,7 @@ func TestStore_EnsureParticipantsBatch(t *testing.T) {
 		{Email: "", Name: "No Email", Domain: ""}, // Should be skipped
 	}
 
-	result, err := st.EnsureParticipantsBatch(addresses)
+	result, err := f.Store.EnsureParticipantsBatch(addresses)
 	testutil.MustNoErr(t, err, "EnsureParticipantsBatch()")
 
 	if len(result) != 2 {
@@ -333,9 +324,7 @@ func TestStore_MessageLabels(t *testing.T) {
 	f.AssertLabelCount(msgID, 1)
 
 	// Verify it's the right label
-	var labelID int64
-	err = f.Store.DB().QueryRow(f.Store.Rebind("SELECT label_id FROM message_labels WHERE message_id = ?"), msgID).Scan(&labelID)
-	testutil.MustNoErr(t, err, "get label_id")
+	labelID := f.GetSingleLabelID(msgID)
 	if labelID != labels["SENT"] {
 		t.Errorf("label_id = %d, want %d (SENT)", labelID, labels["SENT"])
 	}
@@ -362,9 +351,7 @@ func TestStore_MessageRecipients(t *testing.T) {
 	f.AssertRecipientCount(msgID, "to", 1)
 
 	// Verify it's the right recipient
-	var participantID int64
-	err = f.Store.DB().QueryRow(f.Store.Rebind("SELECT participant_id FROM message_recipients WHERE message_id = ? AND recipient_type = 'to'"), msgID).Scan(&participantID)
-	testutil.MustNoErr(t, err, "get participant_id")
+	participantID := f.GetSingleRecipientID(msgID, "to")
 	if participantID != pid1 {
 		t.Errorf("participant_id = %d, want %d (alice)", participantID, pid1)
 	}
@@ -469,9 +456,7 @@ func TestStore_SyncFail(t *testing.T) {
 	f.AssertNoActiveSync()
 
 	// Verify sync status is "failed" and error message is stored
-	var status, errorMsg string
-	err = f.Store.DB().QueryRow(f.Store.Rebind("SELECT status, error_message FROM sync_runs WHERE id = ?"), syncID).Scan(&status, &errorMsg)
-	testutil.MustNoErr(t, err, "query sync status")
+	status, errorMsg := f.GetSyncRun(syncID)
 	if status != "failed" {
 		t.Errorf("sync status = %q, want %q", status, "failed")
 	}
@@ -499,10 +484,10 @@ func TestStore_MarkMessageDeletedByGmailID(t *testing.T) {
 }
 
 func TestStore_GetMessageRaw_NotFound(t *testing.T) {
-	st := testutil.NewTestStore(t)
+	f := storetest.New(t)
 
 	// Try to get raw for non-existent message
-	_, err := st.GetMessageRaw(99999)
+	_, err := f.Store.GetMessageRaw(99999)
 	if err == nil {
 		t.Error("GetMessageRaw() should error for non-existent message")
 	}
@@ -542,10 +527,8 @@ func TestStore_UpsertMessageBody(t *testing.T) {
 	)
 	testutil.MustNoErr(t, err, "UpsertMessageBody()")
 
-	// Verify via direct query
-	var bodyText, bodyHTML sql.NullString
-	err = f.Store.DB().QueryRow("SELECT body_text, body_html FROM message_bodies WHERE message_id = ?", msgID).Scan(&bodyText, &bodyHTML)
-	testutil.MustNoErr(t, err, "query message_bodies")
+	// Verify via helper
+	bodyText, bodyHTML := f.GetMessageBody(msgID)
 	if bodyText.String != "hello text" {
 		t.Errorf("body_text = %q, want %q", bodyText.String, "hello text")
 	}
@@ -559,8 +542,7 @@ func TestStore_UpsertMessageBody(t *testing.T) {
 		sql.NullString{},
 	)
 	testutil.MustNoErr(t, err, "UpsertMessageBody() update")
-	err = f.Store.DB().QueryRow("SELECT body_text, body_html FROM message_bodies WHERE message_id = ?", msgID).Scan(&bodyText, &bodyHTML)
-	testutil.MustNoErr(t, err, "query after update")
+	bodyText, bodyHTML = f.GetMessageBody(msgID)
 	if bodyText.String != "updated text" {
 		t.Errorf("after update: body_text = %q, want %q", bodyText.String, "updated text")
 	}
