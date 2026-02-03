@@ -374,3 +374,68 @@ func TestAggregateByRecipientName_EmptyStringFallback(t *testing.T) {
 		{"spaces@test.com", 1},
 	})
 }
+
+// =============================================================================
+// Invalid ViewType tests
+// =============================================================================
+
+// TestSQLiteEngine_Aggregate_InvalidViewType verifies that invalid ViewType values
+// return a clear error from the Aggregate API.
+func TestSQLiteEngine_Aggregate_InvalidViewType(t *testing.T) {
+	env := newTestEnv(t)
+
+	tests := []struct {
+		name     string
+		viewType ViewType
+	}{
+		{name: "ViewTypeCount", viewType: ViewTypeCount},
+		{name: "NegativeValue", viewType: ViewType(-1)},
+		{name: "LargeValue", viewType: ViewType(999)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := env.Engine.Aggregate(env.Ctx, tt.viewType, DefaultAggregateOptions())
+			if err == nil {
+				t.Error("expected error for invalid ViewType, got nil")
+			}
+			if err != nil {
+				errMsg := err.Error()
+				if errMsg != "unsupported view type: Unknown" && errMsg != "unsupported view type: -1" && errMsg != "unsupported view type: 999" && errMsg != "unsupported view type: 7" {
+					t.Errorf("expected 'unsupported view type' error, got: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestSQLiteEngine_SubAggregate_InvalidViewType verifies that invalid ViewType values
+// return a clear error from the SubAggregate API.
+func TestSQLiteEngine_SubAggregate_InvalidViewType(t *testing.T) {
+	env := newTestEnv(t)
+
+	tests := []struct {
+		name     string
+		viewType ViewType
+	}{
+		{name: "ViewTypeCount", viewType: ViewTypeCount},
+		{name: "NegativeValue", viewType: ViewType(-1)},
+		{name: "LargeValue", viewType: ViewType(999)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filter := MessageFilter{Sender: "alice@example.com"}
+			_, err := env.Engine.SubAggregate(env.Ctx, filter, tt.viewType, DefaultAggregateOptions())
+			if err == nil {
+				t.Error("expected error for invalid ViewType, got nil")
+			}
+			if err != nil {
+				errMsg := err.Error()
+				if errMsg != "unsupported view type: Unknown" && errMsg != "unsupported view type: -1" && errMsg != "unsupported view type: 999" && errMsg != "unsupported view type: 7" {
+					t.Errorf("expected 'unsupported view type' error, got: %v", err)
+				}
+			}
+		})
+	}
+}

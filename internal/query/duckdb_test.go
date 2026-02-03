@@ -2504,3 +2504,60 @@ func TestDuckDBEngine_SubAggregate_TimeGranularityInference(t *testing.T) {
 		})
 	}
 }
+
+// TestDuckDBEngine_Aggregate_InvalidViewType verifies that invalid ViewType values
+// return a clear error from the Aggregate API.
+func TestDuckDBEngine_Aggregate_InvalidViewType(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name     string
+		viewType ViewType
+	}{
+		{name: "ViewTypeCount", viewType: ViewTypeCount},
+		{name: "NegativeValue", viewType: ViewType(-1)},
+		{name: "LargeValue", viewType: ViewType(999)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := engine.Aggregate(ctx, tt.viewType, DefaultAggregateOptions())
+			if err == nil {
+				t.Error("expected error for invalid ViewType, got nil")
+			}
+			if err != nil && !strings.Contains(err.Error(), "unsupported view type") {
+				t.Errorf("expected error containing 'unsupported view type', got: %v", err)
+			}
+		})
+	}
+}
+
+// TestDuckDBEngine_SubAggregate_InvalidViewType verifies that invalid ViewType values
+// return a clear error from the SubAggregate API.
+func TestDuckDBEngine_SubAggregate_InvalidViewType(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name     string
+		viewType ViewType
+	}{
+		{name: "ViewTypeCount", viewType: ViewTypeCount},
+		{name: "NegativeValue", viewType: ViewType(-1)},
+		{name: "LargeValue", viewType: ViewType(999)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filter := MessageFilter{Sender: "alice@example.com"}
+			_, err := engine.SubAggregate(ctx, filter, tt.viewType, DefaultAggregateOptions())
+			if err == nil {
+				t.Error("expected error for invalid ViewType, got nil")
+			}
+			if err != nil && !strings.Contains(err.Error(), "unsupported view type") {
+				t.Errorf("expected error containing 'unsupported view type', got: %v", err)
+			}
+		})
+	}
+}
