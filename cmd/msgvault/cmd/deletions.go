@@ -270,17 +270,39 @@ Examples:
 
 		// Determine which scopes we need
 		needsBatchDelete := !deleteTrash
-		var scopes []string
+		var requiredScopes []string
 		if needsBatchDelete {
-			scopes = oauth.ScopesDeletion
+			requiredScopes = oauth.ScopesDeletion
 		} else {
-			scopes = oauth.Scopes
+			requiredScopes = oauth.Scopes
 		}
 
 		// Create OAuth manager with appropriate scopes
-		oauthMgr, err := oauth.NewManagerWithScopes(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger, scopes)
+		oauthMgr, err := oauth.NewManagerWithScopes(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger, requiredScopes)
 		if err != nil {
 			return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
+		}
+
+		// Proactively check if we need scope escalation before making API calls.
+		// Legacy tokens (saved before scope tracking) won't have scope metadata,
+		// so we only trigger proactive escalation when we positively know the
+		// token lacks the required scope.
+		if needsBatchDelete && !oauthMgr.HasScope(account, "https://mail.google.com/") {
+			// Check if this is a legacy token (no scope metadata) vs one that
+			// definitively lacks the scope
+			hasAnyScope := oauthMgr.HasScope(account, "https://www.googleapis.com/auth/gmail.readonly")
+			if hasAnyScope {
+				// Token has scope metadata but lacks deletion scope — escalate now
+				if err := promptScopeEscalation(ctx, oauthMgr, account, needsBatchDelete); err != nil {
+					return err
+				}
+				// Re-create OAuth manager with new token
+				oauthMgr, err = oauth.NewManagerWithScopes(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger, requiredScopes)
+				if err != nil {
+					return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
+				}
+			}
+			// If no scope metadata at all (legacy token), fall through to reactive detection
 		}
 
 		tokenSource, err := oauthMgr.TokenSource(ctx, account)
@@ -331,67 +353,10 @@ Examples:
 
 				// Check if this is a scope error - offer to re-authorize
 				if isInsufficientScopeError(execErr) {
-					fmt.Println("\n" + strings.Repeat("=", 70))
-					fmt.Println("PERMISSION UPGRADE REQUIRED")
-					fmt.Println(strings.Repeat("=", 70))
-					fmt.Println()
-
-					// Use appropriate scopes and messaging based on deletion method
-					var requiredScopes []string
-					if useTrash {
-						fmt.Println("Trash deletion requires Gmail modify permissions.")
-						fmt.Println()
-						fmt.Println("Your current OAuth token doesn't include the gmail.modify scope.")
-						fmt.Println("To proceed, msgvault needs to re-authorize with modify access.")
-						requiredScopes = oauth.Scopes
-					} else {
-						fmt.Println("Batch deletion requires elevated Gmail permissions.")
-						fmt.Println()
-						fmt.Println("Your current OAuth token was granted with limited permissions that")
-						fmt.Println("don't include batch delete. To proceed, msgvault needs to:")
-						fmt.Println()
-						fmt.Println("  1. Delete your existing OAuth token")
-						fmt.Println("  2. Re-authorize with full Gmail access (mail.google.com scope)")
-						fmt.Println()
-						fmt.Println("This elevated permission allows msgvault to permanently delete")
-						fmt.Println("messages in bulk. You can revoke access anytime at:")
-						fmt.Println("  https://myaccount.google.com/permissions")
-						requiredScopes = oauth.ScopesDeletion
-					}
-					fmt.Println()
-
-					fmt.Print("Upgrade permissions now? [y/N]: ")
-					var response string
-					_, _ = fmt.Scanln(&response)
-					if response != "y" && response != "Y" {
-						if !useTrash {
-							fmt.Println("Cancelled. Use --trash for slower deletion without elevated permissions.")
-						} else {
-							fmt.Println("Cancelled.")
-						}
+					if err := promptScopeEscalation(ctx, oauthMgr, account, !useTrash); err != nil {
 						return nil
 					}
-
-					// Delete old token and re-authorize
-					fmt.Println("\nDeleting old token...")
-					if err := oauthMgr.DeleteToken(account); err != nil {
-						return fmt.Errorf("delete token: %w", err)
-					}
-
-					fmt.Println("Starting OAuth flow...")
-					fmt.Println()
-
-					// Create new manager with appropriate scopes and authorize
-					newMgr, err := oauth.NewManagerWithScopes(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger, requiredScopes)
-					if err != nil {
-						return fmt.Errorf("create oauth manager: %w", err)
-					}
-
-					if err := newMgr.Authorize(ctx, account, false); err != nil {
-						return fmt.Errorf("authorize: %w", err)
-					}
-
-					fmt.Println("\nAuthorization successful! Run delete-staged again to continue.")
+					fmt.Println("Run delete-staged again to continue.")
 					return nil
 				}
 
@@ -447,6 +412,72 @@ func limitManifests(manifests []*deletion.Manifest, max int) []*deletion.Manifes
 		return manifests
 	}
 	return manifests[:max]
+}
+
+// promptScopeEscalation prompts the user to re-authorize with elevated scopes.
+// It deletes the old token, runs the OAuth browser flow, and returns nil on
+// success. The caller should re-create the OAuth manager after this returns.
+func promptScopeEscalation(ctx context.Context, oauthMgr *oauth.Manager, account string, batchDelete bool) error {
+	fmt.Println("\n" + strings.Repeat("=", 70))
+	fmt.Println("PERMISSION UPGRADE REQUIRED")
+	fmt.Println(strings.Repeat("=", 70))
+	fmt.Println()
+
+	var requiredScopes []string
+	if !batchDelete {
+		fmt.Println("Trash deletion requires Gmail modify permissions.")
+		fmt.Println()
+		fmt.Println("Your current OAuth token doesn't include the gmail.modify scope.")
+		fmt.Println("To proceed, msgvault needs to re-authorize with modify access.")
+		requiredScopes = oauth.Scopes
+	} else {
+		fmt.Println("Batch deletion requires elevated Gmail permissions.")
+		fmt.Println()
+		fmt.Println("Your current OAuth token was granted with limited permissions that")
+		fmt.Println("don't include batch delete. To proceed, msgvault needs to:")
+		fmt.Println()
+		fmt.Println("  1. Delete your existing OAuth token")
+		fmt.Println("  2. Re-authorize with full Gmail access (mail.google.com scope)")
+		fmt.Println()
+		fmt.Println("This elevated permission allows msgvault to permanently delete")
+		fmt.Println("messages in bulk. You can revoke access anytime at:")
+		fmt.Println("  https://myaccount.google.com/permissions")
+		requiredScopes = oauth.ScopesDeletion
+	}
+	fmt.Println()
+
+	fmt.Print("Upgrade permissions now? [y/N]: ")
+	var response string
+	_, _ = fmt.Scanln(&response)
+	if response != "y" && response != "Y" {
+		if batchDelete {
+			fmt.Println("Cancelled. Use --trash for slower deletion without elevated permissions.")
+		} else {
+			fmt.Println("Cancelled.")
+		}
+		return fmt.Errorf("scope escalation cancelled")
+	}
+
+	// Delete old token and re-authorize
+	fmt.Println("\nDeleting old token...")
+	if err := oauthMgr.DeleteToken(account); err != nil {
+		return fmt.Errorf("delete token: %w", err)
+	}
+
+	fmt.Println("Starting OAuth flow...")
+	fmt.Println()
+
+	newMgr, err := oauth.NewManagerWithScopes(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger, requiredScopes)
+	if err != nil {
+		return fmt.Errorf("create oauth manager: %w", err)
+	}
+
+	if err := newMgr.Authorize(ctx, account, false); err != nil {
+		return fmt.Errorf("authorize: %w", err)
+	}
+
+	fmt.Println("\nAuthorization successful!")
+	return nil
 }
 
 // isInsufficientScopeError checks if an error is due to missing OAuth scopes.
