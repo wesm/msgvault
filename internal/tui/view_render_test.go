@@ -2,178 +2,157 @@ package tui
 
 import (
 	"fmt"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/wesm/msgvault/internal/query"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/wesm/msgvault/internal/query"
 )
 
-// TestPositionDisplayInMessageList verifies position shows cursor/total correctly.
-func TestPositionDisplayInMessageList(t *testing.T) {
-	model := NewBuilder().WithMessages(makeMessages(100)...).
-		WithPageSize(20).WithSize(100, 30).
-		WithLevel(levelMessageList).Build()
-	model.cursor = 49 // 50th message
+// TestFooterPositionDisplay verifies footer position indicator in message list view.
+func TestFooterPositionDisplay(t *testing.T) {
+	tests := []struct {
+		name         string
+		msgCount     int
+		cursor       int
+		contextStats *query.TotalStats
+		globalStats  *query.TotalStats
+		allMessages  bool
+		wantContains []string
+		wantMissing  []string
+	}{
+		{
+			name:         "shows cursor/total",
+			msgCount:     100,
+			cursor:       49,
+			wantContains: []string{"50/100"},
+		},
+		{
+			name:         "shows N of M when total > loaded",
+			msgCount:     100,
+			cursor:       49,
+			contextStats: &query.TotalStats{MessageCount: 500},
+			wantContains: []string{"50 of 500"},
+			wantMissing:  []string{"50/100"},
+		},
+		{
+			name:         "shows N/M when all loaded",
+			msgCount:     50,
+			cursor:       24,
+			contextStats: &query.TotalStats{MessageCount: 50},
+			wantContains: []string{"25/50"},
+		},
+		{
+			name:         "falls back to loaded count when no context stats",
+			msgCount:     75,
+			cursor:       49,
+			wantContains: []string{"50/75"},
+			wantMissing:  []string{" of "},
+		},
+		{
+			name:         "uses loaded count when context stats smaller",
+			msgCount:     100,
+			cursor:       49,
+			contextStats: &query.TotalStats{MessageCount: 50},
+			wantContains: []string{"50/100"},
+		},
+		{
+			name:         "uses global stats for all messages view",
+			msgCount:     500,
+			cursor:       99,
+			globalStats:  &query.TotalStats{MessageCount: 175000},
+			allMessages:  true,
+			wantContains: []string{"100 of 175000"},
+			wantMissing:  []string{"/500"},
+		},
+	}
 
-	// Get the footer view
-	footer := model.footerView()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			builder := NewBuilder().WithMessages(makeMessages(tt.msgCount)...).
+				WithPageSize(20).WithSize(100, 30).
+				WithLevel(levelMessageList)
 
-	// Should show "50/100" (cursor+1 / total loaded)
-	if !strings.Contains(footer, "50/100") {
-		t.Errorf("expected footer to contain '50/100', got: %s", footer)
+			if tt.contextStats != nil {
+				builder = builder.WithContextStats(tt.contextStats)
+			}
+			if tt.globalStats != nil {
+				builder = builder.WithStats(tt.globalStats)
+			}
+
+			model := builder.Build()
+			model.cursor = tt.cursor
+			model.allMessages = tt.allMessages
+
+			footer := model.footerView()
+			for _, s := range tt.wantContains {
+				if !strings.Contains(footer, s) {
+					t.Errorf("footer missing %q, got: %q", s, footer)
+				}
+			}
+			for _, s := range tt.wantMissing {
+				if strings.Contains(footer, s) {
+					t.Errorf("footer should not contain %q, got: %q", s, footer)
+				}
+			}
+		})
 	}
 }
 
 // TestTabCyclesViewTypeAtAggregates verifies Tab still cycles view types.
 
-// TestContextStatsDisplayedInHeader verifies header shows contextual stats when drilled down.
-func TestContextStatsDisplayedInHeader(t *testing.T) {
-	model := NewBuilder().WithSize(100, 20).WithLevel(levelMessageList).
-		WithStats(&query.TotalStats{MessageCount: 10000, TotalSize: 50000000, AttachmentCount: 500}).
-		WithContextStats(&query.TotalStats{MessageCount: 100, TotalSize: 500000}).
-		Build()
+// TestHeaderContextStats verifies header shows contextual stats when drilled down.
+func TestHeaderContextStats(t *testing.T) {
+	globalStats := &query.TotalStats{MessageCount: 10000, TotalSize: 50000000, AttachmentCount: 500}
 
-	header := model.headerView()
-
-	// Should show contextStats (100 msgs), not global stats (10000 msgs)
-	if !strings.Contains(header, "100 msgs") {
-		t.Errorf("expected header to contain '100 msgs' (contextStats), got: %s", header)
+	tests := []struct {
+		name         string
+		width        int
+		contextStats *query.TotalStats
+		wantContains []string
+		wantMissing  []string
+	}{
+		{
+			name:         "shows context stats not global",
+			width:        100,
+			contextStats: &query.TotalStats{MessageCount: 100, TotalSize: 500000},
+			wantContains: []string{"100 msgs"},
+			wantMissing:  []string{"10000 msgs"},
+		},
+		{
+			name:         "shows attachment count",
+			width:        120,
+			contextStats: &query.TotalStats{MessageCount: 100, TotalSize: 500000, AttachmentCount: 42},
+			wantContains: []string{"42 attchs"},
+		},
+		{
+			name:         "shows zero attachment count",
+			width:        120,
+			contextStats: &query.TotalStats{MessageCount: 100, TotalSize: 500000, AttachmentCount: 0},
+			wantContains: []string{"0 attchs"},
+		},
 	}
-	if strings.Contains(header, "10000 msgs") {
-		t.Errorf("header should NOT contain '10000 msgs' (global stats) when drilled down")
-	}
-}
 
-// TestContextStatsShowsAttachmentCountInHeader verifies header shows attachment count when drilled down.
-func TestContextStatsShowsAttachmentCountInHeader(t *testing.T) {
-	model := NewBuilder().WithSize(120, 20).WithLevel(levelMessageList).
-		WithStats(&query.TotalStats{MessageCount: 10000, TotalSize: 50000000, AttachmentCount: 500}).
-		WithContextStats(&query.TotalStats{MessageCount: 100, TotalSize: 500000, AttachmentCount: 42}).
-		Build()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := NewBuilder().WithSize(tt.width, 20).WithLevel(levelMessageList).
+				WithStats(globalStats).
+				WithContextStats(tt.contextStats).
+				Build()
 
-	header := model.headerView()
-
-	// Should show "attchs" with attachment count
-	if !strings.Contains(header, "attchs") {
-		t.Errorf("expected header to contain 'attchs' when AttachmentCount > 0, got: %s", header)
-	}
-	if !strings.Contains(header, "42 attchs") {
-		t.Errorf("expected header to contain '42 attchs' (attachment count), got: %s", header)
-	}
-}
-
-// TestContextStatsShowsZeroAttachmentCount verifies header shows "0 attchs" when count is 0.
-func TestContextStatsShowsZeroAttachmentCount(t *testing.T) {
-	model := NewBuilder().WithSize(120, 20).WithLevel(levelMessageList).
-		WithStats(&query.TotalStats{MessageCount: 10000, TotalSize: 50000000, AttachmentCount: 500}).
-		WithContextStats(&query.TotalStats{MessageCount: 100, TotalSize: 500000, AttachmentCount: 0}).
-		Build()
-
-	header := model.headerView()
-
-	// Should show "0 attchs" even when attachment count is 0
-	if !strings.Contains(header, "0 attchs") {
-		t.Errorf("header should contain '0 attchs' when AttachmentCount is 0, got: %s", header)
-	}
-}
-
-// TestPositionShowsTotalFromContextStats verifies footer shows "N of M" when total > loaded.
-func TestPositionShowsTotalFromContextStats(t *testing.T) {
-	// Create 100 loaded messages but contextStats says 500 total
-	model := NewBuilder().WithMessages(makeMessages(100)...).
-		WithPageSize(20).WithSize(100, 30).
-		WithLevel(levelMessageList).
-		WithContextStats(&query.TotalStats{MessageCount: 500}).
-		Build()
-	model.cursor = 49 // 50th message
-
-	footer := model.footerView()
-
-	// Should show "50 of 500" (not "50/100")
-	if !strings.Contains(footer, "50 of 500") {
-		t.Errorf("expected footer to contain '50 of 500', got: %s", footer)
-	}
-	if strings.Contains(footer, "50/100") {
-		t.Errorf("footer should NOT contain '50/100' when contextStats.MessageCount > loaded")
-	}
-}
-
-// TestPositionShowsLoadedCountWhenAllLoaded verifies footer shows "N/M" when all loaded.
-func TestPositionShowsLoadedCountWhenAllLoaded(t *testing.T) {
-	model := NewBuilder().WithMessages(makeMessages(50)...).
-		WithPageSize(20).WithSize(100, 30).
-		WithLevel(levelMessageList).
-		WithContextStats(&query.TotalStats{MessageCount: 50}).
-		Build()
-	model.cursor = 24
-
-	footer := model.footerView()
-
-	// Should show "25/50" (standard format when all loaded)
-	if !strings.Contains(footer, "25/50") {
-		t.Errorf("expected footer to contain '25/50', got: %s", footer)
-	}
-}
-
-// TestPositionShowsLoadedCountWhenNoContextStats verifies footer falls back to loaded count.
-func TestPositionShowsLoadedCountWhenNoContextStats(t *testing.T) {
-	model := NewBuilder().WithMessages(makeMessages(75)...).
-		WithPageSize(20).WithSize(100, 30).
-		WithLevel(levelMessageList).Build()
-	model.cursor = 49
-
-	footer := model.footerView()
-
-	// Should show "50/75" (standard format using loaded count)
-	if !strings.Contains(footer, "50/75") {
-		t.Errorf("expected footer to contain '50/75' when contextStats is nil, got: %s", footer)
-	}
-	// Should NOT show "of" format
-	if strings.Contains(footer, " of ") {
-		t.Errorf("footer should NOT contain ' of ' when contextStats is nil, got: %s", footer)
-	}
-}
-
-// TestPositionShowsLoadedCountWhenContextStatsSmaller verifies loaded count is used when
-// contextStats.MessageCount is smaller than loaded (edge case, shouldn't normally happen).
-func TestPositionShowsLoadedCountWhenContextStatsSmaller(t *testing.T) {
-	model := NewBuilder().WithMessages(makeMessages(100)...).
-		WithPageSize(20).WithSize(100, 30).
-		WithLevel(levelMessageList).
-		WithContextStats(&query.TotalStats{MessageCount: 50}).
-		Build()
-	model.cursor = 49
-
-	footer := model.footerView()
-
-	// Should use loaded count (100), not contextStats (50)
-	// Shows "50/100" not "50 of 50"
-	if !strings.Contains(footer, "50/100") {
-		t.Errorf("expected footer to contain '50/100' when contextStats is smaller, got: %s", footer)
-	}
-}
-
-// TestPositionUsesGlobalStatsForAllMessagesView verifies footer uses global stats
-// when in "All Messages" view (allMessages=true, contextStats=nil).
-func TestPositionUsesGlobalStatsForAllMessagesView(t *testing.T) {
-	// Simulate 500 messages loaded (the limit)
-	model := NewBuilder().WithMessages(makeMessages(500)...).
-		WithPageSize(20).WithSize(100, 30).
-		WithLevel(levelMessageList).
-		WithStats(&query.TotalStats{MessageCount: 175000}).
-		Build()
-	model.cursor = 99        // 100th message
-	model.allMessages = true // All Messages view
-
-	footer := model.footerView()
-
-	// Should show "100 of 175000" (using global stats total)
-	if !strings.Contains(footer, "100 of 175000") {
-		t.Errorf("expected footer to contain '100 of 175000', got: %s", footer)
-	}
-	// Should NOT just show "/500"
-	if strings.Contains(footer, "/500") {
-		t.Errorf("footer should NOT contain '/500' in All Messages view, got: %s", footer)
+			header := model.headerView()
+			for _, s := range tt.wantContains {
+				if !strings.Contains(header, s) {
+					t.Errorf("header missing %q, got: %q", s, header)
+				}
+			}
+			for _, s := range tt.wantMissing {
+				if strings.Contains(header, s) {
+					t.Errorf("header should not contain %q", s)
+				}
+			}
+		})
 	}
 }
 
@@ -704,52 +683,6 @@ func TestViewDuringSpinnerAnimation(t *testing.T) {
 	}
 }
 
-// TestViewLineByLineAnalysis provides detailed line-by-line output for debugging.
-func TestViewLineByLineAnalysis(t *testing.T) {
-	model := NewBuilder().
-		WithRows(standardRows...).
-		WithViewType(query.ViewSenders).
-		WithStats(standardStats()).
-		Build()
-
-	terminalWidth := 100
-	terminalHeight := 55 // User's actual terminal height
-	model = resizeModel(t, model, terminalWidth, terminalHeight)
-
-	view := model.View()
-	lines := strings.Split(view, "\n")
-
-	t.Logf("=== View Analysis (terminal %dx%d, pageSize=%d) ===", terminalWidth, terminalHeight, model.pageSize)
-	t.Logf("Total lines from split: %d", len(lines))
-
-	// Count non-empty lines
-	nonEmpty := 0
-	for i, line := range lines {
-		width := lipgloss.Width(line)
-		isEmpty := line == ""
-		if !isEmpty {
-			nonEmpty++
-		}
-		marker := ""
-		if i == 0 {
-			marker = " <- title bar"
-		} else if i == 1 {
-			marker = " <- breadcrumb/stats"
-		} else if i == len(lines)-1 || (i == len(lines)-2 && lines[len(lines)-1] == "") {
-			marker = " <- footer"
-		}
-		if width > terminalWidth {
-			marker += " *** OVERFLOW ***"
-		}
-		t.Logf("Line %2d: width=%3d empty=%v %s", i, width, isEmpty, marker)
-	}
-	t.Logf("Non-empty lines: %d (expected: %d)", nonEmpty, terminalHeight)
-
-	if nonEmpty > terminalHeight {
-		t.Errorf("View has %d non-empty lines but terminal height is %d", nonEmpty, terminalHeight)
-	}
-}
-
 // TestHeaderLineFitsWidth verifies the header line2 doesn't exceed terminal width
 // even when breadcrumb + stats are very long.
 func TestHeaderLineFitsWidth(t *testing.T) {
@@ -953,70 +886,36 @@ func TestModalCompositingPreservesANSI(t *testing.T) {
 	// Render the view with quit modal - this uses overlayModal
 	view := model.View()
 
-	// The view should not contain corrupted ANSI sequences
-	// A corrupted sequence would be one that starts with ESC but doesn't complete properly
-	// Check that all ESC sequences are well-formed (ESC [ ... m for SGR)
-
-	// Count escape sequences - with ANSI profile enabled, we should have many
-	escCount := strings.Count(view, "\x1b[")
-	resetCount := strings.Count(view, "\x1b[0m") + strings.Count(view, "\x1b[m")
-
-	// There should be escape sequences in the output (styled content)
-	if escCount == 0 {
-		t.Error("No ANSI sequences found - styled content expected with ANSI profile")
-	}
-
-	// Basic sanity: view should render without panics and produce output
+	// Basic sanity checks
 	if len(view) == 0 {
-		t.Error("View rendered empty output")
+		t.Fatal("View rendered empty output")
 	}
 
 	// The view should contain modal content
 	if !strings.Contains(view, "Quit") && !strings.Contains(view, "quit") {
 		t.Errorf("Modal content not found in view, view length: %d", len(view))
-		// Show first 500 chars for debugging
-		if len(view) > 500 {
-			t.Logf("View preview: %q", view[:500])
-		} else {
-			t.Logf("View: %q", view)
-		}
 	}
 
-	// Check for obviously broken sequences (ESC followed by non-[ character in middle of string)
-	// This is a heuristic - a properly formed SGR sequence is ESC [ <params> m
-	lines := strings.Split(view, "\n")
-	for i, line := range lines {
-		// Check for truncated sequences: ESC at end without completion
-		if strings.HasSuffix(line, "\x1b") {
-			t.Errorf("Line %d ends with incomplete escape sequence", i)
-		}
-		// Check for ESC[ without closing m (very basic check)
-		// This won't catch all issues but catches obvious truncation
-		idx := 0
-		for {
-			pos := strings.Index(line[idx:], "\x1b[")
-			if pos == -1 {
-				break
-			}
-			start := idx + pos
-			// Find the 'm' terminator (for SGR sequences)
-			end := strings.IndexAny(line[start:], "mHJKABCDfsu")
-			if end == -1 && start < len(line)-2 {
-				// No terminator found and not at end - might be truncated
-				remaining := line[start:]
-				if len(remaining) > 10 && !strings.ContainsAny(remaining[:10], "mHJKABCDfsu") {
-					t.Errorf("Line %d may have truncated escape sequence at position %d: %q",
-						i, start, remaining[:min(20, len(remaining))])
-				}
-			}
-			idx = start + 2
-			if idx >= len(line) {
-				break
-			}
-		}
+	// Validate ANSI sequences using regex
+	// Valid SGR sequences: ESC [ (optional params: digits and semicolons) m
+	// Valid cursor sequences: ESC [ (params) H/J/K/A/B/C/D/f/s/u
+	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*[mHJKABCDfsu]`)
+
+	// Remove all valid sequences
+	stripped := ansiRegex.ReplaceAllString(view, "")
+
+	// If any raw ESC remains, a sequence was corrupted/truncated
+	if strings.Contains(stripped, "\x1b") {
+		// Find the corrupted sequence for debugging
+		escIdx := strings.Index(stripped, "\x1b")
+		context := stripped[escIdx:min(escIdx+20, len(stripped))]
+		t.Errorf("Found corrupted or incomplete ANSI sequence: %q", context)
 	}
 
-	t.Logf("View has %d escape sequences, %d resets", escCount, resetCount)
+	// Ensure we actually had sequences (styled content expected)
+	if !ansiRegex.MatchString(view) {
+		t.Error("Expected ANSI sequences in output with ANSI profile enabled, found none")
+	}
 }
 
 // TestSubAggregateAKeyJumpsToMessages verifies 'a' key in sub-aggregate view
