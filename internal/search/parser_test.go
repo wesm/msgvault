@@ -285,6 +285,24 @@ func TestParse_TopLevelWrapper(t *testing.T) {
 	}
 }
 
+// TestParser_NilNow verifies that a Parser with nil Now function doesn't panic
+// and correctly handles relative date operators by falling back to time.Now().
+func TestParser_NilNow(t *testing.T) {
+	p := &Parser{Now: nil}
+
+	// Should not panic and should return a valid result
+	q := p.Parse("newer_than:1d")
+	if q.AfterDate == nil {
+		t.Error("Parser{Now: nil}.Parse(\"newer_than:1d\") should set AfterDate")
+	}
+
+	// Verify the date is roughly correct (within the last 2 days to account for timing)
+	expectedAfter := time.Now().UTC().AddDate(0, 0, -2)
+	if q.AfterDate.Before(expectedAfter) {
+		t.Errorf("AfterDate %v is too far in the past (expected after %v)", q.AfterDate, expectedAfter)
+	}
+}
+
 func TestQuery_IsEmpty(t *testing.T) {
 	tests := []struct {
 		query   string
