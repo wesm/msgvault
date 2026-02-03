@@ -224,7 +224,7 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Time view: jump to Time view, or cycle granularity if already there
 	case "t":
 		if m.viewType == query.ViewTime {
-			m.timeGranularity = (m.timeGranularity + 1) % 3
+			m.timeGranularity = (m.timeGranularity + 1) % query.TimeGranularityCount
 		} else if isSub && m.drillViewType == query.ViewTime {
 			// Can't sub-aggregate by the same dimension we drilled from
 			return m, nil

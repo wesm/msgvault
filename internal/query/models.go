@@ -121,6 +121,9 @@ const (
 	TimeYear TimeGranularity = iota
 	TimeMonth
 	TimeDay
+
+	// TimeGranularityCount is the total number of time granularity options. Must be last.
+	TimeGranularityCount
 )
 
 func (g TimeGranularity) String() string {
