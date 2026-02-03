@@ -454,7 +454,7 @@ func TestListMessages_ConversationIDFilter(t *testing.T) {
 		Subject:        "Thread 2 Message 1",
 		SentAt:         "2024-04-01 10:00:00",
 		SizeEstimate:   100,
-		FromID:         1, // Alice
+		FromID:         1,          // Alice
 		ToIDs:          []int64{2}, // Bob
 	})
 	env.AddMessage(dbtest.MessageOpts{
@@ -462,7 +462,7 @@ func TestListMessages_ConversationIDFilter(t *testing.T) {
 		Subject:        "Thread 2 Message 2",
 		SentAt:         "2024-04-02 11:00:00",
 		SizeEstimate:   200,
-		FromID:         2, // Bob
+		FromID:         2,          // Bob
 		ToIDs:          []int64{1}, // Alice
 	})
 

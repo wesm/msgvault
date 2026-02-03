@@ -287,7 +287,7 @@ func (tdb *TestDB) LastMessageID() int64 {
 // MessageOpts configures a message to insert.
 type MessageOpts struct {
 	Subject        string
-	SentAt         string  // e.g. "2024-05-01 10:00:00"
+	SentAt         string // e.g. "2024-05-01 10:00:00"
 	SizeEstimate   int
 	HasAttachments bool
 	FromID         int64   // participant ID for 'from' recipient; 0 = no from

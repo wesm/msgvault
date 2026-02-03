@@ -58,7 +58,7 @@ const DefaultRefillRate = 250.0
 type realClock struct{}
 
 func (realClock) Now() time.Time                         { return time.Now() }
-func (realClock) After(d time.Duration) <-chan time.Time  { return time.After(d) }
+func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
 // RateLimiter implements a token bucket rate limiter for Gmail API calls.
 // It is safe for concurrent use and supports adaptive throttling.

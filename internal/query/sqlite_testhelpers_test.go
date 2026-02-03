@@ -208,7 +208,7 @@ func newTestEnvWithEmptyBuckets(t *testing.T) *testEnv {
 	env.AddMessage(dbtest.MessageOpts{
 		Subject: "No Labels",
 		SentAt:  "2024-04-04 10:00:00",
-		FromID:  1, // Alice
+		FromID:  1,          // Alice
 		ToIDs:   []int64{2}, // Bob
 	})
 

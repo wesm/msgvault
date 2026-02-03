@@ -48,8 +48,8 @@ type DeletionMockAPI struct {
 
 // DeletionCall represents a single API call for sequence tracking.
 type DeletionCall struct {
-	Operation string // "trash", "delete", "batch_delete"
-	MessageID string // For single operations
+	Operation string   // "trash", "delete", "batch_delete"
+	MessageID string   // For single operations
 	BatchIDs  []string // For batch operations
 	Error     error    // Error returned (nil for success)
 }

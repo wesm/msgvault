@@ -16,7 +16,6 @@ import (
 	"github.com/wesm/msgvault/internal/testutil"
 )
 
-
 // toolHandler is the function signature for MCP tool handler methods.
 type toolHandler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
 
@@ -151,7 +150,7 @@ func TestGetStats(t *testing.T) {
 	h := &handlers{engine: eng}
 
 	resp := runTool[struct {
-		Stats    query.TotalStats   `json:"stats"`
+		Stats    query.TotalStats    `json:"stats"`
 		Accounts []query.AccountInfo `json:"accounts"`
 	}](t, "get_stats", h.getStats, map[string]any{})
 

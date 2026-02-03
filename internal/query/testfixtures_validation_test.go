@@ -24,7 +24,7 @@ func newFakeT(t testing.TB) *fakeT {
 	return &fakeT{TB: t}
 }
 
-func (f *fakeT) Helper()                          {}
+func (f *fakeT) Helper()                           {}
 func (f *fakeT) Errorf(format string, args ...any) {}
 func (f *fakeT) Cleanup(fn func())                 {}
 func (f *fakeT) Fatalf(format string, args ...any) {

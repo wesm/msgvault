@@ -10,8 +10,8 @@ import (
 type viewLevel int
 
 const (
-	levelAggregates   viewLevel = iota
-	levelDrillDown              // Sub-grouping after drill-down
+	levelAggregates viewLevel = iota
+	levelDrillDown            // Sub-grouping after drill-down
 	levelMessageList
 	levelMessageDetail
 	levelThreadView // Thread/conversation view showing all messages in a thread
@@ -19,28 +19,28 @@ const (
 
 // viewState encapsulates the state for a specific view (cursor, sort, filters, data).
 type viewState struct {
-	level           viewLevel
-	viewType        query.ViewType
-	timeGranularity query.TimeGranularity
-	sortField       query.SortField
-	sortDirection   query.SortDirection
+	level            viewLevel
+	viewType         query.ViewType
+	timeGranularity  query.TimeGranularity
+	sortField        query.SortField
+	sortDirection    query.SortDirection
 	msgSortField     query.MessageSortField
 	msgSortDirection query.SortDirection
-	cursor          int
-	scrollOffset    int
-	filterKey       string              // The aggregate key used to filter messages
-	allMessages     bool                // True when showing all messages (not filtered by aggregate)
-	drillFilter     query.MessageFilter // Filter from parent drill-down
-	drillViewType   query.ViewType      // ViewType that created the drill filter
-	contextStats    *query.TotalStats   // Contextual stats for header display
-	searchQuery     string              // Active search query (for aggregate filtering)
-	searchFilter    query.MessageFilter // Context filter applied to search
-	
+	cursor           int
+	scrollOffset     int
+	filterKey        string              // The aggregate key used to filter messages
+	allMessages      bool                // True when showing all messages (not filtered by aggregate)
+	drillFilter      query.MessageFilter // Filter from parent drill-down
+	drillViewType    query.ViewType      // ViewType that created the drill filter
+	contextStats     *query.TotalStats   // Contextual stats for header display
+	searchQuery      string              // Active search query (for aggregate filtering)
+	searchFilter     query.MessageFilter // Context filter applied to search
+
 	// Data
-	rows         []query.AggregateRow
+	rows          []query.AggregateRow
 	messages      []query.MessageSummary
 	messageDetail *query.MessageDetail
-	
+
 	// Detail view specific
 	detailScroll         int
 	detailLineCount      int
@@ -54,7 +54,7 @@ type viewState struct {
 	detailSearchQuery      string
 	detailSearchMatches    []int // Line indices with matches
 	detailSearchMatchIndex int   // Current match index
-	
+
 	// Thread view specific
 	threadConversationID int64
 	threadMessages       []query.MessageSummary
@@ -257,4 +257,3 @@ func (m *Model) navigateList(key string, itemCount int) bool {
 	}
 	return false
 }
-

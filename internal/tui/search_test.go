@@ -1,12 +1,11 @@
 package tui
 
 import (
-	"strings"
-	"testing"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wesm/msgvault/internal/query"
+	"strings"
+	"testing"
 )
-
 
 func TestSearchModalOpen(t *testing.T) {
 	model := NewBuilder().

@@ -31,13 +31,13 @@ const (
 
 // Filters specifies criteria for selecting messages.
 type Filters struct {
-	Senders      []string `json:"senders,omitempty"`
+	Senders       []string `json:"senders,omitempty"`
 	SenderDomains []string `json:"sender_domains,omitempty"`
-	Recipients   []string `json:"recipients,omitempty"`
-	Labels       []string `json:"labels,omitempty"`
-	After        string   `json:"after,omitempty"`  // ISO date
-	Before       string   `json:"before,omitempty"` // ISO date
-	Account      string   `json:"account,omitempty"`
+	Recipients    []string `json:"recipients,omitempty"`
+	Labels        []string `json:"labels,omitempty"`
+	After         string   `json:"after,omitempty"`  // ISO date
+	Before        string   `json:"before,omitempty"` // ISO date
+	Account       string   `json:"account,omitempty"`
 }
 
 // Summary contains statistics about messages to be deleted.

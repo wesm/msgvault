@@ -11,7 +11,6 @@ import (
 	"github.com/wesm/msgvault/internal/query/querytest"
 )
 
-
 func TestStaleAsyncResponsesIgnored(t *testing.T) {
 	model := NewBuilder().
 		WithLevel(levelMessageList).
@@ -47,7 +46,6 @@ func TestStaleAsyncResponsesIgnored(t *testing.T) {
 		t.Errorf("expected subject 'Valid', got %s", m.messages[0].Subject)
 	}
 }
-
 
 func TestStaleDetailResponsesIgnored(t *testing.T) {
 	model := NewBuilder().
@@ -87,7 +85,6 @@ func TestStaleDetailResponsesIgnored(t *testing.T) {
 	}
 }
 
-
 func TestDetailLineCountResetOnLoad(t *testing.T) {
 	model := NewBuilder().
 		WithMessages(
@@ -117,7 +114,6 @@ func TestDetailLineCountResetOnLoad(t *testing.T) {
 	}
 }
 
-
 func TestDetailScrollClamping(t *testing.T) {
 	model := NewBuilder().
 		WithLevel(levelMessageDetail).
@@ -146,7 +142,6 @@ func TestDetailScrollClamping(t *testing.T) {
 		t.Errorf("expected detailScroll = 0 when content fits page, got %d", model.detailScroll)
 	}
 }
-
 
 func TestResizeRecalculatesDetailLineCount(t *testing.T) {
 	model := NewBuilder().
@@ -186,7 +181,6 @@ func TestResizeRecalculatesDetailLineCount(t *testing.T) {
 	}
 }
 
-
 func TestEndKeyWithZeroLineCount(t *testing.T) {
 	model := NewBuilder().
 		WithLevel(levelMessageDetail).
@@ -203,7 +197,6 @@ func TestEndKeyWithZeroLineCount(t *testing.T) {
 		t.Errorf("expected detailScroll = 0 with zero line count, got %d", m.detailScroll)
 	}
 }
-
 
 func TestQuitConfirmationModal(t *testing.T) {
 	model := NewBuilder().Build()
@@ -227,7 +220,6 @@ func TestQuitConfirmationModal(t *testing.T) {
 	assertModal(t, model, modalNone)
 }
 
-
 func TestQuitConfirmationConfirm(t *testing.T) {
 	model := NewBuilder().WithModal(modalQuitConfirm).WithPageSize(10).WithSize(100, 20).Build()
 
@@ -241,7 +233,6 @@ func TestQuitConfirmationConfirm(t *testing.T) {
 		t.Error("expected quit command")
 	}
 }
-
 
 func TestAccountSelectorModal(t *testing.T) {
 	model := NewBuilder().
@@ -283,7 +274,6 @@ func TestAccountSelectorModal(t *testing.T) {
 	}
 }
 
-
 func TestAttachmentFilterModal(t *testing.T) {
 	model := NewBuilder().WithPageSize(10).WithSize(100, 20).Build()
 
@@ -314,7 +304,6 @@ func TestAttachmentFilterModal(t *testing.T) {
 	}
 }
 
-
 func TestAttachmentFilterInMessageList(t *testing.T) {
 	model := NewBuilder().WithLevel(levelMessageList).WithPageSize(10).WithSize(100, 20).Build()
 
@@ -337,7 +326,6 @@ func TestAttachmentFilterInMessageList(t *testing.T) {
 		t.Error("expected command to reload messages")
 	}
 }
-
 
 func TestSubGroupingNavigation(t *testing.T) {
 	rows := []query.AggregateRow{
@@ -429,7 +417,6 @@ func TestSubGroupingNavigation(t *testing.T) {
 	}
 }
 
-
 func TestFillScreenDetailLineCount(t *testing.T) {
 	model := NewBuilder().WithLevel(levelMessageDetail).WithSize(80, 24).WithPageSize(19).Build()
 
@@ -465,7 +452,6 @@ func TestFillScreenDetailLineCount(t *testing.T) {
 	}
 }
 
-
 func TestWindowSizeClampNegative(t *testing.T) {
 	model := NewBuilder().Build()
 
@@ -483,7 +469,6 @@ func TestWindowSizeClampNegative(t *testing.T) {
 	}
 }
 
-
 func TestDefaultLoadingWithNoData(t *testing.T) {
 	// Build with no rows/messages and no explicit loading override.
 	// The builder should preserve New()'s default loading=true.
@@ -493,7 +478,6 @@ func TestDefaultLoadingWithNoData(t *testing.T) {
 		t.Errorf("expected loading=true (New default) when no data provided, got false")
 	}
 }
-
 
 func TestPageSizeRawZeroAndNegative(t *testing.T) {
 	tests := []struct {
@@ -524,7 +508,6 @@ func TestPageSizeRawZeroAndNegative(t *testing.T) {
 	}
 }
 
-
 func TestWithPageSizeClearsRawFlag(t *testing.T) {
 	// WithPageSizeRaw followed by WithPageSize should clear the raw flag,
 	// so the normal clamping logic applies.
@@ -539,7 +522,6 @@ func TestWithPageSizeClearsRawFlag(t *testing.T) {
 		t.Errorf("expected pageSize=10 after WithPageSize cleared raw flag, got %d", model.pageSize)
 	}
 }
-
 
 func TestSubAggregateDrillDown(t *testing.T) {
 	model := NewBuilder().
@@ -567,7 +549,6 @@ func TestSubAggregateDrillDown(t *testing.T) {
 		t.Error("expected command to load messages")
 	}
 }
-
 
 // TestGKeyCyclesViewType verifies that 'g' cycles through view types at aggregate level.
 func TestGKeyCyclesViewType(t *testing.T) {
@@ -1265,7 +1246,6 @@ func TestDrillFilterPreservedAfterMessageDetail(t *testing.T) {
 	}
 }
 
-
 // TestDetailNavigationPrevNext verifies left/right arrow navigation in message detail view.
 // Left = previous in list (lower index), Right = next in list (higher index).
 func TestDetailNavigationPrevNext(t *testing.T) {
@@ -1639,11 +1619,11 @@ func TestSubAggregateAKeyJumpsToMessages(t *testing.T) {
 
 func TestNavigateList(t *testing.T) {
 	tests := []struct {
-		name       string
-		key        string
-		itemCount  int
-		initCursor int
-		wantCursor int
+		name        string
+		key         string
+		itemCount   int
+		initCursor  int
+		wantCursor  int
 		wantHandled bool
 	}{
 		{"down from top", "j", 5, 0, 1, true},
@@ -1676,7 +1656,6 @@ func TestNavigateList(t *testing.T) {
 	}
 }
 
-
 func TestOpenAccountSelector(t *testing.T) {
 	t.Run("no accounts", func(t *testing.T) {
 		m := NewBuilder().Build()
@@ -1702,7 +1681,6 @@ func TestOpenAccountSelector(t *testing.T) {
 	})
 }
 
-
 func TestOpenAttachmentFilter(t *testing.T) {
 	m := NewBuilder().Build()
 
@@ -1718,7 +1696,6 @@ func TestOpenAttachmentFilter(t *testing.T) {
 		t.Errorf("expected modalCursor 1 for attachment filter, got %d", m.modalCursor)
 	}
 }
-
 
 func TestPushBreadcrumb(t *testing.T) {
 	m := NewBuilder().Build()
@@ -1737,7 +1714,6 @@ func TestPushBreadcrumb(t *testing.T) {
 		t.Errorf("expected 2 breadcrumbs, got %d", len(m.breadcrumbs))
 	}
 }
-
 
 func TestSubAggregateDrillDownPreservesSelection(t *testing.T) {
 	// Regression test: drilling down from sub-aggregate via Enter should NOT
@@ -1781,7 +1757,6 @@ func TestSubAggregateDrillDownPreservesSelection(t *testing.T) {
 	}
 }
 
-
 func TestTopLevelDrillDownClearsSelection(t *testing.T) {
 	// Top-level Enter should clear selections (contrasts with sub-aggregate behavior)
 	model := NewBuilder().
@@ -1806,7 +1781,6 @@ func TestTopLevelDrillDownClearsSelection(t *testing.T) {
 		t.Errorf("top-level Enter should clear message selection, got %v", m.selection.messageIDs)
 	}
 }
-
 
 // =============================================================================
 // Time Granularity Drill-Down Tests
@@ -1849,16 +1823,15 @@ func TestTopLevelTimeDrillDown_AllGranularities(t *testing.T) {
 	}
 }
 
-
 func TestSubAggregateTimeDrillDown_AllGranularities(t *testing.T) {
 	// Regression test: drilling down from sub-aggregate Time view must set
 	// TimeGranularity on the drillFilter to match the current view granularity,
 	// not the stale value from the original top-level drill.
 	tests := []struct {
-		name              string
+		name               string
 		initialGranularity query.TimeGranularity // Set when top-level drill was created
 		subGranularity     query.TimeGranularity // Changed in sub-aggregate view
-		key               string
+		key                string
 	}{
 		{"Month_to_Year", query.TimeMonth, query.TimeYear, "2024"},
 		{"Year_to_Month", query.TimeYear, query.TimeMonth, "2024-06"},
@@ -1908,7 +1881,6 @@ func TestSubAggregateTimeDrillDown_AllGranularities(t *testing.T) {
 	}
 }
 
-
 func TestSubAggregateTimeDrillDown_NonTimeViewPreservesGranularity(t *testing.T) {
 	// When sub-aggregate view is NOT Time (e.g., Labels), drilling down should
 	// NOT change the drillFilter's TimeGranularity (it may have been set by
@@ -1942,7 +1914,6 @@ func TestSubAggregateTimeDrillDown_NonTimeViewPreservesGranularity(t *testing.T)
 	}
 }
 
-
 func TestTopLevelTimeDrillDown_GranularityChangedBeforeEnter(t *testing.T) {
 	// User starts in Time view with Month, changes to Year, then presses Enter.
 	// drillFilter should use the CURRENT granularity (Year), not the initial one.
@@ -1965,7 +1936,6 @@ func TestTopLevelTimeDrillDown_GranularityChangedBeforeEnter(t *testing.T) {
 		t.Errorf("drillFilter.TimePeriod = %q, want %q", m.drillFilter.TimePeriod, "2024")
 	}
 }
-
 
 func TestSubAggregateTimeDrillDown_FullScenario(t *testing.T) {
 	// Full user scenario: search sender → drill → sub-group by time → toggle Year → Enter
@@ -2212,7 +2182,6 @@ func TestSenderNamesBreadcrumbRoundTrip(t *testing.T) {
 	}
 }
 
-
 // =============================================================================
 // RecipientNames tests
 // =============================================================================
@@ -2245,7 +2214,6 @@ func TestRecipientNamesDrillDown(t *testing.T) {
 	}
 }
 
-
 func TestRecipientNamesDrillDownEmptyKey(t *testing.T) {
 	rows := []query.AggregateRow{
 		{Key: "", Count: 3},
@@ -2264,7 +2232,6 @@ func TestRecipientNamesDrillDownEmptyKey(t *testing.T) {
 		t.Errorf("expected empty RecipientName, got %q", m.drillFilter.RecipientName)
 	}
 }
-
 
 func TestRecipientNamesDrillFilterKey(t *testing.T) {
 	model := NewBuilder().
@@ -2286,7 +2253,6 @@ func TestRecipientNamesDrillFilterKey(t *testing.T) {
 	}
 }
 
-
 func TestRecipientNamesBreadcrumbPrefix(t *testing.T) {
 	prefix := viewTypePrefix(query.ViewRecipientNames)
 	if prefix != "RN" {
@@ -2298,7 +2264,6 @@ func TestRecipientNamesBreadcrumbPrefix(t *testing.T) {
 		t.Errorf("expected abbrev 'Recipient Name', got %q", abbrev)
 	}
 }
-
 
 func TestShiftTabCyclesRecipientNames(t *testing.T) {
 	model := NewBuilder().
@@ -2312,7 +2277,6 @@ func TestShiftTabCyclesRecipientNames(t *testing.T) {
 		t.Errorf("expected ViewRecipients after shift+tab from RecipientNames, got %v", m.viewType)
 	}
 }
-
 
 func TestTabFromRecipientsThenRecipientNames(t *testing.T) {
 	model := NewBuilder().
@@ -2333,7 +2297,6 @@ func TestTabFromRecipientsThenRecipientNames(t *testing.T) {
 		t.Errorf("expected ViewDomains after tab from RecipientNames, got %v", m.viewType)
 	}
 }
-
 
 func TestSubAggregateFromRecipientNames(t *testing.T) {
 	rows := []query.AggregateRow{
@@ -2362,7 +2325,6 @@ func TestSubAggregateFromRecipientNames(t *testing.T) {
 	}
 }
 
-
 func TestHasDrillFilterWithRecipientName(t *testing.T) {
 	model := NewBuilder().
 		WithRows(query.AggregateRow{Key: "test", Count: 1}).
@@ -2378,7 +2340,6 @@ func TestHasDrillFilterWithRecipientName(t *testing.T) {
 		t.Error("expected hasDrillFilter=true for MatchEmptyRecipientName")
 	}
 }
-
 
 func TestRecipientNamesBreadcrumbRoundTrip(t *testing.T) {
 	model := NewBuilder().
@@ -2416,7 +2377,6 @@ func TestRecipientNamesBreadcrumbRoundTrip(t *testing.T) {
 	}
 }
 
-
 // =============================================================================
 // t hotkey tests
 // =============================================================================
@@ -2436,7 +2396,6 @@ func TestTKeyJumpsToTimeView(t *testing.T) {
 		t.Error("expected loading=true after 't' key")
 	}
 }
-
 
 func TestTKeyJumpsToTimeFromAnyView(t *testing.T) {
 	views := []query.ViewType{
@@ -2461,7 +2420,6 @@ func TestTKeyJumpsToTimeFromAnyView(t *testing.T) {
 	}
 }
 
-
 func TestTKeyCyclesGranularityInTimeView(t *testing.T) {
 	model := NewBuilder().
 		WithRows(query.AggregateRow{Key: "2024-01", Count: 10}).
@@ -2478,7 +2436,6 @@ func TestTKeyCyclesGranularityInTimeView(t *testing.T) {
 		t.Errorf("expected TimeMonth after cycling from TimeYear, got %v", m.timeGranularity)
 	}
 }
-
 
 func TestTKeyResetsSelectionOnJump(t *testing.T) {
 	model := NewBuilder().
@@ -2500,7 +2457,6 @@ func TestTKeyResetsSelectionOnJump(t *testing.T) {
 		t.Errorf("expected scrollOffset=0 after 't' jump, got %d", m.scrollOffset)
 	}
 }
-
 
 func TestTKeyDoesNotResetSelectionOnCycle(t *testing.T) {
 	model := NewBuilder().
@@ -2527,7 +2483,6 @@ func TestTKeyDoesNotResetSelectionOnCycle(t *testing.T) {
 		t.Errorf("expected cursor=1 preserved, got %d", m.cursor)
 	}
 }
-
 
 func TestTKeyNoOpInSubAggregateWhenDrillIsTime(t *testing.T) {
 	model := NewBuilder().
