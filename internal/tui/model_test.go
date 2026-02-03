@@ -687,3 +687,412 @@ func TestModel_Update_DataLoaded_ClearsContextStatsAtTopLevelWithoutSearch(t *te
 		t.Error("expected contextStats to be cleared at top level without search")
 	}
 }
+
+// =============================================================================
+// Thread Messages Loaded Tests
+// =============================================================================
+
+func TestModel_Update_ThreadMessagesLoaded_SetsMessages(t *testing.T) {
+	model := NewBuilder().
+		WithLevel(levelThreadView).
+		WithLoading(true).
+		Build()
+	model.loadRequestID = 1
+
+	messages := makeMessages(5)
+	msg := threadMessagesLoadedMsg{
+		messages:       messages,
+		conversationID: 42,
+		truncated:      false,
+		requestID:      1,
+	}
+	updatedModel, _ := model.Update(msg)
+	m := updatedModel.(Model)
+
+	if m.loading {
+		t.Error("expected loading=false after thread messages loaded")
+	}
+	if len(m.threadMessages) != 5 {
+		t.Errorf("expected 5 thread messages, got %d", len(m.threadMessages))
+	}
+	if m.threadConversationID != 42 {
+		t.Errorf("expected conversationID=42, got %d", m.threadConversationID)
+	}
+	if m.threadTruncated {
+		t.Error("expected threadTruncated=false")
+	}
+	// Should reset cursor/scroll
+	if m.threadCursor != 0 {
+		t.Errorf("expected threadCursor=0, got %d", m.threadCursor)
+	}
+	if m.threadScrollOffset != 0 {
+		t.Errorf("expected threadScrollOffset=0, got %d", m.threadScrollOffset)
+	}
+}
+
+func TestModel_Update_ThreadMessagesLoaded_IgnoresStaleResponse(t *testing.T) {
+	model := NewBuilder().
+		WithLevel(levelThreadView).
+		WithLoading(true).
+		Build()
+	model.loadRequestID = 5
+
+	msg := threadMessagesLoadedMsg{
+		messages:       makeMessages(10),
+		conversationID: 42,
+		requestID:      3, // Stale
+	}
+	updatedModel, _ := model.Update(msg)
+	m := updatedModel.(Model)
+
+	if !m.loading {
+		t.Error("expected loading=true (stale response should be ignored)")
+	}
+	if len(m.threadMessages) != 0 {
+		t.Errorf("expected no thread messages (stale response), got %d", len(m.threadMessages))
+	}
+}
+
+func TestModel_Update_ThreadMessagesLoaded_ClearsTransitionBuffer(t *testing.T) {
+	model := NewBuilder().
+		WithLevel(levelThreadView).
+		WithLoading(true).
+		Build()
+	model.transitionBuffer = "frozen view"
+	model.loadRequestID = 1
+
+	msg := threadMessagesLoadedMsg{
+		messages:       makeMessages(3),
+		conversationID: 42,
+		requestID:      1,
+	}
+	updatedModel, _ := model.Update(msg)
+	m := updatedModel.(Model)
+
+	if m.transitionBuffer != "" {
+		t.Error("expected transitionBuffer to be cleared after thread messages load")
+	}
+}
+
+func TestModel_Update_ThreadMessagesLoaded_ResetsCursorAndScroll(t *testing.T) {
+	model := NewBuilder().
+		WithLevel(levelThreadView).
+		WithLoading(true).
+		Build()
+	model.loadRequestID = 1
+	// Set non-zero values to verify reset
+	model.threadCursor = 5
+	model.threadScrollOffset = 3
+
+	msg := threadMessagesLoadedMsg{
+		messages:       makeMessages(10),
+		conversationID: 42,
+		requestID:      1,
+	}
+	updatedModel, _ := model.Update(msg)
+	m := updatedModel.(Model)
+
+	if m.threadCursor != 0 {
+		t.Errorf("expected threadCursor=0 after load, got %d", m.threadCursor)
+	}
+	if m.threadScrollOffset != 0 {
+		t.Errorf("expected threadScrollOffset=0 after load, got %d", m.threadScrollOffset)
+	}
+}
+
+func TestModel_Update_ThreadMessagesLoaded_HandlesError(t *testing.T) {
+	model := NewBuilder().
+		WithLevel(levelThreadView).
+		WithLoading(true).
+		Build()
+	model.loadRequestID = 1
+
+	msg := threadMessagesLoadedMsg{
+		err:       errors.New("thread load failed"),
+		requestID: 1,
+	}
+	updatedModel, _ := model.Update(msg)
+	m := updatedModel.(Model)
+
+	if m.loading {
+		t.Error("expected loading=false after error")
+	}
+	if m.err == nil {
+		t.Error("expected err to be set")
+	}
+	if m.err.Error() != "thread load failed" {
+		t.Errorf("unexpected error message: %v", m.err)
+	}
+}
+
+func TestModel_Update_ThreadMessagesLoaded_SetsTruncatedFlag(t *testing.T) {
+	model := NewBuilder().
+		WithLevel(levelThreadView).
+		WithLoading(true).
+		Build()
+	model.loadRequestID = 1
+
+	msg := threadMessagesLoadedMsg{
+		messages:       makeMessages(1000),
+		conversationID: 42,
+		truncated:      true,
+		requestID:      1,
+	}
+	updatedModel, _ := model.Update(msg)
+	m := updatedModel.(Model)
+
+	if !m.threadTruncated {
+		t.Error("expected threadTruncated=true when more messages exist")
+	}
+}
+
+// =============================================================================
+// Window Size Tests - Detail View with Search
+// =============================================================================
+
+func TestModel_Update_WindowSize_RecalculatesDetailSearchMatches(t *testing.T) {
+	// Create a message detail with multi-line body that wrapping will affect
+	detail := &query.MessageDetail{
+		ID:       1,
+		Subject:  "Test Subject",
+		BodyText: "This is a test body with a searchterm in it.\nAnother line here.\nAnd a third line with searchterm again.",
+	}
+
+	model := NewBuilder().
+		WithLevel(levelMessageDetail).
+		WithDetail(detail).
+		WithSize(100, 40).
+		Build()
+	model.width = 100
+	model.height = 40
+	model.loading = false
+
+	// Set up detail search state
+	model.detailSearchQuery = "searchterm"
+	model.findDetailMatches()
+	originalMatchCount := len(model.detailSearchMatches)
+	model.detailSearchMatchIndex = 1 // Point to second match
+
+	// Resize the window - this should trigger re-wrapping and match recomputation
+	msg := tea.WindowSizeMsg{Width: 60, Height: 30}
+	updatedModel, _ := model.Update(msg)
+	m := updatedModel.(Model)
+
+	// Verify dimensions updated
+	if m.width != 60 {
+		t.Errorf("expected width=60, got %d", m.width)
+	}
+	if m.height != 30 {
+		t.Errorf("expected height=30, got %d", m.height)
+	}
+
+	// Verify search matches were recomputed (the function should have been called)
+	// The match count may differ due to different wrapping
+	if m.detailSearchQuery != "searchterm" {
+		t.Error("detailSearchQuery should be preserved")
+	}
+
+	// Match index should be clamped to valid range
+	if len(m.detailSearchMatches) > 0 {
+		if m.detailSearchMatchIndex >= len(m.detailSearchMatches) {
+			t.Errorf("detailSearchMatchIndex %d should be < match count %d",
+				m.detailSearchMatchIndex, len(m.detailSearchMatches))
+		}
+	} else {
+		if m.detailSearchMatchIndex != 0 {
+			t.Errorf("expected detailSearchMatchIndex=0 when no matches, got %d",
+				m.detailSearchMatchIndex)
+		}
+	}
+
+	// Original match count check to ensure the test is meaningful
+	if originalMatchCount == 0 {
+		t.Error("test setup error: expected at least one match in original search")
+	}
+}
+
+func TestModel_Update_WindowSize_ClampsMatchIndexWhenMatchesDecrease(t *testing.T) {
+	// Create detail with content that will have matches
+	detail := &query.MessageDetail{
+		ID:       1,
+		Subject:  "Test",
+		BodyText: "line1 keyword\nline2 keyword\nline3 keyword",
+	}
+
+	model := NewBuilder().
+		WithLevel(levelMessageDetail).
+		WithDetail(detail).
+		WithSize(100, 40).
+		Build()
+	model.loading = false
+
+	// Set up search with matches
+	model.detailSearchQuery = "keyword"
+	model.findDetailMatches()
+
+	// Simulate having match index pointing beyond what might exist after resize
+	// (in real scenarios, wrapping changes could affect line indices)
+	if len(model.detailSearchMatches) > 0 {
+		model.detailSearchMatchIndex = len(model.detailSearchMatches) - 1
+	}
+
+	// Resize - should preserve valid match index or clamp it
+	msg := tea.WindowSizeMsg{Width: 80, Height: 35}
+	updatedModel, _ := model.Update(msg)
+	m := updatedModel.(Model)
+
+	// Match index should never exceed matches length
+	if len(m.detailSearchMatches) > 0 && m.detailSearchMatchIndex >= len(m.detailSearchMatches) {
+		t.Errorf("detailSearchMatchIndex %d exceeds match count %d",
+			m.detailSearchMatchIndex, len(m.detailSearchMatches))
+	}
+}
+
+func TestModel_Update_WindowSize_NoMatchesAfterResize(t *testing.T) {
+	detail := &query.MessageDetail{
+		ID:       1,
+		Subject:  "Test",
+		BodyText: "some text here",
+	}
+
+	model := NewBuilder().
+		WithLevel(levelMessageDetail).
+		WithDetail(detail).
+		WithSize(100, 40).
+		Build()
+	model.loading = false
+
+	// Set up search with no matches
+	model.detailSearchQuery = "nonexistent"
+	model.findDetailMatches()
+	model.detailSearchMatchIndex = 5 // Invalid index
+
+	// Resize
+	msg := tea.WindowSizeMsg{Width: 80, Height: 35}
+	updatedModel, _ := model.Update(msg)
+	m := updatedModel.(Model)
+
+	// When no matches, index should be 0
+	if len(m.detailSearchMatches) == 0 && m.detailSearchMatchIndex != 0 {
+		t.Errorf("expected detailSearchMatchIndex=0 when no matches, got %d",
+			m.detailSearchMatchIndex)
+	}
+}
+
+// =============================================================================
+// Append Search Results with Unknown Total Tests
+// =============================================================================
+
+func TestModel_Update_SearchResults_AppendsUpdatesContextStatsWhenTotalUnknown(t *testing.T) {
+	existingMessages := makeMessages(10)
+	model := NewBuilder().
+		WithMessages(existingMessages...).
+		WithLevel(levelMessageList).
+		WithContextStats(&query.TotalStats{MessageCount: 10, TotalSize: 1000}).
+		Build()
+	model.searchRequestID = 1
+	model.searchOffset = 10
+	model.searchTotalCount = -1 // Unknown total
+	model.loading = true
+
+	newMessages := makeMessages(5)
+	// Adjust IDs to not conflict
+	for i := range newMessages {
+		newMessages[i].ID = int64(i + 11)
+	}
+
+	msg := searchResultsMsg{
+		messages:   newMessages,
+		totalCount: -1, // Still unknown
+		requestID:  1,
+		append:     true,
+	}
+	updatedModel, _ := model.Update(msg)
+	m := updatedModel.(Model)
+
+	// Total messages should be 15 (10 + 5)
+	if len(m.messages) != 15 {
+		t.Errorf("expected 15 messages, got %d", len(m.messages))
+	}
+
+	// contextStats.MessageCount should be updated to reflect loaded count
+	if m.contextStats == nil {
+		t.Fatal("expected contextStats to be set")
+	}
+	if m.contextStats.MessageCount != 15 {
+		t.Errorf("expected contextStats.MessageCount=15, got %d", m.contextStats.MessageCount)
+	}
+}
+
+func TestModel_Update_SearchResults_AppendDoesNotUpdateContextStatsWhenTotalKnown(t *testing.T) {
+	existingMessages := makeMessages(10)
+	model := NewBuilder().
+		WithMessages(existingMessages...).
+		WithLevel(levelMessageList).
+		WithContextStats(&query.TotalStats{MessageCount: 100}).
+		Build()
+	model.searchRequestID = 1
+	model.searchOffset = 10
+	model.searchTotalCount = 100 // Known total
+	model.loading = true
+
+	newMessages := makeMessages(5)
+	for i := range newMessages {
+		newMessages[i].ID = int64(i + 11)
+	}
+
+	msg := searchResultsMsg{
+		messages:   newMessages,
+		totalCount: 100,
+		requestID:  1,
+		append:     true,
+	}
+	updatedModel, _ := model.Update(msg)
+	m := updatedModel.(Model)
+
+	// contextStats.MessageCount should remain at known total (100), not loaded count (15)
+	if m.contextStats == nil {
+		t.Fatal("expected contextStats to be set")
+	}
+	if m.contextStats.MessageCount != 100 {
+		t.Errorf("expected contextStats.MessageCount=100 (known total), got %d", m.contextStats.MessageCount)
+	}
+}
+
+func TestModel_Update_SearchResults_AppendWithNilContextStats(t *testing.T) {
+	existingMessages := makeMessages(10)
+	model := NewBuilder().
+		WithMessages(existingMessages...).
+		WithLevel(levelMessageList).
+		Build()
+	model.contextStats = nil // Explicitly nil
+	model.searchRequestID = 1
+	model.searchOffset = 10
+	model.searchTotalCount = -1 // Unknown total
+	model.loading = true
+
+	newMessages := makeMessages(5)
+	for i := range newMessages {
+		newMessages[i].ID = int64(i + 11)
+	}
+
+	msg := searchResultsMsg{
+		messages:   newMessages,
+		totalCount: -1,
+		requestID:  1,
+		append:     true,
+	}
+	updatedModel, _ := model.Update(msg)
+	m := updatedModel.(Model)
+
+	// Messages should be appended
+	if len(m.messages) != 15 {
+		t.Errorf("expected 15 messages, got %d", len(m.messages))
+	}
+
+	// contextStats should remain nil when unknown total and no pre-existing contextStats
+	// (the code only updates MessageCount when contextStats != nil)
+	if m.contextStats != nil {
+		t.Error("expected contextStats to remain nil when not pre-existing")
+	}
+}
