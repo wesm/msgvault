@@ -103,7 +103,7 @@ func PrintHeadlessInstructions(email, tokensDir string) {
 	fmt.Println()
 	fmt.Println("Step 2: Copy the token file to your headless server:")
 	fmt.Println()
-	fmt.Printf("    scp '%s' user@server:'%s'\n", tokenPath, tokenPath)
+	fmt.Printf("    scp %s user@server:%s\n", shellQuote(tokenPath), shellQuote(tokenPath))
 	fmt.Println()
 	fmt.Println("Step 3: On the headless server, register the account:")
 	fmt.Println()
@@ -120,6 +120,13 @@ func sanitizeEmail(email string) string {
 	safe = strings.ReplaceAll(safe, "\\", "_")
 	safe = strings.ReplaceAll(safe, "..", "_")
 	return safe
+}
+
+// shellQuote returns a shell-safe quoted string using single quotes.
+// Handles embedded single quotes by ending the quoted string, adding an
+// escaped single quote, and starting a new quoted string: ' -> '\”
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 // Authorize performs the browser OAuth flow for a new account.
