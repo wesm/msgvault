@@ -1,6 +1,18 @@
 display_name = "msgvault"
+agent = "claude-code"
 
 review_guidelines = """
 Since this software is pre-alpha, do not worry about backward compatibility.
-We are using the latest production version of Go
+We are using the latest production version of Go.
+
+Focus on:
+- CGO compatibility (DuckDB, SQLite)
+- Proper error handling with context
+- No SELECT DISTINCT with JOINs (use EXISTS instead)
+- Never JOIN or scan message_bodies in list/aggregate queries
 """
+
+# Create beads issues from review failures
+[[hooks]]
+event = "review.*"
+type = "beads"

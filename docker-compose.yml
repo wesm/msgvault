@@ -31,7 +31,8 @@ services:
       # Timezone (adjust to your location)
       - TZ=${TZ:-America/New_York}
       # API key for HTTP API authentication (required for serve mode)
-      - MSGVAULT_API_KEY=${MSGVAULT_API_KEY:-changeme}
+      # IMPORTANT: Set this to a secure value before deployment!
+      - MSGVAULT_API_KEY=${MSGVAULT_API_KEY:?Set MSGVAULT_API_KEY environment variable}
 
     # Port mapping (only needed when running 'serve' command)
     ports:
