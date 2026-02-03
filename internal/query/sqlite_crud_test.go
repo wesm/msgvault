@@ -1,28 +1,111 @@
 package query
 
 import (
-	"context"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/testutil/dbtest"
 )
 
-func TestListMessages(t *testing.T) {
+func viewTypePtr(v ViewType) *ViewType { return &v }
+
+func TestListMessages_Filters(t *testing.T) {
 	env := newTestEnv(t)
 
-	messages := env.MustListMessages(MessageFilter{})
-	if len(messages) != 5 {
-		t.Errorf("expected 5 messages, got %d", len(messages))
+	tests := []struct {
+		name      string
+		filter    MessageFilter
+		wantCount int
+		validate  func(*testing.T, []MessageSummary)
+	}{
+		{
+			name:      "All messages",
+			filter:    MessageFilter{},
+			wantCount: 5,
+		},
+		{
+			name:      "Filter by sender",
+			filter:    MessageFilter{Sender: "alice@example.com"},
+			wantCount: 3,
+		},
+		{
+			name:      "Filter by label",
+			filter:    MessageFilter{Label: "Work"},
+			wantCount: 2,
+		},
+		{
+			name:      "Filter by sender name",
+			filter:    MessageFilter{SenderName: "Alice Smith"},
+			wantCount: 3,
+		},
+		{
+			name:      "Filter by recipient name",
+			filter:    MessageFilter{RecipientName: "Bob Jones"},
+			wantCount: 3,
+		},
+		{
+			name:      "Combined recipient and recipient name",
+			filter:    MessageFilter{Recipient: "bob@company.org", RecipientName: "Bob Jones"},
+			wantCount: 3,
+		},
+		{
+			name:      "Mismatched recipient and recipient name",
+			filter:    MessageFilter{Recipient: "bob@company.org", RecipientName: "Alice Smith"},
+			wantCount: 0,
+		},
+		{
+			name:      "RecipientName with MatchEmptyRecipient (contradictory)",
+			filter:    MessageFilter{RecipientName: "Bob Jones", EmptyValueTarget: viewTypePtr(ViewRecipients)},
+			wantCount: 0,
+		},
+		{
+			name:      "MatchEmptyRecipientName with sender",
+			filter:    MessageFilter{EmptyValueTarget: viewTypePtr(ViewRecipientNames), Sender: "alice@example.com"},
+			wantCount: 0,
+		},
+		{
+			name:      "Time period month",
+			filter:    MessageFilter{TimeRange: TimeRange{Period: "2024-01"}},
+			wantCount: 2,
+		},
+		{
+			name:      "Time period day",
+			filter:    MessageFilter{TimeRange: TimeRange{Period: "2024-01-15"}},
+			wantCount: 1,
+		},
+		{
+			name:      "Time period year",
+			filter:    MessageFilter{TimeRange: TimeRange{Period: "2024", Granularity: TimeYear}},
+			wantCount: 5,
+		},
 	}
 
-	messages = env.MustListMessages(MessageFilter{Sender: "alice@example.com"})
-	if len(messages) != 3 {
-		t.Errorf("expected 3 messages from alice, got %d", len(messages))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			messages := env.MustListMessages(tt.filter)
+			if len(messages) != tt.wantCount {
+				t.Errorf("got %d messages, want %d", len(messages), tt.wantCount)
+			}
+			if tt.validate != nil {
+				tt.validate(t, messages)
+			}
+		})
 	}
+}
 
-	messages = env.MustListMessages(MessageFilter{Label: "Work"})
-	if len(messages) != 2 {
-		t.Errorf("expected 2 messages with Work label, got %d", len(messages))
+func TestListMessages_NoDuplicates(t *testing.T) {
+	env := newTestEnv(t)
+
+	filter := MessageFilter{Recipient: "bob@company.org", RecipientName: "Bob Jones"}
+	messages := env.MustListMessages(filter)
+
+	seen := make(map[int64]int)
+	for _, m := range messages {
+		seen[m.ID]++
+	}
+	for id, count := range seen {
+		if count > 1 {
+			t.Errorf("message ID %d returned %d times (expected once)", id, count)
+		}
 	}
 }
 
@@ -44,27 +127,21 @@ func TestGetMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMessage: %v", err)
 	}
-
 	if msg == nil {
 		t.Fatal("expected message, got nil")
 	}
-
 	if msg.Subject != "Hello World" {
 		t.Errorf("expected subject 'Hello World', got %q", msg.Subject)
 	}
-
 	if len(msg.From) != 1 || msg.From[0].Email != "alice@example.com" {
 		t.Errorf("expected from alice, got %v", msg.From)
 	}
-
 	if len(msg.To) != 2 {
 		t.Errorf("expected 2 recipients, got %d", len(msg.To))
 	}
-
 	if len(msg.Labels) != 2 {
 		t.Errorf("expected 2 labels, got %d", len(msg.Labels))
 	}
-
 	if msg.BodyText != "Message body 1" {
 		t.Errorf("expected body text 'Message body 1', got %q", msg.BodyText)
 	}
@@ -77,11 +154,9 @@ func TestGetMessageWithAttachments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMessage: %v", err)
 	}
-
 	if len(msg.Attachments) != 2 {
 		t.Errorf("expected 2 attachments, got %d", len(msg.Attachments))
 	}
-
 	found := false
 	for _, att := range msg.Attachments {
 		if att.Filename == "doc.pdf" {
@@ -106,11 +181,9 @@ func TestGetMessageBySourceID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMessageBySourceID: %v", err)
 	}
-
 	if msg == nil {
 		t.Fatal("expected message, got nil")
 	}
-
 	if msg.Subject != "Follow up" {
 		t.Errorf("expected subject 'Follow up', got %q", msg.Subject)
 	}
@@ -123,11 +196,9 @@ func TestListAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAccounts: %v", err)
 	}
-
 	if len(accounts) != 1 {
 		t.Errorf("expected 1 account, got %d", len(accounts))
 	}
-
 	if accounts[0].Identifier != "test@gmail.com" {
 		t.Errorf("expected test@gmail.com, got %s", accounts[0].Identifier)
 	}
@@ -141,16 +212,13 @@ func TestGetTotalStats(t *testing.T) {
 	if stats.MessageCount != 5 {
 		t.Errorf("expected 5 messages, got %d", stats.MessageCount)
 	}
-
 	if stats.AttachmentCount != 3 {
 		t.Errorf("expected 3 attachments, got %d", stats.AttachmentCount)
 	}
-
 	expectedSize := int64(1000 + 2000 + 1500 + 3000 + 500)
 	if stats.TotalSize != expectedSize {
 		t.Errorf("expected total size %d, got %d", expectedSize, stats.TotalSize)
 	}
-
 	expectedAttSize := int64(10000 + 5000 + 20000)
 	if stats.AttachmentSize != expectedAttSize {
 		t.Errorf("expected attachment size %d, got %d", expectedAttSize, stats.AttachmentSize)
@@ -173,7 +241,6 @@ func TestGetTotalStatsWithSourceID(t *testing.T) {
 	})
 
 	allStats := env.MustGetTotalStats(StatsOptions{})
-
 	if allStats.MessageCount != 6 {
 		t.Errorf("expected 6 total messages, got %d", allStats.MessageCount)
 	}
@@ -186,7 +253,6 @@ func TestGetTotalStatsWithSourceID(t *testing.T) {
 
 	sourceID := int64(1)
 	source1Stats := env.MustGetTotalStats(StatsOptions{SourceID: &sourceID})
-
 	if source1Stats.MessageCount != 5 {
 		t.Errorf("expected 5 messages for source 1, got %d", source1Stats.MessageCount)
 	}
@@ -227,11 +293,9 @@ func TestWithAttachmentsOnlyStats(t *testing.T) {
 	}
 
 	attStats := env.MustGetTotalStats(StatsOptions{WithAttachmentsOnly: true})
-
 	if attStats.MessageCount != 2 {
 		t.Errorf("expected 2 messages with attachments, got %d", attStats.MessageCount)
 	}
-
 	if attStats.AttachmentCount == 0 {
 		t.Error("expected non-zero attachment count for messages with attachments")
 	}
@@ -246,7 +310,6 @@ func TestDeletedMessagesIncludedWithFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Aggregate(ViewSenders): %v", err)
 	}
-
 	for _, row := range rows {
 		if row.Key == "alice@example.com" && row.Count != 3 {
 			t.Errorf("expected alice count 3 (including deleted), got %d", row.Count)
@@ -254,7 +317,6 @@ func TestDeletedMessagesIncludedWithFlag(t *testing.T) {
 	}
 
 	messages := env.MustListMessages(MessageFilter{})
-
 	if len(messages) != 5 {
 		t.Errorf("expected 5 messages (including deleted), got %d", len(messages))
 	}
@@ -277,7 +339,6 @@ func TestDeletedMessagesIncludedWithFlag(t *testing.T) {
 	}
 
 	stats := env.MustGetTotalStats(StatsOptions{})
-
 	if stats.MessageCount != 5 {
 		t.Errorf("expected 5 messages in stats (including deleted), got %d", stats.MessageCount)
 	}
@@ -327,49 +388,24 @@ func TestGetMessageBySourceIDIncludesDeleted(t *testing.T) {
 	}
 }
 
-func TestListMessagesTimePeriodInference(t *testing.T) {
+func TestListMessages_MatchEmptySenderName_NotExists(t *testing.T) {
 	env := newTestEnv(t)
 
-	filter := MessageFilter{TimeRange: TimeRange{Period: "2024-01"}}
-	messages := env.MustListMessages(filter)
+	env.AddMessage(dbtest.MessageOpts{Subject: "Ghost Message", SentAt: "2024-06-01 10:00:00"})
 
-	if len(messages) != 2 {
-		t.Errorf("expected 2 messages for 2024-01, got %d", len(messages))
-	}
-
-	messages = env.MustListMessages(MessageFilter{TimeRange: TimeRange{Period: "2024-01-15"}})
-	if len(messages) != 1 {
-		t.Errorf("expected 1 message for 2024-01-15, got %d", len(messages))
-	}
-
-	messages = env.MustListMessages(MessageFilter{TimeRange: TimeRange{Period: "2024", Granularity: TimeYear}})
-	if len(messages) != 5 {
-		t.Errorf("expected 5 messages for 2024, got %d", len(messages))
-	}
-}
-
-func TestListMessages_SenderNameFilter(t *testing.T) {
-	env := newTestEnv(t)
-
-	filter := MessageFilter{SenderName: "Alice Smith"}
-	messages := env.MustListMessages(filter)
-
-	if len(messages) != 3 {
-		t.Errorf("expected 3 messages from Alice Smith, got %d", len(messages))
-	}
-}
-
-func TestListMessages_MatchEmptySenderName(t *testing.T) {
-	env := newTestEnvWithEmptyBuckets(t)
-
-	filter := MessageFilter{EmptyValueTarget: func() *ViewType { v := ViewSenderNames; return &v }()}
+	filter := MessageFilter{EmptyValueTarget: viewTypePtr(ViewSenderNames)}
 	messages := env.MustListMessages(filter)
 
 	if len(messages) != 1 {
 		t.Errorf("expected 1 message with empty sender name, got %d", len(messages))
 	}
-	if len(messages) > 0 && messages[0].Subject != "No Sender" {
-		t.Errorf("expected 'No Sender', got %q", messages[0].Subject)
+	if len(messages) > 0 && messages[0].Subject != "Ghost Message" {
+		t.Errorf("expected 'Ghost Message', got %q", messages[0].Subject)
+	}
+	for _, m := range messages {
+		if m.Subject == "Hello World" || m.Subject == "Re: Hello" {
+			t.Errorf("should not match message with valid sender: %q", m.Subject)
+		}
 	}
 }
 
@@ -378,14 +414,13 @@ func TestMatchEmptySenderName_MixedFromRecipients(t *testing.T) {
 
 	nullID := env.AddParticipant(dbtest.ParticipantOpts{Email: nil, DisplayName: nil, Domain: ""})
 	env.AddMessage(dbtest.MessageOpts{Subject: "Mixed From", SentAt: "2024-06-01 10:00:00", FromID: 1})
-	// Add a second 'from' with null participant
 	lastMsgID := env.LastMessageID()
 	_, err := env.DB.Exec(`INSERT INTO message_recipients (message_id, participant_id, recipient_type) VALUES (?, ?, 'from')`, lastMsgID, nullID)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
-	filter := MessageFilter{EmptyValueTarget: func() *ViewType { v := ViewSenderNames; return &v }()}
+	filter := MessageFilter{EmptyValueTarget: viewTypePtr(ViewSenderNames)}
 	messages := env.MustListMessages(filter)
 
 	for _, m := range messages {
@@ -399,7 +434,7 @@ func TestMatchEmptySenderName_CombinedWithDomain(t *testing.T) {
 	env := newTestEnvWithEmptyBuckets(t)
 
 	filter := MessageFilter{
-		EmptyValueTarget: func() *ViewType { v := ViewSenderNames; return &v }(),
+		EmptyValueTarget: viewTypePtr(ViewSenderNames),
 		Domain:           "example.com",
 	}
 	messages := env.MustListMessages(filter)
@@ -409,39 +444,43 @@ func TestMatchEmptySenderName_CombinedWithDomain(t *testing.T) {
 	}
 }
 
-func TestListMessages_MatchEmptySenderName_NotExists(t *testing.T) {
-	env := newTestEnv(t)
-
-	env.AddMessage(dbtest.MessageOpts{Subject: "Ghost Message", SentAt: "2024-06-01 10:00:00"})
-
-	filter := MessageFilter{EmptyValueTarget: func() *ViewType { v := ViewSenderNames; return &v }()}
-	messages := env.MustListMessages(filter)
-
-	if len(messages) != 1 {
-		t.Errorf("expected 1 message with empty sender name, got %d", len(messages))
-	}
-	if len(messages) > 0 && messages[0].Subject != "Ghost Message" {
-		t.Errorf("expected 'Ghost Message', got %q", messages[0].Subject)
-	}
-
-	for _, m := range messages {
-		if m.Subject == "Hello World" || m.Subject == "Re: Hello" {
-			t.Errorf("should not match message with valid sender: %q", m.Subject)
-		}
-	}
-}
-
 func TestGetGmailIDsByFilter_SenderName(t *testing.T) {
 	env := newTestEnv(t)
 
-	filter := MessageFilter{SenderName: "Alice Smith"}
+	ids, err := env.Engine.GetGmailIDsByFilter(env.Ctx, MessageFilter{SenderName: "Alice Smith"})
+	if err != nil {
+		t.Fatalf("GetGmailIDsByFilter: %v", err)
+	}
+	if len(ids) != 3 {
+		t.Errorf("expected 3 gmail IDs for Alice Smith, got %d", len(ids))
+	}
+}
+
+func TestGetGmailIDsByFilter_RecipientName(t *testing.T) {
+	env := newTestEnv(t)
+
+	ids, err := env.Engine.GetGmailIDsByFilter(env.Ctx, MessageFilter{RecipientName: "Bob Jones"})
+	if err != nil {
+		t.Fatalf("GetGmailIDsByFilter: %v", err)
+	}
+	if len(ids) != 3 {
+		t.Errorf("expected 3 gmail IDs for Bob Jones, got %d", len(ids))
+	}
+}
+
+func TestGetGmailIDsByFilter_RecipientName_WithMatchEmptyRecipient(t *testing.T) {
+	env := newTestEnv(t)
+
+	filter := MessageFilter{
+		RecipientName:    "Bob Jones",
+		EmptyValueTarget: viewTypePtr(ViewRecipients),
+	}
 	ids, err := env.Engine.GetGmailIDsByFilter(env.Ctx, filter)
 	if err != nil {
 		t.Fatalf("GetGmailIDsByFilter: %v", err)
 	}
-
 	if len(ids) != 3 {
-		t.Errorf("expected 3 gmail IDs for Alice Smith, got %d", len(ids))
+		t.Errorf("expected 3 gmail IDs, got %d", len(ids))
 	}
 }
 
@@ -454,25 +493,23 @@ func TestListMessages_ConversationIDFilter(t *testing.T) {
 		Subject:        "Thread 2 Message 1",
 		SentAt:         "2024-04-01 10:00:00",
 		SizeEstimate:   100,
-		FromID:         1,          // Alice
-		ToIDs:          []int64{2}, // Bob
+		FromID:         1,
+		ToIDs:          []int64{2},
 	})
 	env.AddMessage(dbtest.MessageOpts{
 		ConversationID: conv2,
 		Subject:        "Thread 2 Message 2",
 		SentAt:         "2024-04-02 11:00:00",
 		SizeEstimate:   200,
-		FromID:         2,          // Bob
-		ToIDs:          []int64{1}, // Alice
+		FromID:         2,
+		ToIDs:          []int64{1},
 	})
 
 	convID1 := int64(1)
 	messages1 := env.MustListMessages(MessageFilter{ConversationID: &convID1})
-
 	if len(messages1) != 5 {
 		t.Errorf("expected 5 messages in conversation 1, got %d", len(messages1))
 	}
-
 	for _, msg := range messages1 {
 		if msg.ConversationID != 1 {
 			t.Errorf("expected conversation_id=1, got %d for message %d", msg.ConversationID, msg.ID)
@@ -480,11 +517,9 @@ func TestListMessages_ConversationIDFilter(t *testing.T) {
 	}
 
 	messages2 := env.MustListMessages(MessageFilter{ConversationID: &conv2})
-
 	if len(messages2) != 2 {
 		t.Errorf("expected 2 messages in conversation 2, got %d", len(messages2))
 	}
-
 	for _, msg := range messages2 {
 		if msg.ConversationID != conv2 {
 			t.Errorf("expected conversation_id=%d, got %d for message %d", conv2, msg.ConversationID, msg.ID)
@@ -493,16 +528,12 @@ func TestListMessages_ConversationIDFilter(t *testing.T) {
 
 	filter2Asc := MessageFilter{
 		ConversationID: &conv2,
-		Sorting: MessageSorting{Field: MessageSortByDate,
-			Direction: SortAsc},
+		Sorting:        MessageSorting{Field: MessageSortByDate, Direction: SortAsc},
 	}
-
 	messagesAsc := env.MustListMessages(filter2Asc)
-
 	if len(messagesAsc) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(messagesAsc))
 	}
-
 	if messagesAsc[0].Subject != "Thread 2 Message 1" {
 		t.Errorf("expected first message to be 'Thread 2 Message 1', got %q", messagesAsc[0].Subject)
 	}
@@ -512,247 +543,110 @@ func TestListMessages_ConversationIDFilter(t *testing.T) {
 }
 
 // =============================================================================
-// MatchEmpty* filter tests
+// MatchEmpty* filter tests (using newTestEnvWithEmptyBuckets)
 // =============================================================================
 
-func TestListMessages_MatchEmptySender(t *testing.T) {
+func TestListMessages_MatchEmptyFilters(t *testing.T) {
 	env := newTestEnvWithEmptyBuckets(t)
 
-	filter := MessageFilter{EmptyValueTarget: func() *ViewType { v := ViewSenders; return &v }()}
-	messages := env.MustListMessages(filter)
-
-	if len(messages) != 1 {
-		t.Errorf("expected 1 message with empty sender, got %d", len(messages))
+	tests := []struct {
+		name      string
+		filter    MessageFilter
+		wantCount int
+		validate  func(*testing.T, []MessageSummary)
+	}{
+		{
+			name:      "Empty sender name",
+			filter:    MessageFilter{EmptyValueTarget: viewTypePtr(ViewSenderNames)},
+			wantCount: 1,
+			validate: func(t *testing.T, msgs []MessageSummary) {
+				if msgs[0].Subject != "No Sender" {
+					t.Errorf("expected 'No Sender', got %q", msgs[0].Subject)
+				}
+			},
+		},
+		{
+			name:      "Empty sender",
+			filter:    MessageFilter{EmptyValueTarget: viewTypePtr(ViewSenders)},
+			wantCount: 1,
+			validate: func(t *testing.T, msgs []MessageSummary) {
+				if msgs[0].Subject != "No Sender" {
+					t.Errorf("expected 'No Sender' message, got %q", msgs[0].Subject)
+				}
+			},
+		},
+		{
+			name:      "Empty recipient",
+			filter:    MessageFilter{EmptyValueTarget: viewTypePtr(ViewRecipients)},
+			wantCount: 2,
+		},
+		{
+			name:      "Empty domain",
+			filter:    MessageFilter{EmptyValueTarget: viewTypePtr(ViewDomains)},
+			wantCount: 2,
+		},
+		{
+			name:      "Empty label",
+			filter:    MessageFilter{EmptyValueTarget: viewTypePtr(ViewLabels)},
+			wantCount: 4,
+		},
+		{
+			name:      "Empty label combined with sender",
+			filter:    MessageFilter{EmptyValueTarget: viewTypePtr(ViewLabels), Sender: "alice@example.com"},
+			wantCount: 2,
+			validate: func(t *testing.T, msgs []MessageSummary) {
+				subjects := make(map[string]bool)
+				for _, m := range msgs {
+					subjects[m.Subject] = true
+				}
+				if !subjects["No Labels"] {
+					t.Error("expected 'No Labels' message")
+				}
+				if !subjects["No Recipients"] {
+					t.Error("expected 'No Recipients' message")
+				}
+			},
+		},
+		{
+			name:   "Empty recipient name includes no-recipients message",
+			filter: MessageFilter{EmptyValueTarget: viewTypePtr(ViewRecipientNames)},
+			validate: func(t *testing.T, msgs []MessageSummary) {
+				if len(msgs) == 0 {
+					t.Fatal("expected at least 1 message with empty recipient name, got 0")
+				}
+				found := false
+				for _, m := range msgs {
+					if m.Subject == "No Recipients" {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("expected 'No Recipients' message in results")
+				}
+			},
+		},
+		{
+			name:      "EmptyValueTarget=ViewSenders alone",
+			filter:    MessageFilter{EmptyValueTarget: viewTypePtr(ViewSenders)},
+			wantCount: 1,
+			validate: func(t *testing.T, msgs []MessageSummary) {
+				if msgs[0].Subject != "No Sender" {
+					t.Errorf("expected 'No Sender' message, got %q", msgs[0].Subject)
+				}
+			},
+		},
 	}
 
-	if len(messages) > 0 && messages[0].Subject != "No Sender" {
-		t.Errorf("expected 'No Sender' message, got %q", messages[0].Subject)
-	}
-}
-
-func TestListMessages_MatchEmptyRecipient(t *testing.T) {
-	env := newTestEnvWithEmptyBuckets(t)
-
-	filter := MessageFilter{EmptyValueTarget: func() *ViewType { v := ViewRecipients; return &v }()}
-	messages := env.MustListMessages(filter)
-
-	if len(messages) != 2 {
-		t.Errorf("expected 2 messages with empty recipients, got %d", len(messages))
-	}
-}
-
-func TestListMessages_MatchEmptyDomain(t *testing.T) {
-	env := newTestEnvWithEmptyBuckets(t)
-
-	filter := MessageFilter{EmptyValueTarget: func() *ViewType { v := ViewDomains; return &v }()}
-	messages := env.MustListMessages(filter)
-
-	if len(messages) != 2 {
-		t.Errorf("expected 2 messages with empty domain, got %d", len(messages))
-	}
-}
-
-func TestListMessages_MatchEmptyLabel(t *testing.T) {
-	env := newTestEnvWithEmptyBuckets(t)
-
-	filter := MessageFilter{EmptyValueTarget: func() *ViewType { v := ViewLabels; return &v }()}
-	messages := env.MustListMessages(filter)
-
-	if len(messages) != 4 {
-		t.Errorf("expected 4 messages with no labels, got %d", len(messages))
-	}
-}
-
-func TestListMessages_MatchEmptyFiltersAreIndependent(t *testing.T) {
-	env := newTestEnvWithEmptyBuckets(t)
-
-	messages := env.MustListMessages(MessageFilter{
-		EmptyValueTarget: func() *ViewType { v := ViewLabels; return &v }(),
-		Sender:           "alice@example.com",
-	})
-
-	if len(messages) != 2 {
-		t.Errorf("expected 2 messages with MatchEmptyLabel + alice sender, got %d", len(messages))
-	}
-
-	foundMsg9 := false
-	foundMsg7 := false
-	for _, msg := range messages {
-		if msg.Subject == "No Labels" {
-			foundMsg9 = true
-		}
-		if msg.Subject == "No Recipients" {
-			foundMsg7 = true
-		}
-	}
-	if !foundMsg9 {
-		t.Error("expected 'No Labels' (msg9) with MatchEmptyLabel + alice sender")
-	}
-	if !foundMsg7 {
-		t.Error("expected 'No Recipients' (msg7) with MatchEmptyLabel + alice sender")
-	}
-
-	// With the new single EmptyValueTarget API, only one empty-match can be active.
-	// Test EmptyValueTarget=ViewSenders alone.
-	messages = env.MustListMessages(MessageFilter{
-		EmptyValueTarget: func() *ViewType { v := ViewSenders; return &v }(),
-	})
-
-	if len(messages) != 1 {
-		t.Errorf("expected 1 message with EmptyValueTarget=ViewSenders, got %d", len(messages))
-	}
-	if len(messages) > 0 && messages[0].Subject != "No Sender" {
-		t.Errorf("expected 'No Sender' message, got %q", messages[0].Subject)
-	}
-
-	messages = env.MustListMessages(MessageFilter{EmptyValueTarget: func() *ViewType { v := ViewLabels; return &v }()})
-
-	if len(messages) != 4 {
-		t.Errorf("expected 4 messages with no labels, got %d", len(messages))
-	}
-}
-
-// =============================================================================
-// RecipientName CRUD tests
-// =============================================================================
-
-func TestListMessages_RecipientNameFilter(t *testing.T) {
-	env := newTestEnv(t)
-
-	filter := MessageFilter{RecipientName: "Bob Jones"}
-	messages := env.MustListMessages(filter)
-
-	if len(messages) != 3 {
-		t.Errorf("expected 3 messages to Bob Jones, got %d", len(messages))
-	}
-}
-
-func TestListMessages_MatchEmptyRecipientName(t *testing.T) {
-	env := newTestEnvWithEmptyBuckets(t)
-
-	filter := MessageFilter{EmptyValueTarget: func() *ViewType { v := ViewRecipientNames; return &v }()}
-	messages := env.MustListMessages(filter)
-
-	if len(messages) == 0 {
-		t.Fatal("expected at least 1 message with empty recipient name, got 0")
-	}
-	found := false
-	for _, m := range messages {
-		if m.Subject == "No Recipients" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected 'No Recipients' message in results")
-		for _, m := range messages {
-			t.Logf("  got: %q", m.Subject)
-		}
-	}
-}
-
-func TestGetGmailIDsByFilter_RecipientName(t *testing.T) {
-	env := newTestEnv(t)
-
-	filter := MessageFilter{RecipientName: "Bob Jones"}
-	ids, err := env.Engine.GetGmailIDsByFilter(env.Ctx, filter)
-	if err != nil {
-		t.Fatalf("GetGmailIDsByFilter: %v", err)
-	}
-
-	if len(ids) != 3 {
-		t.Errorf("expected 3 gmail IDs for Bob Jones, got %d", len(ids))
-	}
-}
-
-func TestMatchEmptyRecipientName_CombinedWithSender(t *testing.T) {
-	env := newTestEnv(t)
-
-	filter := MessageFilter{
-		EmptyValueTarget: func() *ViewType { v := ViewRecipientNames; return &v }(),
-		Sender:           "alice@example.com",
-	}
-	messages := env.MustListMessages(filter)
-
-	if len(messages) != 0 {
-		t.Errorf("expected 0 messages for MatchEmptyRecipientName+Sender, got %d", len(messages))
-	}
-}
-
-func TestCombinedRecipientAndRecipientNameFilter(t *testing.T) {
-	env := newTestEnv(t)
-
-	filter := MessageFilter{
-		Recipient:     "bob@company.org",
-		RecipientName: "Bob Jones",
-	}
-	messages := env.MustListMessages(filter)
-
-	if len(messages) != 3 {
-		t.Errorf("expected 3 messages matching both Recipient+RecipientName for Bob, got %d", len(messages))
-	}
-}
-
-func TestCombinedRecipientAndRecipientName_Mismatch(t *testing.T) {
-	env := newTestEnv(t)
-
-	filter := MessageFilter{
-		Recipient:     "bob@company.org",
-		RecipientName: "Alice Smith",
-	}
-	messages := env.MustListMessages(filter)
-
-	if len(messages) != 0 {
-		t.Errorf("expected 0 messages for mismatched Recipient+RecipientName, got %d", len(messages))
-	}
-}
-
-func TestCombinedRecipientAndRecipientName_NoOvercount(t *testing.T) {
-	env := newTestEnv(t)
-
-	filter := MessageFilter{
-		Recipient:     "bob@company.org",
-		RecipientName: "Bob Jones",
-	}
-	messages := env.MustListMessages(filter)
-
-	seen := make(map[int64]int)
-	for _, m := range messages {
-		seen[m.ID]++
-	}
-	for id, count := range seen {
-		if count > 1 {
-			t.Errorf("message ID %d returned %d times (expected once)", id, count)
-		}
-	}
-}
-
-func TestRecipientName_WithMatchEmptyRecipient(t *testing.T) {
-	env := newTestEnv(t)
-
-	filter := MessageFilter{
-		RecipientName:    "Bob Jones",
-		EmptyValueTarget: func() *ViewType { v := ViewRecipients; return &v }(),
-	}
-
-	messages := env.MustListMessages(filter)
-	if len(messages) != 0 {
-		t.Errorf("expected 0 messages for contradictory RecipientName+MatchEmptyRecipient, got %d", len(messages))
-	}
-}
-
-func TestGetGmailIDsByFilter_RecipientName_WithMatchEmptyRecipient(t *testing.T) {
-	env := newTestEnv(t)
-
-	filter := MessageFilter{
-		RecipientName:    "Bob Jones",
-		EmptyValueTarget: func() *ViewType { v := ViewRecipients; return &v }(),
-	}
-	ids, err := env.Engine.GetGmailIDsByFilter(env.Ctx, filter)
-	if err != nil {
-		t.Fatalf("GetGmailIDsByFilter: %v", err)
-	}
-	if len(ids) != 3 {
-		t.Errorf("expected 3 gmail IDs, got %d", len(ids))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			messages := env.MustListMessages(tt.filter)
+			if tt.wantCount > 0 && len(messages) != tt.wantCount {
+				t.Errorf("got %d messages, want %d", len(messages), tt.wantCount)
+			}
+			if tt.validate != nil {
+				tt.validate(t, messages)
+			}
+		})
 	}
 }
 
@@ -762,7 +656,7 @@ func TestRecipientAndRecipientNameAndMatchEmptyRecipient(t *testing.T) {
 	filter := MessageFilter{
 		Recipient:        "bob@company.org",
 		RecipientName:    "Bob Jones",
-		EmptyValueTarget: func() *ViewType { v := ViewRecipients; return &v }(),
+		EmptyValueTarget: viewTypePtr(ViewRecipients),
 	}
 
 	messages := env.MustListMessages(filter)
@@ -782,37 +676,29 @@ func TestRecipientAndRecipientNameAndMatchEmptyRecipient(t *testing.T) {
 // TestRecipientNameFilter_IncludesBCC verifies that RecipientName filter includes BCC recipients.
 // Regression test for a bug where RecipientName only searched 'to' and 'cc' but not 'bcc'.
 func TestRecipientNameFilter_IncludesBCC(t *testing.T) {
-	tdb := dbtest.NewTestDB(t, "../store/schema.sql")
+	env := newTestEnv(t)
 
 	sp := dbtest.StrPtr
-	aliceID := tdb.AddParticipant(dbtest.ParticipantOpts{Email: sp("alice@example.com"), DisplayName: sp("Alice Sender"), Domain: "example.com"})
-	bobID := tdb.AddParticipant(dbtest.ParticipantOpts{Email: sp("bob@example.com"), DisplayName: sp("Bob ToRecipient"), Domain: "example.com"})
-	secretID := tdb.AddParticipant(dbtest.ParticipantOpts{Email: sp("secret@example.com"), DisplayName: sp("Secret Bob"), Domain: "example.com"})
+	aliceID := env.AddParticipant(dbtest.ParticipantOpts{Email: sp("alice-bcc@example.com"), DisplayName: sp("Alice Sender"), Domain: "example.com"})
+	secretID := env.AddParticipant(dbtest.ParticipantOpts{Email: sp("secret@example.com"), DisplayName: sp("Secret Bob"), Domain: "example.com"})
 
-	tdb.AddSource(dbtest.SourceOpts{Identifier: "test@gmail.com"})
-	tdb.AddMessage(dbtest.MessageOpts{
-		Subject: "Test Subject",
+	env.AddMessage(dbtest.MessageOpts{
+		Subject: "BCC Test Subject",
 		SentAt:  "2024-01-15 10:00:00",
 		FromID:  aliceID,
-		ToIDs:   []int64{bobID},
+		ToIDs:   []int64{2}, // Bob from standard data
 		BccIDs:  []int64{secretID},
 	})
 
-	engine := NewSQLiteEngine(tdb.DB)
-	ctx := context.Background()
-
 	t.Run("ListMessages", func(t *testing.T) {
-		messages, err := engine.ListMessages(ctx, MessageFilter{RecipientName: "Secret Bob"})
-		if err != nil {
-			t.Fatalf("ListMessages: %v", err)
-		}
+		messages := env.MustListMessages(MessageFilter{RecipientName: "Secret Bob"})
 		if len(messages) != 1 {
 			t.Errorf("expected 1 message, got %d", len(messages))
 		}
 	})
 
 	t.Run("AggregateByRecipientName", func(t *testing.T) {
-		rows, err := engine.Aggregate(ctx, ViewRecipientNames, AggregateOptions{Limit: 100})
+		rows, err := env.Engine.Aggregate(env.Ctx, ViewRecipientNames, AggregateOptions{Limit: 100})
 		if err != nil {
 			t.Fatalf("AggregateByRecipientName: %v", err)
 		}
@@ -829,17 +715,17 @@ func TestRecipientNameFilter_IncludesBCC(t *testing.T) {
 	})
 
 	t.Run("SubAggregate", func(t *testing.T) {
-		rows, err := engine.SubAggregate(ctx, MessageFilter{RecipientName: "Secret Bob"}, ViewSenders, AggregateOptions{Limit: 100})
+		rows, err := env.Engine.SubAggregate(env.Ctx, MessageFilter{RecipientName: "Secret Bob"}, ViewSenders, AggregateOptions{Limit: 100})
 		if err != nil {
 			t.Fatalf("SubAggregate: %v", err)
 		}
-		if len(rows) != 1 || rows[0].Key != "alice@example.com" {
-			t.Errorf("expected sender Alice, got: %v", rows)
+		if len(rows) != 1 || rows[0].Key != "alice-bcc@example.com" {
+			t.Errorf("expected sender alice-bcc@example.com, got: %v", rows)
 		}
 	})
 
 	t.Run("GetGmailIDsByFilter", func(t *testing.T) {
-		ids, err := engine.GetGmailIDsByFilter(ctx, MessageFilter{RecipientName: "Secret Bob"})
+		ids, err := env.Engine.GetGmailIDsByFilter(env.Ctx, MessageFilter{RecipientName: "Secret Bob"})
 		if err != nil {
 			t.Fatalf("GetGmailIDsByFilter: %v", err)
 		}
@@ -849,10 +735,7 @@ func TestRecipientNameFilter_IncludesBCC(t *testing.T) {
 	})
 
 	t.Run("Recipient_email_also_finds_BCC", func(t *testing.T) {
-		messages, err := engine.ListMessages(ctx, MessageFilter{Recipient: "secret@example.com"})
-		if err != nil {
-			t.Fatalf("ListMessages: %v", err)
-		}
+		messages := env.MustListMessages(MessageFilter{Recipient: "secret@example.com"})
 		if len(messages) != 1 {
 			t.Errorf("expected 1 message, got %d", len(messages))
 		}
