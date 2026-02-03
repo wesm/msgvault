@@ -120,34 +120,96 @@ func TestExecute_UsesBackgroundContext(t *testing.T) {
 	}
 }
 
-// TestExecuteContext_DelegatesToRootCmd verifies ExecuteContext passes context to rootCmd.
-func TestExecuteContext_DelegatesToRootCmd(t *testing.T) {
-	// This test verifies the actual Execute/ExecuteContext functions work,
-	// but uses a minimal approach to avoid side effects from the real rootCmd's
-	// PersistentPreRunE (which loads config, etc.)
+// TestExecuteContext_PropagatesContext verifies ExecuteContext passes context to command handlers.
+func TestExecuteContext_PropagatesContext(t *testing.T) {
+	// Save and restore global rootCmd to avoid state leakage
+	savedRootCmd := rootCmd
+	defer func() { rootCmd = savedRootCmd }()
 
-	// We test that ExecuteContext returns an error for unknown commands,
-	// which proves it's actually executing through the command tree.
-	ctx := context.Background()
-	oldArgs := rootCmd.Args
-	defer func() { rootCmd.SetArgs(nil) }()
+	// Create a test root command
+	testRoot := newTestRootCmd()
 
-	rootCmd.SetArgs([]string{"__nonexistent_command_for_test__"})
+	// Track the context received by the command
+	type ctxKey string
+	var receivedCtx context.Context
+	testCmd := &cobra.Command{
+		Use:   "test-ctx",
+		Short: "Test command for context verification",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			receivedCtx = cmd.Context()
+			return nil
+		},
+	}
+	testRoot.AddCommand(testCmd)
+
+	// Replace global rootCmd for this test
+	rootCmd = testRoot
+
+	// Create a context with a custom value
+	testKey := ctxKey("test-key")
+	testValue := "test-value"
+	ctx := context.WithValue(context.Background(), testKey, testValue)
+
+	testRoot.SetArgs([]string{"test-ctx"})
 	err := ExecuteContext(ctx)
-	if err == nil {
-		t.Error("expected error for unknown command, got nil")
+	if err != nil {
+		t.Fatalf("ExecuteContext returned unexpected error: %v", err)
 	}
 
-	rootCmd.Args = oldArgs
+	// Verify the context was propagated
+	if receivedCtx == nil {
+		t.Fatal("command did not receive context")
+	}
+	if got := receivedCtx.Value(testKey); got != testValue {
+		t.Errorf("context value mismatch: got %v, want %v", got, testValue)
+	}
 }
 
-// TestExecute_DelegatesToExecuteContext verifies Execute calls ExecuteContext.
-func TestExecute_DelegatesToExecuteContext(t *testing.T) {
-	defer func() { rootCmd.SetArgs(nil) }()
+// TestExecute_UsesBackgroundContextInHandler verifies Execute provides background context to handlers.
+func TestExecute_UsesBackgroundContextInHandler(t *testing.T) {
+	// Save and restore global rootCmd to avoid state leakage
+	savedRootCmd := rootCmd
+	defer func() { rootCmd = savedRootCmd }()
 
-	rootCmd.SetArgs([]string{"__nonexistent_command_for_test__"})
+	// Create a test root command
+	testRoot := newTestRootCmd()
+
+	// Track the context received by the command
+	var receivedCtx context.Context
+	testCmd := &cobra.Command{
+		Use:   "test-bg-ctx",
+		Short: "Test command for background context",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			receivedCtx = cmd.Context()
+			return nil
+		},
+	}
+	testRoot.AddCommand(testCmd)
+
+	// Replace global rootCmd for this test
+	rootCmd = testRoot
+
+	testRoot.SetArgs([]string{"test-bg-ctx"})
 	err := Execute()
-	if err == nil {
-		t.Error("expected error for unknown command, got nil")
+	if err != nil {
+		t.Fatalf("Execute returned unexpected error: %v", err)
+	}
+
+	// Verify the command received a non-nil context (should be background context)
+	if receivedCtx == nil {
+		t.Fatal("command did not receive context")
+	}
+
+	// Background context should not have any deadline
+	if deadline, ok := receivedCtx.Deadline(); ok {
+		t.Errorf("expected no deadline from background context, got %v", deadline)
+	}
+
+	// Background context should not be cancelled
+	select {
+	case <-receivedCtx.Done():
+		t.Error("background context should not be done")
+	default:
+		// Expected: context is not done
 	}
 }
