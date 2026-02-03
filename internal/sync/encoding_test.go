@@ -3,19 +3,29 @@ package sync
 import (
 	"testing"
 
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/encoding/korean"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/encoding/traditionalchinese"
+
 	"github.com/wesm/msgvault/internal/testutil"
 )
 
-// encodingCase defines a test case for encoding conversion functions.
-type encodingCase struct {
-	name     string
-	input    []byte
-	expected string
-}
-
-// runEncodingTests runs table-driven tests that call ensureUTF8 on byte input
-// and check both the expected output and UTF-8 validity.
-func runEncodingTests(t *testing.T, tests []encodingCase) {
+func TestEnsureUTF8_AlreadyValid(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []byte
+		expected string
+	}{
+		{"ASCII", []byte("Hello, World!"), "Hello, World!"},
+		{"UTF-8 Chinese", []byte("你好世界"), "你好世界"},
+		{"UTF-8 Japanese", []byte("こんにちは"), "こんにちは"},
+		{"UTF-8 Korean", []byte("안녕하세요"), "안녕하세요"},
+		{"UTF-8 Cyrillic", []byte("Привет мир"), "Привет мир"},
+		{"UTF-8 mixed", []byte("Hello 世界! Привет!"), "Hello 世界! Привет!"},
+		{"UTF-8 emoji", []byte("Hello 👋 World 🌍"), "Hello 👋 World 🌍"},
+		{"empty string", []byte(""), ""},
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := ensureUTF8(string(tt.input))
@@ -27,22 +37,13 @@ func runEncodingTests(t *testing.T, tests []encodingCase) {
 	}
 }
 
-func TestEnsureUTF8_AlreadyValid(t *testing.T) {
-	runEncodingTests(t, []encodingCase{
-		{"ASCII", []byte("Hello, World!"), "Hello, World!"},
-		{"UTF-8 Chinese", []byte("你好世界"), "你好世界"},
-		{"UTF-8 Japanese", []byte("こんにちは"), "こんにちは"},
-		{"UTF-8 Korean", []byte("안녕하세요"), "안녕하세요"},
-		{"UTF-8 Cyrillic", []byte("Привет мир"), "Привет мир"},
-		{"UTF-8 mixed", []byte("Hello 世界! Привет!"), "Hello 世界! Привет!"},
-		{"UTF-8 emoji", []byte("Hello 👋 World 🌍"), "Hello 👋 World 🌍"},
-		{"empty string", []byte(""), ""},
-	})
-}
-
 func TestEnsureUTF8_Windows1252(t *testing.T) {
 	enc := testutil.EncodedSamples()
-	runEncodingTests(t, []encodingCase{
+	tests := []struct {
+		name     string
+		input    []byte
+		expected string
+	}{
 		{"smart single quote (right)", enc.Win1252_SmartQuoteRight, "Rand\u2019s Opponent"},
 		{"en dash", enc.Win1252_EnDash, "2020 \u2013 2024"},
 		{"em dash", enc.Win1252_EmDash, "Hello\u2014World"},
@@ -50,43 +51,62 @@ func TestEnsureUTF8_Windows1252(t *testing.T) {
 		{"trademark", enc.Win1252_Trademark, "Brand\u2122"},
 		{"bullet", enc.Win1252_Bullet, "\u2022 Item"},
 		{"euro sign", enc.Win1252_Euro, "Price: \u20ac100"},
-	})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ensureUTF8(string(tt.input))
+			if result != tt.expected {
+				t.Errorf("got %q, want %q", result, tt.expected)
+			}
+			testutil.AssertValidUTF8(t, result)
+		})
+	}
 }
 
 func TestEnsureUTF8_Latin1(t *testing.T) {
 	enc := testutil.EncodedSamples()
-	runEncodingTests(t, []encodingCase{
+	tests := []struct {
+		name     string
+		input    []byte
+		expected string
+	}{
 		{"o with acute", enc.Latin1_OAcute, "Miró - Picasso"},
 		{"c with cedilla", enc.Latin1_CCedilla, "Garçon"},
 		{"u with umlaut", enc.Latin1_UUmlaut, "München"},
 		{"n with tilde", enc.Latin1_NTilde, "España"},
 		{"registered trademark", enc.Latin1_Registered, "Laguiole.com ®"},
 		{"degree symbol", enc.Latin1_Degree, "25°C"},
-	})
-}
-
-func TestEnsureUTF8_AsianEncodings(t *testing.T) {
-	// ensureUTF8 relies on chardet heuristics without charset hints. Short
-	// byte sequences from CJK encodings are typically misidentified, so we
-	// can only assert valid UTF-8 output (not exact decoded strings).
-	enc := testutil.EncodedSamples()
-	tests := []struct {
-		name  string
-		input []byte
-	}{
-		{"Shift-JIS Japanese", enc.ShiftJIS_Konnichiwa},
-		{"GBK Simplified Chinese", enc.GBK_Nihao},
-		{"Big5 Traditional Chinese", enc.Big5_Nihao},
-		{"EUC-KR Korean", enc.EUCKR_Annyeong},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := ensureUTF8(string(tt.input))
-			testutil.AssertValidUTF8(t, result)
-			if len(result) == 0 {
-				t.Errorf("result is empty")
+			if result != tt.expected {
+				t.Errorf("got %q, want %q", result, tt.expected)
 			}
+			testutil.AssertValidUTF8(t, result)
+		})
+	}
+}
+
+func TestEnsureUTF8_AsianEncodings(t *testing.T) {
+	enc := testutil.EncodedSamples()
+	tests := []struct {
+		name     string
+		input    []byte
+		expected string
+	}{
+		{"Shift-JIS Japanese", enc.ShiftJIS_Long, enc.ShiftJIS_Long_UTF8},
+		{"GBK Simplified Chinese", enc.GBK_Long, enc.GBK_Long_UTF8},
+		{"Big5 Traditional Chinese", enc.Big5_Long, enc.Big5_Long_UTF8},
+		{"EUC-KR Korean", enc.EUCKR_Long, enc.EUCKR_Long_UTF8},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ensureUTF8(string(tt.input))
+			if result != tt.expected {
+				t.Errorf("got %q, want %q", result, tt.expected)
+			}
+			testutil.AssertValidUTF8(t, result)
 		})
 	}
 }
@@ -108,7 +128,6 @@ func TestEnsureUTF8_MixedContent(t *testing.T) {
 			[]string{"Only", "199.99", "Limited Time"},
 		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := ensureUTF8(string(tt.input))
@@ -130,7 +149,6 @@ func TestSanitizeUTF8(t *testing.T) {
 		{"truncated UTF-8 sequence", "Hello\xc3", "Hello\ufffd"},
 		{"invalid continuation byte", "Test\xc3\x00End", "Test\ufffd\x00End"},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := sanitizeUTF8(tt.input)
@@ -144,35 +162,202 @@ func TestSanitizeUTF8(t *testing.T) {
 
 func TestGetEncodingByName(t *testing.T) {
 	tests := []struct {
-		charset string
-		wantNil bool
+		charset    string
+		wantNil    bool
+		verifyByte byte // A byte that decodes differently in this charset vs ASCII
+		wantRune   rune // Expected rune when decoding verifyByte
 	}{
-		{"windows-1252", false},
-		{"CP1252", false},
-		{"ISO-8859-1", false},
-		{"iso-8859-1", false},
-		{"latin1", false},
-		{"Shift_JIS", false},
-		{"shift_jis", false},
-		{"EUC-JP", false},
-		{"EUC-KR", false},
-		{"GBK", false},
-		{"GB2312", false},
-		{"Big5", false},
-		{"KOI8-R", false},
-		{"unknown-charset", true},
-		{"", true},
+		// Windows-1252: 0x92 = right single quote (')
+		{"windows-1252", false, 0x92, '\u2019'},
+		{"CP1252", false, 0x92, '\u2019'},
+		// ISO-8859-1: 0xE9 = é
+		{"ISO-8859-1", false, 0xe9, 'é'},
+		{"iso-8859-1", false, 0xe9, 'é'},
+		{"latin1", false, 0xe9, 'é'},
+		// Shift_JIS: two-byte sequence 0x82 0xA0 = あ (hiragana a)
+		{"Shift_JIS", false, 0, 0}, // Skip byte verification for multi-byte
+		{"shift_jis", false, 0, 0},
+		// Other encodings - verify non-nil only
+		{"EUC-JP", false, 0, 0},
+		{"EUC-KR", false, 0, 0},
+		{"GBK", false, 0, 0},
+		{"GB2312", false, 0, 0},
+		{"Big5", false, 0, 0},
+		{"KOI8-R", false, 0, 0},
+		// Unknown charset should return nil
+		{"unknown-charset", true, 0, 0},
+		{"", true, 0, 0},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.charset, func(t *testing.T) {
-			result := getEncodingByName(tt.charset)
-			if tt.wantNil && result != nil {
-				t.Errorf("getEncodingByName(%q) = %v, want nil", tt.charset, result)
+			enc := getEncodingByName(tt.charset)
+			if tt.wantNil {
+				if enc != nil {
+					t.Errorf("getEncodingByName(%q) = %v, want nil", tt.charset, enc)
+				}
+				return
 			}
-			if !tt.wantNil && result == nil {
-				t.Errorf("getEncodingByName(%q) = nil, want encoding", tt.charset)
+			if enc == nil {
+				t.Fatalf("getEncodingByName(%q) = nil, want encoding", tt.charset)
+			}
+			// Verify encoding identity by decoding a characteristic byte
+			if tt.verifyByte != 0 {
+				decoded, err := enc.NewDecoder().Bytes([]byte{tt.verifyByte})
+				if err != nil {
+					t.Fatalf("decode failed: %v", err)
+				}
+				got := []rune(string(decoded))
+				if len(got) != 1 || got[0] != tt.wantRune {
+					t.Errorf("decoding 0x%02x: got %q, want %q", tt.verifyByte, string(got), string(tt.wantRune))
+				}
 			}
 		})
+	}
+}
+
+func TestGetEncodingByName_DecodesCorrectly(t *testing.T) {
+	// Verify that getEncodingByName returns encodings that decode test samples correctly.
+	enc := testutil.EncodedSamples()
+	tests := []struct {
+		name     string
+		charset  string
+		input    []byte
+		expected string
+	}{
+		{"Shift-JIS", "Shift_JIS", enc.ShiftJIS_Long, enc.ShiftJIS_Long_UTF8},
+		{"GBK", "GBK", enc.GBK_Long, enc.GBK_Long_UTF8},
+		{"Big5", "Big5", enc.Big5_Long, enc.Big5_Long_UTF8},
+		{"EUC-KR", "EUC-KR", enc.EUCKR_Long, enc.EUCKR_Long_UTF8},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoding := getEncodingByName(tt.charset)
+			if encoding == nil {
+				t.Fatalf("getEncodingByName(%q) returned nil", tt.charset)
+			}
+			decoded, err := encoding.NewDecoder().Bytes(tt.input)
+			if err != nil {
+				t.Fatalf("decode failed: %v", err)
+			}
+			if string(decoded) != tt.expected {
+				t.Errorf("decoded %q, want %q", string(decoded), tt.expected)
+			}
+		})
+	}
+}
+
+func TestGetEncodingByName_MatchesExpectedEncodings(t *testing.T) {
+	// Verify that charset names map to the correct encoding objects.
+	tests := []struct {
+		charset  string
+		wantName string // Use a test decoding to verify identity
+	}{
+		// Test that similar charset names return the same encoding
+		{"windows-1252", "windows-1252"},
+		{"CP1252", "windows-1252"},
+		{"cp1252", "windows-1252"},
+		{"ISO-8859-1", "iso-8859-1"},
+		{"iso-8859-1", "iso-8859-1"},
+		{"latin1", "iso-8859-1"},
+		{"latin-1", "iso-8859-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.charset, func(t *testing.T) {
+			enc := getEncodingByName(tt.charset)
+			expected := getEncodingByName(tt.wantName)
+			if enc == nil || expected == nil {
+				t.Fatalf("encoding is nil")
+			}
+			// Verify they decode the same way
+			testBytes := []byte{0x80, 0x92, 0xe9, 0xf1}
+			got, _ := enc.NewDecoder().Bytes(testBytes)
+			want, _ := expected.NewDecoder().Bytes(testBytes)
+			if string(got) != string(want) {
+				t.Errorf("%q and %q decode differently: %q vs %q", tt.charset, tt.wantName, got, want)
+			}
+		})
+	}
+}
+
+func TestEncodingIdentity(t *testing.T) {
+	// Verify that getEncodingByName returns the correct encoding type
+	// by checking that decoding produces expected results for each encoding.
+	tests := []struct {
+		name     string
+		charset  string
+		input    []byte
+		expected string
+	}{
+		{
+			"Shift_JIS hiragana",
+			"Shift_JIS",
+			[]byte{0x82, 0xa0, 0x82, 0xa2, 0x82, 0xa4}, // あいう
+			"あいう",
+		},
+		{
+			"EUC-JP hiragana",
+			"EUC-JP",
+			[]byte{0xa4, 0xa2, 0xa4, 0xa4, 0xa4, 0xa6}, // あいう
+			"あいう",
+		},
+		{
+			"GBK chinese",
+			"GBK",
+			[]byte{0xc4, 0xe3, 0xba, 0xc3}, // 你好
+			"你好",
+		},
+		{
+			"Big5 chinese",
+			"Big5",
+			[]byte{0xa7, 0x41, 0xa6, 0x6e}, // 你好
+			"你好",
+		},
+		{
+			"EUC-KR korean",
+			"EUC-KR",
+			[]byte{0xbe, 0xc8, 0xb3, 0xe7}, // 안녕
+			"안녕",
+		},
+		{
+			"KOI8-R cyrillic",
+			"KOI8-R",
+			[]byte{0xf0, 0xf2, 0xe9, 0xf7, 0xe5, 0xf4}, // ПРИВЕТ
+			"ПРИВЕТ",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			enc := getEncodingByName(tt.charset)
+			if enc == nil {
+				t.Fatalf("getEncodingByName(%q) returned nil", tt.charset)
+			}
+			decoded, err := enc.NewDecoder().Bytes(tt.input)
+			if err != nil {
+				t.Fatalf("decode error: %v", err)
+			}
+			if string(decoded) != tt.expected {
+				t.Errorf("decoded %q, want %q", string(decoded), tt.expected)
+			}
+		})
+	}
+}
+
+func TestGetEncodingByName_ReturnsCorrectType(t *testing.T) {
+	// Verify that specific charset names return the expected encoding types
+	// by comparing with directly-imported encodings.
+	if enc := getEncodingByName("Shift_JIS"); enc != japanese.ShiftJIS {
+		t.Error("Shift_JIS should return japanese.ShiftJIS")
+	}
+	if enc := getEncodingByName("EUC-JP"); enc != japanese.EUCJP {
+		t.Error("EUC-JP should return japanese.EUCJP")
+	}
+	if enc := getEncodingByName("EUC-KR"); enc != korean.EUCKR {
+		t.Error("EUC-KR should return korean.EUCKR")
+	}
+	if enc := getEncodingByName("GBK"); enc != simplifiedchinese.GBK {
+		t.Error("GBK should return simplifiedchinese.GBK")
+	}
+	if enc := getEncodingByName("Big5"); enc != traditionalchinese.Big5 {
+		t.Error("Big5 should return traditionalchinese.Big5")
 	}
 }
