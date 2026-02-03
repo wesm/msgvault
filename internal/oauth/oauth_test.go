@@ -249,6 +249,71 @@ func TestSanitizeEmail(t *testing.T) {
 	}
 }
 
+func TestParseClientSecrets(t *testing.T) {
+	// Valid Desktop application credentials
+	validDesktop := `{
+		"installed": {
+			"client_id": "123.apps.googleusercontent.com",
+			"client_secret": "secret",
+			"auth_uri": "https://accounts.google.com/o/oauth2/auth",
+			"token_uri": "https://oauth2.googleapis.com/token",
+			"redirect_uris": ["http://localhost"]
+		}
+	}`
+
+	// TV/device client (no redirect_uris)
+	tvClient := `{
+		"installed": {
+			"client_id": "123.apps.googleusercontent.com",
+			"client_secret": "secret",
+			"auth_uri": "https://accounts.google.com/o/oauth2/auth",
+			"token_uri": "https://oauth2.googleapis.com/token"
+		}
+	}`
+
+	// Malformed JSON
+	malformedJSON := `{not valid json`
+
+	tests := []struct {
+		name    string
+		data    string
+		wantErr string
+	}{
+		{
+			name:    "valid desktop client",
+			data:    validDesktop,
+			wantErr: "",
+		},
+		{
+			name:    "TV/device client rejected",
+			data:    tvClient,
+			wantErr: "TV/device OAuth clients are not supported",
+		},
+		{
+			name:    "malformed JSON",
+			data:    malformedJSON,
+			wantErr: "invalid character",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseClientSecrets([]byte(tt.data), Scopes)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Error("expected error, got nil")
+				} else if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error = %q, want to contain %q", err.Error(), tt.wantErr)
+				}
+			}
+		})
+	}
+}
+
 func TestNewCallbackHandler(t *testing.T) {
 	mgr := setupTestManager(t, Scopes)
 
