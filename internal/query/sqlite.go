@@ -201,6 +201,8 @@ func optsToFilterConditions(opts AggregateOptions, prefix string) ([]string, []i
 }
 
 // sortClause returns ORDER BY clause for aggregates.
+// Always includes a secondary sort by key to ensure deterministic ordering when
+// primary sort values are equal (e.g., two labels with the same count).
 func sortClause(opts AggregateOptions) string {
 	field := "count"
 	switch opts.SortField {
@@ -217,7 +219,11 @@ func sortClause(opts AggregateOptions) string {
 		dir = "ASC"
 	}
 
-	return fmt.Sprintf("ORDER BY %s %s", field, dir)
+	// Secondary sort by key ensures deterministic ordering for ties
+	if field == "key" {
+		return fmt.Sprintf("ORDER BY %s %s", field, dir)
+	}
+	return fmt.Sprintf("ORDER BY %s %s, key ASC", field, dir)
 }
 
 // buildFilterJoinsAndConditions builds JOIN and WHERE clauses from a MessageFilter.
