@@ -11,7 +11,11 @@ import (
 	"github.com/wesm/msgvault/internal/testutil"
 )
 
-const testHash64 = "abc123def456789012345678901234567890123456789012345678901234abcd"
+const (
+	testHash64   = "abc123def456789012345678901234567890123456789012345678901234abcd"
+	testHashAAAA = "abc123def456789012345678901234567890123456789012345678901234aaaa"
+	testHashBBBB = "abc123def456789012345678901234567890123456789012345678901234bbbb"
+)
 
 func TestSanitizeTarPath(t *testing.T) {
 	t.Parallel()
@@ -89,9 +93,6 @@ func TestExtractTarGzSymlinkSkipped(t *testing.T) {
 func TestExtractChecksum(t *testing.T) {
 	t.Parallel()
 
-	hashAAAA := "abc123def456789012345678901234567890123456789012345678901234aaaa"
-	hashBBBB := "abc123def456789012345678901234567890123456789012345678901234bbbb"
-
 	tests := []struct {
 		name      string
 		body      string
@@ -112,9 +113,9 @@ func TestExtractChecksum(t *testing.T) {
 		},
 		{
 			name:      "multiline with target in middle",
-			body:      fmt.Sprintf("%s  msgvault_linux_amd64.tar.gz\n%s  msgvault_darwin_arm64.tar.gz", hashAAAA, hashBBBB),
+			body:      fmt.Sprintf("%s  msgvault_linux_amd64.tar.gz\n%s  msgvault_darwin_arm64.tar.gz", testHashAAAA, testHashBBBB),
 			assetName: "msgvault_darwin_arm64.tar.gz",
-			want:      hashBBBB,
+			want:      testHashBBBB,
 		},
 		{
 			name:      "no match",
@@ -136,9 +137,9 @@ func TestExtractChecksum(t *testing.T) {
 		},
 		{
 			name:      "exact match with superset also present",
-			body:      fmt.Sprintf("%s  msgvault_darwin_arm64.tar.gz.sig\n%s  msgvault_darwin_arm64.tar.gz", hashAAAA, hashBBBB),
+			body:      fmt.Sprintf("%s  msgvault_darwin_arm64.tar.gz.sig\n%s  msgvault_darwin_arm64.tar.gz", testHashAAAA, testHashBBBB),
 			assetName: "msgvault_darwin_arm64.tar.gz",
-			want:      hashBBBB,
+			want:      testHashBBBB,
 		},
 		{
 			name:      "binary mode star prefix",
@@ -158,9 +159,7 @@ func TestExtractChecksum(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := extractChecksum(tt.body, tt.assetName)
-			if got != tt.want {
-				t.Errorf("extractChecksum() = %q, want %q", got, tt.want)
-			}
+			testutil.AssertEqual(t, got, tt.want)
 		})
 	}
 }
@@ -190,10 +189,7 @@ func TestExtractBaseSemver(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.version, func(t *testing.T) {
 			t.Parallel()
-			got := extractBaseSemver(tt.version)
-			if got != tt.want {
-				t.Errorf("extractBaseSemver(%q) = %q, want %q", tt.version, got, tt.want)
-			}
+			testutil.AssertEqual(t, extractBaseSemver(tt.version), tt.want)
 		})
 	}
 }
@@ -219,10 +215,7 @@ func TestIsDevBuildVersion(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.version, func(t *testing.T) {
 			t.Parallel()
-			got := isDevBuildVersion(tt.version)
-			if got != tt.want {
-				t.Errorf("isDevBuildVersion(%q) = %v, want %v", tt.version, got, tt.want)
-			}
+			testutil.AssertEqual(t, isDevBuildVersion(tt.version), tt.want)
 		})
 	}
 }
@@ -269,10 +262,7 @@ func TestIsNewer(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := isNewer(tt.v1, tt.v2)
-			if got != tt.want {
-				t.Errorf("isNewer(%q, %q) = %v, want %v", tt.v1, tt.v2, got, tt.want)
-			}
+			testutil.AssertEqual(t, isNewer(tt.v1, tt.v2), tt.want)
 		})
 	}
 }
@@ -329,20 +319,14 @@ func TestFindAssets(t *testing.T) {
 				if asset == nil {
 					t.Fatal("expected asset to be non-nil")
 				}
-				if asset.BrowserDownloadURL != tt.wantAssetURL {
-					t.Errorf("asset URL = %q, want %q", asset.BrowserDownloadURL, tt.wantAssetURL)
-				}
-				if asset.Size != tt.wantAssetSize {
-					t.Errorf("asset size = %d, want %d", asset.Size, tt.wantAssetSize)
-				}
+				testutil.AssertEqual(t, asset.BrowserDownloadURL, tt.wantAssetURL)
+				testutil.AssertEqual(t, asset.Size, tt.wantAssetSize)
 			}
 
 			if checksums == nil {
 				t.Fatal("expected checksums to be non-nil")
 			}
-			if checksums.BrowserDownloadURL != tt.wantChecksumsURL {
-				t.Errorf("checksums URL = %q, want %q", checksums.BrowserDownloadURL, tt.wantChecksumsURL)
-			}
+			testutil.AssertEqual(t, checksums.BrowserDownloadURL, tt.wantChecksumsURL)
 		})
 	}
 }
@@ -363,10 +347,7 @@ func TestFormatSize(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
 			t.Parallel()
-			got := FormatSize(tt.bytes)
-			if got != tt.want {
-				t.Errorf("FormatSize(%d) = %q, want %q", tt.bytes, got, tt.want)
-			}
+			testutil.AssertEqual(t, FormatSize(tt.bytes), tt.want)
 		})
 	}
 }

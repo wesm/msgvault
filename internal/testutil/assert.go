@@ -90,3 +90,11 @@ func MustNoErr(t *testing.T, err error, msg string) {
 		t.Fatalf("%s: %v", msg, err)
 	}
 }
+
+// AssertEqual compares two comparable values and fails the test if they differ.
+func AssertEqual[T comparable](t *testing.T, got, want T) {
+	t.Helper()
+	if got != want {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
