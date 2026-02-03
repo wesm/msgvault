@@ -40,9 +40,12 @@ func assertSubject(t *testing.T, msg *Message, want string) {
 	}
 }
 
-// assertAddress checks that got[idx] has the expected email and (optionally) domain.
-func assertAddress(t *testing.T, got []Address, idx int, wantEmail, wantDomain string) {
+// assertAddress checks that got has exactly wantLen elements and got[idx] has the expected email and (optionally) domain.
+func assertAddress(t *testing.T, got []Address, wantLen, idx int, wantEmail, wantDomain string) {
 	t.Helper()
+	if len(got) != wantLen {
+		t.Errorf("Address slice length = %d, want %d", len(got), wantLen)
+	}
 	if idx >= len(got) {
 		t.Fatalf("Address index %d out of bounds (len %d)", idx, len(got))
 	}
@@ -275,8 +278,8 @@ func TestParse_MinimalMessage(t *testing.T) {
 		},
 	})
 
-	assertAddress(t, msg.From, 0, "sender@example.com", "example.com")
-	assertAddress(t, msg.To, 0, "recipient@example.com", "")
+	assertAddress(t, msg.From, 1, 0, "sender@example.com", "example.com")
+	assertAddress(t, msg.To, 1, 0, "recipient@example.com", "")
 	assertSubject(t, msg, "Test")
 
 	if msg.BodyText != "Body text" {
