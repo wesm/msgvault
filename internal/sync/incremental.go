@@ -97,53 +97,9 @@ func (s *Syncer) Incremental(ctx context.Context, email string) (*gmail.SyncSumm
 
 		// Process each history record
 		for _, record := range historyResp.History {
-			// Handle added messages
-			for _, added := range record.MessagesAdded {
-				// Fetch and ingest the new message
-				raw, err := s.client.GetMessageRaw(ctx, added.Message.ID)
-				if err != nil {
-					var notFound *gmail.NotFoundError
-					if errors.As(err, &notFound) {
-						// Message was deleted before we could fetch it
-						continue
-					}
-					s.logger.Warn("failed to fetch added message", "id", added.Message.ID, "error", err)
-					checkpoint.ErrorsCount++
-					continue
-				}
-
-				err = s.ingestMessage(ctx, source.ID, raw, added.Message.ThreadID, labelMap)
-				if err != nil {
-					s.logger.Warn("failed to ingest added message", "id", added.Message.ID, "error", err)
-					checkpoint.ErrorsCount++
-					continue
-				}
-
-				checkpoint.MessagesAdded++
-				summary.BytesDownloaded += int64(len(raw.Raw))
-			}
-
-			// Handle deleted messages
-			for _, deleted := range record.MessagesDeleted {
-				if err := s.store.MarkMessageDeleted(source.ID, deleted.Message.ID); err != nil {
-					s.logger.Warn("failed to mark message deleted", "id", deleted.Message.ID, "error", err)
-					checkpoint.ErrorsCount++
-				}
-			}
-
-			// Handle label changes
-			for _, labelAdded := range record.LabelsAdded {
-				if err := s.handleLabelChange(ctx, source.ID, labelAdded.Message.ID, labelAdded.Message.ThreadID, labelAdded.LabelIDs, labelMap, true); err != nil {
-					logLabelChangeError(s, "add", labelAdded.Message.ID, err)
-				}
-			}
-
-			for _, labelRemoved := range record.LabelsRemoved {
-				if err := s.handleLabelChange(ctx, source.ID, labelRemoved.Message.ID, labelRemoved.Message.ThreadID, labelRemoved.LabelIDs, labelMap, false); err != nil {
-					logLabelChangeError(s, "remove", labelRemoved.Message.ID, err)
-				}
-			}
-
+			s.processMessagesAdded(ctx, source.ID, record.MessagesAdded, labelMap, checkpoint, summary)
+			s.processMessagesDeleted(source.ID, record.MessagesDeleted, checkpoint)
+			s.processLabelChanges(ctx, source.ID, record, labelMap)
 			checkpoint.MessagesProcessed++
 		}
 
@@ -185,6 +141,56 @@ func (s *Syncer) Incremental(ctx context.Context, email string) (*gmail.SyncSumm
 
 	s.progress.OnComplete(summary)
 	return summary, nil
+}
+
+// processMessagesAdded fetches and ingests newly added messages.
+func (s *Syncer) processMessagesAdded(ctx context.Context, sourceID int64, added []gmail.HistoryMessage, labelMap map[string]int64, checkpoint *store.Checkpoint, summary *gmail.SyncSummary) {
+	for _, msg := range added {
+		raw, err := s.client.GetMessageRaw(ctx, msg.Message.ID)
+		if err != nil {
+			var notFound *gmail.NotFoundError
+			if errors.As(err, &notFound) {
+				// Message was deleted before we could fetch it
+				continue
+			}
+			s.logger.Warn("failed to fetch added message", "id", msg.Message.ID, "error", err)
+			checkpoint.ErrorsCount++
+			continue
+		}
+
+		if err := s.ingestMessage(ctx, sourceID, raw, msg.Message.ThreadID, labelMap); err != nil {
+			s.logger.Warn("failed to ingest added message", "id", msg.Message.ID, "error", err)
+			checkpoint.ErrorsCount++
+			continue
+		}
+
+		checkpoint.MessagesAdded++
+		summary.BytesDownloaded += int64(len(raw.Raw))
+	}
+}
+
+// processMessagesDeleted marks deleted messages in the local store.
+func (s *Syncer) processMessagesDeleted(sourceID int64, deleted []gmail.HistoryMessage, checkpoint *store.Checkpoint) {
+	for _, msg := range deleted {
+		if err := s.store.MarkMessageDeleted(sourceID, msg.Message.ID); err != nil {
+			s.logger.Warn("failed to mark message deleted", "id", msg.Message.ID, "error", err)
+			checkpoint.ErrorsCount++
+		}
+	}
+}
+
+// processLabelChanges handles label additions and removals for messages.
+func (s *Syncer) processLabelChanges(ctx context.Context, sourceID int64, record gmail.HistoryRecord, labelMap map[string]int64) {
+	for _, item := range record.LabelsAdded {
+		if err := s.handleLabelChange(ctx, sourceID, item.Message.ID, item.Message.ThreadID, item.LabelIDs, labelMap, true); err != nil {
+			s.logLabelChangeError("add", item.Message.ID, err)
+		}
+	}
+	for _, item := range record.LabelsRemoved {
+		if err := s.handleLabelChange(ctx, sourceID, item.Message.ID, item.Message.ThreadID, item.LabelIDs, labelMap, false); err != nil {
+			s.logLabelChangeError("remove", item.Message.ID, err)
+		}
+	}
 }
 
 // handleLabelChange processes a label addition or removal.
@@ -233,7 +239,7 @@ func (s *Syncer) handleLabelChange(ctx context.Context, sourceID int64, messageI
 // logLabelChangeError logs label change errors, downgrading "not found"
 // to a debug-level message since deleted messages are expected during
 // incremental sync (e.g., spam auto-deleted between sync runs).
-func logLabelChangeError(s *Syncer, action, messageID string, err error) {
+func (s *Syncer) logLabelChangeError(action, messageID string, err error) {
 	var notFound *gmail.NotFoundError
 	if errors.As(err, &notFound) {
 		s.logger.Debug("skipping label "+action+": message deleted from Gmail", "id", messageID)
