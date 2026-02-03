@@ -21,7 +21,7 @@ func TestAttachments(t *testing.T) {
 	tests := []struct {
 		name           string
 		inputs         []query.AttachmentInfo
-		wantErr        bool
+		wantCount      int
 		wantSubstrings []string
 	}{
 		{
@@ -58,13 +58,14 @@ func TestAttachments(t *testing.T) {
 			zipPath := filepath.Join(t.TempDir(), "test.zip")
 			outDir := t.TempDir()
 
-			result := Attachments(zipPath, outDir, tt.inputs)
+			stats := Attachments(zipPath, outDir, tt.inputs)
 
-			if (result.Err != nil) != tt.wantErr {
-				t.Fatalf("Attachments() error = %v, wantErr %v", result.Err, tt.wantErr)
+			if stats.Count != tt.wantCount {
+				t.Fatalf("Attachments() count = %d, want %d", stats.Count, tt.wantCount)
 			}
 
-			assertContainsSubstrings(t, result.Result, tt.wantSubstrings)
+			formatted := FormatExportResult(stats)
+			assertContainsSubstrings(t, formatted, tt.wantSubstrings)
 		})
 	}
 }

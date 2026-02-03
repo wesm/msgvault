@@ -13,105 +13,141 @@ import (
 	"github.com/wesm/msgvault/internal/query"
 )
 
-// AttachmentResult contains the outcome of an attachment export operation.
-type AttachmentResult struct {
-	Result string
-	Err    error
+// ExportStats contains structured results of an attachment export operation.
+type ExportStats struct {
+	Count   int
+	Size    int64
+	Errors  []string
+	ZipPath string
 }
 
 // Attachments exports the given attachments into a zip file.
 // It reads attachment content from attachmentsDir using content-hash based paths.
-func Attachments(zipFilename, attachmentsDir string, attachments []query.AttachmentInfo) AttachmentResult {
+func Attachments(zipFilename, attachmentsDir string, attachments []query.AttachmentInfo) ExportStats {
 	zipFile, err := os.Create(zipFilename)
 	if err != nil {
-		return AttachmentResult{Err: fmt.Errorf("failed to create zip file: %w", err)}
+		return ExportStats{Errors: []string{fmt.Sprintf("failed to create zip file: %v", err)}}
 	}
-	// Don't defer Close - we need to handle errors and avoid double-close
 
 	zipWriter := zip.NewWriter(zipFile)
 
-	var exportedCount int
-	var totalSize int64
-	var errors []string
+	var stats ExportStats
 	var writeError bool
 
 	usedNames := make(map[string]int)
 	for _, att := range attachments {
 		if len(att.ContentHash) < 2 {
-			errors = append(errors, fmt.Sprintf("%s: missing or invalid content hash", att.Filename))
+			stats.Errors = append(stats.Errors, fmt.Sprintf("%s: missing or invalid content hash", att.Filename))
 			continue
 		}
 
-		storagePath := filepath.Join(attachmentsDir, att.ContentHash[:2], att.ContentHash)
-
-		srcFile, err := os.Open(storagePath)
+		n, err := addAttachmentToZip(zipWriter, attachmentsDir, att, usedNames)
 		if err != nil {
-			errors = append(errors, fmt.Sprintf("%s: %v", att.Filename, err))
+			stats.Errors = append(stats.Errors, fmt.Sprintf("%s: %v", att.Filename, err))
+			if isWriteError(err) {
+				writeError = true
+			}
 			continue
 		}
 
-		// Use filepath.Base to prevent Zip Slip (path traversal) attacks
-		filename := filepath.Base(att.Filename)
-		if filename == "" || filename == "." {
-			filename = att.ContentHash
-		}
-		baseKey := filename
-		if count, exists := usedNames[baseKey]; exists {
-			ext := filepath.Ext(filename)
-			base := filename[:len(filename)-len(ext)]
-			filename = fmt.Sprintf("%s_%d%s", base, count+1, ext)
-			usedNames[baseKey] = count + 1
-		} else {
-			usedNames[baseKey] = 1
-		}
-
-		w, err := zipWriter.Create(filename)
-		if err != nil {
-			srcFile.Close()
-			errors = append(errors, fmt.Sprintf("%s: zip write error: %v", att.Filename, err))
-			writeError = true
-			continue
-		}
-
-		n, err := io.Copy(w, srcFile)
-		srcFile.Close()
-		if err != nil {
-			errors = append(errors, fmt.Sprintf("%s: zip write error: %v", att.Filename, err))
-			writeError = true
-			continue
-		}
-
-		exportedCount++
-		totalSize += n
+		stats.Count++
+		stats.Size += n
 	}
 
-	// Close zip writer first - check for errors as this finalizes the archive
 	if err := zipWriter.Close(); err != nil {
-		errors = append(errors, fmt.Sprintf("zip finalization error: %v", err))
+		stats.Errors = append(stats.Errors, fmt.Sprintf("zip finalization error: %v", err))
 		writeError = true
 	}
 	if err := zipFile.Close(); err != nil {
-		errors = append(errors, fmt.Sprintf("file close error: %v", err))
+		stats.Errors = append(stats.Errors, fmt.Sprintf("file close error: %v", err))
 		writeError = true
 	}
 
-	// Build result message
-	if exportedCount == 0 || writeError {
+	if stats.Count == 0 || writeError {
 		os.Remove(zipFilename)
-		if writeError {
-			return AttachmentResult{Result: "Export failed due to write errors. Zip file removed.\n\nErrors:\n" + strings.Join(errors, "\n")}
-		}
-		return AttachmentResult{Result: "No attachments exported.\n\nErrors:\n" + strings.Join(errors, "\n")}
+		return stats
 	}
 
 	cwd, _ := os.Getwd()
-	fullPath := filepath.Join(cwd, zipFilename)
-	result := fmt.Sprintf("Exported %d attachment(s) (%s)\n\nSaved to:\n%s",
-		exportedCount, FormatBytesLong(totalSize), fullPath)
-	if len(errors) > 0 {
-		result += "\n\nErrors:\n" + strings.Join(errors, "\n")
+	stats.ZipPath = filepath.Join(cwd, zipFilename)
+	return stats
+}
+
+// FormatExportResult formats ExportStats into a human-readable string for display.
+func FormatExportResult(stats ExportStats) string {
+	if stats.Count == 0 {
+		if len(stats.Errors) > 0 {
+			// Check if any errors indicate write failures
+			for _, e := range stats.Errors {
+				if strings.Contains(e, "zip write error") || strings.Contains(e, "zip finalization") || strings.Contains(e, "file close") {
+					return "Export failed due to write errors. Zip file removed.\n\nErrors:\n" + strings.Join(stats.Errors, "\n")
+				}
+			}
+		}
+		return "No attachments exported.\n\nErrors:\n" + strings.Join(stats.Errors, "\n")
 	}
-	return AttachmentResult{Result: result}
+
+	result := fmt.Sprintf("Exported %d attachment(s) (%s)\n\nSaved to:\n%s",
+		stats.Count, FormatBytesLong(stats.Size), stats.ZipPath)
+	if len(stats.Errors) > 0 {
+		result += "\n\nErrors:\n" + strings.Join(stats.Errors, "\n")
+	}
+	return result
+}
+
+type zipWriteError struct {
+	err error
+}
+
+func (e *zipWriteError) Error() string { return e.err.Error() }
+func (e *zipWriteError) Unwrap() error { return e.err }
+
+func isWriteError(err error) bool {
+	_, ok := err.(*zipWriteError)
+	return ok
+}
+
+func addAttachmentToZip(zw *zip.Writer, root string, att query.AttachmentInfo, usedNames map[string]int) (int64, error) {
+	storagePath := filepath.Join(root, att.ContentHash[:2], att.ContentHash)
+
+	srcFile, err := os.Open(storagePath)
+	if err != nil {
+		return 0, err
+	}
+	defer srcFile.Close()
+
+	filename := resolveUniqueFilename(att.Filename, att.ContentHash, usedNames)
+
+	w, err := zw.Create(filename)
+	if err != nil {
+		return 0, &zipWriteError{fmt.Errorf("zip write error: %w", err)}
+	}
+
+	n, err := io.Copy(w, srcFile)
+	if err != nil {
+		return 0, &zipWriteError{fmt.Errorf("zip write error: %w", err)}
+	}
+
+	return n, nil
+}
+
+func resolveUniqueFilename(original, contentHash string, usedNames map[string]int) string {
+	filename := SanitizeFilename(filepath.Base(original))
+	if filename == "" || filename == "." {
+		filename = contentHash
+	}
+
+	baseKey := filename
+	if count, exists := usedNames[baseKey]; exists {
+		ext := filepath.Ext(filename)
+		base := filename[:len(filename)-len(ext)]
+		filename = fmt.Sprintf("%s_%d%s", base, count+1, ext)
+		usedNames[baseKey] = count + 1
+	} else {
+		usedNames[baseKey] = 1
+	}
+
+	return filename
 }
 
 // SanitizeFilename removes or replaces characters that are invalid in filenames.

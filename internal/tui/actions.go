@@ -195,7 +195,7 @@ func (c *ActionController) ExportAttachments(detail *query.MessageDetail, select
 	zipFilename := fmt.Sprintf("%s_%d.zip", subject, detail.ID)
 
 	return func() tea.Msg {
-		result := export.Attachments(zipFilename, attachmentsDir, selectedAttachments)
-		return ExportResultMsg{Result: result.Result, Err: result.Err}
+		stats := export.Attachments(zipFilename, attachmentsDir, selectedAttachments)
+		return ExportResultMsg{Result: export.FormatExportResult(stats)}
 	}
 }
