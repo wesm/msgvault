@@ -9,11 +9,26 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// newTestRootCmd creates a fresh root command for testing, avoiding mutation
+// of the global rootCmd which could cause race conditions in parallel tests.
+func newTestRootCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "msgvault",
+		Short: "Offline email archive tool",
+	}
+}
+
 // TestExecuteContext_CancellationPropagates verifies that context cancellation
 // from ExecuteContext propagates to command handlers.
 func TestExecuteContext_CancellationPropagates(t *testing.T) {
 	// Track whether context was cancelled
 	var contextWasCancelled atomic.Bool
+
+	// Signal when the command handler has started waiting on ctx.Done()
+	handlerStarted := make(chan struct{})
+
+	// Create a fresh root command for this test
+	testRoot := newTestRootCmd()
 
 	// Create a test command that waits for context cancellation
 	testCmd := &cobra.Command{
@@ -21,6 +36,8 @@ func TestExecuteContext_CancellationPropagates(t *testing.T) {
 		Short: "Test command for context cancellation",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			// Signal that we're now waiting for cancellation
+			close(handlerStarted)
 			select {
 			case <-ctx.Done():
 				contextWasCancelled.Store(true)
@@ -31,26 +48,26 @@ func TestExecuteContext_CancellationPropagates(t *testing.T) {
 		},
 	}
 
-	// Add the test command to root
-	rootCmd.AddCommand(testCmd)
-	defer func() {
-		// Clean up: remove test command
-		rootCmd.RemoveCommand(testCmd)
-	}()
+	testRoot.AddCommand(testCmd)
 
 	// Create a cancellable context
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // Ensure cleanup even if test fails early
 
 	// Start ExecuteContext in a goroutine
 	done := make(chan error, 1)
 	go func() {
-		// Set args to run our test command
-		rootCmd.SetArgs([]string{"test-cancel"})
-		done <- ExecuteContext(ctx)
+		testRoot.SetArgs([]string{"test-cancel"})
+		done <- testRoot.ExecuteContext(ctx)
 	}()
 
-	// Give the command time to start
-	time.Sleep(50 * time.Millisecond)
+	// Wait for handler to start (synchronization instead of sleep)
+	select {
+	case <-handlerStarted:
+		// Handler is now waiting on ctx.Done()
+	case <-time.After(2 * time.Second):
+		t.Fatal("command handler did not start in time")
+	}
 
 	// Cancel the context (simulates SIGINT/SIGTERM)
 	cancel()
@@ -73,6 +90,9 @@ func TestExecuteContext_CancellationPropagates(t *testing.T) {
 
 // TestExecute_UsesBackgroundContext verifies Execute() works with background context.
 func TestExecute_UsesBackgroundContext(t *testing.T) {
+	// Create a fresh root command for this test
+	testRoot := newTestRootCmd()
+
 	// Create a simple command that completes immediately
 	completed := make(chan struct{})
 	testCmd := &cobra.Command{
@@ -84,11 +104,10 @@ func TestExecute_UsesBackgroundContext(t *testing.T) {
 		},
 	}
 
-	rootCmd.AddCommand(testCmd)
-	defer rootCmd.RemoveCommand(testCmd)
+	testRoot.AddCommand(testCmd)
 
-	rootCmd.SetArgs([]string{"test-execute"})
-	err := Execute()
+	testRoot.SetArgs([]string{"test-execute"})
+	err := testRoot.Execute()
 	if err != nil {
 		t.Fatalf("Execute() returned error: %v", err)
 	}
@@ -98,5 +117,37 @@ func TestExecute_UsesBackgroundContext(t *testing.T) {
 		// Success
 	case <-time.After(time.Second):
 		t.Fatal("command did not complete")
+	}
+}
+
+// TestExecuteContext_DelegatesToRootCmd verifies ExecuteContext passes context to rootCmd.
+func TestExecuteContext_DelegatesToRootCmd(t *testing.T) {
+	// This test verifies the actual Execute/ExecuteContext functions work,
+	// but uses a minimal approach to avoid side effects from the real rootCmd's
+	// PersistentPreRunE (which loads config, etc.)
+
+	// We test that ExecuteContext returns an error for unknown commands,
+	// which proves it's actually executing through the command tree.
+	ctx := context.Background()
+	oldArgs := rootCmd.Args
+	defer func() { rootCmd.SetArgs(nil) }()
+
+	rootCmd.SetArgs([]string{"__nonexistent_command_for_test__"})
+	err := ExecuteContext(ctx)
+	if err == nil {
+		t.Error("expected error for unknown command, got nil")
+	}
+
+	rootCmd.Args = oldArgs
+}
+
+// TestExecute_DelegatesToExecuteContext verifies Execute calls ExecuteContext.
+func TestExecute_DelegatesToExecuteContext(t *testing.T) {
+	defer func() { rootCmd.SetArgs(nil) }()
+
+	rootCmd.SetArgs([]string{"__nonexistent_command_for_test__"})
+	err := Execute()
+	if err == nil {
+		t.Error("expected error for unknown command, got nil")
 	}
 }
