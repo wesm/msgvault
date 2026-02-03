@@ -496,8 +496,11 @@ func parseClientSecrets(data []byte, scopes []string) (*oauth2.Config, error) {
 	if creds == nil || creds.ClientID == "" || creds.ClientSecret == "" {
 		return nil, fmt.Errorf("client secrets missing client_id or client_secret")
 	}
+	if creds.AuthURI == "" || creds.TokenURI == "" {
+		return nil, fmt.Errorf("client secrets missing auth_uri or token_uri")
+	}
 
-	// Build config manually - use empty redirect URI for device flow clients
+	// Build config manually - no redirect URI needed for device flow
 	return &oauth2.Config{
 		ClientID:     creds.ClientID,
 		ClientSecret: creds.ClientSecret,
@@ -505,8 +508,7 @@ func parseClientSecrets(data []byte, scopes []string) (*oauth2.Config, error) {
 			AuthURL:  creds.AuthURI,
 			TokenURL: creds.TokenURI,
 		},
-		RedirectURL: "urn:ietf:wg:oauth:2.0:oob", // Out-of-band redirect for device flow
-		Scopes:      scopes,
+		Scopes: scopes,
 	}, nil
 }
 
