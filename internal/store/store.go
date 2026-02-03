@@ -4,12 +4,13 @@ package store
 import (
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/mattn/go-sqlite3"
 )
 
 //go:embed schema.sql schema_sqlite.sql
@@ -23,6 +24,17 @@ type Store struct {
 }
 
 const defaultSQLiteParams = "?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=ON"
+
+// isSQLiteError checks if err is a sqlite3.Error with a message containing substr.
+// This is more robust than strings.Contains on err.Error() because it first
+// type-asserts to the specific driver error type using errors.As.
+func isSQLiteError(err error, substr string) bool {
+	var sqliteErr sqlite3.Error
+	if errors.As(err, &sqliteErr) {
+		return strings.Contains(sqliteErr.Error(), substr)
+	}
+	return false
+}
 
 // Open opens or creates the database at the given path.
 // Currently only SQLite is supported. PostgreSQL URLs will return an error.
@@ -179,7 +191,7 @@ func (s *Store) InitSchema() error {
 	}
 
 	if _, err := s.db.Exec(string(sqliteSchema)); err != nil {
-		if strings.Contains(err.Error(), "no such module: fts5") {
+		if isSQLiteError(err, "no such module: fts5") {
 			s.fts5Available = false
 		} else {
 			return fmt.Errorf("init fts5 schema: %w", err)
@@ -218,7 +230,7 @@ func (s *Store) GetStats() (*Stats, error) {
 
 	for _, q := range queries {
 		if err := s.db.QueryRow(q.query).Scan(q.dest); err != nil {
-			if strings.Contains(err.Error(), "no such table") {
+			if isSQLiteError(err, "no such table") {
 				continue
 			}
 			return nil, fmt.Errorf("get stats %q: %w", q.query, err)

@@ -649,6 +649,37 @@ func TestStore_GetStats_WithData(t *testing.T) {
 	}
 }
 
+func TestStore_GetStats_ClosedDB(t *testing.T) {
+	st := testutil.NewTestStore(t)
+
+	// Close the database
+	err := st.Close()
+	testutil.MustNoErr(t, err, "Close()")
+
+	// GetStats should return an error for closed DB (not silently ignore)
+	_, err = st.GetStats()
+	if err == nil {
+		t.Error("GetStats() should return error on closed DB")
+	}
+}
+
+func TestStore_GetStats_MissingTable(t *testing.T) {
+	st := testutil.NewTestStore(t)
+
+	// Drop a table to simulate missing table scenario
+	_, err := st.DB().Exec("DROP TABLE IF EXISTS attachments")
+	testutil.MustNoErr(t, err, "DROP TABLE attachments")
+
+	// GetStats should ignore missing tables and return partial stats
+	stats, err := st.GetStats()
+	testutil.MustNoErr(t, err, "GetStats() with missing table")
+
+	// AttachmentCount should be 0 (table missing, ignored)
+	if stats.AttachmentCount != 0 {
+		t.Errorf("AttachmentCount = %d, want 0 for missing table", stats.AttachmentCount)
+	}
+}
+
 func TestStore_CountMessagesForSource(t *testing.T) {
 	f := storetest.New(t)
 
