@@ -44,10 +44,7 @@ func assertSubject(t *testing.T, msg *Message, want string) {
 func assertAddress(t *testing.T, got []Address, wantLen, idx int, wantEmail, wantDomain string) {
 	t.Helper()
 	if len(got) != wantLen {
-		t.Errorf("Address slice length = %d, want %d", len(got), wantLen)
-	}
-	if idx >= len(got) {
-		t.Fatalf("Address index %d out of bounds (len %d)", idx, len(got))
+		t.Fatalf("Address slice length = %d, want %d", len(got), wantLen)
 	}
 	if got[idx].Email != wantEmail {
 		t.Errorf("Address[%d].Email = %q, want %q", idx, got[idx].Email, wantEmail)
