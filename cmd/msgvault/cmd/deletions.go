@@ -208,7 +208,7 @@ Use --trash to move messages to Gmail trash instead (recoverable for 30 days, sl
 Examples:
   msgvault delete-staged                # Permanent delete all pending (fast)
   msgvault delete-staged batch-123      # Delete specific batch
-  msgvault delete-staged --list         # Show pending batches without executing
+  msgvault delete-staged --list         # Show staged batches without executing
   msgvault delete-staged --trash        # Move to trash instead (slower)
   msgvault delete-staged --yes          # Skip confirmation`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -247,7 +247,7 @@ Examples:
 			return nil
 		}
 
-		// --list: show pending batches and exit
+		// --list: show staged batches (pending + in-progress) and exit
 		if deleteList {
 			fmt.Printf("Staged deletions: %d batch(es)\n\n", len(manifests))
 			fmt.Printf("  %-25s  %-12s  %10s  %s\n", "ID", "Status", "Messages", "Description")
@@ -673,7 +673,7 @@ func init() {
 	deleteStagedCmd.Flags().BoolVar(&deleteTrash, "trash", false, "Move to trash instead of permanent delete (slower)")
 	deleteStagedCmd.Flags().BoolVarP(&deleteYes, "yes", "y", false, "Skip confirmation")
 	deleteStagedCmd.Flags().BoolVar(&deleteDryRun, "dry-run", false, "Show what would be deleted")
-	deleteStagedCmd.Flags().BoolVarP(&deleteList, "list", "l", false, "List pending batches without executing")
+	deleteStagedCmd.Flags().BoolVarP(&deleteList, "list", "l", false, "List staged batches without executing")
 	deleteStagedCmd.Flags().StringVar(&deleteAccount, "account", "", "Gmail account to use")
 
 	rootCmd.AddCommand(listDeletionsCmd)
