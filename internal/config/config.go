@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -48,24 +49,27 @@ func DefaultHome() string {
 	return filepath.Join(home, ".msgvault")
 }
 
-// Load reads the configuration from the specified file.
-// If path is empty, uses the default location (~/.msgvault/config.toml).
-func Load(path string) (*Config, error) {
+// NewDefaultConfig returns a configuration with default values.
+func NewDefaultConfig() *Config {
 	homeDir := DefaultHome()
-
-	if path == "" {
-		path = filepath.Join(homeDir, "config.toml")
-	}
-
-	cfg := &Config{
+	return &Config{
 		HomeDir: homeDir,
-		// Defaults
 		Data: DataConfig{
 			DataDir: homeDir,
 		},
 		Sync: SyncConfig{
 			RateLimitQPS: 5,
 		},
+	}
+}
+
+// Load reads the configuration from the specified file.
+// If path is empty, uses the default location (~/.msgvault/config.toml).
+func Load(path string) (*Config, error) {
+	cfg := NewDefaultConfig()
+
+	if path == "" {
+		path = filepath.Join(cfg.HomeDir, "config.toml")
 	}
 
 	// Config file is optional - use defaults if not present
@@ -84,10 +88,9 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// DatabasePath returns the path to the SQLite database.
-func (c *Config) DatabasePath() string {
+// DatabaseDSN returns the database connection string or file path.
+func (c *Config) DatabaseDSN() string {
 	if c.Data.DatabaseURL != "" {
-		// If a full URL is specified, it might be PostgreSQL
 		return c.Data.DatabaseURL
 	}
 	return filepath.Join(c.Data.DataDir, "msgvault.db")
@@ -109,16 +112,20 @@ func (c *Config) AnalyticsDir() string {
 }
 
 // expandPath expands ~ to the user's home directory.
+// Only expands paths that are exactly "~" or start with "~/".
 func expandPath(path string) string {
 	if path == "" {
 		return path
 	}
-	if path[0] == '~' {
+	if path == "~" || strings.HasPrefix(path, "~"+string(os.PathSeparator)) || strings.HasPrefix(path, "~/") {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return path
 		}
-		return filepath.Join(home, path[1:])
+		if path == "~" {
+			return home
+		}
+		return filepath.Join(home, path[2:])
 	}
 	return path
 }

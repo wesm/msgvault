@@ -43,7 +43,7 @@ The cache files are stored in ~/.msgvault/analytics/:
 By default, this performs an incremental update (only adding new messages).
 Use --full-rebuild to recreate all cache files from scratch.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		dbPath := cfg.DatabasePath()
+		dbPath := cfg.DatabaseDSN()
 		analyticsDir := cfg.AnalyticsDir()
 
 		// Check database exists
