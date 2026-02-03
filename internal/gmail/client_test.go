@@ -1,6 +1,7 @@
 package gmail
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -76,6 +77,108 @@ func (b *GmailErrorBuilder) Build() []byte {
 		panic(fmt.Sprintf("failed to marshal test body: %v", err))
 	}
 	return data
+}
+
+func TestDecodeBase64URL(t *testing.T) {
+	// Test data: "Hello, World!" in various encodings
+	plaintext := []byte("Hello, World!")
+	// base64url unpadded (Gmail's typical format)
+	unpadded := base64.RawURLEncoding.EncodeToString(plaintext)
+	// base64url with padding
+	padded := base64.URLEncoding.EncodeToString(plaintext)
+
+	tests := []struct {
+		name    string
+		input   string
+		want    []byte
+		wantErr bool
+	}{
+		{
+			name:    "unpadded base64url",
+			input:   unpadded,
+			want:    plaintext,
+			wantErr: false,
+		},
+		{
+			name:    "padded base64url",
+			input:   padded,
+			want:    plaintext,
+			wantErr: false,
+		},
+		{
+			name:    "empty string",
+			input:   "",
+			want:    []byte{},
+			wantErr: false,
+		},
+		{
+			name:    "single byte unpadded",
+			input:   "QQ", // 'A'
+			want:    []byte("A"),
+			wantErr: false,
+		},
+		{
+			name:    "single byte padded",
+			input:   "QQ==", // 'A' with padding
+			want:    []byte("A"),
+			wantErr: false,
+		},
+		{
+			name:    "two bytes unpadded",
+			input:   "QUI", // 'AB'
+			want:    []byte("AB"),
+			wantErr: false,
+		},
+		{
+			name:    "two bytes padded",
+			input:   "QUI=", // 'AB' with single pad
+			want:    []byte("AB"),
+			wantErr: false,
+		},
+		{
+			name:    "URL-safe characters unpadded",
+			input:   "PDw_Pz4-", // "<<??>>", uses - and _ instead of + and /
+			want:    []byte("<<??>>"),
+			wantErr: false,
+		},
+		{
+			name:    "URL-safe characters padded",
+			input:   "PDw_Pz4-", // same but note: this doesn't need padding
+			want:    []byte("<<??>>"),
+			wantErr: false,
+		},
+		{
+			name:    "invalid characters",
+			input:   "!!!invalid!!!",
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name:    "binary data unpadded",
+			input:   base64.RawURLEncoding.EncodeToString([]byte{0x00, 0xFF, 0x80, 0x7F}),
+			want:    []byte{0x00, 0xFF, 0x80, 0x7F},
+			wantErr: false,
+		},
+		{
+			name:    "binary data padded",
+			input:   base64.URLEncoding.EncodeToString([]byte{0x00, 0xFF, 0x80, 0x7F}),
+			want:    []byte{0x00, 0xFF, 0x80, 0x7F},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := decodeBase64URL(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("decodeBase64URL() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && string(got) != string(tt.want) {
+				t.Errorf("decodeBase64URL() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestIsRateLimitError(t *testing.T) {

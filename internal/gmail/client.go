@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -253,6 +254,12 @@ type rawMessageResponse struct {
 	Raw          string   `json:"raw"` // base64url encoded (unpadded)
 }
 
+// decodeBase64URL decodes a base64url-encoded string, tolerating optional padding.
+// Gmail typically returns unpadded base64url, but this function handles both cases.
+func decodeBase64URL(s string) ([]byte, error) {
+	return base64.RawURLEncoding.DecodeString(strings.TrimRight(s, "="))
+}
+
 type historyMessageChange struct {
 	Message gmailMessageRef `json:"message"`
 }
@@ -375,7 +382,7 @@ func (c *Client) GetMessageRaw(ctx context.Context, messageID string) (*RawMessa
 	}
 
 	// Decode raw MIME from base64url
-	rawBytes, err := base64.RawURLEncoding.DecodeString(resp.Raw)
+	rawBytes, err := decodeBase64URL(resp.Raw)
 	if err != nil {
 		return nil, fmt.Errorf("decode raw MIME: %w", err)
 	}
