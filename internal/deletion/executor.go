@@ -132,7 +132,7 @@ func (e *Executor) Execute(ctx context.Context, manifestID string, opts *Execute
 		startIndex = manifest.Execution.LastProcessedIndex
 	}
 
-	e.logger.Info("executing deletion",
+	e.logger.Debug("executing deletion",
 		"manifest", manifestID,
 		"total", len(manifest.GmailIDs),
 		"start_index", startIndex,
@@ -246,7 +246,7 @@ func (e *Executor) Execute(ctx context.Context, manifestID string, opts *Execute
 
 	e.progress.OnComplete(succeeded, failed)
 
-	e.logger.Info("deletion complete",
+	e.logger.Debug("deletion complete",
 		"manifest", manifestID,
 		"succeeded", succeeded,
 		"failed", failed,
@@ -322,7 +322,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 		startIndex = len(manifest.GmailIDs)
 	}
 
-	e.logger.Info("executing batch deletion",
+	e.logger.Debug("executing batch deletion",
 		"manifest", manifestID,
 		"total", len(manifest.GmailIDs),
 		"start_index", startIndex,
@@ -335,7 +335,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 
 	// Retry previously failed IDs before continuing with remaining messages
 	if len(retryIDs) > 0 {
-		e.logger.Info("retrying previously failed messages", "count", len(retryIDs))
+		e.logger.Debug("retrying previously failed messages", "count", len(retryIDs))
 		for ri, gmailID := range retryIDs {
 			if delErr := e.client.DeleteMessage(ctx, gmailID); delErr != nil {
 				if isNotFoundError(delErr) {
@@ -367,7 +367,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 				}
 			}
 		}
-		e.logger.Info("retry complete", "succeeded_now", succeeded-manifest.Execution.Succeeded, "still_failed", len(failedIDs))
+		e.logger.Debug("retry complete", "succeeded_now", succeeded-manifest.Execution.Succeeded, "still_failed", len(failedIDs))
 	}
 
 	// Execute in batches of 1000 (Gmail API limit)
@@ -395,7 +395,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 
 		batch := manifest.GmailIDs[i:end]
 
-		e.logger.Info("deleting batch", "start", i, "end", end, "size", len(batch))
+		e.logger.Debug("deleting batch", "start", i, "end", end, "size", len(batch))
 
 		if err := e.client.BatchDeleteMessages(ctx, batch); err != nil {
 			// If it's a permission/scope error, save checkpoint and return
@@ -480,7 +480,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 
 	e.progress.OnComplete(succeeded, failed)
 
-	e.logger.Info("batch deletion complete",
+	e.logger.Debug("batch deletion complete",
 		"manifest", manifestID,
 		"succeeded", succeeded,
 		"failed", failed,

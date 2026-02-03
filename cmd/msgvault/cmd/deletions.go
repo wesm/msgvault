@@ -402,8 +402,11 @@ Examples:
 			WithProgress(&CLIDeletionProgress{})
 
 		// Execute each manifest
-		for _, m := range manifests {
-			fmt.Printf("\nExecuting: %s (%d messages)\n", m.ID, len(m.GmailIDs))
+		for i, m := range manifests {
+			if i > 0 {
+				fmt.Println()
+			}
+			fmt.Printf("  [%d/%d] %s (%d messages)\n", i+1, len(manifests), m.Description, len(m.GmailIDs))
 
 			var execErr error
 			// For in-progress manifests, honor the stored method to avoid
@@ -461,36 +464,71 @@ type CLIDeletionProgress struct {
 func (p *CLIDeletionProgress) OnStart(total int) {
 	p.total = total
 	p.startTime = time.Now()
-	p.lastPrint = time.Now()
-	fmt.Printf("  Progress: 0/%d (0.0%%) | Succeeded: 0 | Failed: 0", total)
+	p.lastPrint = time.Time{} // Force first print
+}
+
+func (p *CLIDeletionProgress) formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
 }
 
 func (p *CLIDeletionProgress) OnProgress(processed, succeeded, failed int) {
-	if time.Since(p.lastPrint) < time.Second {
+	if time.Since(p.lastPrint) < 500*time.Millisecond {
 		return
 	}
 	p.lastPrint = time.Now()
 
 	pct := float64(processed) / float64(p.total) * 100
 	elapsed := time.Since(p.startTime)
+
+	bar := p.progressBar(pct, 30)
+
 	var eta string
-	if processed > 0 {
+	if processed > 0 && processed < p.total {
 		remaining := time.Duration(float64(elapsed) / float64(processed) * float64(p.total-processed))
-		if remaining < time.Minute {
-			eta = fmt.Sprintf("%ds", int(remaining.Seconds()))
-		} else {
-			eta = fmt.Sprintf("%dm%ds", int(remaining.Minutes()), int(remaining.Seconds())%60)
-		}
+		eta = p.formatDuration(remaining) + " remaining"
+	} else if processed >= p.total {
+		eta = p.formatDuration(elapsed) + " elapsed"
 	} else {
-		eta = "..."
+		eta = "calculating..."
 	}
-	fmt.Printf("\r  Progress: %d/%d (%.1f%%) | Succeeded: %d | Failed: %d | ETA: %s    ",
-		processed, p.total, pct, succeeded, failed, eta)
+
+	status := fmt.Sprintf("\r  %s %.1f%%  %d/%d", bar, pct, processed, p.total)
+	if failed > 0 {
+		status += fmt.Sprintf("  (%d failed)", failed)
+	}
+	status += fmt.Sprintf("  %s", eta)
+	// Pad with spaces to clear previous longer lines
+	fmt.Printf("%-80s", status)
+}
+
+func (p *CLIDeletionProgress) progressBar(pct float64, width int) string {
+	filled := int(pct / 100 * float64(width))
+	if filled > width {
+		filled = width
+	}
+	bar := make([]byte, width)
+	for i := range bar {
+		if i < filled {
+			bar[i] = '#'
+		} else {
+			bar[i] = '-'
+		}
+	}
+	return "[" + string(bar) + "]"
 }
 
 func (p *CLIDeletionProgress) OnComplete(succeeded, failed int) {
-	fmt.Println()
-	fmt.Printf("  Completed: %d succeeded, %d failed\n", succeeded, failed)
+	elapsed := time.Since(p.startTime)
+	// Clear the progress line
+	fmt.Printf("\r%-80s\r", "")
+	if failed == 0 {
+		fmt.Printf("  Done: %d deleted in %s\n", succeeded, p.formatDuration(elapsed))
+	} else {
+		fmt.Printf("  Done: %d deleted, %d failed in %s\n", succeeded, failed, p.formatDuration(elapsed))
+	}
 }
 
 // Helper functions
