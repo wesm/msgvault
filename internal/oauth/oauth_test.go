@@ -148,3 +148,43 @@ func TestHasScope_LegacyToken(t *testing.T) {
 		t.Error("expected HasScope to return false for legacy token")
 	}
 }
+
+func TestHasScopeMetadata(t *testing.T) {
+	dir := t.TempDir()
+	tokensDir := filepath.Join(dir, "tokens")
+	if err := os.MkdirAll(tokensDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := &Manager{
+		config:    &oauth2.Config{Scopes: Scopes},
+		tokensDir: tokensDir,
+	}
+
+	// Token with scopes
+	tf := tokenFile{
+		Token:  oauth2.Token{AccessToken: "test", TokenType: "Bearer"},
+		Scopes: []string{"https://www.googleapis.com/auth/gmail.readonly"},
+	}
+	data, _ := json.Marshal(tf)
+	if err := os.WriteFile(filepath.Join(tokensDir, "scoped@gmail.com.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Legacy token (no scopes)
+	legacy := oauth2.Token{AccessToken: "test", TokenType: "Bearer"}
+	data, _ = json.Marshal(legacy)
+	if err := os.WriteFile(filepath.Join(tokensDir, "legacy@gmail.com.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if !mgr.HasScopeMetadata("scoped@gmail.com") {
+		t.Error("expected HasScopeMetadata true for token with scopes")
+	}
+	if mgr.HasScopeMetadata("legacy@gmail.com") {
+		t.Error("expected HasScopeMetadata false for legacy token")
+	}
+	if mgr.HasScopeMetadata("missing@gmail.com") {
+		t.Error("expected HasScopeMetadata false for missing token")
+	}
+}
