@@ -193,6 +193,16 @@ func (m *Manifest) FormatSummary() string {
 	return sb.String()
 }
 
+// statusDirMap provides an explicit mapping from Status to on-disk directory name.
+// This decouples the Status constant values (which may be used for display or JSON)
+// from the filesystem directory names.
+var statusDirMap = map[Status]string{
+	StatusPending:    "pending",
+	StatusInProgress: "in_progress",
+	StatusCompleted:  "completed",
+	StatusFailed:     "failed",
+}
+
 // persistedStatuses lists all statuses that have on-disk directories.
 var persistedStatuses = []Status{
 	StatusPending, StatusInProgress, StatusCompleted, StatusFailed,
@@ -217,8 +227,16 @@ func NewManager(baseDir string) (*Manager, error) {
 }
 
 // dirForStatus returns the directory path for a given status.
+// Uses explicit mapping to decouple Status values from directory names.
 func (m *Manager) dirForStatus(s Status) string {
-	return filepath.Join(m.baseDir, string(s))
+	dirName, ok := statusDirMap[s]
+	if !ok {
+		// Fallback for unknown status; log warning and use status string.
+		// This should not happen in normal operation.
+		log.Printf("WARNING: unknown status %q has no directory mapping, using status value as directory name", s)
+		dirName = string(s)
+	}
+	return filepath.Join(m.baseDir, dirName)
 }
 
 // PendingDir returns the path to the pending directory.

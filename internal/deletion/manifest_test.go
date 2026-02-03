@@ -668,6 +668,97 @@ func TestMethod_Values(t *testing.T) {
 	}
 }
 
+// TestStatusDirMap verifies that statusDirMap contains all persisted statuses
+// and maps them to the expected directory names.
+func TestStatusDirMap(t *testing.T) {
+	// Verify all persistedStatuses have entries in statusDirMap
+	for _, status := range persistedStatuses {
+		dirName, ok := statusDirMap[status]
+		if !ok {
+			t.Errorf("persistedStatus %q missing from statusDirMap", status)
+			continue
+		}
+		if dirName == "" {
+			t.Errorf("statusDirMap[%q] is empty", status)
+		}
+	}
+
+	// Verify expected mappings
+	expectedMappings := map[Status]string{
+		StatusPending:    "pending",
+		StatusInProgress: "in_progress",
+		StatusCompleted:  "completed",
+		StatusFailed:     "failed",
+	}
+	for status, wantDir := range expectedMappings {
+		gotDir, ok := statusDirMap[status]
+		if !ok {
+			t.Errorf("statusDirMap missing entry for %q", status)
+			continue
+		}
+		if gotDir != wantDir {
+			t.Errorf("statusDirMap[%q] = %q, want %q", status, gotDir, wantDir)
+		}
+	}
+}
+
+// TestDirForStatus verifies that dirForStatus returns the correct path for each status.
+func TestDirForStatus(t *testing.T) {
+	mgr := testManager(t)
+
+	tests := []struct {
+		status  Status
+		wantDir string
+	}{
+		{StatusPending, "pending"},
+		{StatusInProgress, "in_progress"},
+		{StatusCompleted, "completed"},
+		{StatusFailed, "failed"},
+	}
+
+	for _, tc := range tests {
+		t.Run(string(tc.status), func(t *testing.T) {
+			got := mgr.dirForStatus(tc.status)
+			wantSuffix := "/" + tc.wantDir
+			if !strings.HasSuffix(got, wantSuffix) {
+				t.Errorf("dirForStatus(%q) = %q, want suffix %q", tc.status, got, wantSuffix)
+			}
+		})
+	}
+}
+
+// TestPersistedStatusesComplete verifies that persistedStatuses includes all
+// statuses that should be persisted to disk.
+func TestPersistedStatusesComplete(t *testing.T) {
+	// All these statuses should be in persistedStatuses
+	requiredStatuses := []Status{
+		StatusPending,
+		StatusInProgress,
+		StatusCompleted,
+		StatusFailed,
+	}
+
+	for _, status := range requiredStatuses {
+		found := false
+		for _, ps := range persistedStatuses {
+			if ps == status {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Status %q should be in persistedStatuses but is not", status)
+		}
+	}
+
+	// StatusCancelled should NOT be in persistedStatuses (cancelled manifests are deleted)
+	for _, ps := range persistedStatuses {
+		if ps == StatusCancelled {
+			t.Errorf("StatusCancelled should not be in persistedStatuses")
+		}
+	}
+}
+
 // TestManager_SaveManifest_UnknownStatus tests saving with an unknown status.
 func TestManager_SaveManifest_UnknownStatus(t *testing.T) {
 	mgr := testManager(t)
