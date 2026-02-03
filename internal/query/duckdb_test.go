@@ -2658,10 +2658,10 @@ func TestDuckDBEngine_Aggregate_InvalidViewType(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := engine.Aggregate(ctx, tt.viewType, DefaultAggregateOptions())
 			if err == nil {
-				t.Error("expected error for invalid ViewType, got nil")
+				t.Fatal("expected error for invalid ViewType, got nil")
 			}
-			if err != nil && !strings.Contains(err.Error(), "unsupported view type") {
-				t.Errorf("expected error containing 'unsupported view type', got: %v", err)
+			if !strings.Contains(err.Error(), "unsupported view type") {
+				t.Errorf("expected 'unsupported view type' error, got: %v", err)
 			}
 		})
 	}
@@ -2687,10 +2687,10 @@ func TestDuckDBEngine_SubAggregate_InvalidViewType(t *testing.T) {
 			filter := MessageFilter{Sender: "alice@example.com"}
 			_, err := engine.SubAggregate(ctx, filter, tt.viewType, DefaultAggregateOptions())
 			if err == nil {
-				t.Error("expected error for invalid ViewType, got nil")
+				t.Fatal("expected error for invalid ViewType, got nil")
 			}
-			if err != nil && !strings.Contains(err.Error(), "unsupported view type") {
-				t.Errorf("expected error containing 'unsupported view type', got: %v", err)
+			if !strings.Contains(err.Error(), "unsupported view type") {
+				t.Errorf("expected 'unsupported view type' error, got: %v", err)
 			}
 		})
 	}
