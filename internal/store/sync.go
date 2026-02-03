@@ -355,6 +355,16 @@ func (s *Store) ListSources(sourceType string) ([]*Source, error) {
 	return sources, nil
 }
 
+// UpdateSourceDisplayName updates the display name for a source.
+func (s *Store) UpdateSourceDisplayName(sourceID int64, displayName string) error {
+	_, err := s.db.Exec(`
+		UPDATE sources
+		SET display_name = ?, updated_at = datetime('now')
+		WHERE id = ?
+	`, displayName, sourceID)
+	return err
+}
+
 // GetSourceByIdentifier returns a source by its identifier (email address).
 func (s *Store) GetSourceByIdentifier(identifier string) (*Source, error) {
 	row := s.db.QueryRow(`

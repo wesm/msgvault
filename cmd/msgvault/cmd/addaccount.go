@@ -9,7 +9,8 @@ import (
 )
 
 var (
-	headless bool
+	headless            bool
+	accountDisplayName  string
 )
 
 var addAccountCmd = &cobra.Command{
@@ -20,9 +21,10 @@ var addAccountCmd = &cobra.Command{
 By default, opens a browser for authorization. Use --headless to see instructions
 for authorizing on headless servers (Google does not support Gmail in device flow).
 
-Example:
+Examples:
   msgvault add-account you@gmail.com
-  msgvault add-account you@gmail.com --headless`,
+  msgvault add-account you@gmail.com --headless
+  msgvault add-account you@gmail.com --display-name "Work Account"`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		email := args[0]
@@ -77,9 +79,16 @@ Example:
 		}
 
 		// Create source record in database
-		_, err = s.GetOrCreateSource("gmail", email)
+		source, err := s.GetOrCreateSource("gmail", email)
 		if err != nil {
 			return fmt.Errorf("create source: %w", err)
+		}
+
+		// Set display name if provided
+		if accountDisplayName != "" {
+			if err := s.UpdateSourceDisplayName(source.ID, accountDisplayName); err != nil {
+				return fmt.Errorf("set display name: %w", err)
+			}
 		}
 
 		fmt.Printf("\nAccount %s authorized successfully!\n", email)
@@ -91,5 +100,6 @@ Example:
 
 func init() {
 	addAccountCmd.Flags().BoolVar(&headless, "headless", false, "Show instructions for headless server setup")
+	addAccountCmd.Flags().StringVar(&accountDisplayName, "display-name", "", "Display name for the account (e.g., \"Work\", \"Personal\")")
 	rootCmd.AddCommand(addAccountCmd)
 }
