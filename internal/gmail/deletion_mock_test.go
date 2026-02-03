@@ -46,10 +46,33 @@ func TestDeletionMockAPI_Reset(t *testing.T) {
 	mockAPI.DeleteErrors["msg-err"] = errors.New("error")
 	mockAPI.BatchDeleteError = errors.New("error")
 
+	// Set transient failures to verify they get cleared
+	mockAPI.TransientTrashFailures["msg-trans"] = 3
+	mockAPI.TransientDeleteFailures["msg-trans"] = 2
+
+	// Set rate limit fields to verify they get cleared
+	mockAPI.RateLimitAfterCalls = 10
+	mockAPI.RateLimitDuration = 5
+
 	// Set hooks to verify they get cleared
-	mockAPI.BeforeTrash = func(string) error { return nil }
-	mockAPI.BeforeDelete = func(string) error { return nil }
-	mockAPI.BeforeBatchDelete = func([]string) error { return nil }
+	hookCalled := false
+	mockAPI.BeforeTrash = func(string) error { hookCalled = true; return nil }
+	mockAPI.BeforeDelete = func(string) error { hookCalled = true; return nil }
+	mockAPI.BeforeBatchDelete = func([]string) error { hookCalled = true; return nil }
+
+	// Assert call-tracking data is populated before Reset
+	if len(mockAPI.TrashCalls) == 0 {
+		t.Fatal("TrashCalls should be populated before Reset")
+	}
+	if len(mockAPI.DeleteCalls) == 0 {
+		t.Fatal("DeleteCalls should be populated before Reset")
+	}
+	if len(mockAPI.BatchDeleteCalls) == 0 {
+		t.Fatal("BatchDeleteCalls should be populated before Reset")
+	}
+	if len(mockAPI.CallSequence) == 0 {
+		t.Fatal("CallSequence should be populated before Reset")
+	}
 
 	mockAPI.Reset()
 
@@ -61,6 +84,18 @@ func TestDeletionMockAPI_Reset(t *testing.T) {
 	}
 	if mockAPI.BatchDeleteError != nil {
 		t.Error("BatchDeleteError not cleared")
+	}
+	if len(mockAPI.TransientTrashFailures) != 0 {
+		t.Error("TransientTrashFailures not cleared")
+	}
+	if len(mockAPI.TransientDeleteFailures) != 0 {
+		t.Error("TransientDeleteFailures not cleared")
+	}
+	if mockAPI.RateLimitAfterCalls != 0 {
+		t.Error("RateLimitAfterCalls not cleared")
+	}
+	if mockAPI.RateLimitDuration != 0 {
+		t.Error("RateLimitDuration not cleared")
 	}
 	if len(mockAPI.TrashCalls) != 0 {
 		t.Error("TrashCalls not cleared")
@@ -82,6 +117,12 @@ func TestDeletionMockAPI_Reset(t *testing.T) {
 	}
 	if mockAPI.BeforeBatchDelete != nil {
 		t.Error("BeforeBatchDelete not cleared")
+	}
+
+	// Verify hooks are not invoked after Reset
+	_ = mockAPI.TrashMessage(ctx, "after-reset")
+	if hookCalled {
+		t.Error("hook was invoked after Reset")
 	}
 }
 
