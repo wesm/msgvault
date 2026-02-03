@@ -1171,4 +1171,3 @@ func (m *Model) clearAllSelections() {
 	m.selection.aggregateKeys = make(map[string]bool)
 	m.selection.messageIDs = make(map[int64]bool)
 }
-

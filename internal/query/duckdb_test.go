@@ -154,11 +154,18 @@ func buildStandardTestData(t *testing.T) *TestDataBuilder {
 	msg5 := b.AddMessage(MessageOpt{Subject: "Final", SentAt: makeDate(2024, 3, 1), SizeEstimate: 500, ConversationID: 104})
 
 	// Recipients
-	b.AddFrom(msg1, 1, "Alice"); b.AddTo(msg1, 2, "Bob"); b.AddTo(msg1, 3, "Carol")
-	b.AddFrom(msg2, 1, "Alice"); b.AddTo(msg2, 2, "Bob"); b.AddCc(msg2, 4, "Dan")
-	b.AddFrom(msg3, 1, "Alice"); b.AddTo(msg3, 2, "Bob")
-	b.AddFrom(msg4, 2, "Bob");   b.AddTo(msg4, 1, "Alice")
-	b.AddFrom(msg5, 2, "Bob");   b.AddTo(msg5, 1, "Alice")
+	b.AddFrom(msg1, 1, "Alice")
+	b.AddTo(msg1, 2, "Bob")
+	b.AddTo(msg1, 3, "Carol")
+	b.AddFrom(msg2, 1, "Alice")
+	b.AddTo(msg2, 2, "Bob")
+	b.AddCc(msg2, 4, "Dan")
+	b.AddFrom(msg3, 1, "Alice")
+	b.AddTo(msg3, 2, "Bob")
+	b.AddFrom(msg4, 2, "Bob")
+	b.AddTo(msg4, 1, "Alice")
+	b.AddFrom(msg5, 2, "Bob")
+	b.AddTo(msg5, 1, "Alice")
 
 	// Labels: INBOX(1), Work(2), IMPORTANT(3)
 	inbox := b.AddLabel("INBOX")
@@ -166,10 +173,13 @@ func buildStandardTestData(t *testing.T) *TestDataBuilder {
 	important := b.AddLabel("IMPORTANT")
 
 	// Message labels
-	b.AddMessageLabel(msg1, inbox); b.AddMessageLabel(msg1, work)
-	b.AddMessageLabel(msg2, inbox); b.AddMessageLabel(msg2, important)
+	b.AddMessageLabel(msg1, inbox)
+	b.AddMessageLabel(msg1, work)
+	b.AddMessageLabel(msg2, inbox)
+	b.AddMessageLabel(msg2, important)
 	b.AddMessageLabel(msg3, inbox)
-	b.AddMessageLabel(msg4, inbox); b.AddMessageLabel(msg4, work)
+	b.AddMessageLabel(msg4, inbox)
+	b.AddMessageLabel(msg4, work)
 	b.AddMessageLabel(msg5, inbox)
 
 	// Attachments
@@ -1389,12 +1399,16 @@ func buildEmptyBucketsTestData(t *testing.T) *TestDataBuilder {
 	msg6 := b.AddMessage(MessageOpt{Subject: "Empty Domain", SentAt: makeDate(2024, 1, 20), SizeEstimate: 600})
 
 	// Recipients
-	b.AddFrom(msg1, alice, "Alice"); b.AddTo(msg1, bob, "Bob")
-	b.AddFrom(msg2, bob, "Bob");     b.AddTo(msg2, alice, "Alice")
-	b.AddTo(msg3, bob, "Bob") // no sender
-	b.AddFrom(msg4, alice, "Alice")  // no recipients
-	b.AddFrom(msg5, alice, "Alice"); b.AddTo(msg5, bob, "Bob") // no labels
-	b.AddFrom(msg6, nodomain, "No Domain"); b.AddTo(msg6, bob, "Bob") // empty domain
+	b.AddFrom(msg1, alice, "Alice")
+	b.AddTo(msg1, bob, "Bob")
+	b.AddFrom(msg2, bob, "Bob")
+	b.AddTo(msg2, alice, "Alice")
+	b.AddTo(msg3, bob, "Bob")       // no sender
+	b.AddFrom(msg4, alice, "Alice") // no recipients
+	b.AddFrom(msg5, alice, "Alice")
+	b.AddTo(msg5, bob, "Bob") // no labels
+	b.AddFrom(msg6, nodomain, "No Domain")
+	b.AddTo(msg6, bob, "Bob") // empty domain
 
 	// Labels: INBOX(1), Work(2)
 	inbox := b.AddLabel("INBOX")
@@ -1712,7 +1726,7 @@ func TestBuildWhereClause_SearchOperators(t *testing.T) {
 		{
 			name:        "label operator",
 			searchQuery: "label:INBOX",
-			wantClauses: []string{"l_label.name = ?"},  // Exact match, consistent with SearchFast
+			wantClauses: []string{"l_label.name = ?"}, // Exact match, consistent with SearchFast
 		},
 		{
 			name:        "combined operators",
@@ -1818,10 +1832,10 @@ func TestBuildSearchConditions_EscapedWildcards(t *testing.T) {
 	engine := &DuckDBEngine{}
 
 	tests := []struct {
-		name         string
-		query        *search.Query
-		wantClauses  []string // Substrings in WHERE clause
-		wantInArgs   []string // Substrings that should appear in args
+		name        string
+		query       *search.Query
+		wantClauses []string // Substrings in WHERE clause
+		wantInArgs  []string // Substrings that should appear in args
 	}{
 		{
 			name: "TextTerms with wildcards",

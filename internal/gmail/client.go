@@ -119,6 +119,9 @@ func (c *Client) request(ctx context.Context, op Operation, method, path string,
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
 		}
+		if bodyBytes != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {

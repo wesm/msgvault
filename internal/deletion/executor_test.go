@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -247,6 +248,45 @@ func trashOpts(batchSize int) *ExecuteOptions {
 		Method:    MethodTrash,
 		BatchSize: batchSize,
 		Resume:    true,
+	}
+}
+
+// SimulateScopeError injects an insufficient scope error for a specific message ID.
+func (c *TestContext) SimulateScopeError(msgID string) {
+	scopeErr := fmt.Errorf("googleapi: Error 403: Insufficient Permission: ACCESS_TOKEN_SCOPE_INSUFFICIENT")
+	c.MockAPI.TrashErrors[msgID] = scopeErr
+	c.MockAPI.DeleteErrors[msgID] = scopeErr
+}
+
+// SimulateBatchScopeError sets the batch delete operation to fail with a scope error.
+func (c *TestContext) SimulateBatchScopeError() {
+	c.MockAPI.BatchDeleteError = fmt.Errorf("googleapi: Error 403: Insufficient Permission: ACCESS_TOKEN_SCOPE_INSUFFICIENT")
+}
+
+// AssertInProgressCount verifies the number of in-progress manifests.
+func (c *TestContext) AssertInProgressCount(want int) {
+	c.t.Helper()
+	inProgress, err := c.Mgr.ListInProgress()
+	if err != nil {
+		c.t.Fatalf("ListInProgress() error = %v", err)
+	}
+	if len(inProgress) != want {
+		c.t.Errorf("ListInProgress() = %d, want %d", len(inProgress), want)
+	}
+}
+
+// AssertManifestLastProcessedIndex verifies the persisted LastProcessedIndex.
+func (c *TestContext) AssertManifestLastProcessedIndex(id string, want int) {
+	c.t.Helper()
+	m, _, err := c.Mgr.GetManifest(id)
+	if err != nil {
+		c.t.Fatalf("GetManifest(%q) failed: %v", id, err)
+	}
+	if m.Execution == nil {
+		c.t.Fatalf("manifest %q has nil Execution", id)
+	}
+	if m.Execution.LastProcessedIndex != want {
+		c.t.Errorf("LastProcessedIndex = %d, want %d", m.Execution.LastProcessedIndex, want)
 	}
 }
 
@@ -660,6 +700,119 @@ func TestExecutor_ExecuteBatch_FallbackMixed(t *testing.T) {
 	}
 }
 
+// TestExecutor_ExecuteBatch_RetriesFailedIDs verifies that resuming a batch
+// execution retries previously failed message IDs.
+func TestExecutor_ExecuteBatch_RetriesFailedIDs(t *testing.T) {
+	tc := NewTestContext(t)
+
+	// Create a manifest that's already in_progress with failed IDs
+	gmailIDs := msgIDs(5)
+	manifest := NewManifest("retry test", gmailIDs)
+	manifest.Status = StatusInProgress
+	manifest.Execution = &Execution{
+		StartedAt:          time.Now().Add(-time.Hour),
+		Method:             MethodDelete,
+		Succeeded:          2,
+		Failed:             3,
+		FailedIDs:          []string{"msg2", "msg3", "msg4"},
+		LastProcessedIndex: 5, // All processed, but 3 failed
+	}
+	if err := tc.Mgr.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest() error = %v", err)
+	}
+
+	if err := tc.ExecuteBatch(manifest.ID); err != nil {
+		t.Fatalf("ExecuteBatch() error = %v", err)
+	}
+
+	// The 3 previously failed IDs should be retried via individual delete
+	tc.AssertDeleteCalls(3)
+	// All should succeed now (no errors injected)
+	tc.AssertResult(5, 0)
+	tc.AssertCompletedCount(1)
+}
+
+// TestExecutor_ExecuteBatch_RetryPartialSuccess verifies that retried IDs that
+// still fail are tracked correctly.
+func TestExecutor_ExecuteBatch_RetryPartialSuccess(t *testing.T) {
+	tc := NewTestContext(t)
+	tc.SimulateDeleteError("msg3") // msg3 still fails on retry
+
+	gmailIDs := msgIDs(5)
+	manifest := NewManifest("retry partial", gmailIDs)
+	manifest.Status = StatusInProgress
+	manifest.Execution = &Execution{
+		StartedAt:          time.Now().Add(-time.Hour),
+		Method:             MethodDelete,
+		Succeeded:          2,
+		Failed:             3,
+		FailedIDs:          []string{"msg2", "msg3", "msg4"},
+		LastProcessedIndex: 5,
+	}
+	if err := tc.Mgr.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest() error = %v", err)
+	}
+
+	if err := tc.ExecuteBatch(manifest.ID); err != nil {
+		t.Fatalf("ExecuteBatch() error = %v", err)
+	}
+
+	// msg2, msg4 succeed on retry; msg3 still fails
+	tc.AssertResult(4, 1)
+	tc.AssertCompletedCount(1)
+}
+
+// TestExecutor_ExecuteBatch_RetryScopeErrorAfterPartialSuccess verifies that
+// a scope error during retry only preserves unattempted+failed IDs, not
+// already-succeeded ones.
+func TestExecutor_ExecuteBatch_RetryScopeErrorAfterPartialSuccess(t *testing.T) {
+	tc := NewTestContext(t)
+	// msg3 hits scope error; msg2 succeeds before it, msg4 is unattempted
+	tc.SimulateScopeError("msg3")
+
+	gmailIDs := msgIDs(5)
+	manifest := NewManifest("retry scope partial", gmailIDs)
+	manifest.Status = StatusInProgress
+	manifest.Execution = &Execution{
+		StartedAt:          time.Now().Add(-time.Hour),
+		Method:             MethodDelete,
+		Succeeded:          2,
+		Failed:             3,
+		FailedIDs:          []string{"msg2", "msg3", "msg4"},
+		LastProcessedIndex: 5,
+	}
+	if err := tc.Mgr.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest() error = %v", err)
+	}
+
+	err := tc.ExecuteBatch(manifest.ID)
+	if err == nil {
+		t.Fatal("ExecuteBatch() should return error for scope error during retry")
+	}
+	if !strings.Contains(err.Error(), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+		t.Errorf("error should contain scope message, got: %v", err)
+	}
+
+	// msg2 succeeded before the scope error on msg3
+	// Checkpoint should have: FailedIDs = [msg3, msg4] (current + unattempted)
+	m, _, err := tc.Mgr.GetManifest(manifest.ID)
+	if err != nil {
+		t.Fatalf("GetManifest() error = %v", err)
+	}
+	if m.Execution.Succeeded != 3 { // original 2 + msg2 retry
+		t.Errorf("Succeeded = %d, want 3", m.Execution.Succeeded)
+	}
+	if m.Execution.Failed != 2 { // msg3 + msg4
+		t.Errorf("Failed = %d, want 2", m.Execution.Failed)
+	}
+	if len(m.Execution.FailedIDs) != 2 {
+		t.Fatalf("FailedIDs count = %d, want 2", len(m.Execution.FailedIDs))
+	}
+	if m.Execution.FailedIDs[0] != "msg3" || m.Execution.FailedIDs[1] != "msg4" {
+		t.Errorf("FailedIDs = %v, want [msg3, msg4]", m.Execution.FailedIDs)
+	}
+}
+
 // TestNullProgress_AllMethods exercises all NullProgress methods for coverage.
 func TestNullProgress_AllMethods(t *testing.T) {
 	p := NullProgress{}
@@ -668,4 +821,72 @@ func TestNullProgress_AllMethods(t *testing.T) {
 	p.OnProgress(50, 40, 10)
 	p.OnComplete(90, 10)
 	// If we get here without panic, the test passes
+}
+
+// TestExecutor_Execute_ScopeError verifies that scope errors propagate immediately
+// and checkpoint state is saved.
+func TestExecutor_Execute_ScopeError(t *testing.T) {
+	ctx := NewTestContext(t)
+	ctx.SimulateScopeError("msg1")
+
+	manifest := ctx.CreateManifest("scope error test", []string{"msg0", "msg1", "msg2"})
+
+	err := ctx.Execute(manifest.ID)
+	if err == nil {
+		t.Fatal("Execute() should return error for scope error")
+	}
+	if !strings.Contains(err.Error(), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+		t.Errorf("error should contain scope message, got: %v", err)
+	}
+
+	ctx.AssertNotCompleted()
+	ctx.AssertInProgressCount(1)
+	// msg0 succeeded, msg1 hit scope error — checkpoint should be at index 1
+	ctx.AssertManifestLastProcessedIndex(manifest.ID, 1)
+	ctx.AssertManifestExecution(manifest.ID, 1, 0)
+}
+
+// TestExecutor_ExecuteBatch_ScopeError verifies that batch scope errors propagate
+// immediately and checkpoint state is saved.
+func TestExecutor_ExecuteBatch_ScopeError(t *testing.T) {
+	ctx := NewTestContext(t)
+	ctx.SimulateBatchScopeError()
+
+	manifest := ctx.CreateManifest("batch scope error", []string{"msg0", "msg1", "msg2"})
+
+	err := ctx.ExecuteBatch(manifest.ID)
+	if err == nil {
+		t.Fatal("ExecuteBatch() should return error for scope error")
+	}
+	if !strings.Contains(err.Error(), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+		t.Errorf("error should contain scope message, got: %v", err)
+	}
+
+	ctx.AssertNotCompleted()
+	ctx.AssertInProgressCount(1)
+	ctx.AssertManifestLastProcessedIndex(manifest.ID, 0)
+}
+
+// TestExecutor_ExecuteBatch_FallbackScopeError verifies that scope errors during
+// individual delete fallback propagate with correct per-item checkpoint.
+func TestExecutor_ExecuteBatch_FallbackScopeError(t *testing.T) {
+	ctx := NewTestContext(t)
+	ctx.SimulateBatchDeleteError() // Force fallback to individual deletes
+	ctx.SimulateScopeError("msg2") // Third message hits scope error
+
+	manifest := ctx.CreateManifest("fallback scope error", []string{"msg0", "msg1", "msg2", "msg3"})
+
+	err := ctx.ExecuteBatch(manifest.ID)
+	if err == nil {
+		t.Fatal("ExecuteBatch() should return error for scope error in fallback")
+	}
+	if !strings.Contains(err.Error(), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+		t.Errorf("error should contain scope message, got: %v", err)
+	}
+
+	ctx.AssertNotCompleted()
+	ctx.AssertInProgressCount(1)
+	// msg0 and msg1 succeeded, msg2 hit scope error at index 2
+	ctx.AssertManifestLastProcessedIndex(manifest.ID, 2)
+	ctx.AssertManifestExecution(manifest.ID, 2, 0)
 }

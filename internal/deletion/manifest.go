@@ -31,13 +31,13 @@ const (
 
 // Filters specifies criteria for selecting messages.
 type Filters struct {
-	Senders      []string `json:"senders,omitempty"`
+	Senders       []string `json:"senders,omitempty"`
 	SenderDomains []string `json:"sender_domains,omitempty"`
-	Recipients   []string `json:"recipients,omitempty"`
-	Labels       []string `json:"labels,omitempty"`
-	After        string   `json:"after,omitempty"`  // ISO date
-	Before       string   `json:"before,omitempty"` // ISO date
-	Account      string   `json:"account,omitempty"`
+	Recipients    []string `json:"recipients,omitempty"`
+	Labels        []string `json:"labels,omitempty"`
+	After         string   `json:"after,omitempty"`  // ISO date
+	Before        string   `json:"before,omitempty"` // ISO date
+	Account       string   `json:"account,omitempty"`
 }
 
 // Summary contains statistics about messages to be deleted.
@@ -357,10 +357,20 @@ func (m *Manager) MoveManifest(id string, fromStatus, toStatus Status) error {
 	return os.Rename(fromPath, toPath)
 }
 
-// CancelManifest removes a pending manifest.
+// CancelManifest removes a pending or in-progress manifest.
 func (m *Manager) CancelManifest(id string) error {
-	path := filepath.Join(m.PendingDir(), id+".json")
-	return os.Remove(path)
+	// Try pending first, then in_progress
+	for _, dir := range []string{m.PendingDir(), m.InProgressDir()} {
+		path := filepath.Join(dir, id+".json")
+		err := os.Remove(path)
+		if err == nil {
+			return nil
+		}
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", path, err)
+		}
+	}
+	return fmt.Errorf("manifest %s not found in pending or in_progress", id)
 }
 
 // CreateManifest creates and saves a new manifest.

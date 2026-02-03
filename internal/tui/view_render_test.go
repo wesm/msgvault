@@ -2,12 +2,11 @@ package tui
 
 import (
 	"fmt"
-	"strings"
-	"testing"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/wesm/msgvault/internal/query"
+	"strings"
+	"testing"
 )
-
 
 // TestPositionDisplayInMessageList verifies position shows cursor/total correctly.
 func TestPositionDisplayInMessageList(t *testing.T) {
@@ -164,7 +163,7 @@ func TestPositionUsesGlobalStatsForAllMessagesView(t *testing.T) {
 		WithStats(&query.TotalStats{MessageCount: 175000}).
 		Build()
 	model.cursor = 99        // 100th message
-	model.allMessages = true  // All Messages view
+	model.allMessages = true // All Messages view
 
 	footer := model.footerView()
 
@@ -594,9 +593,9 @@ func TestViewFitsTerminalHeightWithBadData(t *testing.T) {
 	// Data with embedded newlines and other special characters
 	rows := []query.AggregateRow{
 		{Key: "alice@example.com", Count: 100, TotalSize: 500000},
-		{Key: "bob\n@example.com", Count: 50, TotalSize: 250000}, // Embedded newline!
+		{Key: "bob\n@example.com", Count: 50, TotalSize: 250000},       // Embedded newline!
 		{Key: "charlie\r\n@example.com", Count: 25, TotalSize: 100000}, // CRLF
-		{Key: "david\t@example.com", Count: 10, TotalSize: 50000}, // Tab
+		{Key: "david\t@example.com", Count: 10, TotalSize: 50000},      // Tab
 	}
 
 	model := NewBuilder().
@@ -890,7 +889,7 @@ func TestLayoutFitsTerminalHeight(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			model := NewBuilder().WithRows(rows...).
-				WithSize(100, tc.height).WithPageSize(tc.height-5).
+				WithSize(100, tc.height).WithPageSize(tc.height - 5).
 				WithLevel(tc.level).Build()
 
 			// Set up messages for message list/detail views
@@ -1085,7 +1084,6 @@ func TestExportAttachmentsModal(t *testing.T) {
 	}
 }
 
-
 func TestExportAttachmentsNoAttachments(t *testing.T) {
 	model := NewBuilder().
 		WithDetail(&query.MessageDetail{
@@ -1108,7 +1106,6 @@ func TestExportAttachmentsNoAttachments(t *testing.T) {
 }
 
 // --- Helper method unit tests ---
-
 
 // TestHeaderUpdateNoticeUnicode verifies update notice alignment with Unicode account names.
 func TestHeaderUpdateNoticeUnicode(t *testing.T) {
@@ -1148,4 +1145,3 @@ func TestHeaderUpdateNoticeNarrowTerminal(t *testing.T) {
 		t.Errorf("header line 1 width %d exceeds narrow terminal width 40", lineWidth)
 	}
 }
-

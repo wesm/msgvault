@@ -473,7 +473,7 @@ func saveCache(version string) {
 	}
 	cachePath := filepath.Join(getCacheDir(), cacheFileName)
 	os.MkdirAll(filepath.Dir(cachePath), 0755) //nolint:errcheck
-	os.WriteFile(cachePath, data, 0600)         //nolint:errcheck
+	os.WriteFile(cachePath, data, 0600)        //nolint:errcheck
 }
 
 // extractBaseSemver extracts the base semver from a version string.
@@ -516,7 +516,6 @@ func prereleaseTag(v string) string {
 	}
 	return v[idx+1:]
 }
-
 
 // comparePrerelease compares two prerelease tags using semver-like rules:
 // split on "." and non-alpha/digit boundaries, compare numeric segments numerically.

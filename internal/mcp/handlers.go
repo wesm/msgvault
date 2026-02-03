@@ -202,7 +202,7 @@ func (h *handlers) getStats(ctx context.Context, _ mcp.CallToolRequest) (*mcp.Ca
 	}
 
 	resp := struct {
-		Stats    *query.TotalStats  `json:"stats"`
+		Stats    *query.TotalStats   `json:"stats"`
 		Accounts []query.AccountInfo `json:"accounts"`
 	}{
 		Stats:    stats,

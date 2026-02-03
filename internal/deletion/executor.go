@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/wesm/msgvault/internal/gmail"
@@ -16,6 +17,17 @@ import (
 func isNotFoundError(err error) bool {
 	var notFound *gmail.NotFoundError
 	return errors.As(err, &notFound)
+}
+
+// isInsufficientScopeError checks if an error is due to missing OAuth scopes.
+func isInsufficientScopeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "ACCESS_TOKEN_SCOPE_INSUFFICIENT") ||
+		strings.Contains(msg, "insufficient authentication scopes") ||
+		strings.Contains(msg, "Insufficient Permission")
 }
 
 // Progress reports deletion progress.
@@ -120,7 +132,7 @@ func (e *Executor) Execute(ctx context.Context, manifestID string, opts *Execute
 		startIndex = manifest.Execution.LastProcessedIndex
 	}
 
-	e.logger.Info("executing deletion",
+	e.logger.Debug("executing deletion",
 		"manifest", manifestID,
 		"total", len(manifest.GmailIDs),
 		"start_index", startIndex,
@@ -167,6 +179,17 @@ func (e *Executor) Execute(ctx context.Context, manifestID string, opts *Execute
 				if markErr := e.store.MarkMessageDeletedByGmailID(manifest.Execution.Method == MethodDelete, gmailID); markErr != nil {
 					e.logger.Warn("failed to mark deleted in DB", "gmail_id", gmailID, "error", markErr)
 				}
+			} else if isInsufficientScopeError(err) {
+				// Scope errors should propagate immediately — every subsequent
+				// message will fail for the same reason. Save checkpoint first.
+				manifest.Execution.LastProcessedIndex = i
+				manifest.Execution.Succeeded = succeeded
+				manifest.Execution.Failed = failed
+				manifest.Execution.FailedIDs = failedIDs
+				if saveErr := manifest.Save(path); saveErr != nil {
+					e.logger.Warn("failed to save checkpoint", "error", saveErr)
+				}
+				return fmt.Errorf("delete message: %w", err)
 			} else {
 				e.logger.Warn("failed to delete message", "gmail_id", gmailID, "error", err)
 				failed++
@@ -223,7 +246,7 @@ func (e *Executor) Execute(ctx context.Context, manifestID string, opts *Execute
 
 	e.progress.OnComplete(succeeded, failed)
 
-	e.logger.Info("deletion complete",
+	e.logger.Debug("deletion complete",
 		"manifest", manifestID,
 		"succeeded", succeeded,
 		"failed", failed,
@@ -276,10 +299,19 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 	startIndex := 0
 	succeeded := 0
 	failed := 0
+	var retryIDs []string
 	if manifest.Execution != nil {
 		startIndex = manifest.Execution.LastProcessedIndex
 		succeeded = manifest.Execution.Succeeded
-		failed = manifest.Execution.Failed
+		// Retry previously failed IDs instead of carrying forward the count
+		if len(manifest.Execution.FailedIDs) > 0 {
+			retryIDs = manifest.Execution.FailedIDs
+			// Don't carry forward the old failed count — we're retrying them
+			failed = 0
+			succeeded = manifest.Execution.Succeeded
+		} else {
+			failed = manifest.Execution.Failed
+		}
 	}
 
 	// Bounds check to handle corrupted manifests
@@ -290,13 +322,53 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 		startIndex = len(manifest.GmailIDs)
 	}
 
-	e.logger.Info("executing batch deletion",
+	e.logger.Debug("executing batch deletion",
 		"manifest", manifestID,
 		"total", len(manifest.GmailIDs),
 		"start_index", startIndex,
+		"retry_ids", len(retryIDs),
 	)
 
 	e.progress.OnStart(len(manifest.GmailIDs))
+
+	var failedIDs []string
+
+	// Retry previously failed IDs before continuing with remaining messages
+	if len(retryIDs) > 0 {
+		e.logger.Debug("retrying previously failed messages", "count", len(retryIDs))
+		for ri, gmailID := range retryIDs {
+			if delErr := e.client.DeleteMessage(ctx, gmailID); delErr != nil {
+				if isNotFoundError(delErr) {
+					e.logger.Debug("message already deleted", "gmail_id", gmailID)
+					succeeded++
+					if markErr := e.store.MarkMessageDeletedByGmailID(true, gmailID); markErr != nil {
+						e.logger.Warn("failed to mark deleted in DB", "gmail_id", gmailID, "error", markErr)
+					}
+				} else if isInsufficientScopeError(delErr) {
+					// Save only unattempted + already-failed IDs
+					remaining := append(failedIDs, retryIDs[ri:]...)
+					manifest.Execution.LastProcessedIndex = startIndex
+					manifest.Execution.Succeeded = succeeded
+					manifest.Execution.Failed = len(remaining)
+					manifest.Execution.FailedIDs = remaining
+					if saveErr := manifest.Save(path); saveErr != nil {
+						e.logger.Warn("failed to save checkpoint", "error", saveErr)
+					}
+					return fmt.Errorf("delete message: %w", delErr)
+				} else {
+					e.logger.Warn("retry failed", "gmail_id", gmailID, "error", delErr)
+					failed++
+					failedIDs = append(failedIDs, gmailID)
+				}
+			} else {
+				succeeded++
+				if markErr := e.store.MarkMessageDeletedByGmailID(true, gmailID); markErr != nil {
+					e.logger.Warn("failed to mark deleted in DB", "gmail_id", gmailID, "error", markErr)
+				}
+			}
+		}
+		e.logger.Debug("retry complete", "succeeded_now", succeeded-manifest.Execution.Succeeded, "still_failed", len(failedIDs))
+	}
 
 	// Execute in batches of 1000 (Gmail API limit)
 	const batchSize = 1000
@@ -308,6 +380,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 			manifest.Execution.LastProcessedIndex = i
 			manifest.Execution.Succeeded = succeeded
 			manifest.Execution.Failed = failed
+			manifest.Execution.FailedIDs = failedIDs
 			if err := manifest.Save(path); err != nil {
 				e.logger.Warn("failed to save checkpoint", "error", err)
 			}
@@ -322,10 +395,25 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 
 		batch := manifest.GmailIDs[i:end]
 
+		e.logger.Debug("deleting batch", "start", i, "end", end, "size", len(batch))
+
 		if err := e.client.BatchDeleteMessages(ctx, batch); err != nil {
-			e.logger.Warn("batch delete failed", "start_index", i, "error", err)
+			// If it's a permission/scope error, save checkpoint and return
+			// immediately — falling back to individual deletes would fail
+			// for the same reason.
+			if isInsufficientScopeError(err) {
+				manifest.Execution.LastProcessedIndex = i
+				manifest.Execution.Succeeded = succeeded
+				manifest.Execution.Failed = failed
+				manifest.Execution.FailedIDs = failedIDs
+				if saveErr := manifest.Save(path); saveErr != nil {
+					e.logger.Warn("failed to save checkpoint", "error", saveErr)
+				}
+				return fmt.Errorf("batch delete: %w", err)
+			}
+			e.logger.Warn("batch delete failed, falling back to individual deletes", "start_index", i, "error", err)
 			// Fall back to individual deletes
-			for _, gmailID := range batch {
+			for j, gmailID := range batch {
 				if delErr := e.client.DeleteMessage(ctx, gmailID); delErr != nil {
 					// Treat 404 (already deleted) as success - makes deletion idempotent
 					if isNotFoundError(delErr) {
@@ -334,8 +422,18 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 						if markErr := e.store.MarkMessageDeletedByGmailID(true, gmailID); markErr != nil {
 							e.logger.Warn("failed to mark message as deleted in DB", "gmail_id", gmailID, "error", markErr)
 						}
+					} else if isInsufficientScopeError(delErr) {
+						manifest.Execution.LastProcessedIndex = i + j
+						manifest.Execution.Succeeded = succeeded
+						manifest.Execution.Failed = failed
+						manifest.Execution.FailedIDs = failedIDs
+						if saveErr := manifest.Save(path); saveErr != nil {
+							e.logger.Warn("failed to save checkpoint", "error", saveErr)
+						}
+						return fmt.Errorf("delete message: %w", delErr)
 					} else {
 						failed++
+						failedIDs = append(failedIDs, gmailID)
 					}
 				} else {
 					succeeded++
@@ -343,6 +441,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 						e.logger.Warn("failed to mark message as deleted in DB", "gmail_id", gmailID, "error", markErr)
 					}
 				}
+				e.progress.OnProgress(i+j+1, succeeded, failed)
 			}
 		} else {
 			succeeded += len(batch)
@@ -362,6 +461,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 	manifest.Execution.CompletedAt = &now
 	manifest.Execution.Succeeded = succeeded
 	manifest.Execution.Failed = failed
+	manifest.Execution.FailedIDs = failedIDs
 
 	var targetStatus Status
 	if failed == 0 {
@@ -380,7 +480,7 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 
 	e.progress.OnComplete(succeeded, failed)
 
-	e.logger.Info("batch deletion complete",
+	e.logger.Debug("batch deletion complete",
 		"manifest", manifestID,
 		"succeeded", succeeded,
 		"failed", failed,

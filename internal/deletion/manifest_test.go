@@ -601,6 +601,35 @@ func TestManager_CancelManifest(t *testing.T) {
 	assertListCount(t, mgr.ListPending, 0)
 }
 
+func TestManager_CancelManifest_InProgress(t *testing.T) {
+	mgr := testManager(t)
+	m := createTestManifest(t, mgr, "cancel in-progress")
+
+	// Move to in_progress
+	if err := mgr.MoveManifest(m.ID, StatusPending, StatusInProgress); err != nil {
+		t.Fatalf("MoveManifest() error = %v", err)
+	}
+
+	// Cancel it
+	if err := mgr.CancelManifest(m.ID); err != nil {
+		t.Fatalf("CancelManifest() error = %v", err)
+	}
+
+	assertListCount(t, mgr.ListInProgress, 0)
+}
+
+func TestManager_CancelManifest_NotFound(t *testing.T) {
+	mgr := testManager(t)
+
+	err := mgr.CancelManifest("nonexistent-id")
+	if err == nil {
+		t.Error("CancelManifest() should error for nonexistent manifest")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v, want 'not found' error", err)
+	}
+}
+
 func TestManager_SaveManifest(t *testing.T) {
 	mgr := testManager(t)
 

@@ -18,18 +18,18 @@ import (
 
 // MessageFixture defines a message row for Parquet test data.
 type MessageFixture struct {
-	ID               int64
-	SourceID         int64
-	SourceMessageID  string
-	ConversationID   int64
-	Subject          string
-	Snippet          string
-	SentAt           time.Time
-	SizeEstimate     int64
-	HasAttachments   bool
-	DeletedAt        *time.Time // nil = NULL
-	Year             int
-	Month            int
+	ID              int64
+	SourceID        int64
+	SourceMessageID string
+	ConversationID  int64
+	Subject         string
+	Snippet         string
+	SentAt          time.Time
+	SizeEstimate    int64
+	HasAttachments  bool
+	DeletedAt       *time.Time // nil = NULL
+	Year            int
+	Month           int
 }
 
 // SourceFixture defines a source row for Parquet test data.
@@ -86,13 +86,13 @@ type TestDataBuilder struct {
 	nextLabelID int64
 	nextConvID  int64
 
-	sources     []SourceFixture
-	messages    []MessageFixture
+	sources      []SourceFixture
+	messages     []MessageFixture
 	participants []ParticipantFixture
-	recipients  []RecipientFixture
-	labels      []LabelFixture
-	msgLabels   []MessageLabelFixture
-	attachments []AttachmentFixture
+	recipients   []RecipientFixture
+	labels       []LabelFixture
+	msgLabels    []MessageLabelFixture
+	attachments  []AttachmentFixture
 
 	emptyAttachments bool // if true, write empty attachments file
 }
@@ -101,12 +101,12 @@ type TestDataBuilder struct {
 func NewTestDataBuilder(t testing.TB) *TestDataBuilder {
 	t.Helper()
 	return &TestDataBuilder{
-		t:          t,
-		nextMsgID:  1,
-		nextSrcID:  1,
-		nextPartID: 1,
+		t:           t,
+		nextMsgID:   1,
+		nextSrcID:   1,
+		nextPartID:  1,
 		nextLabelID: 1,
-		nextConvID: 200,
+		nextConvID:  200,
 	}
 }
 

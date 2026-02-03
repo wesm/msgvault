@@ -35,12 +35,12 @@ type MessageBuilder struct {
 // NewMessage creates a MessageBuilder with sensible defaults.
 func NewMessage() *MessageBuilder {
 	return &MessageBuilder{
-		from:     "sender@example.com",
-		to:       "recipient@example.com",
-		date:     "Mon, 01 Jan 2024 12:00:00 +0000",
-		subject:  "Test Message",
-		body:     "This is a test message body.",
-		boundary: "boundary123",
+		from:       "sender@example.com",
+		to:         "recipient@example.com",
+		date:       "Mon, 01 Jan 2024 12:00:00 +0000",
+		subject:    "Test Message",
+		body:       "This is a test message body.",
+		boundary:   "boundary123",
 		headerKeys: nil,
 		headerVals: nil,
 	}
@@ -59,7 +59,11 @@ func (b *MessageBuilder) Cc(v string) *MessageBuilder { b.cc = v; return b }
 func (b *MessageBuilder) Bcc(v string) *MessageBuilder { b.bcc = v; return b }
 
 // Subject sets the Subject header. Use NoSubject() to omit it entirely.
-func (b *MessageBuilder) Subject(v string) *MessageBuilder { b.subject = v; b.noSubject = false; return b }
+func (b *MessageBuilder) Subject(v string) *MessageBuilder {
+	b.subject = v
+	b.noSubject = false
+	return b
+}
 
 // NoSubject omits the Subject header from the output.
 func (b *MessageBuilder) NoSubject() *MessageBuilder { b.noSubject = true; return b }

@@ -111,9 +111,13 @@ func TestDeletionMockAPI_Hooks(t *testing.T) {
 			act:       func(ctx context.Context, m *DeletionMockAPI) error { return m.DeleteMessage(ctx, "msg1") },
 		},
 		{
-			name:      "BeforeBatchDelete",
-			setupHook: func(m *DeletionMockAPI) { m.BeforeBatchDelete = func([]string) error { return errors.New("hook error") } },
-			act:       func(ctx context.Context, m *DeletionMockAPI) error { return m.BatchDeleteMessages(ctx, []string{"msg1", "msg2"}) },
+			name: "BeforeBatchDelete",
+			setupHook: func(m *DeletionMockAPI) {
+				m.BeforeBatchDelete = func([]string) error { return errors.New("hook error") }
+			},
+			act: func(ctx context.Context, m *DeletionMockAPI) error {
+				return m.BatchDeleteMessages(ctx, []string{"msg1", "msg2"})
+			},
 		},
 	}
 	for _, tt := range tests {

@@ -279,6 +279,14 @@ func (m *Manager) pollForToken(ctx context.Context, deviceCode string) (*oauth2.
 	}, nil
 }
 
+// tokenFile wraps an OAuth2 token with metadata about the scopes it was
+// authorized with. This enables proactive scope checking (e.g., detecting
+// that deletion requires re-authorization) without making an API call first.
+type tokenFile struct {
+	oauth2.Token
+	Scopes []string `json:"scopes,omitempty"`
+}
+
 // loadToken loads a saved token for the given email.
 func (m *Manager) loadToken(email string) (*oauth2.Token, error) {
 	path := m.tokenPath(email)
@@ -287,21 +295,69 @@ func (m *Manager) loadToken(email string) (*oauth2.Token, error) {
 		return nil, err
 	}
 
-	var token oauth2.Token
-	if err := json.Unmarshal(data, &token); err != nil {
+	var tf tokenFile
+	if err := json.Unmarshal(data, &tf); err != nil {
 		return nil, err
 	}
 
-	return &token, nil
+	return &tf.Token, nil
 }
 
-// saveToken saves a token for the given email.
+// loadTokenFile loads the full token file including scope metadata.
+func (m *Manager) loadTokenFile(email string) (*tokenFile, error) {
+	path := m.tokenPath(email)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var tf tokenFile
+	if err := json.Unmarshal(data, &tf); err != nil {
+		return nil, err
+	}
+
+	return &tf, nil
+}
+
+// HasScopeMetadata returns true if the token file for this account has any
+// scope metadata stored. Legacy tokens (saved before scope tracking) return false.
+func (m *Manager) HasScopeMetadata(email string) bool {
+	tf, err := m.loadTokenFile(email)
+	if err != nil {
+		return false
+	}
+	return len(tf.Scopes) > 0
+}
+
+// HasScope checks if the stored token for the given email was authorized
+// with the specified scope. Returns false if the token doesn't exist or
+// doesn't have scope metadata (legacy tokens saved before scope tracking).
+func (m *Manager) HasScope(email string, scope string) bool {
+	tf, err := m.loadTokenFile(email)
+	if err != nil {
+		return false
+	}
+	for _, s := range tf.Scopes {
+		if s == scope {
+			return true
+		}
+	}
+	return false
+}
+
+// saveToken saves a token for the given email, including the scopes from
+// the manager's config.
 func (m *Manager) saveToken(email string, token *oauth2.Token) error {
 	if err := os.MkdirAll(m.tokensDir, 0700); err != nil {
 		return err
 	}
 
-	data, err := json.MarshalIndent(token, "", "  ")
+	tf := tokenFile{
+		Token:  *token,
+		Scopes: m.config.Scopes,
+	}
+
+	data, err := json.MarshalIndent(tf, "", "  ")
 	if err != nil {
 		return err
 	}

@@ -2,10 +2,10 @@ package testutil
 
 // EncodedSamplesT holds encoded byte sequences for testing charset detection and repair.
 type EncodedSamplesT struct {
-	ShiftJIS_Konnichiwa    []byte
-	GBK_Nihao              []byte
-	Big5_Nihao             []byte
-	EUCKR_Annyeong         []byte
+	ShiftJIS_Konnichiwa     []byte
+	GBK_Nihao               []byte
+	Big5_Nihao              []byte
+	EUCKR_Annyeong          []byte
 	Win1252_SmartQuoteRight []byte
 	Win1252_EnDash          []byte
 	Win1252_EmDash          []byte
@@ -44,7 +44,6 @@ var encodedSamples = EncodedSamplesT{
 	Latin1_Degree:     []byte("25\xb0C"),
 }
 
-
 func cloneBytes(b []byte) []byte {
 	return append([]byte(nil), b...)
 }
@@ -53,10 +52,10 @@ func cloneBytes(b []byte) []byte {
 // mutation by individual tests without cross-test coupling.
 func EncodedSamples() EncodedSamplesT {
 	return EncodedSamplesT{
-		ShiftJIS_Konnichiwa:    cloneBytes(encodedSamples.ShiftJIS_Konnichiwa),
-		GBK_Nihao:              cloneBytes(encodedSamples.GBK_Nihao),
-		Big5_Nihao:             cloneBytes(encodedSamples.Big5_Nihao),
-		EUCKR_Annyeong:         cloneBytes(encodedSamples.EUCKR_Annyeong),
+		ShiftJIS_Konnichiwa:     cloneBytes(encodedSamples.ShiftJIS_Konnichiwa),
+		GBK_Nihao:               cloneBytes(encodedSamples.GBK_Nihao),
+		Big5_Nihao:              cloneBytes(encodedSamples.Big5_Nihao),
+		EUCKR_Annyeong:          cloneBytes(encodedSamples.EUCKR_Annyeong),
 		Win1252_SmartQuoteRight: cloneBytes(encodedSamples.Win1252_SmartQuoteRight),
 		Win1252_EnDash:          cloneBytes(encodedSamples.Win1252_EnDash),
 		Win1252_EmDash:          cloneBytes(encodedSamples.Win1252_EmDash),
