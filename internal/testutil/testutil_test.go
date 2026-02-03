@@ -6,11 +6,16 @@ import (
 )
 
 // errRecorder is a minimal testing.TB stub that records Errorf calls
-// without calling runtime.Goexit. This is safer than using a zero-value
-// testing.T which relies on unexported internals.
+// without calling runtime.Goexit. It wraps a real testing.TB so that any
+// unoverridden methods delegate safely instead of panicking on nil.
 type errRecorder struct {
-	testing.TB
-	failed bool
+	testing.TB // wrapped real TB for safe delegation
+	failed     bool
+}
+
+// newErrRecorder creates an errRecorder wrapping the given testing.TB.
+func newErrRecorder(t testing.TB) *errRecorder {
+	return &errRecorder{TB: t}
 }
 
 func (e *errRecorder) Helper() {}
@@ -201,7 +206,7 @@ func TestAssertStringSet(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rec := &errRecorder{}
+			rec := newErrRecorder(t)
 			AssertStringSet(rec, tt.got, tt.want...)
 			if rec.Failed() != tt.shouldFail {
 				if tt.shouldFail {
