@@ -6,29 +6,31 @@ import (
 )
 
 // assertHighlight checks that applyHighlight produces the expected plain text
-// (after stripping ANSI) and, when wantANSI is true, that the raw output
-// contains ANSI escape sequences.
+// (after stripping ANSI) and validates ANSI behavior based on wantANSI:
+// - wantANSI=true: output must contain ANSI escapes and differ from input
+// - wantANSI=false: output must be unchanged from input
 func assertHighlight(t *testing.T, text string, terms []string, wantANSI bool) {
 	t.Helper()
 	result := applyHighlight(text, terms)
 	stripped := stripANSI(result)
+
+	// Content integrity check
 	if stripped != text {
 		t.Errorf("text content mismatch:\n  got:  %q\n  want: %q", stripped, text)
 	}
-	if wantANSI {
-		if !strings.Contains(result, ansiStart) {
-			t.Errorf("expected raw output to contain ANSI escapes, got %q", result)
-		}
-	}
-}
 
-// assertHighlightUnchanged checks that applyHighlight returns the input
-// unchanged when no terms match.
-func assertHighlightUnchanged(t *testing.T, text string, terms []string) {
-	t.Helper()
-	result := applyHighlight(text, terms)
-	if result != text {
-		t.Errorf("expected unchanged output for no match, got: %q", result)
+	// ANSI/change check
+	if wantANSI {
+		if result == text {
+			t.Errorf("expected highlighting (ANSI) but output was unchanged")
+		}
+		if !strings.Contains(result, ansiStart) {
+			t.Errorf("expected output to contain ANSI start sequence, got %q", result)
+		}
+	} else {
+		if result != text {
+			t.Errorf("expected unchanged output, got: %q", result)
+		}
 	}
 }
 
@@ -62,20 +64,4 @@ func TestApplyHighlight(t *testing.T) {
 			assertHighlight(t, tt.text, tt.terms, tt.wantANSI)
 		})
 	}
-}
-
-func TestApplyHighlightProducesOutput(t *testing.T) {
-	forceColorProfile(t)
-
-	// Verify that highlighting actually modifies the output when matches exist.
-	result := applyHighlight("hello world", []string{"world"})
-	if result == "hello world" {
-		t.Errorf("expected styled output to differ from input, got unchanged: %q", result)
-	}
-	if !strings.Contains(result, "world") {
-		t.Errorf("highlighted output missing matched text: %q", result)
-	}
-
-	// No match should return input unchanged
-	assertHighlightUnchanged(t, "hello world", []string{"xyz"})
 }
