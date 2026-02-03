@@ -727,7 +727,7 @@ func TestDirForStatus(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(string(tc.status), func(t *testing.T) {
 			got := mgr.dirForStatus(tc.status)
-			wantSuffix := "/" + tc.wantDir
+			wantSuffix := string(filepath.Separator) + tc.wantDir
 			if !strings.HasSuffix(got, wantSuffix) {
 				t.Errorf("dirForStatus(%q) = %q, want suffix %q", tc.status, got, wantSuffix)
 			}
