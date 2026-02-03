@@ -113,7 +113,7 @@ func TestStore_UpsertMessage(t *testing.T) {
 					WithSentAt(now).
 					WithReceivedAt(now.Add(time.Second)).
 					WithInternalDate(now).
-					WithAttachments(2).
+					WithAttachmentCount(2).
 					WithIsFromMe(true).
 					Build()
 			},
@@ -375,7 +375,7 @@ func TestStore_Attachment(t *testing.T) {
 
 	msgID := storetest.NewMessage(f.Source.ID, f.ConvID).
 		WithSourceMessageID("msg-1").
-		WithAttachments(1).
+		WithAttachmentCount(1).
 		Create(t, f.Store)
 
 	err := f.Store.UpsertAttachment(msgID, "document.pdf", "application/pdf", "/path/to/file", "abc123hash", 1024)

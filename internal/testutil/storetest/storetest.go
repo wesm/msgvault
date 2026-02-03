@@ -305,7 +305,8 @@ func (b *MessageBuilder) WithInternalDate(t time.Time) *MessageBuilder {
 	return b
 }
 
-func (b *MessageBuilder) WithAttachments(count int) *MessageBuilder {
+// WithAttachmentCount sets the attachment count and HasAttachments flag.
+func (b *MessageBuilder) WithAttachmentCount(count int) *MessageBuilder {
 	b.msg.HasAttachments = count > 0
 	b.msg.AttachmentCount = count
 	return b

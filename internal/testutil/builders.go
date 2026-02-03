@@ -59,7 +59,10 @@ func (b *MessageSummaryBuilder) WithLabels(labels ...string) *MessageSummaryBuil
 	return b
 }
 
-func (b *MessageSummaryBuilder) WithAttachments(count int) *MessageSummaryBuilder {
+// WithAttachmentCount sets the attachment count and HasAttachments flag.
+// Named differently from MessageDetailBuilder.WithAttachments to clarify
+// that this takes a count, not actual attachment structs.
+func (b *MessageSummaryBuilder) WithAttachmentCount(count int) *MessageSummaryBuilder {
 	b.s.HasAttachments = count > 0
 	b.s.AttachmentCount = count
 	return b
@@ -80,8 +83,21 @@ func (b *MessageSummaryBuilder) WithDeletedAt(t *time.Time) *MessageSummaryBuild
 	return b
 }
 
+// WithDeleted is a convenience method that sets DeletedAt from a time.Time value,
+// handling pointer conversion internally.
+func (b *MessageSummaryBuilder) WithDeleted(t time.Time) *MessageSummaryBuilder {
+	b.s.DeletedAt = &t
+	return b
+}
+
 func (b *MessageSummaryBuilder) Build() query.MessageSummary {
 	return b.s
+}
+
+// BuildPtr returns a pointer to the constructed MessageSummary.
+func (b *MessageSummaryBuilder) BuildPtr() *query.MessageSummary {
+	s := b.s
+	return &s
 }
 
 // MessageDetailBuilder provides a fluent API for constructing query.MessageDetail in tests.
@@ -110,6 +126,13 @@ func (b *MessageDetailBuilder) WithSubject(s string) *MessageDetailBuilder {
 
 func (b *MessageDetailBuilder) WithFrom(addrs ...query.Address) *MessageDetailBuilder {
 	b.d.From = addrs
+	return b
+}
+
+// WithFromAddress is a convenience method for setting a single sender
+// without needing to construct a query.Address struct.
+func (b *MessageDetailBuilder) WithFromAddress(email, name string) *MessageDetailBuilder {
+	b.d.From = []query.Address{{Email: email, Name: name}}
 	return b
 }
 
