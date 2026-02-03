@@ -667,6 +667,21 @@ func TestExecutor_ExecuteBatch_Scenarios(t *testing.T) {
 			},
 		},
 		{
+			name: "AllFail",
+			ids:  msgIDs(2),
+			setup: func(c *TestContext) {
+				c.SimulateBatchDeleteError()
+				c.SimulateDeleteError("msg0")
+				c.SimulateDeleteError("msg1")
+			},
+			wantSucc: 0, wantFail: 2,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				// Batch mode always marks as Completed even when all fail
+				ctx.AssertCompletedCount(1)
+				ctx.AssertFailedCount(0)
+			},
+		},
+		{
 			name:       "ScopeError",
 			ids:        msgIDs(3),
 			setup:      func(c *TestContext) { c.SimulateBatchScopeError() },

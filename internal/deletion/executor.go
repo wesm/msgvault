@@ -174,7 +174,10 @@ func (e *Executor) prepareExecution(manifestID string, method Method) (*Manifest
 }
 
 // finalizeExecution marks the manifest as completed or failed and moves it.
-func (e *Executor) finalizeExecution(manifestID string, manifest *Manifest, path string, succeeded, failed int, failedIDs []string) {
+// When failOnAllErrors is true, the manifest is marked as Failed if all deletions
+// failed (succeeded == 0). When false (batch mode), it is always marked Completed
+// even with failures, preserving the batch semantics where partial progress is expected.
+func (e *Executor) finalizeExecution(manifestID string, manifest *Manifest, path string, succeeded, failed int, failedIDs []string, failOnAllErrors bool) {
 	now := time.Now()
 	manifest.Execution.CompletedAt = &now
 	manifest.Execution.LastProcessedIndex = len(manifest.GmailIDs)
@@ -183,7 +186,7 @@ func (e *Executor) finalizeExecution(manifestID string, manifest *Manifest, path
 	manifest.Execution.FailedIDs = failedIDs
 
 	var targetStatus Status
-	if failed == 0 || succeeded > 0 {
+	if failed == 0 || succeeded > 0 || !failOnAllErrors {
 		targetStatus = StatusCompleted
 	} else {
 		targetStatus = StatusFailed
@@ -265,7 +268,7 @@ func (e *Executor) Execute(ctx context.Context, manifestID string, opts *Execute
 		}
 	}
 
-	e.finalizeExecution(manifestID, manifest, path, succeeded, failed, failedIDs)
+	e.finalizeExecution(manifestID, manifest, path, succeeded, failed, failedIDs, true)
 	return nil
 }
 
@@ -391,6 +394,6 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 		e.progress.OnProgress(end, succeeded, failed)
 	}
 
-	e.finalizeExecution(manifestID, manifest, path, succeeded, failed, failedIDs)
+	e.finalizeExecution(manifestID, manifest, path, succeeded, failed, failedIDs, false)
 	return nil
 }
