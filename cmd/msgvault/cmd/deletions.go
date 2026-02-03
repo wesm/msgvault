@@ -105,14 +105,14 @@ Examples:
   msgvault cancel-deletion --all`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if cancelAll && len(args) > 0 {
+			return fmt.Errorf("cannot use --all with a batch ID argument")
+		}
+
 		deletionsDir := filepath.Join(cfg.Data.DataDir, "deletions")
 		manager, err := deletion.NewManager(deletionsDir)
 		if err != nil {
 			return fmt.Errorf("create manager: %w", err)
-		}
-
-		if cancelAll && len(args) > 0 {
-			return fmt.Errorf("cannot use --all with a batch ID argument")
 		}
 
 		if cancelAll {
