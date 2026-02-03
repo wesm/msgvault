@@ -152,6 +152,17 @@ func assertAllResults(t *testing.T, results []MessageSummary, desc string, pred 
 	}
 }
 
+// assertAnyResult verifies that at least one result satisfies the given predicate.
+func assertAnyResult(t *testing.T, results []MessageSummary, desc string, pred func(MessageSummary) bool) {
+	t.Helper()
+	for _, r := range results {
+		if pred(r) {
+			return
+		}
+	}
+	t.Errorf("no result satisfied %s", desc)
+}
+
 // newTestEnvWithEmptyBuckets creates a test DB with messages that have
 // empty senders, recipients, domains, and labels for testing MatchEmpty* filters.
 func newTestEnvWithEmptyBuckets(t *testing.T) *testEnv {

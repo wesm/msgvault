@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/testutil/ptr"
 )
@@ -205,6 +206,9 @@ func TestSearchMixedExactAndDomainFilter(t *testing.T) {
 	assertAllResults(t, results, "FromEmail matches alice@example.com or @other.com", func(m MessageSummary) bool {
 		return m.FromEmail == "alice@example.com" || strings.HasSuffix(m.FromEmail, "@other.com")
 	})
+	assertAnyResult(t, results, "FromEmail equals alice@example.com", func(m MessageSummary) bool {
+		return m.FromEmail == "alice@example.com"
+	})
 }
 
 // TestSearchFastCountMatchesSearch verifies that SearchFastCount returns the same
@@ -351,7 +355,7 @@ func TestMergeFilterIntoQuery(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			merged := MergeFilterIntoQuery(tc.initial, tc.filter)
-			if diff := cmp.Diff(tc.expected, merged); diff != "" {
+			if diff := cmp.Diff(tc.expected, merged, cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("MergeFilterIntoQuery mismatch (-want +got):\n%s", diff)
 			}
 		})
