@@ -139,7 +139,7 @@ func TestTokenFileScopesRoundTrip(t *testing.T) {
 		TokenType:    "Bearer",
 	}
 
-	if err := mgr.saveToken("test@gmail.com", token); err != nil {
+	if err := mgr.saveToken("test@gmail.com", token, ScopesDeletion); err != nil {
 		t.Fatal(err)
 	}
 

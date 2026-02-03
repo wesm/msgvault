@@ -33,6 +33,13 @@ var ScopesDeletion = []string{
 	"https://mail.google.com/",
 }
 
+// ScopesDeviceFlow is used for headless device authorization.
+// Google's device flow only supports the full mail.google.com scope,
+// not granular gmail.readonly/gmail.modify scopes.
+var ScopesDeviceFlow = []string{
+	"https://mail.google.com/",
+}
+
 // Manager handles OAuth2 token acquisition and storage.
 type Manager struct {
 	config    *oauth2.Config
@@ -48,13 +55,13 @@ func NewManager(clientSecretsPath, tokensDir string, logger *slog.Logger) (*Mana
 // TokenSource returns a token source for the given email.
 // If a valid token exists, it will be reused and auto-refreshed.
 func (m *Manager) TokenSource(ctx context.Context, email string) (oauth2.TokenSource, error) {
-	token, err := m.loadToken(email)
+	tf, err := m.loadTokenFile(email)
 	if err != nil {
 		return nil, fmt.Errorf("no valid token for %s: %w", email, err)
 	}
 
 	// Create a token source that auto-refreshes
-	ts := m.config.TokenSource(ctx, token)
+	ts := m.config.TokenSource(ctx, &tf.Token)
 
 	// Save refreshed token if it changed
 	newToken, err := ts.Token()
@@ -62,8 +69,13 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (oauth2.TokenSo
 		return nil, fmt.Errorf("refresh token: %w", err)
 	}
 
-	if newToken.AccessToken != token.AccessToken {
-		if err := m.saveToken(email, newToken); err != nil {
+	if newToken.AccessToken != tf.Token.AccessToken {
+		// Preserve the original scopes when saving refreshed token
+		scopes := tf.Scopes
+		if len(scopes) == 0 {
+			scopes = m.config.Scopes // fallback for legacy tokens
+		}
+		if err := m.saveToken(email, newToken, scopes); err != nil {
 			m.logger.Warn("failed to save refreshed token", "email", email, "error", err)
 		}
 	}
@@ -81,19 +93,22 @@ func (m *Manager) HasToken(email string) bool {
 // If headless is true, uses device code flow; otherwise opens browser.
 func (m *Manager) Authorize(ctx context.Context, email string, headless bool) error {
 	var token *oauth2.Token
+	var scopes []string
 	var err error
 
 	if headless {
 		token, err = m.deviceFlow(ctx)
+		scopes = ScopesDeviceFlow // Device flow requires full mail.google.com scope
 	} else {
 		token, err = m.browserFlow(ctx)
+		scopes = m.config.Scopes
 	}
 
 	if err != nil {
 		return err
 	}
 
-	return m.saveToken(email, token)
+	return m.saveToken(email, token, scopes)
 }
 
 const (
@@ -173,10 +188,11 @@ func (m *Manager) deviceFlow(ctx context.Context) (*oauth2.Token, error) {
 	// Device flow endpoint
 	deviceEndpoint := "https://oauth2.googleapis.com/device/code"
 
-	// Request device code
+	// Request device code - device flow requires full mail.google.com scope,
+	// not granular gmail.readonly/gmail.modify scopes
 	resp, err := http.PostForm(deviceEndpoint, map[string][]string{
 		"client_id": {m.config.ClientID},
-		"scope":     {scopesToString(m.config.Scopes)},
+		"scope":     {scopesToString(ScopesDeviceFlow)},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("request device code: %w", err)
@@ -369,16 +385,15 @@ func (m *Manager) HasScope(email string, scope string) bool {
 	return false
 }
 
-// saveToken saves a token for the given email, including the scopes from
-// the manager's config.
-func (m *Manager) saveToken(email string, token *oauth2.Token) error {
+// saveToken saves a token for the given email with the specified scopes.
+func (m *Manager) saveToken(email string, token *oauth2.Token, scopes []string) error {
 	if err := os.MkdirAll(m.tokensDir, 0700); err != nil {
 		return err
 	}
 
 	tf := tokenFile{
 		Token:  *token,
-		Scopes: m.config.Scopes,
+		Scopes: scopes,
 	}
 
 	data, err := json.MarshalIndent(tf, "", "  ")
