@@ -9,6 +9,47 @@ import (
 	"golang.org/x/oauth2"
 )
 
+func setupTestManager(t *testing.T, scopes []string) *Manager {
+	t.Helper()
+	dir := t.TempDir()
+	tokensDir := filepath.Join(dir, "tokens")
+	if err := os.MkdirAll(tokensDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	return &Manager{
+		config:    &oauth2.Config{Scopes: scopes},
+		tokensDir: tokensDir,
+	}
+}
+
+func writeTokenFile(t *testing.T, mgr *Manager, email string, token oauth2.Token, scopes []string) {
+	t.Helper()
+	tf := tokenFile{
+		Token:  token,
+		Scopes: scopes,
+	}
+	data, err := json.Marshal(tf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mgr.tokensDir, email+".json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeLegacyTokenFile(t *testing.T, mgr *Manager, email string, token oauth2.Token) {
+	t.Helper()
+	data, err := json.Marshal(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mgr.tokensDir, email+".json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+var testToken = oauth2.Token{AccessToken: "test", TokenType: "Bearer"}
+
 func TestScopesToString(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -48,29 +89,12 @@ func TestScopesToString(t *testing.T) {
 }
 
 func TestHasScope(t *testing.T) {
-	dir := t.TempDir()
-	tokensDir := filepath.Join(dir, "tokens")
-	if err := os.MkdirAll(tokensDir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	mgr := setupTestManager(t, Scopes)
 
-	mgr := &Manager{
-		config:    &oauth2.Config{Scopes: Scopes},
-		tokensDir: tokensDir,
-	}
-
-	// Write a token file with scopes
-	tf := tokenFile{
-		Token:  oauth2.Token{AccessToken: "test", TokenType: "Bearer"},
-		Scopes: []string{"https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.modify"},
-	}
-	data, err := json.Marshal(tf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tokensDir, "test@gmail.com.json"), data, 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeTokenFile(t, mgr, "test@gmail.com", testToken, []string{
+		"https://www.googleapis.com/auth/gmail.readonly",
+		"https://www.googleapis.com/auth/gmail.modify",
+	})
 
 	// Has a scope that was saved
 	if !mgr.HasScope("test@gmail.com", "https://www.googleapis.com/auth/gmail.readonly") {
@@ -89,13 +113,7 @@ func TestHasScope(t *testing.T) {
 }
 
 func TestTokenFileScopesRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	tokensDir := filepath.Join(dir, "tokens")
-
-	mgr := &Manager{
-		config:    &oauth2.Config{Scopes: ScopesDeletion},
-		tokensDir: tokensDir,
-	}
+	mgr := setupTestManager(t, ScopesDeletion)
 
 	token := &oauth2.Token{
 		AccessToken:  "access",
@@ -128,83 +146,43 @@ func TestTokenFileScopesRoundTrip(t *testing.T) {
 }
 
 func TestHasScope_LegacyToken(t *testing.T) {
-	dir := t.TempDir()
-	tokensDir := filepath.Join(dir, "tokens")
-	if err := os.MkdirAll(tokensDir, 0700); err != nil {
-		t.Fatal(err)
-	}
+	mgr := setupTestManager(t, Scopes)
 
-	mgr := &Manager{
-		config:    &oauth2.Config{Scopes: Scopes},
-		tokensDir: tokensDir,
-	}
+	writeLegacyTokenFile(t, mgr, "legacy@gmail.com", testToken)
 
-	// Write a legacy token (no scopes field)
-	token := oauth2.Token{AccessToken: "test", TokenType: "Bearer"}
-	data, err := json.Marshal(token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tokensDir, "legacy@gmail.com.json"), data, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	// Legacy token has no scopes — HasScope returns false
 	if mgr.HasScope("legacy@gmail.com", "https://www.googleapis.com/auth/gmail.readonly") {
 		t.Error("expected HasScope to return false for legacy token")
 	}
 }
 
 func TestHasScopeMetadata(t *testing.T) {
-	dir := t.TempDir()
-	tokensDir := filepath.Join(dir, "tokens")
-	if err := os.MkdirAll(tokensDir, 0700); err != nil {
+	mgr := setupTestManager(t, Scopes)
+
+	writeTokenFile(t, mgr, "scoped@gmail.com", testToken, []string{
+		"https://www.googleapis.com/auth/gmail.readonly",
+	})
+	writeLegacyTokenFile(t, mgr, "legacy@gmail.com", testToken)
+	if err := os.WriteFile(filepath.Join(mgr.tokensDir, "corrupt@gmail.com.json"), []byte("not json"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
-	mgr := &Manager{
-		config:    &oauth2.Config{Scopes: Scopes},
-		tokensDir: tokensDir,
+	tests := []struct {
+		name  string
+		email string
+		want  bool
+	}{
+		{"valid scoped token", "scoped@gmail.com", true},
+		{"legacy token", "legacy@gmail.com", false},
+		{"missing token", "missing@gmail.com", false},
+		{"corrupt token file", "corrupt@gmail.com", false},
 	}
 
-	// Token with scopes
-	tf := tokenFile{
-		Token:  oauth2.Token{AccessToken: "test", TokenType: "Bearer"},
-		Scopes: []string{"https://www.googleapis.com/auth/gmail.readonly"},
-	}
-	data, err := json.Marshal(tf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tokensDir, "scoped@gmail.com.json"), data, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	// Legacy token (no scopes)
-	legacy := oauth2.Token{AccessToken: "test", TokenType: "Bearer"}
-	data, err = json.Marshal(legacy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tokensDir, "legacy@gmail.com.json"), data, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	// Corrupt token file
-	if err := os.WriteFile(filepath.Join(tokensDir, "corrupt@gmail.com.json"), []byte("not json"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	if !mgr.HasScopeMetadata("scoped@gmail.com") {
-		t.Error("expected HasScopeMetadata true for token with scopes")
-	}
-	if mgr.HasScopeMetadata("legacy@gmail.com") {
-		t.Error("expected HasScopeMetadata false for legacy token")
-	}
-	if mgr.HasScopeMetadata("missing@gmail.com") {
-		t.Error("expected HasScopeMetadata false for missing token")
-	}
-	if mgr.HasScopeMetadata("corrupt@gmail.com") {
-		t.Error("expected HasScopeMetadata false for corrupt token file")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mgr.HasScopeMetadata(tt.email)
+			if got != tt.want {
+				t.Errorf("HasScopeMetadata(%q) = %v, want %v", tt.email, got, tt.want)
+			}
+		})
 	}
 }
