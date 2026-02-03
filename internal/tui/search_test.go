@@ -446,16 +446,24 @@ func TestDrillDownWithSearchQueryClearsSearch(t *testing.T) {
 	model.searchQuery = "important" // Active search filter
 	model.cursor = 0                // alice@example.com
 
+	// Capture initial request IDs to verify exact increments
+	initialLoadRequestID := model.loadRequestID
+	initialSearchRequestID := model.searchRequestID
+
 	// Press Enter to drill down
-	m := applyAggregateKey(t, model, keyEnter())
+	m, cmd := applyAggregateKeyWithCmd(t, model, keyEnter())
 
 	assertLevel(t, m, levelMessageList)
 	assertSearchQuery(t, m, "")
-	if m.loadRequestID != 1 {
-		t.Errorf("expected loadRequestID=1, got %d", m.loadRequestID)
+	assertCmd(t, cmd, true) // Should return command to load messages
+
+	if m.loadRequestID != initialLoadRequestID+1 {
+		t.Errorf("expected loadRequestID to increment by 1 (from %d to %d), got %d",
+			initialLoadRequestID, initialLoadRequestID+1, m.loadRequestID)
 	}
-	if m.searchRequestID != 1 {
-		t.Errorf("expected searchRequestID=1, got %d", m.searchRequestID)
+	if m.searchRequestID != initialSearchRequestID+1 {
+		t.Errorf("expected searchRequestID to increment by 1 (from %d to %d), got %d",
+			initialSearchRequestID, initialSearchRequestID+1, m.searchRequestID)
 	}
 }
 
@@ -467,14 +475,22 @@ func TestDrillDownWithoutSearchQueryUsesLoadMessages(t *testing.T) {
 	model.searchQuery = "" // No search filter
 	model.cursor = 0
 
-	m := applyAggregateKey(t, model, keyEnter())
+	// Capture initial request IDs to verify exact increments
+	initialLoadRequestID := model.loadRequestID
+	initialSearchRequestID := model.searchRequestID
+
+	m, cmd := applyAggregateKeyWithCmd(t, model, keyEnter())
 
 	assertLevel(t, m, levelMessageList)
-	if m.loadRequestID != 1 {
-		t.Errorf("expected loadRequestID=1, got %d", m.loadRequestID)
+	assertCmd(t, cmd, true) // Should return command to load messages
+
+	if m.loadRequestID != initialLoadRequestID+1 {
+		t.Errorf("expected loadRequestID to increment by 1 (from %d to %d), got %d",
+			initialLoadRequestID, initialLoadRequestID+1, m.loadRequestID)
 	}
-	if m.searchRequestID != 1 {
-		t.Errorf("expected searchRequestID=1, got %d", m.searchRequestID)
+	if m.searchRequestID != initialSearchRequestID+1 {
+		t.Errorf("expected searchRequestID to increment by 1 (from %d to %d), got %d",
+			initialSearchRequestID, initialSearchRequestID+1, m.searchRequestID)
 	}
 }
 
@@ -489,15 +505,23 @@ func TestSubAggregateDrillDownWithSearchQueryClearsSearch(t *testing.T) {
 	model.viewType = query.ViewLabels
 	model.cursor = 0
 
-	m := applyAggregateKey(t, model, keyEnter())
+	// Capture initial request IDs to verify exact increments
+	initialLoadRequestID := model.loadRequestID
+	initialSearchRequestID := model.searchRequestID
+
+	m, cmd := applyAggregateKeyWithCmd(t, model, keyEnter())
 
 	assertLevel(t, m, levelMessageList)
 	assertSearchQuery(t, m, "")
-	if m.loadRequestID != 1 {
-		t.Errorf("expected loadRequestID=1, got %d", m.loadRequestID)
+	assertCmd(t, cmd, true) // Should return command to load messages
+
+	if m.loadRequestID != initialLoadRequestID+1 {
+		t.Errorf("expected loadRequestID to increment by 1 (from %d to %d), got %d",
+			initialLoadRequestID, initialLoadRequestID+1, m.loadRequestID)
 	}
-	if m.searchRequestID != 1 {
-		t.Errorf("expected searchRequestID=1, got %d", m.searchRequestID)
+	if m.searchRequestID != initialSearchRequestID+1 {
+		t.Errorf("expected searchRequestID to increment by 1 (from %d to %d), got %d",
+			initialSearchRequestID, initialSearchRequestID+1, m.searchRequestID)
 	}
 }
 
@@ -611,8 +635,9 @@ func TestPreSearchSnapshotRestoreOnEsc(t *testing.T) {
 	model.scrollOffset = 0
 	model.contextStats = originalStats
 
-	// Activate inline search — should snapshot
-	model.activateInlineSearch("search")
+	// Activate inline search — should snapshot and return blink command
+	cmd := model.activateInlineSearch("search")
+	assertCmd(t, cmd, true) // Should return textinput.Blink command
 
 	// Verify snapshot was taken
 	if model.preSearchMessages == nil {
@@ -685,7 +710,8 @@ func TestTwoStepEscClearsSearchThenGoesBack(t *testing.T) {
 	m.loading = false
 
 	// Activate search and simulate results
-	m.activateInlineSearch("search")
+	cmd := m.activateInlineSearch("search")
+	assertCmd(t, cmd, true)      // Should return textinput.Blink command
 	m.inlineSearchActive = false // Simulate search submitted
 	m.searchQuery = "test"
 	m.messages = []query.MessageSummary{{ID: 99}}
