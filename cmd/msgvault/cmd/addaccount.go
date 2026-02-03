@@ -9,8 +9,8 @@ import (
 )
 
 var (
-	headless            bool
-	accountDisplayName  string
+	headless           bool
+	accountDisplayName string
 )
 
 var addAccountCmd = &cobra.Command{

@@ -96,6 +96,23 @@ func TestStore_Source_UpdateDisplayName(t *testing.T) {
 	}
 }
 
+func TestStore_ListSources(t *testing.T) {
+	f := storetest.New(t)
+
+	sources, err := f.Store.ListSources()
+	testutil.MustNoErr(t, err, "ListSources()")
+
+	if len(sources) != 1 {
+		t.Fatalf("len(sources) = %d, want 1", len(sources))
+	}
+	if sources[0].Identifier != "test@example.com" {
+		t.Errorf("Identifier = %q, want %q", sources[0].Identifier, "test@example.com")
+	}
+	if sources[0].ID != f.Source.ID {
+		t.Errorf("ID = %d, want %d", sources[0].ID, f.Source.ID)
+	}
+}
+
 func TestStore_Conversation(t *testing.T) {
 	f := storetest.New(t)
 
