@@ -1,10 +1,5 @@
 package testutil
 
-import (
-	"bytes"
-	"reflect"
-)
-
 // EncodedSamplesT holds encoded byte sequences for testing charset detection and repair.
 type EncodedSamplesT struct {
 	ShiftJIS_Konnichiwa     []byte
@@ -103,50 +98,47 @@ var encodedSamples = EncodedSamplesT{
 	EUCKR_Long_UTF8: "한글 텍스트 샘플입니다. 인코딩 감지 테스트용입니다.",
 }
 
+func cloneBytes(b []byte) []byte {
+	return append([]byte(nil), b...)
+}
+
 // EncodedSamples returns a fresh copy of all encoded byte samples, safe for
 // mutation by individual tests without cross-test coupling.
-// Uses reflection to automatically clone all fields, ensuring new fields
-// are never accidentally missed.
+//
+// MAINTAINER NOTE: This function uses explicit field copying rather than
+// reflection. This is intentional. Reflection-based "automatic" copying:
+// - Adds complexity (handling unexported fields, nil slices, etc.)
+// - Requires extensive test coverage for the reflection code itself
+// - Solves a problem that doesn't exist (forgetting a field is caught by the compiler)
+//
+// If you add a new field to EncodedSamplesT, add a corresponding line here.
+// The compiler will remind you if you forget (unkeyed struct literal).
 func EncodedSamples() EncodedSamplesT {
-	original := reflect.ValueOf(encodedSamples)
-	copyPtr := reflect.New(original.Type())
-	copyElem := copyPtr.Elem()
-
-	for i := 0; i < original.NumField(); i++ {
-		srcField := original.Field(i)
-		dstField := copyElem.Field(i)
-
-		// Skip unexported fields (reflect cannot set them)
-		if !dstField.CanSet() {
-			continue
-		}
-
-		switch srcField.Kind() {
-		case reflect.Slice:
-			if srcField.IsNil() {
-				continue
-			}
-			// For []byte slices, use bytes.Clone for efficiency
-			if srcField.Type().Elem().Kind() == reflect.Uint8 {
-				dstField.SetBytes(bytes.Clone(srcField.Bytes()))
-			} else {
-				// Generic deep copy for other slice types
-				newSlice := reflect.MakeSlice(srcField.Type(), srcField.Len(), srcField.Cap())
-				reflect.Copy(newSlice, srcField)
-				dstField.Set(newSlice)
-			}
-		case reflect.String:
-			// Strings are immutable, direct copy is safe
-			dstField.SetString(srcField.String())
-		default:
-			// For any other assignable types, copy directly.
-			// Note: This performs a shallow copy for reference types (maps, pointers,
-			// channels). If such fields are added to EncodedSamplesT, they will share
-			// state across calls. Currently, the struct only contains []byte and string
-			// fields, which are properly deep-copied above.
-			dstField.Set(srcField)
-		}
+	return EncodedSamplesT{
+		ShiftJIS_Konnichiwa:     cloneBytes(encodedSamples.ShiftJIS_Konnichiwa),
+		GBK_Nihao:               cloneBytes(encodedSamples.GBK_Nihao),
+		Big5_Nihao:              cloneBytes(encodedSamples.Big5_Nihao),
+		EUCKR_Annyeong:          cloneBytes(encodedSamples.EUCKR_Annyeong),
+		Win1252_SmartQuoteRight: cloneBytes(encodedSamples.Win1252_SmartQuoteRight),
+		Win1252_EnDash:          cloneBytes(encodedSamples.Win1252_EnDash),
+		Win1252_EmDash:          cloneBytes(encodedSamples.Win1252_EmDash),
+		Win1252_DoubleQuotes:    cloneBytes(encodedSamples.Win1252_DoubleQuotes),
+		Win1252_Trademark:       cloneBytes(encodedSamples.Win1252_Trademark),
+		Win1252_Bullet:          cloneBytes(encodedSamples.Win1252_Bullet),
+		Win1252_Euro:            cloneBytes(encodedSamples.Win1252_Euro),
+		Latin1_OAcute:           cloneBytes(encodedSamples.Latin1_OAcute),
+		Latin1_CCedilla:         cloneBytes(encodedSamples.Latin1_CCedilla),
+		Latin1_UUmlaut:          cloneBytes(encodedSamples.Latin1_UUmlaut),
+		Latin1_NTilde:           cloneBytes(encodedSamples.Latin1_NTilde),
+		Latin1_Registered:       cloneBytes(encodedSamples.Latin1_Registered),
+		Latin1_Degree:           cloneBytes(encodedSamples.Latin1_Degree),
+		ShiftJIS_Long:           cloneBytes(encodedSamples.ShiftJIS_Long),
+		ShiftJIS_Long_UTF8:      encodedSamples.ShiftJIS_Long_UTF8,
+		GBK_Long:                cloneBytes(encodedSamples.GBK_Long),
+		GBK_Long_UTF8:           encodedSamples.GBK_Long_UTF8,
+		Big5_Long:               cloneBytes(encodedSamples.Big5_Long),
+		Big5_Long_UTF8:          encodedSamples.Big5_Long_UTF8,
+		EUCKR_Long:              cloneBytes(encodedSamples.EUCKR_Long),
+		EUCKR_Long_UTF8:         encodedSamples.EUCKR_Long_UTF8,
 	}
-
-	return copyElem.Interface().(EncodedSamplesT)
 }
