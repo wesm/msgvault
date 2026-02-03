@@ -665,6 +665,59 @@ func assertContextStats(t *testing.T, m Model, wantCount int, wantSize int64, wa
 	}
 }
 
+// assertSearchMode checks the model's searchMode field.
+func assertSearchMode(t *testing.T, m Model, expected searchModeKind) {
+	t.Helper()
+	if m.searchMode != expected {
+		t.Errorf("expected searchMode %v, got %v", expected, m.searchMode)
+	}
+}
+
+// assertLoading checks the model's loading state fields.
+func assertLoading(t *testing.T, m Model, loading, inlineSearchLoading bool) {
+	t.Helper()
+	if m.loading != loading {
+		t.Errorf("expected loading=%v, got %v", loading, m.loading)
+	}
+	if m.inlineSearchLoading != inlineSearchLoading {
+		t.Errorf("expected inlineSearchLoading=%v, got %v", inlineSearchLoading, m.inlineSearchLoading)
+	}
+}
+
+// assertCmd checks whether a command is nil or non-nil as expected.
+func assertCmd(t *testing.T, cmd tea.Cmd, wantCmd bool) {
+	t.Helper()
+	if wantCmd && cmd == nil {
+		t.Error("expected command to be returned")
+	}
+	if !wantCmd && cmd != nil {
+		t.Error("expected no command")
+	}
+}
+
+// assertSearchQuery checks the model's searchQuery field.
+func assertSearchQuery(t *testing.T, m Model, expected string) {
+	t.Helper()
+	if m.searchQuery != expected {
+		t.Errorf("expected searchQuery=%q, got %q", expected, m.searchQuery)
+	}
+}
+
+// assertInlineSearchActive checks the model's inlineSearchActive field.
+func assertInlineSearchActive(t *testing.T, m Model, expected bool) {
+	t.Helper()
+	if m.inlineSearchActive != expected {
+		t.Errorf("expected inlineSearchActive=%v, got %v", expected, m.inlineSearchActive)
+	}
+}
+
+// applyInlineSearchKey sends a key through handleInlineSearchKeys and returns Model and Cmd.
+func applyInlineSearchKey(t *testing.T, m Model, k tea.KeyMsg) (Model, tea.Cmd) {
+	t.Helper()
+	newModel, cmd := m.handleInlineSearchKeys(k)
+	return newModel.(Model), cmd
+}
+
 // =============================================================================
 // Tests
 // =============================================================================

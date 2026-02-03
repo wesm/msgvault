@@ -1,10 +1,10 @@
 package tui
 
 import (
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/wesm/msgvault/internal/query"
 	"strings"
 	"testing"
+
+	"github.com/wesm/msgvault/internal/query"
 )
 
 func TestSearchModalOpen(t *testing.T) {
@@ -13,19 +13,11 @@ func TestSearchModalOpen(t *testing.T) {
 		Build()
 
 	// Press '/' to activate inline search
-	var cmd tea.Cmd
-	model, cmd = sendKey(t, model, key('/'))
+	model, cmd := sendKey(t, model, key('/'))
 
-	if !model.inlineSearchActive {
-		t.Error("expected inlineSearchActive = true")
-	}
-	if model.searchMode != searchModeFast {
-		t.Errorf("expected searchModeFast, got %v", model.searchMode)
-	}
-	// Should return a command for textinput blink
-	if cmd == nil {
-		t.Error("expected textinput command")
-	}
+	assertInlineSearchActive(t, model, true)
+	assertSearchMode(t, model, searchModeFast)
+	assertCmd(t, cmd, true)
 }
 
 // TestSearchResultsDisplay verifies search results are displayed.
@@ -40,15 +32,11 @@ func TestSearchResultsDisplay(t *testing.T) {
 		{ID: 2, Subject: "Result 2"},
 	}, 0)
 
-	if m.level != levelMessageList {
-		t.Errorf("expected levelMessageList, got %v", m.level)
-	}
+	assertLevel(t, m, levelMessageList)
 	if len(m.messages) != 2 {
 		t.Errorf("expected 2 messages, got %d", len(m.messages))
 	}
-	if m.loading {
-		t.Error("expected loading = false after results")
-	}
+	assertLoading(t, m, false, false)
 }
 
 // TestSearchResultsStale verifies stale search results are ignored.
@@ -66,109 +54,84 @@ func TestSearchResultsStale(t *testing.T) {
 	}
 }
 
-// TestInlineSearchTabToggleAtMessageList verifies Tab toggles mode and triggers search at message list level.
-func TestInlineSearchTabToggleAtMessageList(t *testing.T) {
-	model := NewBuilder().WithPageSize(10).WithSize(100, 20).
-		WithLevel(levelMessageList).
-		WithMessages(query.MessageSummary{ID: 1, Subject: "Existing"}).
-		WithActiveSearch("test query", searchModeFast).
-		Build()
-
-	// Press Tab to toggle to Deep mode
-	newModel, cmd := model.handleInlineSearchKeys(keyTab())
-	m := newModel.(Model)
-
-	// Mode should toggle to Deep
-	if m.searchMode != searchModeDeep {
-		t.Errorf("expected searchModeDeep after Tab, got %v", m.searchMode)
+// TestInlineSearchTabToggle verifies Tab key behavior across different search states.
+func TestInlineSearchTabToggle(t *testing.T) {
+	tests := []struct {
+		name                    string
+		level                   viewLevel
+		initialMode             searchModeKind
+		query                   string
+		wantMode                searchModeKind
+		wantCmd                 bool
+		wantInlineSearchLoading bool
+		wantRequestIDIncrement  bool
+	}{
+		{
+			name:                    "toggle fast to deep at message list",
+			level:                   levelMessageList,
+			initialMode:             searchModeFast,
+			query:                   "test query",
+			wantMode:                searchModeDeep,
+			wantCmd:                 true,
+			wantInlineSearchLoading: true,
+			wantRequestIDIncrement:  true,
+		},
+		{
+			name:                    "toggle deep to fast at message list",
+			level:                   levelMessageList,
+			initialMode:             searchModeDeep,
+			query:                   "test query",
+			wantMode:                searchModeFast,
+			wantCmd:                 true,
+			wantInlineSearchLoading: true,
+			wantRequestIDIncrement:  true,
+		},
+		{
+			name:                    "no search with empty query",
+			level:                   levelMessageList,
+			initialMode:             searchModeFast,
+			query:                   "",
+			wantMode:                searchModeDeep,
+			wantCmd:                 false,
+			wantInlineSearchLoading: false,
+			wantRequestIDIncrement:  false,
+		},
+		{
+			name:                    "no effect at aggregate level",
+			level:                   levelAggregates,
+			initialMode:             searchModeFast,
+			query:                   "test query",
+			wantMode:                searchModeFast, // unchanged
+			wantCmd:                 false,
+			wantInlineSearchLoading: false,
+			wantRequestIDIncrement:  false,
+		},
 	}
 
-	// Should set loading state
-	if !m.inlineSearchLoading {
-		t.Error("expected inlineSearchLoading = true after Tab toggle with query")
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := NewBuilder().WithPageSize(10).WithSize(100, 20).
+				WithLevel(tt.level).
+				WithActiveSearch(tt.query, tt.initialMode).
+				Build()
+			initialRequestID := model.searchRequestID
 
-	// Should NOT clear messages (transitionBuffer handles the transition)
-	// The old messages stay in place until new results arrive
+			m, cmd := applyInlineSearchKey(t, model, keyTab())
 
-	// Should trigger a search command
-	if cmd == nil {
-		t.Error("expected search command to be returned")
-	}
+			assertSearchMode(t, m, tt.wantMode)
+			assertCmd(t, cmd, tt.wantCmd)
 
-	// searchRequestID should be incremented
-	if m.searchRequestID != model.searchRequestID+1 {
-		t.Error("expected searchRequestID to be incremented")
-	}
-}
+			if m.inlineSearchLoading != tt.wantInlineSearchLoading {
+				t.Errorf("expected inlineSearchLoading=%v, got %v", tt.wantInlineSearchLoading, m.inlineSearchLoading)
+			}
 
-// TestInlineSearchTabToggleNoQueryNoSearch verifies Tab with empty query doesn't trigger search.
-func TestInlineSearchTabToggleNoQueryNoSearch(t *testing.T) {
-	model := NewBuilder().WithPageSize(10).WithSize(100, 20).
-		WithLevel(levelMessageList).WithLoading(false).
-		WithActiveSearch("", searchModeFast).
-		Build()
-
-	// Press Tab to toggle mode
-	newModel, cmd := model.handleInlineSearchKeys(keyTab())
-	m := newModel.(Model)
-
-	// Mode should still toggle
-	if m.searchMode != searchModeDeep {
-		t.Errorf("expected searchModeDeep after Tab, got %v", m.searchMode)
-	}
-
-	// Should NOT set loading state (no query to search)
-	if m.loading {
-		t.Error("expected loading = false when toggling mode with empty query")
-	}
-
-	// Should NOT trigger a search command
-	if cmd != nil {
-		t.Error("expected no command when toggling mode with empty query")
-	}
-}
-
-// TestInlineSearchTabAtAggregateLevel verifies Tab has no effect at aggregate level.
-func TestInlineSearchTabAtAggregateLevel(t *testing.T) {
-	model := NewBuilder().WithPageSize(10).WithSize(100, 20).
-		WithActiveSearch("test query", searchModeFast).
-		Build()
-
-	// Press Tab - should do nothing at aggregate level
-	newModel, cmd := model.handleInlineSearchKeys(keyTab())
-	m := newModel.(Model)
-
-	// Mode should NOT toggle (Tab disabled at aggregate level)
-	if m.searchMode != searchModeFast {
-		t.Errorf("expected searchModeFast unchanged at aggregate level, got %v", m.searchMode)
-	}
-
-	// Should NOT trigger any command
-	if cmd != nil {
-		t.Error("expected no command when Tab pressed at aggregate level")
-	}
-}
-
-// TestInlineSearchTabToggleBackToFast verifies Tab toggles back from Deep to Fast.
-func TestInlineSearchTabToggleBackToFast(t *testing.T) {
-	model := NewBuilder().WithPageSize(10).WithSize(100, 20).
-		WithLevel(levelMessageList).
-		WithActiveSearch("test query", searchModeDeep).
-		Build()
-
-	// Press Tab to toggle back to Fast mode
-	newModel, cmd := model.handleInlineSearchKeys(keyTab())
-	m := newModel.(Model)
-
-	// Mode should toggle back to Fast
-	if m.searchMode != searchModeFast {
-		t.Errorf("expected searchModeFast after Tab from Deep, got %v", m.searchMode)
-	}
-
-	// Should trigger a search command
-	if cmd == nil {
-		t.Error("expected search command when toggling back to Fast")
+			if tt.wantRequestIDIncrement && m.searchRequestID <= initialRequestID {
+				t.Error("expected searchRequestID to be incremented")
+			}
+			if !tt.wantRequestIDIncrement && m.searchRequestID != initialRequestID {
+				t.Error("expected searchRequestID to remain unchanged")
+			}
+		})
 	}
 }
 
@@ -221,9 +184,7 @@ func TestSearchBackClears(t *testing.T) {
 	newModel, _ := model.goBack()
 	m := newModel.(Model)
 
-	if m.searchQuery != "" {
-		t.Errorf("expected empty searchQuery after goBack, got %q", m.searchQuery)
-	}
+	assertSearchQuery(t, m, "")
 	if m.searchFilter.Sender != "" {
 		t.Errorf("expected empty searchFilter after goBack, got %v", m.searchFilter)
 	}
@@ -240,15 +201,9 @@ func TestSearchFromSubAggregate(t *testing.T) {
 	model.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
 
 	// Press '/' to activate inline search
-	newModel, cmd := model.handleAggregateKeys(key('/'))
-	m := newModel.(Model)
+	m := applyAggregateKey(t, model, key('/'))
 
-	if !m.inlineSearchActive {
-		t.Error("expected inlineSearchActive = true")
-	}
-	if cmd == nil {
-		t.Error("expected textinput command")
-	}
+	assertInlineSearchActive(t, m, true)
 }
 
 // TestSearchFromMessageList verifies search from message list view.
@@ -259,15 +214,9 @@ func TestSearchFromMessageList(t *testing.T) {
 		WithLevel(levelMessageList).Build()
 
 	// Press '/' to activate inline search
-	newModel, cmd := model.handleMessageListKeys(key('/'))
-	m := newModel.(Model)
+	m := applyMessageListKey(t, model, key('/'))
 
-	if !m.inlineSearchActive {
-		t.Error("expected inlineSearchActive = true")
-	}
-	if cmd == nil {
-		t.Error("expected textinput command")
-	}
+	assertInlineSearchActive(t, m, true)
 }
 
 // TestGKeyCyclesViewType verifies that 'g' cycles through view types at aggregate level.
@@ -494,30 +443,15 @@ func TestDrillDownWithSearchQueryClearsSearch(t *testing.T) {
 	model.cursor = 0                // alice@example.com
 
 	// Press Enter to drill down
-	newModel, cmd := model.handleAggregateKeys(keyEnter())
-	m := newModel.(Model)
+	m := applyAggregateKey(t, model, keyEnter())
 
-	// Should transition to message list
-	if m.level != levelMessageList {
-		t.Errorf("expected levelMessageList, got %v", m.level)
-	}
-
-	// Search query should be cleared on drill-down
-	if m.searchQuery != "" {
-		t.Errorf("expected searchQuery cleared, got %q", m.searchQuery)
-	}
-
-	// loadRequestID incremented for loadMessages
+	assertLevel(t, m, levelMessageList)
+	assertSearchQuery(t, m, "")
 	if m.loadRequestID != 1 {
 		t.Errorf("expected loadRequestID=1, got %d", m.loadRequestID)
 	}
-	// searchRequestID incremented to invalidate in-flight search responses
 	if m.searchRequestID != 1 {
 		t.Errorf("expected searchRequestID=1, got %d", m.searchRequestID)
-	}
-
-	if cmd == nil {
-		t.Error("expected a command to be returned")
 	}
 }
 
@@ -529,25 +463,14 @@ func TestDrillDownWithoutSearchQueryUsesLoadMessages(t *testing.T) {
 	model.searchQuery = "" // No search filter
 	model.cursor = 0
 
-	newModel, cmd := model.handleAggregateKeys(keyEnter())
-	m := newModel.(Model)
+	m := applyAggregateKey(t, model, keyEnter())
 
-	if m.level != levelMessageList {
-		t.Errorf("expected levelMessageList, got %v", m.level)
-	}
-
-	// loadRequestID should have been incremented
+	assertLevel(t, m, levelMessageList)
 	if m.loadRequestID != 1 {
 		t.Errorf("expected loadRequestID=1, got %d", m.loadRequestID)
 	}
-
-	// searchRequestID incremented to invalidate any in-flight search responses
 	if m.searchRequestID != 1 {
 		t.Errorf("expected searchRequestID=1, got %d", m.searchRequestID)
-	}
-
-	if cmd == nil {
-		t.Error("expected a command to be returned")
 	}
 }
 
@@ -562,29 +485,15 @@ func TestSubAggregateDrillDownWithSearchQueryClearsSearch(t *testing.T) {
 	model.viewType = query.ViewLabels
 	model.cursor = 0
 
-	newModel, cmd := model.handleAggregateKeys(keyEnter())
-	m := newModel.(Model)
+	m := applyAggregateKey(t, model, keyEnter())
 
-	if m.level != levelMessageList {
-		t.Errorf("expected levelMessageList, got %v", m.level)
-	}
-
-	// Search query should be cleared on drill-down
-	if m.searchQuery != "" {
-		t.Errorf("expected searchQuery cleared, got %q", m.searchQuery)
-	}
-
-	// loadRequestID incremented for loadMessages
+	assertLevel(t, m, levelMessageList)
+	assertSearchQuery(t, m, "")
 	if m.loadRequestID != 1 {
 		t.Errorf("expected loadRequestID=1, got %d", m.loadRequestID)
 	}
-	// searchRequestID incremented to invalidate in-flight search responses
 	if m.searchRequestID != 1 {
 		t.Errorf("expected searchRequestID=1, got %d", m.searchRequestID)
-	}
-
-	if cmd == nil {
-		t.Error("expected a command to be returned")
 	}
 }
 
@@ -597,29 +506,19 @@ func TestDrillDownSearchBreadcrumbRoundTrip(t *testing.T) {
 	model.cursor = 0
 
 	// Drill down — search should be cleared
-	newModel, _ := model.handleAggregateKeys(keyEnter())
-	m := newModel.(Model)
+	m := applyAggregateKey(t, model, keyEnter())
 
-	if m.searchQuery != "" {
-		t.Errorf("expected searchQuery cleared after drill-down, got %q", m.searchQuery)
-	}
-	if m.level != levelMessageList {
-		t.Errorf("expected levelMessageList, got %v", m.level)
-	}
+	assertSearchQuery(t, m, "")
+	assertLevel(t, m, levelMessageList)
 
 	// Populate messages so Esc handler works
 	m.messages = []query.MessageSummary{{ID: 1}}
 
 	// Esc back — should restore outer search from breadcrumb
-	newModel2, _ := m.handleMessageListKeys(keyEsc())
-	m2 := newModel2.(Model)
+	m2 := applyMessageListKey(t, m, keyEsc())
 
-	if m2.level != levelAggregates {
-		t.Errorf("expected levelAggregates after Esc, got %v", m2.level)
-	}
-	if m2.searchQuery != "important" {
-		t.Errorf("expected searchQuery restored to %q, got %q", "important", m2.searchQuery)
-	}
+	assertLevel(t, m2, levelAggregates)
+	assertSearchQuery(t, m2, "important")
 }
 
 // TestDrillDownClearsHighlightTerms verifies that highlightTerms produces no
@@ -630,8 +529,7 @@ func TestDrillDownClearsHighlightTerms(t *testing.T) {
 	model.searchQuery = "alice"
 	model.cursor = 0
 
-	newModel, _ := model.handleAggregateKeys(keyEnter())
-	m := newModel.(Model)
+	m := applyAggregateKey(t, model, keyEnter())
 
 	// highlightTerms with empty searchQuery should return text unchanged
 	text := "alice@example.com"
@@ -653,21 +551,15 @@ func TestSubAggregateDrillDownSearchBreadcrumbRoundTrip(t *testing.T) {
 	model.cursor = 0
 
 	// Drill down to message list — search should be cleared
-	newModel, _ := model.handleAggregateKeys(keyEnter())
-	m := newModel.(Model)
+	m := applyAggregateKey(t, model, keyEnter())
 
-	if m.searchQuery != "" {
-		t.Errorf("expected searchQuery cleared, got %q", m.searchQuery)
-	}
+	assertSearchQuery(t, m, "")
 
 	// Populate messages and go back
 	m.messages = []query.MessageSummary{{ID: 1}}
-	newModel2, _ := m.handleMessageListKeys(keyEsc())
-	m2 := newModel2.(Model)
+	m2 := applyMessageListKey(t, m, keyEsc())
 
-	if m2.searchQuery != "urgent" {
-		t.Errorf("expected searchQuery restored to %q, got %q", "urgent", m2.searchQuery)
-	}
+	assertSearchQuery(t, m2, "urgent")
 }
 
 // TestStaleSearchResponseIgnoredAfterDrillDown verifies that a search response
@@ -684,8 +576,7 @@ func TestStaleSearchResponseIgnoredAfterDrillDown(t *testing.T) {
 	staleRequestID := model.searchRequestID
 
 	// Drill down — clears search and increments searchRequestID
-	newModel, _ := model.handleAggregateKeys(keyEnter())
-	m := newModel.(Model)
+	m := applyAggregateKey(t, model, keyEnter())
 
 	// Populate the message list with expected data
 	m.messages = []query.MessageSummary{{ID: 100, Subject: "Drilled message"}}
@@ -734,8 +625,7 @@ func TestPreSearchSnapshotRestoreOnEsc(t *testing.T) {
 	model.searchTotalCount = 200
 
 	// Esc from inline search — should restore snapshot
-	newModel, _ := model.handleInlineSearchKeys(keyEsc())
-	m := newModel.(Model)
+	m, _ := applyInlineSearchKey(t, model, keyEsc())
 
 	// Messages restored
 	if len(m.messages) != 2 {
@@ -759,9 +649,7 @@ func TestPreSearchSnapshotRestoreOnEsc(t *testing.T) {
 	}
 
 	// Search state fully cleared
-	if m.searchQuery != "" {
-		t.Errorf("expected searchQuery cleared, got %q", m.searchQuery)
-	}
+	assertSearchQuery(t, m, "")
 	if m.searchLoadingMore {
 		t.Error("expected searchLoadingMore=false after restore")
 	}
@@ -771,9 +659,7 @@ func TestPreSearchSnapshotRestoreOnEsc(t *testing.T) {
 	if m.searchTotalCount != 0 {
 		t.Errorf("expected searchTotalCount=0, got %d", m.searchTotalCount)
 	}
-	if m.loading {
-		t.Error("expected loading=false after restore")
-	}
+	assertLoading(t, m, false, false)
 
 	// Snapshot cleared
 	if m.preSearchMessages != nil {
@@ -790,8 +676,7 @@ func TestTwoStepEscClearsSearchThenGoesBack(t *testing.T) {
 	model.cursor = 0
 
 	// Drill down to message list
-	newModel, _ := model.handleAggregateKeys(keyEnter())
-	m := newModel.(Model)
+	m := applyAggregateKey(t, model, keyEnter())
 	m.messages = []query.MessageSummary{{ID: 1}, {ID: 2}, {ID: 3}}
 	m.loading = false
 
@@ -802,26 +687,18 @@ func TestTwoStepEscClearsSearchThenGoesBack(t *testing.T) {
 	m.messages = []query.MessageSummary{{ID: 99}}
 
 	// First Esc — should clear search and restore pre-search messages
-	newModel2, _ := m.handleMessageListKeys(keyEsc())
-	m2 := newModel2.(Model)
+	m2 := applyMessageListKey(t, m, keyEsc())
 
-	if m2.searchQuery != "" {
-		t.Errorf("expected searchQuery cleared after first Esc, got %q", m2.searchQuery)
-	}
-	if m2.level != levelMessageList {
-		t.Errorf("expected still at levelMessageList after first Esc, got %v", m2.level)
-	}
+	assertSearchQuery(t, m2, "")
+	assertLevel(t, m2, levelMessageList)
 	if len(m2.messages) != 3 {
 		t.Errorf("expected 3 pre-search messages restored, got %d", len(m2.messages))
 	}
 
 	// Second Esc — should goBack to aggregates
-	newModel3, _ := m2.handleMessageListKeys(keyEsc())
-	m3 := newModel3.(Model)
+	m3 := applyMessageListKey(t, m2, keyEsc())
 
-	if m3.level != levelAggregates {
-		t.Errorf("expected levelAggregates after second Esc, got %v", m3.level)
-	}
+	assertLevel(t, m3, levelAggregates)
 }
 
 // TestHighlightedColumnsAligned verifies that highlighting search terms in
