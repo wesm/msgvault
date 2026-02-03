@@ -454,17 +454,28 @@ Examples:
 	},
 }
 
+// isTTY reports whether stdout is connected to a terminal.
+func isTTY() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
 // CLIDeletionProgress reports deletion progress to the terminal.
 type CLIDeletionProgress struct {
 	total     int
 	startTime time.Time
 	lastPrint time.Time
+	tty       bool
 }
 
 func (p *CLIDeletionProgress) OnStart(total int) {
 	p.total = total
 	p.startTime = time.Now()
 	p.lastPrint = time.Time{} // Force first print
+	p.tty = isTTY()
 }
 
 func (p *CLIDeletionProgress) formatDuration(d time.Duration) string {
@@ -495,12 +506,16 @@ func (p *CLIDeletionProgress) OnProgress(processed, succeeded, failed int) {
 		eta = "calculating..."
 	}
 
-	status := fmt.Sprintf("\r  %s %.1f%%  %d/%d", bar, pct, processed, p.total)
+	status := fmt.Sprintf("  %s %.1f%%  %d/%d", bar, pct, processed, p.total)
 	if failed > 0 {
 		status += fmt.Sprintf("  (%d failed)", failed)
 	}
 	status += fmt.Sprintf("  %s", eta)
-	fmt.Printf("\r\033[K%s", status)
+	if p.tty {
+		fmt.Printf("\r\033[K%s", status)
+	} else {
+		fmt.Println(status)
+	}
 }
 
 func (p *CLIDeletionProgress) progressBar(pct float64, width int) string {
@@ -522,7 +537,9 @@ func (p *CLIDeletionProgress) progressBar(pct float64, width int) string {
 func (p *CLIDeletionProgress) OnComplete(succeeded, failed int) {
 	elapsed := time.Since(p.startTime)
 	// Clear the progress line
-	fmt.Print("\r\033[K")
+	if p.tty {
+		fmt.Print("\r\033[K")
+	}
 	if failed == 0 {
 		fmt.Printf("  Done: %d deleted in %s\n", succeeded, p.formatDuration(elapsed))
 	} else {
