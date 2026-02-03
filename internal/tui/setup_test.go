@@ -645,11 +645,25 @@ func applyAggregateKey(t *testing.T, m Model, k tea.KeyMsg) Model {
 	return newModel.(Model)
 }
 
+// applyAggregateKeyWithCmd sends a key through handleAggregateKeys and returns Model and Cmd.
+func applyAggregateKeyWithCmd(t *testing.T, m Model, k tea.KeyMsg) (Model, tea.Cmd) {
+	t.Helper()
+	newModel, cmd := m.handleAggregateKeys(k)
+	return newModel.(Model), cmd
+}
+
 // applyMessageListKey sends a key through handleMessageListKeys and returns the concrete Model.
 func applyMessageListKey(t *testing.T, m Model, k tea.KeyMsg) Model {
 	t.Helper()
 	newModel, _ := m.handleMessageListKeys(k)
 	return newModel.(Model)
+}
+
+// applyMessageListKeyWithCmd sends a key through handleMessageListKeys and returns Model and Cmd.
+func applyMessageListKeyWithCmd(t *testing.T, m Model, k tea.KeyMsg) (Model, tea.Cmd) {
+	t.Helper()
+	newModel, cmd := m.handleMessageListKeys(k)
+	return newModel.(Model), cmd
 }
 
 // applyModalKey sends a key through handleModalKeys and returns the concrete Model and Cmd.

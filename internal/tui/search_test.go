@@ -125,11 +125,13 @@ func TestInlineSearchTabToggle(t *testing.T) {
 				t.Errorf("expected inlineSearchLoading=%v, got %v", tt.wantInlineSearchLoading, m.inlineSearchLoading)
 			}
 
-			if tt.wantRequestIDIncrement && m.searchRequestID <= initialRequestID {
-				t.Error("expected searchRequestID to be incremented")
-			}
-			if !tt.wantRequestIDIncrement && m.searchRequestID != initialRequestID {
-				t.Error("expected searchRequestID to remain unchanged")
+			if tt.wantRequestIDIncrement {
+				if m.searchRequestID != initialRequestID+1 {
+					t.Errorf("expected searchRequestID to increment by 1 (from %d to %d), got %d",
+						initialRequestID, initialRequestID+1, m.searchRequestID)
+				}
+			} else if m.searchRequestID != initialRequestID {
+				t.Errorf("expected searchRequestID to remain %d, got %d", initialRequestID, m.searchRequestID)
 			}
 		})
 	}
@@ -201,9 +203,10 @@ func TestSearchFromSubAggregate(t *testing.T) {
 	model.drillFilter = query.MessageFilter{Sender: "alice@example.com"}
 
 	// Press '/' to activate inline search
-	m := applyAggregateKey(t, model, key('/'))
+	m, cmd := applyAggregateKeyWithCmd(t, model, key('/'))
 
 	assertInlineSearchActive(t, m, true)
+	assertCmd(t, cmd, true)
 }
 
 // TestSearchFromMessageList verifies search from message list view.
@@ -214,9 +217,10 @@ func TestSearchFromMessageList(t *testing.T) {
 		WithLevel(levelMessageList).Build()
 
 	// Press '/' to activate inline search
-	m := applyMessageListKey(t, model, key('/'))
+	m, cmd := applyMessageListKeyWithCmd(t, model, key('/'))
 
 	assertInlineSearchActive(t, m, true)
+	assertCmd(t, cmd, true)
 }
 
 // TestGKeyCyclesViewType verifies that 'g' cycles through view types at aggregate level.
