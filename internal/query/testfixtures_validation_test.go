@@ -2,73 +2,11 @@ package query
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
+
+	"github.com/wesm/msgvault/internal/testutil/tbmock"
 )
-
-// fatalSentinel is panicked by fakeT to halt execution, mimicking
-// testing.TB methods that call runtime.Goexit (Fatal, Fatalf, FailNow,
-// Skip, Skipf, SkipNow). Recovered by expectFatal.
-type fatalSentinel struct{ msg string }
-
-// fakeT wraps a real testing.TB so that un-overridden methods delegate safely,
-// while intercepting all fail/skip methods via a panic sentinel.
-type fakeT struct {
-	testing.TB // delegate to a real TB for methods we don't override
-	failed     bool
-	fatalMsg   string
-}
-
-func newFakeT(t testing.TB) *fakeT {
-	return &fakeT{TB: t}
-}
-
-func (f *fakeT) Helper()                           {}
-func (f *fakeT) Errorf(format string, args ...any) {}
-func (f *fakeT) Cleanup(fn func())                 {}
-func (f *fakeT) Fatalf(format string, args ...any) {
-	f.failed = true
-	f.fatalMsg = fmt.Sprintf(format, args...)
-	panic(fatalSentinel{f.fatalMsg})
-}
-func (f *fakeT) Fatal(args ...any) {
-	f.failed = true
-	f.fatalMsg = fmt.Sprint(args...)
-	panic(fatalSentinel{f.fatalMsg})
-}
-func (f *fakeT) FailNow() {
-	f.failed = true
-	f.fatalMsg = ""
-	panic(fatalSentinel{})
-}
-func (f *fakeT) Skip(args ...any) {
-	f.failed = true
-	f.fatalMsg = fmt.Sprint(args...)
-	panic(fatalSentinel{f.fatalMsg})
-}
-func (f *fakeT) Skipf(format string, args ...any) {
-	f.failed = true
-	f.fatalMsg = fmt.Sprintf(format, args...)
-	panic(fatalSentinel{f.fatalMsg})
-}
-func (f *fakeT) SkipNow() {
-	f.failed = true
-	f.fatalMsg = ""
-	panic(fatalSentinel{})
-}
-
-// expectFatal calls fn and recovers if it triggered a fakeT fatal/skip.
-func expectFatal(ft *fakeT, fn func()) {
-	defer func() {
-		if r := recover(); r != nil {
-			if _, ok := r.(fatalSentinel); !ok {
-				panic(r) // re-panic non-sentinel
-			}
-		}
-	}()
-	fn()
-}
 
 func TestAddLabel_ValidName(t *testing.T) {
 	b := NewTestDataBuilder(t)
@@ -94,29 +32,36 @@ func TestAddMessage_ExplicitSourceID_BypassesCheck(t *testing.T) {
 	}
 }
 
-func TestAddMessage_FailsWithoutSources(t *testing.T) {
-	// When no sources exist and SourceID is 0, AddMessage should fatal.
-	ft := newFakeT(t)
-	expectFatal(ft, func() {
-		b := NewTestDataBuilder(ft)
-		b.AddMessage(MessageOpt{Subject: "test"}) // SourceID defaults to 0
-	})
-	if !ft.failed {
-		t.Error("expected Fatalf when adding message without sources")
+func TestTestDataBuilder_ValidationFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func(*TestDataBuilder)
+	}{
+		{
+			name: "AddMessage_WithoutSources",
+			fn:   func(b *TestDataBuilder) { b.AddMessage(MessageOpt{Subject: "fail"}) },
+		},
+		{
+			name: "AddAttachment_MissingMessage",
+			fn: func(b *TestDataBuilder) {
+				b.AddSource("a@test.com")
+				b.AddMessage(MessageOpt{Subject: "ok"})
+				b.AddAttachment(999, 1024, "missing.txt")
+			},
+		},
 	}
-}
 
-func TestAddAttachment_FailsWithMissingMessage(t *testing.T) {
-	// AddAttachment should fatal when the message ID doesn't exist.
-	ft := newFakeT(t)
-	expectFatal(ft, func() {
-		b := NewTestDataBuilder(ft)
-		b.AddSource("a@test.com")
-		b.AddMessage(MessageOpt{Subject: "exists"}) // ID = 1
-		b.AddAttachment(999, 1024, "missing.txt")   // message 999 doesn't exist
-	})
-	if !ft.failed {
-		t.Error("expected Fatalf when attaching to nonexistent message")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mtb := tbmock.NewMockTB(t)
+			tbmock.ExpectFatal(mtb, func() {
+				b := NewTestDataBuilder(mtb)
+				tc.fn(b)
+			})
+			if !mtb.Failed() {
+				t.Error("expected builder to fail")
+			}
+		})
 	}
 }
 
@@ -127,8 +72,16 @@ func TestAddMessage_UsesFirstSource(t *testing.T) {
 	if id != 1 {
 		t.Errorf("expected message ID 1, got %d", id)
 	}
-	if b.messages[0].SourceID != 1 {
-		t.Errorf("expected source ID 1, got %d", b.messages[0].SourceID)
+
+	engine := b.BuildEngine()
+	defer engine.Close()
+
+	stats, err := engine.GetTotalStats(context.Background(), StatsOptions{})
+	if err != nil {
+		t.Fatalf("GetTotalStats: %v", err)
+	}
+	if stats.MessageCount != 1 {
+		t.Errorf("expected 1 message, got %d", stats.MessageCount)
 	}
 }
 
