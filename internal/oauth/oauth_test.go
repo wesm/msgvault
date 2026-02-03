@@ -2,6 +2,8 @@ package oauth
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -185,4 +187,121 @@ func TestHasScopeMetadata(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNewCallbackHandler(t *testing.T) {
+	mgr := setupTestManager(t, Scopes)
+
+	tests := []struct {
+		name             string
+		queryState       string
+		expectedState    string
+		queryCode        string
+		wantStatusCode   int
+		wantBodyContains string
+		wantCode         string
+		wantErr          string
+	}{
+		{
+			name:             "success",
+			queryState:       "valid-state",
+			expectedState:    "valid-state",
+			queryCode:        "auth-code-123",
+			wantStatusCode:   http.StatusOK,
+			wantBodyContains: "Authorization successful",
+			wantCode:         "auth-code-123",
+		},
+		{
+			name:             "state mismatch",
+			queryState:       "wrong-state",
+			expectedState:    "expected-state",
+			queryCode:        "auth-code-123",
+			wantStatusCode:   http.StatusOK,
+			wantBodyContains: "state mismatch",
+			wantErr:          "state mismatch: possible CSRF attack",
+		},
+		{
+			name:             "missing code",
+			queryState:       "valid-state",
+			expectedState:    "valid-state",
+			queryCode:        "",
+			wantStatusCode:   http.StatusOK,
+			wantBodyContains: "no authorization code",
+			wantErr:          "no code in callback",
+		},
+		{
+			name:             "empty state",
+			queryState:       "",
+			expectedState:    "expected-state",
+			queryCode:        "auth-code-123",
+			wantStatusCode:   http.StatusOK,
+			wantBodyContains: "state mismatch",
+			wantErr:          "state mismatch: possible CSRF attack",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			codeChan := make(chan string, 1)
+			errChan := make(chan error, 1)
+
+			handler := mgr.newCallbackHandler(tt.expectedState, codeChan, errChan)
+
+			url := "/callback?state=" + tt.queryState
+			if tt.queryCode != "" {
+				url += "&code=" + tt.queryCode
+			}
+			req := httptest.NewRequest(http.MethodGet, url, nil)
+			rec := httptest.NewRecorder()
+
+			handler(rec, req)
+
+			if rec.Code != tt.wantStatusCode {
+				t.Errorf("status code = %d, want %d", rec.Code, tt.wantStatusCode)
+			}
+
+			body := rec.Body.String()
+			if tt.wantBodyContains != "" && !contains(body, tt.wantBodyContains) {
+				t.Errorf("body = %q, want to contain %q", body, tt.wantBodyContains)
+			}
+
+			// Check for expected code on success
+			if tt.wantCode != "" {
+				select {
+				case code := <-codeChan:
+					if code != tt.wantCode {
+						t.Errorf("code = %q, want %q", code, tt.wantCode)
+					}
+				default:
+					t.Error("expected code on codeChan, got nothing")
+				}
+			}
+
+			// Check for expected error
+			if tt.wantErr != "" {
+				select {
+				case err := <-errChan:
+					if err.Error() != tt.wantErr {
+						t.Errorf("error = %q, want %q", err.Error(), tt.wantErr)
+					}
+				default:
+					t.Error("expected error on errChan, got nothing")
+				}
+			}
+		})
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && len(substr) > 0 && searchString(s, substr)))
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
