@@ -28,10 +28,15 @@ const defaultSQLiteParams = "?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys
 // isSQLiteError checks if err is a sqlite3.Error with a message containing substr.
 // This is more robust than strings.Contains on err.Error() because it first
 // type-asserts to the specific driver error type using errors.As.
+// Handles both value (sqlite3.Error) and pointer (*sqlite3.Error) forms.
 func isSQLiteError(err error, substr string) bool {
 	var sqliteErr sqlite3.Error
 	if errors.As(err, &sqliteErr) {
 		return strings.Contains(sqliteErr.Error(), substr)
+	}
+	var sqliteErrPtr *sqlite3.Error
+	if errors.As(err, &sqliteErrPtr) {
+		return strings.Contains(sqliteErrPtr.Error(), substr)
 	}
 	return false
 }
