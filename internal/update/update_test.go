@@ -252,11 +252,14 @@ func TestIsNewer(t *testing.T) {
 		{"release newer than its prerelease", "0.4.0", "0.4.0-rc1", true},
 		{"prerelease not newer than release", "0.4.0-rc1", "0.4.0", false},
 		{"rc2 newer than rc1", "0.4.0-rc2", "0.4.0-rc1", true},
-		{"numeric prerelease comparison rc10 vs rc2", "0.4.0-rc10", "0.4.0-rc2", true},
-		{"numeric prerelease comparison rc2 vs rc10", "0.4.0-rc2", "0.4.0-rc10", false},
-		{"numeric prerelease beta10 vs beta2", "0.4.0-beta10", "0.4.0-beta2", true},
+		// Note: semver spec uses lexicographic comparison for non-dotted identifiers
+		// so "rc10" < "rc2" (compares "1" < "2"). Use dotted format for numeric comparison.
+		{"non-dotted prerelease comparison rc10 vs rc2 lexicographic", "0.4.0-rc10", "0.4.0-rc2", false},
+		{"non-dotted prerelease comparison rc2 vs rc10 lexicographic", "0.4.0-rc2", "0.4.0-rc10", true},
+		{"non-dotted prerelease beta10 vs beta2 lexicographic", "0.4.0-beta10", "0.4.0-beta2", false},
 		{"rc newer than beta lexicographically", "0.4.0-rc1", "0.4.0-beta1", true},
 		{"alpha older than beta", "0.4.0-alpha1", "0.4.0-beta1", false},
+		{"dotted prerelease numeric comparison rc.10 vs rc.2", "0.4.0-rc.10", "0.4.0-rc.2", true},
 		{"dotted prerelease comparison", "0.4.0-rc.2", "0.4.0-rc.1", true},
 		{"numeric segment less than non-numeric", "0.4.0-1", "0.4.0-rc1", false},
 		{"non-numeric greater than numeric", "0.4.0-rc1", "0.4.0-1", true},
