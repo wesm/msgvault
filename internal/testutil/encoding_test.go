@@ -119,6 +119,9 @@ func TestEncodedSamplesAllFieldsCopied(t *testing.T) {
 // mutateSliceElement mutates the element at index idx of a slice to guarantee
 // a different value. This handles the case where the original value might
 // already be zero, making a simple "set to zero" mutation a no-op.
+//
+// If mutation is not possible (e.g., unexported fields only), the test fails
+// to ensure the gap in test coverage is visible.
 func mutateSliceElement(t *testing.T, slice reflect.Value, idx int) {
 	t.Helper()
 	elem := slice.Index(idx)
@@ -142,28 +145,37 @@ func mutateSliceElement(t *testing.T, slice reflect.Value, idx int) {
 		elem.SetString(elem.String() + "_mutated")
 	case reflect.Struct:
 		// For structs, try to mutate the first settable field
-		for i := 0; i < elem.NumField(); i++ {
-			field := elem.Field(i)
-			if field.CanSet() {
-				mutateValue(t, field)
-				return
-			}
+		if !mutateStruct(t, elem) {
+			t.Fatalf("could not mutate struct element at index %d (no settable fields)", idx)
 		}
-		t.Logf("Warning: could not mutate struct element at index %d (no settable fields)", idx)
 	case reflect.Ptr:
-		if !elem.IsNil() && elem.Elem().CanSet() {
+		if elem.IsNil() {
+			// Allocate a new value and set the pointer to it (guarantees change from nil)
+			elem.Set(reflect.New(elem.Type().Elem()))
+		} else if elem.Elem().Kind() == reflect.Struct {
+			// For pointers to structs, use mutateStruct
+			if !mutateStruct(t, elem.Elem()) {
+				// Could not mutate struct fields; set pointer to nil instead
+				elem.Set(reflect.Zero(elem.Type()))
+			}
+		} else if elem.Elem().CanSet() {
 			mutateValue(t, elem.Elem())
 		} else {
-			t.Logf("Warning: could not mutate pointer element at index %d", idx)
+			// Last resort: set pointer to nil
+			elem.Set(reflect.Zero(elem.Type()))
 		}
 	default:
-		t.Logf("Warning: unhandled slice element kind %v at index %d", elemKind, idx)
+		t.Fatalf("unhandled slice element kind %v at index %d", elemKind, idx)
 	}
 }
 
 // mutateValue mutates a single reflect.Value to guarantee a different value.
-func mutateValue(t *testing.T, v reflect.Value) {
+// Returns true if mutation was successful, false otherwise.
+func mutateValue(t *testing.T, v reflect.Value) bool {
 	t.Helper()
+	if !v.CanSet() {
+		return false
+	}
 	switch v.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		v.SetInt(v.Int() + 1)
@@ -171,11 +183,78 @@ func mutateValue(t *testing.T, v reflect.Value) {
 		v.SetUint(v.Uint() + 1)
 	case reflect.Float32, reflect.Float64:
 		v.SetFloat(v.Float() + 1.0)
+	case reflect.Complex64, reflect.Complex128:
+		v.SetComplex(v.Complex() + complex(1, 1))
 	case reflect.Bool:
 		v.SetBool(!v.Bool())
 	case reflect.String:
 		v.SetString(v.String() + "_mutated")
+	case reflect.Struct:
+		return mutateStruct(t, v)
+	case reflect.Ptr:
+		if v.IsNil() {
+			v.Set(reflect.New(v.Type().Elem()))
+		} else if v.Elem().CanSet() {
+			return mutateValue(t, v.Elem())
+		} else {
+			v.Set(reflect.Zero(v.Type()))
+		}
+	case reflect.Slice:
+		if v.IsNil() || v.Len() == 0 {
+			// Create a slice with one element
+			newSlice := reflect.MakeSlice(v.Type(), 1, 1)
+			v.Set(newSlice)
+		} else {
+			// Mutate the first element
+			return mutateValue(t, v.Index(0))
+		}
+	case reflect.Array:
+		if v.Len() > 0 {
+			return mutateValue(t, v.Index(0))
+		}
+		return false
+	case reflect.Map:
+		if v.IsNil() {
+			v.Set(reflect.MakeMap(v.Type()))
+		} else {
+			// Clear the map by setting to a new empty map
+			v.Set(reflect.MakeMap(v.Type()))
+		}
+	case reflect.Interface:
+		if v.IsNil() {
+			// Cannot create a meaningful non-nil interface value without knowing concrete type
+			return false
+		}
+		// Set to nil to guarantee change
+		v.Set(reflect.Zero(v.Type()))
+	case reflect.Chan:
+		if v.IsNil() {
+			v.Set(reflect.MakeChan(v.Type(), 0))
+		} else {
+			v.Set(reflect.Zero(v.Type()))
+		}
+	case reflect.Func:
+		// Set to nil (or if nil, we can't create a function)
+		if !v.IsNil() {
+			v.Set(reflect.Zero(v.Type()))
+		} else {
+			return false
+		}
 	default:
-		t.Logf("Warning: unhandled value kind %v for mutation", v.Kind())
+		t.Fatalf("unhandled value kind %v for mutation", v.Kind())
 	}
+	return true
+}
+
+// mutateStruct attempts to mutate at least one field of a struct.
+// Returns true if at least one field was successfully mutated.
+func mutateStruct(t *testing.T, v reflect.Value) bool {
+	t.Helper()
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Field(i)
+		if field.CanSet() && mutateValue(t, field) {
+			return true
+		}
+	}
+	return false
 }
