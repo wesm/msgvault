@@ -254,55 +254,66 @@ func sqlStr(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
-func (b *TestDataBuilder) sourcesSQL() string {
-	var rows []string
-	for _, s := range b.sources {
-		rows = append(rows, fmt.Sprintf("(%d::BIGINT, %s)", s.ID, sqlStr(s.AccountEmail)))
+// joinRows maps each item to a SQL row string and joins them with commas.
+func joinRows[T any](items []T, format func(T) string) string {
+	rows := make([]string, len(items))
+	for i, item := range items {
+		rows[i] = format(item)
 	}
 	return strings.Join(rows, ",\n")
+}
+
+// toSQL converts a MessageFixture to a SQL VALUES row string.
+func (m MessageFixture) toSQL() string {
+	deletedAt := "NULL::TIMESTAMP"
+	if m.DeletedAt != nil {
+		deletedAt = fmt.Sprintf("TIMESTAMP '%s'", m.DeletedAt.Format("2006-01-02 15:04:05"))
+	}
+	return fmt.Sprintf("(%d::BIGINT, %d::BIGINT, %s, %d::BIGINT, %s, %s, TIMESTAMP '%s', %d::BIGINT, %v, %s, %d, %d)",
+		m.ID, m.SourceID, sqlStr(m.SourceMessageID), m.ConversationID,
+		sqlStr(m.Subject), sqlStr(m.Snippet),
+		m.SentAt.Format("2006-01-02 15:04:05"), m.SizeEstimate,
+		m.HasAttachments, deletedAt, m.Year, m.Month,
+	)
+}
+
+func (b *TestDataBuilder) sourcesSQL() string {
+	return joinRows(b.sources, func(s SourceFixture) string {
+		return fmt.Sprintf("(%d::BIGINT, %s)", s.ID, sqlStr(s.AccountEmail))
+	})
 }
 
 func (b *TestDataBuilder) participantsSQL() string {
-	var rows []string
-	for _, p := range b.participants {
-		rows = append(rows, fmt.Sprintf("(%d::BIGINT, %s, %s, %s)",
-			p.ID, sqlStr(p.Email), sqlStr(p.Domain), sqlStr(p.DisplayName)))
-	}
-	return strings.Join(rows, ",\n")
+	return joinRows(b.participants, func(p ParticipantFixture) string {
+		return fmt.Sprintf("(%d::BIGINT, %s, %s, %s)",
+			p.ID, sqlStr(p.Email), sqlStr(p.Domain), sqlStr(p.DisplayName))
+	})
 }
 
 func (b *TestDataBuilder) recipientsSQL() string {
-	var rows []string
-	for _, r := range b.recipients {
-		rows = append(rows, fmt.Sprintf("(%d::BIGINT, %d::BIGINT, %s, %s)",
-			r.MessageID, r.ParticipantID, sqlStr(r.Type), sqlStr(r.DisplayName)))
-	}
-	return strings.Join(rows, ",\n")
+	return joinRows(b.recipients, func(r RecipientFixture) string {
+		return fmt.Sprintf("(%d::BIGINT, %d::BIGINT, %s, %s)",
+			r.MessageID, r.ParticipantID, sqlStr(r.Type), sqlStr(r.DisplayName))
+	})
 }
 
 func (b *TestDataBuilder) labelsSQL() string {
-	var rows []string
-	for _, l := range b.labels {
-		rows = append(rows, fmt.Sprintf("(%d::BIGINT, %s)", l.ID, sqlStr(l.Name)))
-	}
-	return strings.Join(rows, ",\n")
+	return joinRows(b.labels, func(l LabelFixture) string {
+		return fmt.Sprintf("(%d::BIGINT, %s)", l.ID, sqlStr(l.Name))
+	})
 }
 
 func (b *TestDataBuilder) messageLabelsSQL() string {
-	var rows []string
-	for _, ml := range b.msgLabels {
-		rows = append(rows, fmt.Sprintf("(%d::BIGINT, %d::BIGINT)", ml.MessageID, ml.LabelID))
-	}
-	return strings.Join(rows, ",\n")
+	return joinRows(b.msgLabels, func(ml MessageLabelFixture) string {
+		return fmt.Sprintf("(%d::BIGINT, %d::BIGINT)", ml.MessageID, ml.LabelID)
+	})
 }
 
 func (b *TestDataBuilder) attachmentsSQL() string {
-	var rows []string
-	for _, a := range b.attachments {
-		rows = append(rows, fmt.Sprintf("(%d::BIGINT, %d::BIGINT, %s)",
-			a.MessageID, a.Size, sqlStr(a.Filename)))
-	}
-	return strings.Join(rows, ",\n")
+	return joinRows(b.attachments, func(a AttachmentFixture) string {
+		return fmt.Sprintf("(%d::BIGINT, %d::BIGINT, %s)",
+			a.MessageID, a.Size, sqlStr(a.Filename))
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -325,36 +336,30 @@ const (
 func (b *TestDataBuilder) Build() (string, func()) {
 	b.t.Helper()
 
-	// Group messages by year for partitioning.
+	pb := newParquetBuilder(b.t)
+	b.addMessageTables(pb)
+	b.addAuxiliaryTables(pb)
+	b.addAttachmentsTable(pb)
+
+	return pb.build()
+}
+
+// addMessageTables partitions messages by year and adds each partition to the builder.
+func (b *TestDataBuilder) addMessageTables(pb *parquetBuilder) {
 	byYear := map[int][]MessageFixture{}
 	for _, m := range b.messages {
 		byYear[m.Year] = append(byYear[m.Year], m)
 	}
-
-	pb := newParquetBuilder(b.t)
-
-	// Add message partitions.
 	for year, msgs := range byYear {
-		var rows []string
-		for _, m := range msgs {
-			deletedAt := "NULL::TIMESTAMP"
-			if m.DeletedAt != nil {
-				deletedAt = fmt.Sprintf("TIMESTAMP '%s'", m.DeletedAt.Format("2006-01-02 15:04:05"))
-			}
-			rows = append(rows, fmt.Sprintf("(%d::BIGINT, %d::BIGINT, %s, %d::BIGINT, %s, %s, TIMESTAMP '%s', %d::BIGINT, %v, %s, %d, %d)",
-				m.ID, m.SourceID, sqlStr(m.SourceMessageID), m.ConversationID,
-				sqlStr(m.Subject), sqlStr(m.Snippet),
-				m.SentAt.Format("2006-01-02 15:04:05"), m.SizeEstimate,
-				m.HasAttachments, deletedAt, m.Year, m.Month,
-			))
-		}
+		rows := joinRows(msgs, MessageFixture.toSQL)
 		pb.addTable("messages",
 			fmt.Sprintf("messages/year=%d", year), "data.parquet",
-			messagesCols, strings.Join(rows, ",\n"))
+			messagesCols, rows)
 	}
+}
 
-	// For each auxiliary table, write an empty-schema file if no rows exist,
-	// otherwise write the actual data. This avoids invalid empty VALUES lists.
+// addAuxiliaryTables adds sources, participants, recipients, labels, and message_labels.
+func (b *TestDataBuilder) addAuxiliaryTables(pb *parquetBuilder) {
 	auxTables := []struct {
 		name, subdir, file, cols, dummy, sql string
 		empty                                bool
@@ -372,18 +377,16 @@ func (b *TestDataBuilder) Build() (string, func()) {
 			pb.addTable(a.name, a.subdir, a.file, a.cols, a.sql)
 		}
 	}
+}
 
-	if b.emptyAttachments {
-		pb.addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols,
-			"(0::BIGINT, 0::BIGINT, '')")
-	} else if len(b.attachments) > 0 {
+// addAttachmentsTable adds the attachments table to the builder.
+func (b *TestDataBuilder) addAttachmentsTable(pb *parquetBuilder) {
+	if len(b.attachments) > 0 && !b.emptyAttachments {
 		pb.addTable("attachments", "attachments", "attachments.parquet", attachmentsCols, b.attachmentsSQL())
 	} else {
 		pb.addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols,
 			"(0::BIGINT, 0::BIGINT, '')")
 	}
-
-	return pb.build()
 }
 
 // BuildEngine generates Parquet files and returns a DuckDBEngine.
