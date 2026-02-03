@@ -68,60 +68,31 @@ type navigationSnapshot struct {
 	state viewState
 }
 
-func (m *Model) ensureThreadCursorVisible() {
-	if m.threadCursor < m.threadScrollOffset {
-		m.threadScrollOffset = m.threadCursor
-	} else if m.threadCursor >= m.threadScrollOffset+m.pageSize {
-		m.threadScrollOffset = m.threadCursor - m.pageSize + 1
+// calculateScrollOffset computes the new scroll offset to keep cursor visible within pageSize.
+func calculateScrollOffset(cursor, currentOffset, pageSize int) int {
+	if cursor < currentOffset {
+		return cursor
 	}
+	if cursor >= currentOffset+pageSize {
+		return cursor - pageSize + 1
+	}
+	return currentOffset
+}
+
+func (m *Model) ensureThreadCursorVisible() {
+	m.threadScrollOffset = calculateScrollOffset(m.threadCursor, m.threadScrollOffset, m.pageSize)
 }
 
 func (m Model) navigateDetailPrev() (tea.Model, tea.Cmd) {
-	// Use thread messages if we entered from thread view, otherwise use list messages
-	var msgs []query.MessageSummary
-	if m.detailFromThread {
-		msgs = m.threadMessages
-	} else {
-		msgs = m.messages
-	}
-
-	// Guard against empty message list
-	if len(msgs) == 0 {
-		return m.showFlash("No messages loaded")
-	}
-
-	// Clamp index if it's out of bounds (can happen if list changed)
-	if m.detailMessageIndex >= len(msgs) {
-		m.detailMessageIndex = len(msgs) - 1
-	}
-
-	if m.detailMessageIndex > 0 {
-		// Go to previous message
-		m.detailMessageIndex--
-		// Keep appropriate cursor in sync
-		if m.detailFromThread {
-			m.threadCursor = m.detailMessageIndex
-			// Ensure thread scroll offset keeps cursor visible when returning
-			if m.threadCursor < m.threadScrollOffset {
-				m.threadScrollOffset = m.threadCursor
-			}
-		} else {
-			m.cursor = m.detailMessageIndex
-		}
-		m.pendingDetailSubject = msgs[m.detailMessageIndex].Subject
-		// Keep old messageDetail visible while new one loads (no flash)
-		m.detailScroll = 0
-		m.loading = true
-		m.err = nil
-		m.detailRequestID++
-		return m, m.loadMessageDetail(msgs[m.detailMessageIndex].ID)
-	}
-
-	// At the first message - show flash notification
-	return m.showFlash("At first message")
+	return m.changeDetailMessage(-1)
 }
 
 func (m Model) navigateDetailNext() (tea.Model, tea.Cmd) {
+	return m.changeDetailMessage(1)
+}
+
+// changeDetailMessage navigates to a different message in the detail view by delta offset.
+func (m Model) changeDetailMessage(delta int) (tea.Model, tea.Cmd) {
 	// Use thread messages if we entered from thread view, otherwise use list messages
 	var msgs []query.MessageSummary
 	if m.detailFromThread {
@@ -140,30 +111,32 @@ func (m Model) navigateDetailNext() (tea.Model, tea.Cmd) {
 		m.detailMessageIndex = len(msgs) - 1
 	}
 
-	if m.detailMessageIndex < len(msgs)-1 {
-		// Go to next message
-		m.detailMessageIndex++
-		// Keep appropriate cursor in sync
-		if m.detailFromThread {
-			m.threadCursor = m.detailMessageIndex
-			// Ensure thread scroll offset keeps cursor visible when returning
-			if m.threadCursor >= m.threadScrollOffset+m.pageSize {
-				m.threadScrollOffset = m.threadCursor - m.pageSize + 1
-			}
-		} else {
-			m.cursor = m.detailMessageIndex
-		}
-		m.pendingDetailSubject = msgs[m.detailMessageIndex].Subject
-		// Keep old messageDetail visible while new one loads (no flash)
-		m.detailScroll = 0
-		m.loading = true
-		m.err = nil
-		m.detailRequestID++
-		return m, m.loadMessageDetail(msgs[m.detailMessageIndex].ID)
+	newIndex := m.detailMessageIndex + delta
+	if newIndex < 0 {
+		return m.showFlash("At first message")
+	}
+	if newIndex >= len(msgs) {
+		return m.showFlash("At last message")
 	}
 
-	// At the last message - show flash notification
-	return m.showFlash("At last message")
+	m.detailMessageIndex = newIndex
+	m.pendingDetailSubject = msgs[newIndex].Subject
+
+	// Keep appropriate cursor in sync
+	if m.detailFromThread {
+		m.threadCursor = newIndex
+		m.ensureThreadCursorVisible()
+	} else {
+		m.cursor = newIndex
+	}
+
+	// Reset view state for new message
+	m.detailScroll = 0
+	m.loading = true
+	m.err = nil
+	m.detailRequestID++
+
+	return m, m.loadMessageDetail(msgs[newIndex].ID)
 }
 
 func (m Model) goBack() (tea.Model, tea.Cmd) {
@@ -200,12 +173,7 @@ func (m Model) goBack() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) ensureCursorVisible() {
-	if m.cursor < m.scrollOffset {
-		m.scrollOffset = m.cursor
-	}
-	if m.cursor >= m.scrollOffset+m.pageSize {
-		m.scrollOffset = m.cursor - m.pageSize + 1
-	}
+	m.scrollOffset = calculateScrollOffset(m.cursor, m.scrollOffset, m.pageSize)
 }
 
 func (m *Model) pushBreadcrumb() {
@@ -213,26 +181,25 @@ func (m *Model) pushBreadcrumb() {
 }
 
 func (m *Model) navigateList(key string, itemCount int) bool {
+	changed := false
+
 	switch key {
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
-			m.ensureCursorVisible()
+			changed = true
 		}
-		return true
 	case "down", "j":
 		if m.cursor < itemCount-1 {
 			m.cursor++
-			m.ensureCursorVisible()
+			changed = true
 		}
-		return true
 	case "pgup", "ctrl+u":
 		m.cursor -= m.pageSize
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
-		m.ensureCursorVisible()
-		return true
+		changed = true
 	case "pgdown", "ctrl+d":
 		m.cursor += m.pageSize
 		if m.cursor >= itemCount {
@@ -241,8 +208,7 @@ func (m *Model) navigateList(key string, itemCount int) bool {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
-		m.ensureCursorVisible()
-		return true
+		changed = true
 	case "home":
 		m.cursor = 0
 		m.scrollOffset = 0
@@ -252,8 +218,13 @@ func (m *Model) navigateList(key string, itemCount int) bool {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
-		m.ensureCursorVisible()
-		return true
+		changed = true
+	default:
+		return false
 	}
-	return false
+
+	if changed {
+		m.ensureCursorVisible()
+	}
+	return true
 }
