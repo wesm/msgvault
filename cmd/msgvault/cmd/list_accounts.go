@@ -31,7 +31,7 @@ Examples:
 		}
 		defer s.Close()
 
-		sources, err := s.ListSources()
+		sources, err := s.ListSources("")
 		if err != nil {
 			return fmt.Errorf("list accounts: %w", err)
 		}

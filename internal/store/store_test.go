@@ -99,7 +99,7 @@ func TestStore_Source_UpdateDisplayName(t *testing.T) {
 func TestStore_ListSources(t *testing.T) {
 	f := storetest.New(t)
 
-	sources, err := f.Store.ListSources()
+	sources, err := f.Store.ListSources("")
 	testutil.MustNoErr(t, err, "ListSources()")
 
 	if len(sources) != 1 {
