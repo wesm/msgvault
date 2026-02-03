@@ -1043,12 +1043,16 @@ func (m Model) stageForDeletion() (tea.Model, tea.Cmd) {
 		f := m.drillFilter
 		drillFilter = &f
 	}
-	manifest, err := m.actions.StageForDeletion(
-		m.selection.aggregateKeys, m.selection.messageIDs,
-		m.selection.aggregateViewType, m.accountFilter, m.accounts,
-		m.viewType, m.filterKey, m.timeGranularity, m.messages,
-		drillFilter,
-	)
+	manifest, err := m.actions.StageForDeletion(DeletionContext{
+		AggregateSelection: m.selection.aggregateKeys,
+		MessageSelection:   m.selection.messageIDs,
+		AggregateViewType:  m.selection.aggregateViewType,
+		AccountFilter:      m.accountFilter,
+		Accounts:           m.accounts,
+		TimeGranularity:    m.timeGranularity,
+		Messages:           m.messages,
+		DrillFilter:        drillFilter,
+	})
 	if err != nil {
 		m.modal = modalDeleteResult
 		m.modalResult = err.Error()

@@ -42,22 +42,32 @@ func newTestController(t *testing.T, gmailIDs ...string) *ActionController {
 }
 
 type stageArgs struct {
-	aggregates  map[string]bool
-	selection   map[int64]bool
-	view        query.ViewType
-	accountID   *int64
-	accounts    []query.AccountInfo
-	messages    []query.MessageSummary
-	drillFilter *query.MessageFilter
+	aggregates      map[string]bool
+	selection       map[int64]bool
+	view            query.ViewType
+	accountID       *int64
+	accounts        []query.AccountInfo
+	timeGranularity query.TimeGranularity
+	messages        []query.MessageSummary
+	drillFilter     *query.MessageFilter
 }
 
 func stageForDeletion(t *testing.T, ctrl *ActionController, args stageArgs) *deletion.Manifest {
 	t.Helper()
-	view := args.view
-	manifest, err := ctrl.StageForDeletion(
-		args.aggregates, args.selection, view, args.accountID, args.accounts,
-		view, "", query.TimeYear, args.messages, args.drillFilter,
-	)
+	granularity := args.timeGranularity
+	if granularity == 0 {
+		granularity = query.TimeYear
+	}
+	manifest, err := ctrl.StageForDeletion(DeletionContext{
+		AggregateSelection: args.aggregates,
+		MessageSelection:   args.selection,
+		AggregateViewType:  args.view,
+		AccountFilter:      args.accountID,
+		Accounts:           args.accounts,
+		TimeGranularity:    granularity,
+		Messages:           args.messages,
+		DrillFilter:        args.drillFilter,
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -112,10 +122,10 @@ func TestStageForDeletion_FromMessageSelection(t *testing.T) {
 func TestStageForDeletion_NoSelection(t *testing.T) {
 	ctrl := newTestController(t)
 
-	_, err := ctrl.StageForDeletion(
-		nil, nil, query.ViewSenders, nil, nil,
-		query.ViewSenders, "", query.TimeYear, nil, nil,
-	)
+	_, err := ctrl.StageForDeletion(DeletionContext{
+		AggregateViewType: query.ViewSenders,
+		TimeGranularity:   query.TimeYear,
+	})
 	if err == nil {
 		t.Fatal("expected error for empty selection")
 	}
