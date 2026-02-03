@@ -174,11 +174,20 @@ func installBinary(srcPath string) error {
 		return fmt.Errorf("resolve symlinks: %w", err)
 	}
 	binDir := filepath.Dir(currentExe)
-
 	dstPath := filepath.Join(binDir, "msgvault")
-	backupPath := dstPath + ".old"
 
 	fmt.Printf("Installing msgvault to %s... ", binDir)
+	if err := installBinaryTo(srcPath, dstPath); err != nil {
+		return err
+	}
+	fmt.Println("OK")
+	return nil
+}
+
+// installBinaryTo performs the actual binary installation with backup/restore logic.
+// This is separated from installBinary for testability.
+func installBinaryTo(srcPath, dstPath string) error {
+	backupPath := dstPath + ".old"
 
 	// Remove any stale backup from a previous update
 	os.Remove(backupPath)
@@ -204,7 +213,6 @@ func installBinary(srcPath string) error {
 	// Clean up backup on success
 	os.Remove(backupPath)
 
-	fmt.Println("OK")
 	return nil
 }
 
@@ -554,15 +562,33 @@ func isNewer(v1, v2 string) bool {
 	return semver.Compare(sv1, sv2) > 0
 }
 
+// prereleaseNumericPattern matches non-dotted prerelease identifiers with trailing digits
+// (e.g., "rc10", "beta2", "alpha1") to normalize them for proper numeric comparison.
+var prereleaseNumericPattern = regexp.MustCompile(`([a-zA-Z]+)(\d+)`)
+
 // normalizeSemver converts a version string to semver format for comparison.
 // Git-describe versions are converted to their base version.
-// Prerelease tags are preserved.
+// Prerelease tags are normalized to use dotted format for proper numeric comparison
+// (e.g., "rc10" becomes "rc.10" so that rc.10 > rc.2 numerically).
 func normalizeSemver(v string) string {
 	v = strings.TrimPrefix(v, "v")
 
 	// Strip git-describe suffix (e.g., "-5-gabcdef" or "-5-gabcdef-dirty")
 	if gitDescribePattern.MatchString(v) {
 		v = gitDescribePattern.ReplaceAllString(v, "")
+	}
+
+	// Normalize non-dotted prerelease identifiers to dotted format for numeric comparison.
+	// Per semver spec, "rc10" is compared lexicographically (so rc10 < rc2).
+	// By converting to "rc.10", the numeric part is compared as an integer.
+	if idx := strings.Index(v, "-"); idx > 0 {
+		base := v[:idx]
+		prerelease := v[idx+1:]
+		// Only normalize if it's a simple identifier like "rc10", not already dotted
+		if !strings.Contains(prerelease, ".") {
+			prerelease = prereleaseNumericPattern.ReplaceAllString(prerelease, "$1.$2")
+		}
+		v = base + "-" + prerelease
 	}
 
 	return "v" + v
