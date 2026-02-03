@@ -121,8 +121,12 @@ func TestExecute_UsesBackgroundContext(t *testing.T) {
 }
 
 // TestExecuteContext_PropagatesContext verifies ExecuteContext passes context to command handlers.
+//
+// NOTE: This test modifies the package-level rootCmd variable and must NOT use t.Parallel().
+// Running this test in parallel with other tests that access rootCmd would cause data races.
 func TestExecuteContext_PropagatesContext(t *testing.T) {
-	// Save and restore global rootCmd to avoid state leakage
+	// Save and restore global rootCmd to avoid state leakage between tests.
+	// This pattern requires sequential test execution - do not add t.Parallel().
 	savedRootCmd := rootCmd
 	defer func() { rootCmd = savedRootCmd }()
 
@@ -166,8 +170,12 @@ func TestExecuteContext_PropagatesContext(t *testing.T) {
 }
 
 // TestExecute_UsesBackgroundContextInHandler verifies Execute provides background context to handlers.
+//
+// NOTE: This test modifies the package-level rootCmd variable and must NOT use t.Parallel().
+// Running this test in parallel with other tests that access rootCmd would cause data races.
 func TestExecute_UsesBackgroundContextInHandler(t *testing.T) {
-	// Save and restore global rootCmd to avoid state leakage
+	// Save and restore global rootCmd to avoid state leakage between tests.
+	// This pattern requires sequential test execution - do not add t.Parallel().
 	savedRootCmd := rootCmd
 	defer func() { rootCmd = savedRootCmd }()
 
