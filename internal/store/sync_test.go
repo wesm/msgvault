@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/testutil"
 	"github.com/wesm/msgvault/internal/testutil/storetest"
 )
@@ -147,53 +148,22 @@ func TestListSources_ParsesTimestamps(t *testing.T) {
 	}
 }
 
-// TestScanSource_UnrecognizedFormat verifies that the scanner returns an error
+// TestScanSource_UnrecognizedFormat verifies that parseDBTime returns an error
 // with helpful context when encountering a truly unrecognized timestamp format.
-// We use a TEXT column to bypass go-sqlite3's automatic timestamp normalization.
 func TestScanSource_UnrecognizedFormat(t *testing.T) {
-	st := testutil.NewTestStore(t)
+	badTimestamp := "not-a-date-at-all"
 
-	// Create a source first
-	source, err := st.GetOrCreateSource("gmail", "badformat@example.com")
-	testutil.MustNoErr(t, err, "GetOrCreateSource")
-
-	// Create a temp table with TEXT columns to bypass DATETIME normalization,
-	// then use it via a view that replaces the sources table query
-	_, err = st.DB().Exec(`
-		CREATE TABLE sources_text_test (
-			id INTEGER PRIMARY KEY,
-			source_type TEXT,
-			identifier TEXT,
-			display_name TEXT,
-			google_user_id TEXT,
-			last_sync_at TEXT,
-			sync_cursor TEXT,
-			created_at TEXT,
-			updated_at TEXT
-		)
-	`)
-	testutil.MustNoErr(t, err, "create temp table")
-
-	// Insert a row with a truly unrecognized timestamp format
-	_, err = st.DB().Exec(`
-		INSERT INTO sources_text_test
-		(id, source_type, identifier, display_name, google_user_id, last_sync_at, sync_cursor, created_at, updated_at)
-		VALUES (?, 'gmail', 'badformat@example.com', NULL, NULL, NULL, NULL, 'not-a-date-at-all', '2024-01-01 00:00:00')
-	`, source.ID)
-	testutil.MustNoErr(t, err, "insert bad timestamp")
-
-	// Query directly from the TEXT table to verify bad timestamp was stored
-	var createdAtRaw string
-	err = st.DB().QueryRow(`SELECT created_at FROM sources_text_test WHERE identifier = 'badformat@example.com'`).Scan(&createdAtRaw)
-	testutil.MustNoErr(t, err, "query raw timestamp")
-
-	// Verify the bad timestamp made it through as a raw string
-	if createdAtRaw != "not-a-date-at-all" {
-		t.Fatalf("expected raw bad timestamp, got %q", createdAtRaw)
+	// Verify that parseDBTime rejects unrecognized formats
+	_, err := store.ParseDBTime(badTimestamp)
+	if err == nil {
+		t.Fatal("expected error for unrecognized timestamp format, got nil")
 	}
 
-	// Now verify that using parseDBTime on this string would fail
-	// (This documents the expected behavior when TEXT columns are used)
+	// Error should include the bad value for debugging
+	errStr := err.Error()
+	if !strings.Contains(errStr, badTimestamp) {
+		t.Errorf("error should include the bad value %q, got: %s", badTimestamp, errStr)
+	}
 }
 
 // TestScanSource_NullRequiredTimestamp verifies that parseRequiredTime returns
