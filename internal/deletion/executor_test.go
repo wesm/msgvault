@@ -224,6 +224,24 @@ func (c *TestContext) AssertBatchDeleteCalls(want int) {
 	}
 }
 
+// GetBatchDeleteCall safely retrieves a batch delete call by index.
+func (c *TestContext) GetBatchDeleteCall(index int) []string {
+	c.t.Helper()
+	if index >= len(c.MockAPI.BatchDeleteCalls) {
+		c.t.Fatalf("BatchDeleteCalls index %d out of range (len=%d)", index, len(c.MockAPI.BatchDeleteCalls))
+		return nil
+	}
+	return c.MockAPI.BatchDeleteCalls[index]
+}
+
+// AssertIsScopeError verifies that the error is an insufficient scope error.
+func (c *TestContext) AssertIsScopeError(err error) {
+	c.t.Helper()
+	if err == nil || !strings.Contains(err.Error(), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+		c.t.Errorf("error = %v, want scope insufficient error", err)
+	}
+}
+
 // msgIDs generates sequential message IDs like "msg0", "msg1", ..., "msg(n-1)".
 func msgIDs(n int) []string {
 	ids := make([]string, n)
@@ -360,59 +378,144 @@ func TestExecutor_WithProgress(t *testing.T) {
 	}
 }
 
-func TestExecutor_Execute_Success(t *testing.T) {
-	ctx := NewTestContext(t)
-	manifest := ctx.CreateManifest("test deletion", []string{"msg1", "msg2", "msg3"})
-
-	if err := ctx.Execute(manifest.ID); err != nil {
-		t.Fatalf("Execute() error = %v", err)
+func TestExecutor_Execute_Scenarios(t *testing.T) {
+	tests := []struct {
+		name       string
+		ids        []string
+		setup      func(*TestContext)
+		opts       *ExecuteOptions
+		wantSucc   int
+		wantFail   int
+		wantErr    bool
+		scopeError bool
+		assertions func(*testing.T, *TestContext, *Manifest)
+	}{
+		{
+			name:     "Success",
+			ids:      msgIDs(3),
+			wantSucc: 3, wantFail: 0,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertTrashCalls(3)
+				ctx.AssertCompleted()
+				ctx.AssertCompletedCount(1)
+			},
+		},
+		{
+			name:     "WithDeleteMethod",
+			ids:      msgIDs(2),
+			opts:     deleteOpts(100),
+			wantSucc: 2, wantFail: 0,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertDeleteCalls(2)
+				ctx.AssertTrashCalls(0)
+			},
+		},
+		{
+			name:     "WithFailures",
+			ids:      msgIDs(3),
+			setup:    func(c *TestContext) { c.SimulateTrashError("msg1") },
+			wantSucc: 2, wantFail: 1,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertCompletedCount(1)
+				ctx.AssertManifestExecution(m.ID, 2, 1, "msg1")
+			},
+		},
+		{
+			name: "AllFail",
+			ids:  msgIDs(2),
+			setup: func(c *TestContext) {
+				c.SimulateTrashError("msg0")
+				c.SimulateTrashError("msg1")
+			},
+			wantSucc: 0, wantFail: 2,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertFailedCount(1)
+			},
+		},
+		{
+			name:     "SmallBatchSize",
+			ids:      msgIDs(5),
+			opts:     trashOpts(2),
+			wantSucc: 5, wantFail: 0,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertTrashCalls(5)
+			},
+		},
+		{
+			name:     "NotFoundTreatedAsSuccess",
+			ids:      msgIDs(3),
+			setup:    func(c *TestContext) { c.SimulateNotFound("msg1") },
+			wantSucc: 3, wantFail: 0,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertCompletedCount(1)
+				ctx.AssertManifestExecution(m.ID, 3, 0)
+			},
+		},
+		{
+			name: "MixedErrors",
+			ids:  msgIDs(5),
+			setup: func(c *TestContext) {
+				c.SimulateNotFound("msg2")
+				c.SimulateTrashError("msg4")
+			},
+			wantSucc: 4, wantFail: 1,
+		},
+		{
+			name:     "WithDeleteMethod404",
+			ids:      msgIDs(3),
+			opts:     deleteOpts(100),
+			setup:    func(c *TestContext) { c.SimulateNotFound("msg1") },
+			wantSucc: 3, wantFail: 0,
+		},
+		{
+			name:       "ScopeError",
+			ids:        []string{"msg0", "msg1", "msg2"},
+			setup:      func(c *TestContext) { c.SimulateScopeError("msg1") },
+			wantErr:    true,
+			scopeError: true,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertNotCompleted()
+				ctx.AssertInProgressCount(1)
+				ctx.AssertManifestLastProcessedIndex(m.ID, 1)
+				ctx.AssertManifestExecution(m.ID, 1, 0)
+			},
+		},
 	}
 
-	ctx.AssertTrashCalls(3)
-	ctx.AssertCompleted()
-	ctx.AssertResult(3, 0)
-	ctx.AssertCompletedCount(1)
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := NewTestContext(t)
+			if tt.setup != nil {
+				tt.setup(ctx)
+			}
+			manifest := ctx.CreateManifest(tt.name, tt.ids)
 
-func TestExecutor_Execute_WithDeleteMethod(t *testing.T) {
-	ctx := NewTestContext(t)
-	manifest := ctx.CreateManifest("permanent delete", []string{"msg1", "msg2"})
+			var err error
+			if tt.opts != nil {
+				err = ctx.ExecuteWithOpts(manifest.ID, tt.opts)
+			} else {
+				err = ctx.Execute(manifest.ID)
+			}
 
-	if err := ctx.ExecuteWithOpts(manifest.ID, deleteOpts(100)); err != nil {
-		t.Fatalf("Execute() error = %v", err)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.scopeError {
+					ctx.AssertIsScopeError(err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				ctx.AssertResult(tt.wantSucc, tt.wantFail)
+			}
+
+			if tt.assertions != nil {
+				tt.assertions(t, ctx, manifest)
+			}
+		})
 	}
-
-	ctx.AssertDeleteCalls(2)
-	ctx.AssertTrashCalls(0)
-}
-
-func TestExecutor_Execute_WithFailures(t *testing.T) {
-	ctx := NewTestContext(t)
-	ctx.SimulateTrashError("msg2")
-
-	manifest := ctx.CreateManifest("partial failure", []string{"msg1", "msg2", "msg3"})
-
-	if err := ctx.Execute(manifest.ID); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	ctx.AssertResult(2, 1)
-	ctx.AssertCompletedCount(1)
-	ctx.AssertManifestExecution(manifest.ID, 2, 1, "msg2")
-}
-
-func TestExecutor_Execute_AllFail(t *testing.T) {
-	ctx := NewTestContext(t)
-	ctx.SimulateTrashError("msg1")
-	ctx.SimulateTrashError("msg2")
-
-	manifest := ctx.CreateManifest("total failure", []string{"msg1", "msg2"})
-
-	if err := ctx.Execute(manifest.ID); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	ctx.AssertFailedCount(1)
 }
 
 func TestExecutor_Execute_ContextCancelled(t *testing.T) {
@@ -432,24 +535,7 @@ func TestExecutor_Execute_ContextCancelled(t *testing.T) {
 	ctx.AssertNotCompleted()
 
 	// Manifest should remain in in_progress (for resume)
-	inProgress, err := ctx.Mgr.ListInProgress()
-	if err != nil {
-		t.Fatalf("ListInProgress() error = %v", err)
-	}
-	if len(inProgress) != 1 {
-		t.Errorf("ListInProgress() = %d, want 1", len(inProgress))
-	}
-}
-
-func TestExecutor_Execute_SmallBatchSize(t *testing.T) {
-	ctx := NewTestContext(t)
-	manifest := ctx.CreateManifest("small batch test", []string{"msg1", "msg2", "msg3", "msg4", "msg5"})
-
-	if err := ctx.ExecuteWithOpts(manifest.ID, trashOpts(2)); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	ctx.AssertTrashCalls(5)
+	ctx.AssertInProgressCount(1)
 }
 
 func TestExecutor_Execute_ManifestNotFound(t *testing.T) {
@@ -463,7 +549,7 @@ func TestExecutor_Execute_ManifestNotFound(t *testing.T) {
 
 func TestExecutor_Execute_InvalidStatus(t *testing.T) {
 	ctx := NewTestContext(t)
-	manifest := ctx.CreateManifest("completed test", []string{"msg1"})
+	manifest := ctx.CreateManifest("completed test", msgIDs(1))
 
 	// Execute to completion
 	if err := ctx.Execute(manifest.ID); err != nil {
@@ -506,61 +592,144 @@ func TestExecutor_Execute_ResumeFromInProgress(t *testing.T) {
 	tc.AssertManifestExecution(manifest.ID, 5, 0)
 }
 
-func TestExecutor_ExecuteBatch_Success(t *testing.T) {
-	ctx := NewTestContext(t)
-	manifest := ctx.CreateManifest("batch delete", []string{"msg1", "msg2", "msg3"})
-
-	if err := ctx.ExecuteBatch(manifest.ID); err != nil {
-		t.Fatalf("ExecuteBatch() error = %v", err)
+func TestExecutor_ExecuteBatch_Scenarios(t *testing.T) {
+	tests := []struct {
+		name       string
+		ids        []string
+		setup      func(*TestContext)
+		wantSucc   int
+		wantFail   int
+		wantErr    bool
+		scopeError bool
+		assertions func(*testing.T, *TestContext, *Manifest)
+	}{
+		{
+			name:     "Success",
+			ids:      msgIDs(3),
+			wantSucc: 3, wantFail: 0,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertBatchDeleteCalls(1)
+				if len(ctx.GetBatchDeleteCall(0)) != 3 {
+					t.Errorf("BatchDeleteCalls[0] length = %d, want 3", len(ctx.GetBatchDeleteCall(0)))
+				}
+				ctx.AssertCompleted()
+				ctx.AssertCompletedCount(1)
+			},
+		},
+		{
+			name:     "LargeBatch",
+			ids:      msgIDs(1500),
+			wantSucc: 1500, wantFail: 0,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertBatchDeleteCalls(2)
+				if len(ctx.GetBatchDeleteCall(0)) != 1000 {
+					t.Errorf("BatchDeleteCalls[0] length = %d, want 1000", len(ctx.GetBatchDeleteCall(0)))
+				}
+				if len(ctx.GetBatchDeleteCall(1)) != 500 {
+					t.Errorf("BatchDeleteCalls[1] length = %d, want 500", len(ctx.GetBatchDeleteCall(1)))
+				}
+			},
+		},
+		{
+			name:     "WithBatchError",
+			ids:      msgIDs(3),
+			setup:    func(c *TestContext) { c.SimulateBatchDeleteError() },
+			wantSucc: 3, wantFail: 0,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertBatchDeleteCalls(1)
+				ctx.AssertDeleteCalls(3)
+			},
+		},
+		{
+			name:     "FallbackNotFoundTreatedAsSuccess",
+			ids:      msgIDs(3),
+			setup:    func(c *TestContext) { c.SimulateBatchDeleteError(); c.SimulateNotFound("msg1") },
+			wantSucc: 3, wantFail: 0,
+		},
+		{
+			name:     "FallbackWithNon404Failures",
+			ids:      msgIDs(3),
+			setup:    func(c *TestContext) { c.SimulateBatchDeleteError(); c.SimulateDeleteError("msg1") },
+			wantSucc: 2, wantFail: 1,
+		},
+		{
+			name: "FallbackMixed",
+			ids:  msgIDs(4),
+			setup: func(c *TestContext) {
+				c.SimulateBatchDeleteError()
+				c.SimulateNotFound("msg2")
+				c.SimulateDeleteError("msg3")
+			},
+			wantSucc: 3, wantFail: 1,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertBatchDeleteCalls(1)
+				ctx.AssertDeleteCalls(4)
+			},
+		},
+		{
+			name:       "ScopeError",
+			ids:        msgIDs(3),
+			setup:      func(c *TestContext) { c.SimulateBatchScopeError() },
+			wantErr:    true,
+			scopeError: true,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertNotCompleted()
+				ctx.AssertInProgressCount(1)
+				ctx.AssertManifestLastProcessedIndex(m.ID, 0)
+			},
+		},
+		{
+			name: "FallbackScopeError",
+			ids:  []string{"msg0", "msg1", "msg2", "msg3"},
+			setup: func(c *TestContext) {
+				c.SimulateBatchDeleteError()
+				c.SimulateScopeError("msg2")
+			},
+			wantErr:    true,
+			scopeError: true,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertNotCompleted()
+				ctx.AssertInProgressCount(1)
+				ctx.AssertManifestLastProcessedIndex(m.ID, 2)
+				ctx.AssertManifestExecution(m.ID, 2, 0)
+			},
+		},
 	}
 
-	ctx.AssertBatchDeleteCalls(1)
-	if len(ctx.MockAPI.BatchDeleteCalls[0]) != 3 {
-		t.Errorf("BatchDeleteCalls[0] length = %d, want 3", len(ctx.MockAPI.BatchDeleteCalls[0]))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := NewTestContext(t)
+			if tt.setup != nil {
+				tt.setup(ctx)
+			}
+			manifest := ctx.CreateManifest(tt.name, tt.ids)
+
+			err := ctx.ExecuteBatch(manifest.ID)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.scopeError {
+					ctx.AssertIsScopeError(err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				ctx.AssertResult(tt.wantSucc, tt.wantFail)
+			}
+
+			if tt.assertions != nil {
+				tt.assertions(t, ctx, manifest)
+			}
+		})
 	}
-	ctx.AssertCompleted()
-	ctx.AssertResult(3, 0)
-	ctx.AssertCompletedCount(1)
-}
-
-func TestExecutor_ExecuteBatch_LargeBatch(t *testing.T) {
-	ctx := NewTestContext(t)
-
-	// Create manifest with >1000 messages (Gmail batch limit)
-	manifest := ctx.CreateManifest("large batch", msgIDs(1500))
-
-	if err := ctx.ExecuteBatch(manifest.ID); err != nil {
-		t.Fatalf("ExecuteBatch() error = %v", err)
-	}
-
-	// Should be split into 2 batches (1000 + 500)
-	ctx.AssertBatchDeleteCalls(2)
-	if len(ctx.MockAPI.BatchDeleteCalls[0]) != 1000 {
-		t.Errorf("BatchDeleteCalls[0] length = %d, want 1000", len(ctx.MockAPI.BatchDeleteCalls[0]))
-	}
-	if len(ctx.MockAPI.BatchDeleteCalls[1]) != 500 {
-		t.Errorf("BatchDeleteCalls[1] length = %d, want 500", len(ctx.MockAPI.BatchDeleteCalls[1]))
-	}
-}
-
-func TestExecutor_ExecuteBatch_WithBatchError(t *testing.T) {
-	ctx := NewTestContext(t)
-	ctx.SimulateBatchDeleteError()
-
-	manifest := ctx.CreateManifest("batch fallback", []string{"msg1", "msg2", "msg3"})
-
-	if err := ctx.ExecuteBatch(manifest.ID); err != nil {
-		t.Fatalf("ExecuteBatch() error = %v", err)
-	}
-
-	// Should have attempted batch, then fallen back to individual
-	ctx.AssertBatchDeleteCalls(1)
-	ctx.AssertDeleteCalls(3)
 }
 
 func TestExecutor_ExecuteBatch_InvalidStatus(t *testing.T) {
 	ctx := NewTestContext(t)
-	manifest := ctx.CreateManifest("wrong status", []string{"msg1"})
+	manifest := ctx.CreateManifest("wrong status", msgIDs(1))
 
 	// Move to in_progress
 	if err := ctx.Mgr.MoveManifest(manifest.ID, StatusPending, StatusInProgress); err != nil {
@@ -596,107 +765,6 @@ func TestExecutor_ExecuteBatch_ManifestNotFound(t *testing.T) {
 	err := ctx.ExecuteBatch("nonexistent-id")
 	if err == nil {
 		t.Error("ExecuteBatch() should error for nonexistent manifest")
-	}
-}
-
-// TestExecutor_Execute_NotFoundTreatedAsSuccess verifies that 404 (already deleted)
-// is treated as success, making deletion idempotent.
-func TestExecutor_Execute_NotFoundTreatedAsSuccess(t *testing.T) {
-	ctx := NewTestContext(t)
-	ctx.SimulateNotFound("msg2")
-
-	manifest := ctx.CreateManifest("idempotent test", []string{"msg1", "msg2", "msg3"})
-
-	if err := ctx.Execute(manifest.ID); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	ctx.AssertResult(3, 0)
-	ctx.AssertCompletedCount(1)
-	ctx.AssertManifestExecution(manifest.ID, 3, 0)
-}
-
-// TestExecutor_ExecuteBatch_FallbackNotFoundTreatedAsSuccess verifies that
-// when batch delete fails and falls back to individual deletes,
-// 404 errors are still treated as success.
-func TestExecutor_ExecuteBatch_FallbackNotFoundTreatedAsSuccess(t *testing.T) {
-	ctx := NewTestContext(t)
-	ctx.SimulateBatchDeleteError()
-	ctx.SimulateNotFound("msg2")
-
-	manifest := ctx.CreateManifest("batch fallback 404", []string{"msg1", "msg2", "msg3"})
-
-	if err := ctx.ExecuteBatch(manifest.ID); err != nil {
-		t.Fatalf("ExecuteBatch() error = %v", err)
-	}
-
-	ctx.AssertResult(3, 0)
-}
-
-// TestExecutor_ExecuteBatch_FallbackWithNon404Failures verifies that
-// non-404 failures during fallback are properly counted as failures.
-func TestExecutor_ExecuteBatch_FallbackWithNon404Failures(t *testing.T) {
-	ctx := NewTestContext(t)
-	ctx.SimulateBatchDeleteError()
-	ctx.SimulateDeleteError("msg2")
-
-	manifest := ctx.CreateManifest("batch fallback failures", []string{"msg1", "msg2", "msg3"})
-
-	if err := ctx.ExecuteBatch(manifest.ID); err != nil {
-		t.Fatalf("ExecuteBatch() error = %v", err)
-	}
-
-	ctx.AssertResult(2, 1)
-}
-
-// TestExecutor_Execute_WithDeleteMethod_404 tests 404 handling with permanent delete method.
-func TestExecutor_Execute_WithDeleteMethod_404(t *testing.T) {
-	ctx := NewTestContext(t)
-	ctx.SimulateNotFound("msg2")
-
-	manifest := ctx.CreateManifest("delete method 404", []string{"msg1", "msg2", "msg3"})
-
-	if err := ctx.ExecuteWithOpts(manifest.ID, deleteOpts(100)); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	ctx.AssertResult(3, 0)
-}
-
-// TestExecutor_Execute_MixedErrors tests mixed success/404/error.
-func TestExecutor_Execute_MixedErrors(t *testing.T) {
-	ctx := NewTestContext(t)
-	ctx.SimulateNotFound("msg2")
-	ctx.SimulateTrashError("msg4")
-
-	manifest := ctx.CreateManifest("mixed errors test", msgIDs(5))
-
-	if err := ctx.Execute(manifest.ID); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	ctx.AssertResult(4, 1)
-}
-
-// TestExecutor_ExecuteBatch_FallbackMixed tests batch fallback with mixed results.
-func TestExecutor_ExecuteBatch_FallbackMixed(t *testing.T) {
-	ctx := NewTestContext(t)
-	ctx.SimulateBatchDeleteError()
-	ctx.SimulateNotFound("msg2")
-	ctx.SimulateDeleteError("msg3")
-
-	manifest := ctx.CreateManifest("batch fallback mixed", msgIDs(4))
-
-	if err := ctx.ExecuteBatch(manifest.ID); err != nil {
-		t.Fatalf("ExecuteBatch() error = %v", err)
-	}
-
-	ctx.AssertResult(3, 1)
-	if len(ctx.MockAPI.BatchDeleteCalls) != 1 {
-		t.Errorf("BatchDeleteCalls = %d, want 1", len(ctx.MockAPI.BatchDeleteCalls))
-	}
-	if len(ctx.MockAPI.DeleteCalls) != 4 {
-		t.Errorf("DeleteCalls = %d, want 4 (fallback)", len(ctx.MockAPI.DeleteCalls))
 	}
 }
 
@@ -789,9 +857,7 @@ func TestExecutor_ExecuteBatch_RetryScopeErrorAfterPartialSuccess(t *testing.T) 
 	if err == nil {
 		t.Fatal("ExecuteBatch() should return error for scope error during retry")
 	}
-	if !strings.Contains(err.Error(), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
-		t.Errorf("error should contain scope message, got: %v", err)
-	}
+	tc.AssertIsScopeError(err)
 
 	// msg2 succeeded before the scope error on msg3
 	// Checkpoint should have: FailedIDs = [msg3, msg4] (current + unattempted)
@@ -821,72 +887,4 @@ func TestNullProgress_AllMethods(t *testing.T) {
 	p.OnProgress(50, 40, 10)
 	p.OnComplete(90, 10)
 	// If we get here without panic, the test passes
-}
-
-// TestExecutor_Execute_ScopeError verifies that scope errors propagate immediately
-// and checkpoint state is saved.
-func TestExecutor_Execute_ScopeError(t *testing.T) {
-	ctx := NewTestContext(t)
-	ctx.SimulateScopeError("msg1")
-
-	manifest := ctx.CreateManifest("scope error test", []string{"msg0", "msg1", "msg2"})
-
-	err := ctx.Execute(manifest.ID)
-	if err == nil {
-		t.Fatal("Execute() should return error for scope error")
-	}
-	if !strings.Contains(err.Error(), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
-		t.Errorf("error should contain scope message, got: %v", err)
-	}
-
-	ctx.AssertNotCompleted()
-	ctx.AssertInProgressCount(1)
-	// msg0 succeeded, msg1 hit scope error — checkpoint should be at index 1
-	ctx.AssertManifestLastProcessedIndex(manifest.ID, 1)
-	ctx.AssertManifestExecution(manifest.ID, 1, 0)
-}
-
-// TestExecutor_ExecuteBatch_ScopeError verifies that batch scope errors propagate
-// immediately and checkpoint state is saved.
-func TestExecutor_ExecuteBatch_ScopeError(t *testing.T) {
-	ctx := NewTestContext(t)
-	ctx.SimulateBatchScopeError()
-
-	manifest := ctx.CreateManifest("batch scope error", []string{"msg0", "msg1", "msg2"})
-
-	err := ctx.ExecuteBatch(manifest.ID)
-	if err == nil {
-		t.Fatal("ExecuteBatch() should return error for scope error")
-	}
-	if !strings.Contains(err.Error(), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
-		t.Errorf("error should contain scope message, got: %v", err)
-	}
-
-	ctx.AssertNotCompleted()
-	ctx.AssertInProgressCount(1)
-	ctx.AssertManifestLastProcessedIndex(manifest.ID, 0)
-}
-
-// TestExecutor_ExecuteBatch_FallbackScopeError verifies that scope errors during
-// individual delete fallback propagate with correct per-item checkpoint.
-func TestExecutor_ExecuteBatch_FallbackScopeError(t *testing.T) {
-	ctx := NewTestContext(t)
-	ctx.SimulateBatchDeleteError() // Force fallback to individual deletes
-	ctx.SimulateScopeError("msg2") // Third message hits scope error
-
-	manifest := ctx.CreateManifest("fallback scope error", []string{"msg0", "msg1", "msg2", "msg3"})
-
-	err := ctx.ExecuteBatch(manifest.ID)
-	if err == nil {
-		t.Fatal("ExecuteBatch() should return error for scope error in fallback")
-	}
-	if !strings.Contains(err.Error(), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
-		t.Errorf("error should contain scope message, got: %v", err)
-	}
-
-	ctx.AssertNotCompleted()
-	ctx.AssertInProgressCount(1)
-	// msg0 and msg1 succeeded, msg2 hit scope error at index 2
-	ctx.AssertManifestLastProcessedIndex(manifest.ID, 2)
-	ctx.AssertManifestExecution(manifest.ID, 2, 0)
 }
