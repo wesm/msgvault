@@ -518,12 +518,14 @@ func TestManager_Transitions(t *testing.T) {
 		// Chain of transitions to apply; last one is the transition under test.
 		chain   [][2]Status
 		wantErr bool
+		// Expected list counts after successful transitions: [pending, inProgress, completed, failed]
+		wantCounts [4]int
 	}{
-		{"pending->in_progress", [][2]Status{{StatusPending, StatusInProgress}}, false},
-		{"in_progress->completed", [][2]Status{{StatusPending, StatusInProgress}, {StatusInProgress, StatusCompleted}}, false},
-		{"in_progress->failed", [][2]Status{{StatusPending, StatusInProgress}, {StatusInProgress, StatusFailed}}, false},
-		{"completed->pending (invalid)", [][2]Status{{StatusPending, StatusInProgress}, {StatusInProgress, StatusCompleted}, {StatusCompleted, StatusPending}}, true},
-		{"pending->pending (invalid)", [][2]Status{{StatusPending, StatusPending}}, true},
+		{"pending->in_progress", [][2]Status{{StatusPending, StatusInProgress}}, false, [4]int{0, 1, 0, 0}},
+		{"in_progress->completed", [][2]Status{{StatusPending, StatusInProgress}, {StatusInProgress, StatusCompleted}}, false, [4]int{0, 0, 1, 0}},
+		{"in_progress->failed", [][2]Status{{StatusPending, StatusInProgress}, {StatusInProgress, StatusFailed}}, false, [4]int{0, 0, 0, 1}},
+		{"completed->pending (invalid)", [][2]Status{{StatusPending, StatusInProgress}, {StatusInProgress, StatusCompleted}, {StatusCompleted, StatusPending}}, true, [4]int{}},
+		{"pending->pending (invalid)", [][2]Status{{StatusPending, StatusPending}}, true, [4]int{}},
 	}
 
 	for _, tc := range tests {
@@ -546,6 +548,12 @@ func TestManager_Transitions(t *testing.T) {
 			if !tc.wantErr {
 				last := tc.chain[len(tc.chain)-1]
 				AssertManifestInState(t, mgr, m.ID, last[1])
+
+				// Verify list counts to ensure proper bookkeeping
+				assertListCount(t, mgr.ListPending, tc.wantCounts[0])
+				assertListCount(t, mgr.ListInProgress, tc.wantCounts[1])
+				assertListCount(t, mgr.ListCompleted, tc.wantCounts[2])
+				assertListCount(t, mgr.ListFailed, tc.wantCounts[3])
 			}
 		})
 	}
