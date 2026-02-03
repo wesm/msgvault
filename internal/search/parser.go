@@ -128,7 +128,10 @@ func NewParser() *Parser {
 //   - Bare words and "quoted phrases" - full-text search
 func (p *Parser) Parse(queryStr string) *Query {
 	q := &Query{}
-	now := p.Now()
+	now := time.Now().UTC()
+	if p.Now != nil {
+		now = p.Now()
+	}
 	tokens := tokenize(queryStr)
 
 	for _, token := range tokens {

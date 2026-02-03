@@ -236,6 +236,23 @@ func TestParse_RelativeDates(t *testing.T) {
 	}
 }
 
+// TestParse_TopLevelWrapper ensures the convenience Parse() function
+// works correctly with relative date operators (verifies wiring to NewParser).
+func TestParse_TopLevelWrapper(t *testing.T) {
+	// Test that Parse() handles relative dates without panicking
+	// and returns a non-nil AfterDate (the exact value depends on current time)
+	q := Parse("newer_than:1d")
+	if q.AfterDate == nil {
+		t.Error("Parse(\"newer_than:1d\") should set AfterDate")
+	}
+
+	// Also verify older_than sets BeforeDate
+	q = Parse("older_than:1w")
+	if q.BeforeDate == nil {
+		t.Error("Parse(\"older_than:1w\") should set BeforeDate")
+	}
+}
+
 func TestQuery_IsEmpty(t *testing.T) {
 	tests := []struct {
 		query   string
