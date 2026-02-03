@@ -126,24 +126,11 @@ func TestAggregateByTime(t *testing.T) {
 		t.Fatalf("AggregateByTime: %v", err)
 	}
 
-	if len(rows) != 3 {
-		t.Errorf("expected 3 months, got %d", len(rows))
-	}
-
-	months := make(map[string]int64)
-	for _, row := range rows {
-		months[row.Key] = row.Count
-	}
-
-	if months["2024-01"] != 2 {
-		t.Errorf("expected 2024-01 count 2, got %d", months["2024-01"])
-	}
-	if months["2024-02"] != 2 {
-		t.Errorf("expected 2024-02 count 2, got %d", months["2024-02"])
-	}
-	if months["2024-03"] != 1 {
-		t.Errorf("expected 2024-03 count 1, got %d", months["2024-03"])
-	}
+	assertAggRows(t, rows, []aggExpectation{
+		{"2024-01", 2},
+		{"2024-02", 2},
+		{"2024-03", 1},
+	})
 }
 
 func TestAggregateWithDateFilter(t *testing.T) {
@@ -158,40 +145,41 @@ func TestAggregateWithDateFilter(t *testing.T) {
 		t.Fatalf("AggregateBySender with date filter: %v", err)
 	}
 
-	if len(rows) != 2 {
-		t.Errorf("expected 2 senders after filter, got %d", len(rows))
-	}
-
-	if rows[0].Key != "bob@company.org" {
-		t.Errorf("expected bob first after filter, got %s", rows[0].Key)
-	}
+	assertAggRows(t, rows, []aggExpectation{
+		{"bob@company.org", 2},
+		{"alice@example.com", 1},
+	})
 }
 
 func TestSortingOptions(t *testing.T) {
 	env := newTestEnv(t)
 
-	opts := DefaultAggregateOptions()
-	opts.SortField = SortBySize
+	t.Run("SortBySizeDesc", func(t *testing.T) {
+		opts := DefaultAggregateOptions()
+		opts.SortField = SortBySize
+		rows, err := env.Engine.Aggregate(env.Ctx, ViewSenders, opts)
+		if err != nil {
+			t.Fatalf("AggregateBySender: %v", err)
+		}
+		assertAggRows(t, rows, []aggExpectation{
+			{"alice@example.com", 3},
+			{"bob@company.org", 2},
+		})
+	})
 
-	rows, err := env.Engine.Aggregate(env.Ctx, ViewSenders, opts)
-	if err != nil {
-		t.Fatalf("AggregateBySender: %v", err)
-	}
-
-	if rows[0].Key != "alice@example.com" {
-		t.Errorf("expected alice first by size, got %s", rows[0].Key)
-	}
-
-	opts.SortDirection = SortAsc
-
-	rows, err = env.Engine.Aggregate(env.Ctx, ViewSenders, opts)
-	if err != nil {
-		t.Fatalf("AggregateBySender: %v", err)
-	}
-
-	if rows[0].Key != "bob@company.org" {
-		t.Errorf("expected bob first by size asc, got %s", rows[0].Key)
-	}
+	t.Run("SortBySizeAsc", func(t *testing.T) {
+		opts := DefaultAggregateOptions()
+		opts.SortField = SortBySize
+		opts.SortDirection = SortAsc
+		rows, err := env.Engine.Aggregate(env.Ctx, ViewSenders, opts)
+		if err != nil {
+			t.Fatalf("AggregateBySender: %v", err)
+		}
+		assertAggRows(t, rows, []aggExpectation{
+			{"bob@company.org", 2},
+			{"alice@example.com", 3},
+		})
+	})
 }
 
 func TestWithAttachmentsOnlyAggregate(t *testing.T) {
@@ -224,42 +212,60 @@ func TestWithAttachmentsOnlyAggregate(t *testing.T) {
 // SubAggregate tests
 // =============================================================================
 
-func TestSubAggregateBySender(t *testing.T) {
-	env := newTestEnv(t)
-
-	filter := MessageFilter{Recipient: "alice@example.com"}
-	results, err := env.Engine.SubAggregate(env.Ctx, filter, ViewSenders, DefaultAggregateOptions())
-	if err != nil {
-		t.Fatalf("SubAggregate: %v", err)
+func TestSubAggregates(t *testing.T) {
+	tests := []struct {
+		name   string
+		filter MessageFilter
+		view   ViewType
+		want   []aggExpectation
+	}{
+		{
+			name:   "BySender",
+			filter: MessageFilter{Recipient: "alice@example.com"},
+			view:   ViewSenders,
+			want:   []aggExpectation{{"bob@company.org", 2}},
+		},
+		{
+			name:   "BySenderName",
+			filter: MessageFilter{Recipient: "alice@example.com"},
+			view:   ViewSenderNames,
+			want:   []aggExpectation{{"Bob Jones", 2}},
+		},
+		{
+			name:   "ByRecipient",
+			filter: MessageFilter{Sender: "alice@example.com"},
+			view:   ViewRecipients,
+			want:   []aggExpectation{{"bob@company.org", 3}, {"carol@example.com", 1}},
+		},
+		{
+			name:   "ByLabel",
+			filter: MessageFilter{Sender: "alice@example.com"},
+			view:   ViewLabels,
+			want:   []aggExpectation{{"INBOX", 3}, {"IMPORTANT", 1}, {"Work", 1}},
+		},
+		{
+			name:   "ByRecipientName",
+			filter: MessageFilter{Sender: "alice@example.com"},
+			view:   ViewRecipientNames,
+			want:   []aggExpectation{{"Bob Jones", 3}, {"Carol White", 1}},
+		},
+		{
+			name:   "RecipientNameWithRecipient",
+			filter: MessageFilter{Recipient: "bob@company.org", RecipientName: "Bob Jones"},
+			view:   ViewSenders,
+			want:   []aggExpectation{{"alice@example.com", 3}},
+		},
 	}
 
-	if len(results) != 1 {
-		t.Errorf("expected 1 sender to alice@example.com, got %d", len(results))
-	}
-
-	if len(results) > 0 && results[0].Key != "bob@company.org" {
-		t.Errorf("expected bob@company.org, got %s", results[0].Key)
-	}
-
-	if len(results) > 0 && results[0].Count != 2 {
-		t.Errorf("expected count 2, got %d", results[0].Count)
-	}
-}
-
-func TestSubAggregateBySenderName(t *testing.T) {
-	env := newTestEnv(t)
-
-	filter := MessageFilter{Recipient: "alice@example.com"}
-	results, err := env.Engine.SubAggregate(env.Ctx, filter, ViewSenderNames, DefaultAggregateOptions())
-	if err != nil {
-		t.Fatalf("SubAggregate: %v", err)
-	}
-
-	if len(results) != 1 {
-		t.Errorf("expected 1 sender name to alice, got %d", len(results))
-	}
-	if len(results) > 0 && results[0].Key != "Bob Jones" {
-		t.Errorf("expected 'Bob Jones', got %q", results[0].Key)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newTestEnv(t)
+			results, err := env.Engine.SubAggregate(env.Ctx, tc.filter, tc.view, DefaultAggregateOptions())
+			if err != nil {
+				t.Fatalf("SubAggregate: %v", err)
+			}
+			assertAggRows(t, results, tc.want)
+		})
 	}
 }
 
@@ -276,42 +282,6 @@ func TestSubAggregate_MatchEmptySenderName(t *testing.T) {
 		t.Errorf("expected 0 label sub-aggregates for empty sender name, got %d", len(results))
 		for _, r := range results {
 			t.Logf("  key=%q count=%d", r.Key, r.Count)
-		}
-	}
-}
-
-func TestSubAggregateByRecipient(t *testing.T) {
-	env := newTestEnv(t)
-
-	filter := MessageFilter{Sender: "alice@example.com"}
-	results, err := env.Engine.SubAggregate(env.Ctx, filter, ViewRecipients, DefaultAggregateOptions())
-	if err != nil {
-		t.Fatalf("SubAggregate: %v", err)
-	}
-
-	if len(results) != 2 {
-		t.Errorf("expected 2 recipients for alice@example.com, got %d", len(results))
-	}
-
-	assertRow(t, results, "bob@company.org", 3)
-}
-
-func TestSubAggregateByLabel(t *testing.T) {
-	env := newTestEnv(t)
-
-	filter := MessageFilter{Sender: "alice@example.com"}
-	results, err := env.Engine.SubAggregate(env.Ctx, filter, ViewLabels, DefaultAggregateOptions())
-	if err != nil {
-		t.Fatalf("SubAggregate: %v", err)
-	}
-
-	if len(results) != 3 {
-		t.Errorf("expected 3 labels for alice@example.com's messages, got %d", len(results))
-	}
-
-	for _, r := range results {
-		if r.Key == "INBOX" && r.Count != 3 {
-			t.Errorf("expected INBOX count 3, got %d", r.Count)
 		}
 	}
 }
@@ -403,42 +373,4 @@ func TestAggregateByRecipientName_EmptyStringFallback(t *testing.T) {
 		{"empty@test.com", 1},
 		{"spaces@test.com", 1},
 	})
-}
-
-func TestSubAggregateByRecipientName(t *testing.T) {
-	env := newTestEnv(t)
-
-	filter := MessageFilter{Sender: "alice@example.com"}
-	results, err := env.Engine.SubAggregate(env.Ctx, filter, ViewRecipientNames, DefaultAggregateOptions())
-	if err != nil {
-		t.Fatalf("SubAggregate: %v", err)
-	}
-
-	if len(results) != 2 {
-		t.Errorf("expected 2 recipient names from alice, got %d", len(results))
-		for _, r := range results {
-			t.Logf("  key=%q count=%d", r.Key, r.Count)
-		}
-	}
-}
-
-func TestSubAggregate_RecipientName_WithRecipient(t *testing.T) {
-	env := newTestEnv(t)
-
-	filter := MessageFilter{
-		Recipient:     "bob@company.org",
-		RecipientName: "Bob Jones",
-	}
-	opts := AggregateOptions{Limit: 100}
-	rows, err := env.Engine.SubAggregate(env.Ctx, filter, ViewSenders, opts)
-	if err != nil {
-		t.Fatalf("SubAggregate: %v", err)
-	}
-
-	if len(rows) != 1 {
-		t.Errorf("expected 1 sender for Bob Jones, got %d", len(rows))
-	}
-	if len(rows) > 0 && rows[0].Key != "alice@example.com" {
-		t.Errorf("expected sender alice@example.com, got %s", rows[0].Key)
-	}
 }
