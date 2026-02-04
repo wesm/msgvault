@@ -66,8 +66,8 @@ func runExportAttachment(cmd *cobra.Command, args []string) error {
 	attachmentsDir := cfg.AttachmentsDir()
 	storagePath := filepath.Join(attachmentsDir, contentHash[:2], contentHash)
 
-	// For base64/JSON modes we need the full content in memory.
-	// For binary output, stream directly to avoid loading large files.
+	// JSON mode reads the full file into memory for base64 encoding.
+	// Base64 and binary modes stream directly to avoid loading large files.
 	if exportAttachmentJSON {
 		return exportAttachmentAsJSON(storagePath, contentHash)
 	}

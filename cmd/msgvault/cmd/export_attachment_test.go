@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -126,9 +127,8 @@ func TestExportAttachment_Base64Output(t *testing.T) {
 		t.Fatalf("exportAttachmentAsBase64: %v", err)
 	}
 
-	buf := make([]byte, 4096)
-	n, _ := r.Read(buf)
-	output := string(buf[:n])
+	outputBytes, _ := io.ReadAll(r)
+	output := string(outputBytes)
 
 	// Strip trailing newline
 	expected := base64.StdEncoding.EncodeToString(wantData) + "\n"

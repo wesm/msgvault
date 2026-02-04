@@ -53,11 +53,10 @@ func getDateArg(args map[string]any, key string) (*time.Time, error) {
 // readAttachmentFile reads the content-addressed attachment file after
 // validating the hash and checking size limits.
 func (h *handlers) readAttachmentFile(contentHash string) ([]byte, error) {
-	if err := export.ValidateContentHash(contentHash); err != nil {
+	filePath, err := export.StoragePath(h.attachmentsDir, contentHash)
+	if err != nil {
 		return nil, fmt.Errorf("attachment has invalid content hash")
 	}
-
-	filePath := export.StoragePath(h.attachmentsDir, contentHash)
 
 	f, err := os.Open(filePath)
 	if err != nil {

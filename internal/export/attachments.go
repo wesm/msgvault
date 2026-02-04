@@ -139,7 +139,11 @@ func isWriteError(err error) bool {
 }
 
 func addAttachmentToZip(zw *zip.Writer, root string, att query.AttachmentInfo, usedNames map[string]int) (int64, error) {
-	srcFile, err := os.Open(StoragePath(root, att.ContentHash))
+	storagePath, err := StoragePath(root, att.ContentHash)
+	if err != nil {
+		return 0, err
+	}
+	srcFile, err := os.Open(storagePath)
 	if err != nil {
 		return 0, err
 	}
@@ -194,9 +198,13 @@ func SanitizeFilename(s string) string {
 }
 
 // StoragePath returns the content-addressed file path for an attachment:
-// attachmentsDir/<hash[:2]>/<hash>.
-func StoragePath(attachmentsDir, contentHash string) string {
-	return filepath.Join(attachmentsDir, contentHash[:2], contentHash)
+// attachmentsDir/<hash[:2]>/<hash>. Returns an error if the content hash
+// is invalid (prevents panics from short/empty strings).
+func StoragePath(attachmentsDir, contentHash string) (string, error) {
+	if err := ValidateContentHash(contentHash); err != nil {
+		return "", err
+	}
+	return filepath.Join(attachmentsDir, contentHash[:2], contentHash), nil
 }
 
 // ExportedFile represents a single file written to a directory.
@@ -251,7 +259,10 @@ func AttachmentsToDir(outputDir, attachmentsDir string, attachments []query.Atta
 // storage to outputDir/filename. Uses O_EXCL to avoid overwriting; appends
 // _1, _2, etc. on conflict.
 func exportAttachmentToFile(outputDir, attachmentsDir, contentHash, filename string) (ExportedFile, error) {
-	srcPath := StoragePath(attachmentsDir, contentHash)
+	srcPath, err := StoragePath(attachmentsDir, contentHash)
+	if err != nil {
+		return ExportedFile{}, err
+	}
 	src, err := os.Open(srcPath)
 	if err != nil {
 		if os.IsNotExist(err) {
