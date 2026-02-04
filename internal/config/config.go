@@ -111,6 +111,16 @@ func (c *Config) AnalyticsDir() string {
 	return filepath.Join(c.Data.DataDir, "analytics")
 }
 
+// EnsureHomeDir creates the msgvault home directory if it doesn't exist.
+func (c *Config) EnsureHomeDir() error {
+	return os.MkdirAll(c.HomeDir, 0700)
+}
+
+// ConfigFilePath returns the path to the config file.
+func (c *Config) ConfigFilePath() string {
+	return filepath.Join(c.HomeDir, "config.toml")
+}
+
 // expandPath expands ~ to the user's home directory.
 // Only expands paths that are exactly "~" or start with "~/".
 func expandPath(path string) string {
