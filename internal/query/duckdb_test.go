@@ -1665,9 +1665,9 @@ func TestDuckDBEngine_SubAggregate_MultipleEmptyTargets(t *testing.T) {
 	}
 }
 
-// TestDuckDBEngine_GetGmailIDsByFilter_NoParquet verifies error when analyticsDir is empty.
-func TestDuckDBEngine_GetGmailIDsByFilter_NoParquet(t *testing.T) {
-	// Create engine without Parquet
+// TestDuckDBEngine_GetGmailIDsByFilter_NoDataSource verifies error when no SQLite or Parquet available.
+func TestDuckDBEngine_GetGmailIDsByFilter_NoDataSource(t *testing.T) {
+	// Create engine without SQLite or Parquet
 	engine, err := NewDuckDBEngine("", "", nil)
 	if err != nil {
 		t.Fatalf("NewDuckDBEngine: %v", err)
@@ -1677,10 +1677,10 @@ func TestDuckDBEngine_GetGmailIDsByFilter_NoParquet(t *testing.T) {
 	ctx := context.Background()
 	_, err = engine.GetGmailIDsByFilter(ctx, MessageFilter{Sender: "test@example.com"})
 	if err == nil {
-		t.Fatal("expected error when calling GetGmailIDsByFilter without Parquet")
+		t.Fatal("expected error when calling GetGmailIDsByFilter without SQLite or Parquet")
 	}
-	if !strings.Contains(err.Error(), "requires Parquet") {
-		t.Errorf("expected 'requires Parquet' error, got: %v", err)
+	if !strings.Contains(err.Error(), "requires SQLite or Parquet") {
+		t.Errorf("expected 'requires SQLite or Parquet' error, got: %v", err)
 	}
 }
 

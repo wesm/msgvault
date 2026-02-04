@@ -1536,11 +1536,20 @@ func (e *DuckDBEngine) Search(ctx context.Context, q *search.Query, limit, offse
 	return results, nil
 }
 
-// GetGmailIDsByFilter returns Gmail IDs matching a filter from Parquet files.
-// Uses EXISTS subqueries for efficient semi-join filtering.
+// GetGmailIDsByFilter returns Gmail IDs matching a filter.
+// This method delegates to SQLite for authoritative deletion status.
+// The Parquet cache may be stale if messages were deleted after the last cache build,
+// so we use SQLite directly to ensure deleted messages are properly excluded.
 func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFilter) ([]string, error) {
+	// Delegate to SQLite for authoritative deletion status.
+	// Parquet cache may be stale if deletions occurred after the last build.
+	if e.sqliteEngine != nil {
+		return e.sqliteEngine.GetGmailIDsByFilter(ctx, filter)
+	}
+
+	// Fall back to Parquet if no SQLite engine available (shouldn't happen in practice)
 	if e.analyticsDir == "" {
-		return nil, fmt.Errorf("GetGmailIDsByFilter requires Parquet data: pass analyticsDir to NewDuckDBEngine")
+		return nil, fmt.Errorf("GetGmailIDsByFilter requires SQLite or Parquet data")
 	}
 
 	var conditions []string
