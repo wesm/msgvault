@@ -286,7 +286,7 @@ func (s *Syncer) Full(ctx context.Context, email string) (*gmail.SyncSummary, er
 				break
 			}
 			if int64(len(listResp.Messages)) > remaining {
-				listResp.Messages = listResp.Messages[:remaining]
+				listResp.Messages = listResp.Messages[:int(remaining)]
 			}
 		}
 
