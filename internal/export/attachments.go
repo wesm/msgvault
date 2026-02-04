@@ -4,6 +4,8 @@ package export
 
 import (
 	"archive/zip"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +14,27 @@ import (
 
 	"github.com/wesm/msgvault/internal/query"
 )
+
+// ErrInvalidContentHash is returned when a content hash fails validation.
+var ErrInvalidContentHash = errors.New("invalid content hash")
+
+// ValidateContentHash validates that a content hash is a valid SHA-256 hex string.
+// This prevents path traversal attacks by ensuring the hash contains only
+// hexadecimal characters and is exactly 64 characters long.
+func ValidateContentHash(hash string) error {
+	// SHA-256 produces 32 bytes = 64 hex characters
+	if len(hash) != 64 {
+		return fmt.Errorf("%w: must be exactly 64 hex characters, got %d", ErrInvalidContentHash, len(hash))
+	}
+
+	// Verify all characters are valid hexadecimal
+	_, err := hex.DecodeString(hash)
+	if err != nil {
+		return fmt.Errorf("%w: contains non-hexadecimal characters", ErrInvalidContentHash)
+	}
+
+	return nil
+}
 
 // ExportStats contains structured results of an attachment export operation.
 type ExportStats struct {
@@ -37,8 +60,8 @@ func Attachments(zipFilename, attachmentsDir string, attachments []query.Attachm
 
 	usedNames := make(map[string]int)
 	for _, att := range attachments {
-		if len(att.ContentHash) < 2 {
-			stats.Errors = append(stats.Errors, fmt.Sprintf("%s: missing or invalid content hash", att.Filename))
+		if err := ValidateContentHash(att.ContentHash); err != nil {
+			stats.Errors = append(stats.Errors, fmt.Sprintf("%s: %v", att.Filename, err))
 			continue
 		}
 
