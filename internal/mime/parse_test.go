@@ -100,6 +100,85 @@ func TestParseReferences(t *testing.T) {
 	}
 }
 
+func TestHasNumericOffset(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		// Numeric offsets should return true
+		{"+0700", true},
+		{"-0700", true},
+		{"+07:00", true},
+		{"-07:00", true},
+		{"Mon, 02 Jan 2006 15:04:05 -0700", true},
+		{"Mon, 02 Jan 2006 15:04:05 +0000", true},
+		{"2006-01-02T15:04:05-07:00", true},
+		{"2006-01-02T15:04:05+00:00", true},
+
+		// Z suffix (UTC) should return true
+		{"2006-01-02T15:04:05Z", true},
+		{"Z", true},
+
+		// Named timezones should return false
+		{"MST", false},
+		{"Mon, 02 Jan 2006 15:04:05 MST", false},
+		{"Mon, 02 Jan 2006 15:04:05 PST", false},
+		{"Mon Jan 2 15:04:05 MST 2006", false},
+
+		// Mixed: numeric offset with parenthesized named TZ should return true
+		{"Mon, 02 Jan 2006 15:04:05 -0700 (PST)", true},
+		{"Mon, 02 Jan 2006 15:04:05 +0700 (UTC)", true},
+
+		// Empty and no timezone
+		{"", false},
+		{"Mon, 02 Jan 2006 15:04:05", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			got := hasNumericOffset(tc.input)
+			if got != tc.want {
+				t.Errorf("hasNumericOffset(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestToUTC(t *testing.T) {
+	// Test with numeric offset: should perform proper timezone conversion
+	t.Run("numeric offset converts to UTC", func(t *testing.T) {
+		// Create a time at 15:04:05 in -0700 timezone
+		loc := time.FixedZone("test", -7*60*60)
+		input := time.Date(2006, 1, 2, 15, 4, 5, 0, loc)
+
+		got := toUTC(input, true)
+
+		// Should be 22:04:05 UTC (15:04:05 + 7 hours)
+		want := time.Date(2006, 1, 2, 22, 4, 5, 0, time.UTC)
+		if !got.Equal(want) {
+			t.Errorf("toUTC() with numeric offset = %v, want %v", got, want)
+		}
+	})
+
+	// Test with named timezone: should keep same time values but mark as UTC
+	t.Run("named timezone keeps same values as UTC", func(t *testing.T) {
+		// Create a time at 15:04:05 with some location
+		loc := time.FixedZone("test", -7*60*60)
+		input := time.Date(2006, 1, 2, 15, 4, 5, 0, loc)
+
+		got := toUTC(input, false)
+
+		// Should be 15:04:05 UTC (same wall-clock time, different instant)
+		want := time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)
+		if !got.Equal(want) {
+			t.Errorf("toUTC() with named timezone = %v, want %v", got, want)
+		}
+		if got.Location() != time.UTC {
+			t.Errorf("toUTC() location = %v, want UTC", got.Location())
+		}
+	})
+}
+
 func TestParseDate(t *testing.T) {
 	// parseDate returns zero time (not error) for unparseable dates.
 	// This is intentional - malformed dates are common in email and
@@ -110,25 +189,43 @@ func TestParseDate(t *testing.T) {
 		input string
 		want  time.Time // Zero value means we expect parse failure
 	}{
-		// Valid RFC date formats
+		// Valid RFC date formats with numeric offsets
 		{"RFC1123Z", "Mon, 02 Jan 2006 15:04:05 -0700",
 			time.Date(2006, 1, 2, 22, 4, 5, 0, time.UTC)},
-		{"RFC1123 named zone", "Mon, 2 Jan 2006 15:04:05 MST",
-			time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)}, // MST treated as UTC offset 0 by Go
 		{"no weekday", "02 Jan 2006 15:04:05 -0700",
 			time.Date(2006, 1, 2, 22, 4, 5, 0, time.UTC)},
 		{"parenthesized zone", "Mon, 02 Jan 2006 15:04:05 -0700 (PST)",
 			time.Date(2006, 1, 2, 22, 4, 5, 0, time.UTC)},
 		{"double space after comma", "Mon,  2 Dec 2024 11:42:03 +0000 (UTC)",
 			time.Date(2024, 12, 2, 11, 42, 3, 0, time.UTC)},
-		{"ISO 8601 UTC", "2006-01-02T15:04:05Z",
-			time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)},
 		{"ISO 8601 offset", "2006-01-02T15:04:05-07:00",
 			time.Date(2006, 1, 2, 22, 4, 5, 0, time.UTC)},
 		{"SQL-like with tz", "2006-01-02 15:04:05 -0700",
 			time.Date(2006, 1, 2, 22, 4, 5, 0, time.UTC)},
+
+		// Z suffix (UTC) - should work like numeric offset
+		{"ISO 8601 UTC", "2006-01-02T15:04:05Z",
+			time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)},
+
+		// Named timezone handling - time values kept as-is, marked UTC
+		// Named TZ offsets are platform-dependent, so we treat them as UTC
+		{"RFC1123 named zone MST", "Mon, 2 Jan 2006 15:04:05 MST",
+			time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)},
+		{"single-digit day named zone", "Mon, 2 Jan 2006 15:04:05 PST",
+			time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)},
+		{"no weekday named zone", "02 Jan 2006 15:04:05 EST",
+			time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)},
+		{"UnixDate format", "Mon Jan  2 15:04:05 MST 2006",
+			time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)},
+
+		// No timezone at all - treated like named TZ (no offset to convert)
 		{"SQL-like no tz", "2006-01-02 15:04:05",
 			time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)},
+
+		// Edge case: parenthesized TZ differs from main TZ
+		// The numeric offset (+0700) should be used for conversion
+		{"numeric offset with different paren TZ", "Mon, 02 Jan 2006 15:04:05 +0700 (UTC)",
+			time.Date(2006, 1, 2, 8, 4, 5, 0, time.UTC)},
 
 		// Invalid/unparseable dates should return zero time
 		{"empty", "", time.Time{}},

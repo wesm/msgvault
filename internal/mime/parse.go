@@ -275,7 +275,9 @@ func parseDate(s string) (time.Time, error) {
 	if baseStr != s {
 		for _, format := range dateFormats {
 			if t, err := time.Parse(format, s); err == nil {
-				return toUTC(t, numericOffset), nil
+				// Recompute numericOffset for the original string since it may
+				// have a different offset than baseStr (e.g., "+0700 (UTC)")
+				return toUTC(t, hasNumericOffset(s)), nil
 			}
 		}
 	}
