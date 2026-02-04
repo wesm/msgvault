@@ -46,7 +46,7 @@ Examples:
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if syncLimit < 0 {
-			return fmt.Errorf("--limit must be a positive number")
+			return fmt.Errorf("--limit must be a non-negative number")
 		}
 
 		// Validate config
