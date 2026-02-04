@@ -504,7 +504,7 @@ func (e *DuckDBEngine) runAggregation(ctx context.Context, def aggViewDef, where
 			SELECT
 				%s as key,
 				COUNT(*) as count,
-				COALESCE(SUM(msg.size_estimate), 0) as total_size,
+				COALESCE(SUM(CAST(msg.size_estimate AS BIGINT)), 0) as total_size,
 				CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
 				CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
 				COUNT(*) OVER() as total_unique
@@ -829,7 +829,7 @@ func (e *DuckDBEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 		WITH %s
 		SELECT
 			COUNT(*) as message_count,
-			COALESCE(SUM(msg.size_estimate), 0) as total_size,
+			COALESCE(SUM(CAST(msg.size_estimate AS BIGINT)), 0) as total_size,
 			CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
 			CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
 			COUNT(DISTINCT msg.source_id) as account_count
@@ -954,15 +954,15 @@ func (e *DuckDBEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		)
 		SELECT
 			msg.id,
-			COALESCE(msg.source_message_id, '') as source_message_id,
-			COALESCE(msg.conversation_id, 0) as conversation_id,
-			COALESCE(msg.subject, '') as subject,
-			COALESCE(msg.snippet, '') as snippet,
-			COALESCE(ms.from_email, '') as from_email,
-			COALESCE(ms.from_name, '') as from_name,
+			COALESCE(CAST(msg.source_message_id AS VARCHAR), '') as source_message_id,
+			COALESCE(CAST(msg.conversation_id AS BIGINT), 0) as conversation_id,
+			COALESCE(CAST(msg.subject AS VARCHAR), '') as subject,
+			COALESCE(CAST(msg.snippet AS VARCHAR), '') as snippet,
+			COALESCE(CAST(ms.from_email AS VARCHAR), '') as from_email,
+			COALESCE(CAST(ms.from_name AS VARCHAR), '') as from_name,
 			msg.sent_at,
-			COALESCE(msg.size_estimate, 0) as size_estimate,
-			COALESCE(msg.has_attachments, false) as has_attachments,
+			COALESCE(CAST(msg.size_estimate AS BIGINT), 0) as size_estimate,
+			COALESCE(CAST(msg.has_attachments AS BOOLEAN), false) as has_attachments,
 			msg.deleted_from_source_at
 		FROM msg
 		JOIN filtered_msgs fm ON fm.id = msg.id
@@ -1684,17 +1684,17 @@ func (e *DuckDBEngine) SearchFast(ctx context.Context, q *search.Query, filter M
 			GROUP BY mr.message_id
 		)
 		SELECT
-			COALESCE(msg.id, 0) as id,
-			COALESCE(msg.source_message_id, '') as source_message_id,
-			COALESCE(msg.conversation_id, 0) as conversation_id,
-			COALESCE(msg.subject, '') as subject,
-			COALESCE(msg.snippet, '') as snippet,
-			COALESCE(ms.from_email, '') as from_email,
-			COALESCE(ms.from_name, '') as from_name,
+			COALESCE(CAST(msg.id AS BIGINT), 0) as id,
+			COALESCE(CAST(msg.source_message_id AS VARCHAR), '') as source_message_id,
+			COALESCE(CAST(msg.conversation_id AS BIGINT), 0) as conversation_id,
+			COALESCE(CAST(msg.subject AS VARCHAR), '') as subject,
+			COALESCE(CAST(msg.snippet AS VARCHAR), '') as snippet,
+			COALESCE(CAST(ms.from_email AS VARCHAR), '') as from_email,
+			COALESCE(CAST(ms.from_name AS VARCHAR), '') as from_name,
 			msg.sent_at,
-			COALESCE(msg.size_estimate, 0) as size_estimate,
-			COALESCE(msg.has_attachments, false) as has_attachments,
-			COALESCE(att.attachment_count, 0) as attachment_count,
+			COALESCE(CAST(msg.size_estimate AS BIGINT), 0) as size_estimate,
+			COALESCE(CAST(msg.has_attachments AS BOOLEAN), false) as has_attachments,
+			COALESCE(CAST(att.attachment_count AS BIGINT), 0) as attachment_count,
 			CAST(COALESCE(to_json(mlbl.labels), '[]') AS VARCHAR) as labels,
 			msg.deleted_from_source_at
 		FROM msg
