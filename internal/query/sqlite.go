@@ -127,7 +127,7 @@ func aggDimensionForView(view ViewType, timeGranularity TimeGranularity) (aggDim
 		case TimeDay:
 			timeExpr = "strftime('%Y-%m-%d', m.sent_at)"
 		default:
-			timeExpr = "strftime('%Y-%m', m.sent_at)"
+			return aggDimension{}, fmt.Errorf("unsupported time granularity: %d", timeGranularity)
 		}
 		return aggDimension{
 			keyExpr:   timeExpr,
@@ -203,15 +203,20 @@ func optsToFilterConditions(opts AggregateOptions, prefix string) ([]string, []i
 // sortClause returns ORDER BY clause for aggregates.
 // Always includes a secondary sort by key to ensure deterministic ordering when
 // primary sort values are equal (e.g., two labels with the same count).
-func sortClause(opts AggregateOptions) string {
-	field := "count"
+// Returns an error if the SortField is not a valid enum value.
+func sortClause(opts AggregateOptions) (string, error) {
+	var field string
 	switch opts.SortField {
+	case SortByCount:
+		field = "count"
 	case SortBySize:
 		field = "total_size"
 	case SortByAttachmentSize:
 		field = "attachment_size"
 	case SortByName:
 		field = "key"
+	default:
+		return "", fmt.Errorf("unsupported sort field: %d", opts.SortField)
 	}
 
 	dir := "DESC"
@@ -221,9 +226,9 @@ func sortClause(opts AggregateOptions) string {
 
 	// Secondary sort by key ensures deterministic ordering for ties
 	if field == "key" {
-		return fmt.Sprintf("ORDER BY %s %s", field, dir)
+		return fmt.Sprintf("ORDER BY %s %s", field, dir), nil
 	}
-	return fmt.Sprintf("ORDER BY %s %s, key ASC", field, dir)
+	return fmt.Sprintf("ORDER BY %s %s, key ASC", field, dir), nil
 }
 
 // buildFilterJoinsAndConditions builds JOIN and WHERE clauses from a MessageFilter.
@@ -433,6 +438,11 @@ func (e *SQLiteEngine) executeAggregate(ctx context.Context, groupBy ViewType, o
 		return nil, err
 	}
 
+	sort, err := sortClause(opts)
+	if err != nil {
+		return nil, err
+	}
+
 	limit := opts.Limit
 	if limit == 0 {
 		limit = 100
@@ -443,7 +453,7 @@ func (e *SQLiteEngine) executeAggregate(ctx context.Context, groupBy ViewType, o
 		filterWhere = strings.Join(filterConditions, " AND ")
 	}
 
-	query := buildAggregateSQL(dim, filterJoins, filterWhere, sortClause(opts))
+	query := buildAggregateSQL(dim, filterJoins, filterWhere, sort)
 	args = append(args, limit)
 	return e.executeAggregateQuery(ctx, query, args)
 }
@@ -477,7 +487,7 @@ func (e *SQLiteEngine) executeAggregateQuery(ctx context.Context, query string, 
 func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) ([]MessageSummary, error) {
 	filterJoins, conditions, args := buildFilterJoinsAndConditions(filter, "m")
 
-	// Build ORDER BY
+	// Build ORDER BY with validation
 	var orderBy string
 	switch filter.Sorting.Field {
 	case MessageSortByDate:
@@ -487,7 +497,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 	case MessageSortBySubject:
 		orderBy = "m.subject"
 	default:
-		orderBy = "m.sent_at"
+		return nil, fmt.Errorf("unsupported message sort field: %d", filter.Sorting.Field)
 	}
 	if filter.Sorting.Direction == SortDesc {
 		orderBy += " DESC"
