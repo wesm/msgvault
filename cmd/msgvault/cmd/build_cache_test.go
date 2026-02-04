@@ -349,6 +349,9 @@ func TestBuildCache_IncrementalExport(t *testing.T) {
 		INSERT INTO message_labels (message_id, label_id) VALUES
 			(6, 1),
 			(7, 1);
+
+		INSERT INTO attachments (message_id, filename, mime_type, size) VALUES
+			(7, 'notes.txt', 'text/plain', 500);
 	`)
 	db.Close()
 	if err != nil {
@@ -368,6 +371,58 @@ func TestBuildCache_IncrementalExport(t *testing.T) {
 	// Verify total count includes both old and new
 	if result2.ExportedCount != 7 {
 		t.Errorf("after incremental: expected 7 total messages, got %d", result2.ExportedCount)
+	}
+
+	// Verify junction tables accumulated across incremental runs
+	duckdb, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatalf("open duckdb: %v", err)
+	}
+	defer duckdb.Close()
+
+	countRows := func(pattern string) int64 {
+		var count int64
+		// Use forward slashes for DuckDB glob patterns (backslashes fail on Windows)
+		pattern = filepath.ToSlash(pattern)
+		if err := duckdb.QueryRow("SELECT COUNT(*) FROM read_parquet('" + pattern + "')").Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", pattern, err)
+		}
+		return count
+	}
+
+	// Messages: 7 total (5 original + 2 new)
+	if c := countRows(filepath.Join(analyticsDir, "messages", "**", "*.parquet")); c != 7 {
+		t.Errorf("messages: expected 7, got %d", c)
+	}
+
+	// Message recipients: 16 total (12 original + 4 new)
+	if c := countRows(filepath.Join(analyticsDir, "message_recipients", "*.parquet")); c != 16 {
+		t.Errorf("message_recipients: expected 16, got %d", c)
+	}
+
+	// Message labels: 10 total (8 original + 2 new)
+	if c := countRows(filepath.Join(analyticsDir, "message_labels", "*.parquet")); c != 10 {
+		t.Errorf("message_labels: expected 10, got %d", c)
+	}
+
+	// Attachments: 4 total (3 original + 1 new)
+	if c := countRows(filepath.Join(analyticsDir, "attachments", "*.parquet")); c != 4 {
+		t.Errorf("attachments: expected 4, got %d", c)
+	}
+
+	// Participants: 4 (overwritten each run, not appended)
+	if c := countRows(filepath.Join(analyticsDir, "participants", "*.parquet")); c != 4 {
+		t.Errorf("participants: expected 4, got %d", c)
+	}
+
+	// Labels: 3 (overwritten each run)
+	if c := countRows(filepath.Join(analyticsDir, "labels", "*.parquet")); c != 3 {
+		t.Errorf("labels: expected 3, got %d", c)
+	}
+
+	// Sources: 1 (overwritten each run)
+	if c := countRows(filepath.Join(analyticsDir, "sources", "*.parquet")); c != 1 {
+		t.Errorf("sources: expected 1, got %d", c)
 	}
 
 	// Verify sync state was updated
