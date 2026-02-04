@@ -55,6 +55,85 @@ func TestFormatExportResult_WriteErrorWithCount(t *testing.T) {
 	}
 }
 
+func TestPathTraversalInContentHash(t *testing.T) {
+	// This test verifies that malicious content hashes with path traversal
+	// sequences are rejected and cannot be used to read arbitrary files.
+
+	// Create a "secret" file outside the attachments directory
+	secretDir := t.TempDir()
+	secretFile := filepath.Join(secretDir, "secret.txt")
+	secretContent := []byte("TOP SECRET DATA")
+	if err := os.WriteFile(secretFile, secretContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create attachments directory (subdirectory to enable traversal)
+	attachDir := filepath.Join(t.TempDir(), "attachments")
+	if err := os.MkdirAll(attachDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Craft a malicious content hash that would traverse to the secret file
+	// The path construction is: root/<hash[:2]>/<hash>
+	// We need to escape from root/../ to reach secretDir
+	// Since hash[:2] is used as subdir, we use ".." as the prefix
+	maliciousHash := "../" + secretFile
+
+	zipPath := filepath.Join(t.TempDir(), "test.zip")
+	inputs := []query.AttachmentInfo{
+		{Filename: "stolen.txt", ContentHash: maliciousHash},
+	}
+
+	stats := Attachments(zipPath, attachDir, inputs)
+
+	// The export should fail - path traversal should be detected and rejected
+	if stats.Count > 0 {
+		t.Errorf("path traversal attack succeeded: exported %d files", stats.Count)
+	}
+
+	// Should report an error about the invalid content hash
+	found := false
+	for _, errMsg := range stats.Errors {
+		if strings.Contains(errMsg, "invalid content hash") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'invalid content hash' error, got errors: %v", stats.Errors)
+	}
+}
+
+func TestContentHashValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		hash    string
+		wantErr bool
+	}{
+		{"valid sha256 lowercase", "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", false},
+		{"valid sha256 uppercase", "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2", false},
+		{"valid sha256 mixed case", "A1b2C3d4E5f6A1b2C3d4E5f6A1b2C3d4E5f6A1b2C3d4E5f6A1b2C3d4E5f6A1b2", false},
+		{"path traversal ../", "../../../etc/passwd", true},
+		{"path traversal ..\\", "..\\..\\windows\\system32", true},
+		{"contains slash", "abc/def", true},
+		{"contains backslash", "abc\\def", true},
+		{"too short", "abc123", true},
+		{"too long", "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2extra", true},
+		{"non-hex characters", "g1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", true},
+		{"empty string", "", true},
+		{"null bytes", "a1b2c3d4\x00e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateContentHash(tt.hash)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateContentHash(%q) error = %v, wantErr %v", tt.hash, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestAttachments(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -92,14 +171,14 @@ func TestAttachments(t *testing.T) {
 			setup: func(_ *testing.T, _ string) []query.AttachmentInfo {
 				return []query.AttachmentInfo{{Filename: "file.txt", ContentHash: ""}}
 			},
-			wantSubstrings: []string{"file.txt: missing or invalid content hash"},
+			wantSubstrings: []string{"file.txt: invalid content hash"},
 		},
 		{
 			name: "single-char content hash is skipped",
 			setup: func(_ *testing.T, _ string) []query.AttachmentInfo {
 				return []query.AttachmentInfo{{Filename: "file2.txt", ContentHash: "a"}}
 			},
-			wantSubstrings: []string{"file2.txt: missing or invalid content hash"},
+			wantSubstrings: []string{"file2.txt: invalid content hash"},
 		},
 		{
 			name: "mixed short hashes all reported",
@@ -111,8 +190,8 @@ func TestAttachments(t *testing.T) {
 			},
 			wantSubstrings: []string{
 				"No attachments exported",
-				"file.txt: missing or invalid content hash",
-				"file2.txt: missing or invalid content hash",
+				"file.txt: invalid content hash",
+				"file2.txt: invalid content hash",
 			},
 		},
 		{
@@ -132,7 +211,7 @@ func TestAttachments(t *testing.T) {
 				}
 			},
 			wantCount:      1,
-			wantSubstrings: []string{"Exported 1 attachment(s)", "bad.txt: missing or invalid content hash"},
+			wantSubstrings: []string{"Exported 1 attachment(s)", "bad.txt: invalid content hash"},
 			wantFiles:      []string{"good.txt"},
 		},
 	}
