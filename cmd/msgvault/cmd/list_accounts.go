@@ -31,6 +31,10 @@ Examples:
 		}
 		defer s.Close()
 
+		if err := s.InitSchema(); err != nil {
+			return fmt.Errorf("init schema: %w", err)
+		}
+
 		sources, err := s.ListSources("")
 		if err != nil {
 			return fmt.Errorf("list accounts: %w", err)

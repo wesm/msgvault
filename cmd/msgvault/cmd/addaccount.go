@@ -62,9 +62,14 @@ Examples:
 		if oauthMgr.HasToken(email) {
 			// Still create the source record - needed for headless setup
 			// where token was copied but account not yet registered
-			_, err = s.GetOrCreateSource("gmail", email)
+			source, err := s.GetOrCreateSource("gmail", email)
 			if err != nil {
 				return fmt.Errorf("create source: %w", err)
+			}
+			if accountDisplayName != "" {
+				if err := s.UpdateSourceDisplayName(source.ID, accountDisplayName); err != nil {
+					return fmt.Errorf("set display name: %w", err)
+				}
 			}
 			fmt.Printf("Account %s is ready.\n", email)
 			fmt.Println("You can now run: msgvault sync-full", email)
