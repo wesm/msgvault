@@ -22,6 +22,8 @@ oauth_client*.json
 
 # Local development state
 .beads/
+.githooks/post-commit
+.mcp.json
 
 # Python
 __pycache__/

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/wesm/msgvault/internal/deletion"
 	"github.com/wesm/msgvault/internal/export"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/search"
@@ -23,6 +24,7 @@ const maxLimit = 1000
 type handlers struct {
 	engine         query.Engine
 	attachmentsDir string
+	dataDir        string
 }
 
 // getAccountID looks up a source ID by email address.
@@ -439,4 +441,172 @@ func jsonResult(v any) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultError(fmt.Sprintf("marshal error: %v", err)), nil
 	}
 	return mcp.NewToolResultText(string(data)), nil
+}
+
+// maxStageDeletionResults limits how many messages can be staged in one call.
+const maxStageDeletionResults = 100000
+
+func (h *handlers) stageDeletion(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+
+	// Check for query vs structured filters
+	queryStr, hasQuery := args["query"].(string)
+	hasQuery = hasQuery && queryStr != ""
+
+	// Check for any structured filter
+	fromStr, _ := args["from"].(string)
+	domainStr, _ := args["domain"].(string)
+	labelStr, _ := args["label"].(string)
+	hasAttachment, _ := args["has_attachment"].(bool)
+	afterDate, err := getDateArg(args, "after")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	beforeDate, err := getDateArg(args, "before")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	hasStructuredFilter := fromStr != "" || domainStr != "" || labelStr != "" ||
+		hasAttachment || afterDate != nil || beforeDate != nil
+
+	// Validate: must have either query or structured filters, but not both
+	if hasQuery && hasStructuredFilter {
+		return mcp.NewToolResultError("use either 'query' or structured filters (from, domain, label, etc.), not both"), nil
+	}
+	if !hasQuery && !hasStructuredFilter {
+		return mcp.NewToolResultError("must provide either 'query' or at least one filter (from, domain, label, after, before, has_attachment)"), nil
+	}
+
+	var gmailIDs []string
+	var description string
+
+	if hasQuery {
+		// Query-based search
+		q := search.Parse(queryStr)
+
+		// Try fast search first
+		results, err := h.engine.SearchFast(ctx, q, query.MessageFilter{}, maxStageDeletionResults, 0)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+		}
+
+		// Fall back to FTS if no results and query has text terms
+		if len(results) == 0 && len(q.TextTerms) > 0 {
+			results, err = h.engine.Search(ctx, q, maxStageDeletionResults, 0)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+			}
+		}
+
+		for _, msg := range results {
+			gmailIDs = append(gmailIDs, msg.SourceMessageID)
+		}
+		description = fmt.Sprintf("query: %s", queryStr)
+		if len(description) > 50 {
+			description = description[:50]
+		}
+	} else {
+		// Structured filter
+		filter := query.MessageFilter{
+			Sender:              fromStr,
+			Domain:              domainStr,
+			Label:               labelStr,
+			WithAttachmentsOnly: hasAttachment,
+			After:               afterDate,
+			Before:              beforeDate,
+		}
+
+		var err error
+		gmailIDs, err = h.engine.GetGmailIDsByFilter(ctx, filter)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("filter failed: %v", err)), nil
+		}
+
+		// Build description from filters
+		var parts []string
+		if fromStr != "" {
+			parts = append(parts, fmt.Sprintf("from:%s", fromStr))
+		}
+		if domainStr != "" {
+			parts = append(parts, fmt.Sprintf("domain:%s", domainStr))
+		}
+		if labelStr != "" {
+			parts = append(parts, fmt.Sprintf("label:%s", labelStr))
+		}
+		if hasAttachment {
+			parts = append(parts, "has:attachment")
+		}
+		if afterDate != nil {
+			parts = append(parts, fmt.Sprintf("after:%s", afterDate.Format("2006-01-02")))
+		}
+		if beforeDate != nil {
+			parts = append(parts, fmt.Sprintf("before:%s", beforeDate.Format("2006-01-02")))
+		}
+		description = fmt.Sprintf("filter: %s", joinParts(parts, " "))
+		if len(description) > 50 {
+			description = description[:50]
+		}
+	}
+
+	if len(gmailIDs) == 0 {
+		return mcp.NewToolResultError("no messages match the specified criteria"), nil
+	}
+
+	// Create deletion manager and manifest
+	deletionsDir := filepath.Join(h.dataDir, "deletions")
+	manager, err := deletion.NewManager(deletionsDir)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("create deletion manager: %v", err)), nil
+	}
+
+	manifest := deletion.NewManifest(description, gmailIDs)
+	manifest.CreatedBy = "mcp"
+
+	// Set filter metadata for execution
+	if fromStr != "" {
+		manifest.Filters.Senders = []string{fromStr}
+	}
+	if domainStr != "" {
+		manifest.Filters.SenderDomains = []string{domainStr}
+	}
+	if labelStr != "" {
+		manifest.Filters.Labels = []string{labelStr}
+	}
+	if afterDate != nil {
+		manifest.Filters.After = afterDate.Format("2006-01-02")
+	}
+	if beforeDate != nil {
+		manifest.Filters.Before = beforeDate.Format("2006-01-02")
+	}
+
+	if err := manager.SaveManifest(manifest); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("save manifest: %v", err)), nil
+	}
+
+	resp := struct {
+		BatchID      string `json:"batch_id"`
+		MessageCount int    `json:"message_count"`
+		Status       string `json:"status"`
+		NextStep     string `json:"next_step"`
+	}{
+		BatchID:      manifest.ID,
+		MessageCount: len(gmailIDs),
+		Status:       string(manifest.Status),
+		NextStep:     "Run 'msgvault delete-staged' to execute deletion, or 'msgvault cancel-deletion " + manifest.ID + "' to cancel",
+	}
+
+	return jsonResult(resp)
+}
+
+// joinParts joins strings with a separator.
+func joinParts(parts []string, sep string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	result := parts[0]
+	for _, p := range parts[1:] {
+		result += sep + p
+	}
+	return result
 }

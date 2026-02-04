@@ -18,6 +18,7 @@ const (
 	ToolListMessages     = "list_messages"
 	ToolGetStats         = "get_stats"
 	ToolAggregate        = "aggregate"
+	ToolStageDeletion    = "stage_deletion"
 )
 
 // Common argument helpers for recurring tool option definitions.
@@ -54,14 +55,15 @@ func withAccount() mcp.ToolOption {
 
 // Serve creates an MCP server with email archive tools and serves over stdio.
 // It blocks until stdin is closed or the context is cancelled.
-func Serve(ctx context.Context, engine query.Engine, attachmentsDir string) error {
+// dataDir is the base data directory (e.g., ~/.msgvault) used for deletions.
+func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir string) error {
 	s := server.NewMCPServer(
 		"msgvault",
 		"1.0.0",
 		server.WithToolCapabilities(false),
 	)
 
-	h := &handlers{engine: engine, attachmentsDir: attachmentsDir}
+	h := &handlers{engine: engine, attachmentsDir: attachmentsDir, dataDir: dataDir}
 
 	s.AddTool(searchMessagesTool(), h.searchMessages)
 	s.AddTool(getMessageTool(), h.getMessage)
@@ -70,6 +72,7 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir string) erro
 	s.AddTool(listMessagesTool(), h.listMessages)
 	s.AddTool(getStatsTool(), h.getStats)
 	s.AddTool(aggregateTool(), h.aggregate)
+	s.AddTool(stageDeletionTool(), h.stageDeletion)
 
 	stdio := server.NewStdioServer(s)
 	return stdio.Listen(ctx, os.Stdin, os.Stdout)
@@ -168,5 +171,28 @@ func aggregateTool() mcp.Tool {
 		withLimit("50"),
 		withAfter(),
 		withBefore(),
+	)
+}
+
+func stageDeletionTool() mcp.Tool {
+	return mcp.NewTool(ToolStageDeletion,
+		mcp.WithDescription("Stage messages for deletion. Use EITHER 'query' (Gmail-style search) OR structured filters (from, domain, label, etc.), not both. Does NOT delete immediately - run 'msgvault delete-staged' CLI command to execute staged deletions."),
+		mcp.WithString("query",
+			mcp.Description("Gmail-style search query (e.g. 'from:linkedin subject:job alert'). Cannot be combined with structured filters."),
+		),
+		mcp.WithString("from",
+			mcp.Description("Filter by sender email address"),
+		),
+		mcp.WithString("domain",
+			mcp.Description("Filter by sender domain (e.g. 'linkedin.com')"),
+		),
+		mcp.WithString("label",
+			mcp.Description("Filter by Gmail label (e.g. 'CATEGORY_PROMOTIONS')"),
+		),
+		withAfter(),
+		withBefore(),
+		mcp.WithBoolean("has_attachment",
+			mcp.Description("Only messages with attachments"),
+		),
 	)
 }
