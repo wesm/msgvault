@@ -151,6 +151,10 @@ func (h *handlers) getAttachment(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError("attachments directory not configured"), nil
 	}
 
+	if att.Size > maxAttachmentSize {
+		return mcp.NewToolResultError(fmt.Sprintf("attachment too large: %d bytes (max %d)", att.Size, maxAttachmentSize)), nil
+	}
+
 	data, err := h.readAttachmentFile(att.ContentHash)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -211,6 +215,10 @@ func (h *handlers) exportAttachment(ctx context.Context, req mcp.CallToolRequest
 
 	if h.attachmentsDir == "" {
 		return mcp.NewToolResultError("attachments directory not configured"), nil
+	}
+
+	if att.Size > maxAttachmentSize {
+		return mcp.NewToolResultError(fmt.Sprintf("attachment too large: %d bytes (max %d)", att.Size, maxAttachmentSize)), nil
 	}
 
 	data, err := h.readAttachmentFile(att.ContentHash)

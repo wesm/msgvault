@@ -677,6 +677,65 @@ func TestExportAttachment_EdgeFilenames(t *testing.T) {
 	}
 }
 
+func TestGetAttachment_RejectsOversizedBeforeFileIO(t *testing.T) {
+	// The att.Size metadata from the database tells us this attachment is too
+	// large BEFORE we try to open the file. The handler should reject with a
+	// "too large" error immediately, without attempting any file I/O.
+	//
+	// Without the pre-flight check, the handler would try to open the file
+	// and produce a misleading "not available" error instead.
+
+	oversizeAtt := &query.AttachmentInfo{
+		ID:          99,
+		Filename:    "huge.bin",
+		MimeType:    "application/octet-stream",
+		Size:        maxAttachmentSize + 1,
+		ContentHash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+	}
+
+	h := &handlers{
+		engine: &querytest.MockEngine{
+			Attachments: map[int64]*query.AttachmentInfo{99: oversizeAtt},
+		},
+		attachmentsDir: t.TempDir(), // empty dir — file does NOT exist on disk
+	}
+
+	// getAttachment should reject based on metadata size, not file I/O error
+	r := runToolExpectError(t, "get_attachment", h.getAttachment, map[string]any{
+		"attachment_id": float64(99),
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "too large") {
+		t.Fatalf("expected 'too large' rejection from metadata check, got: %s", txt)
+	}
+}
+
+func TestExportAttachment_RejectsOversizedBeforeFileIO(t *testing.T) {
+	oversizeAtt := &query.AttachmentInfo{
+		ID:          99,
+		Filename:    "huge.bin",
+		MimeType:    "application/octet-stream",
+		Size:        maxAttachmentSize + 1,
+		ContentHash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+	}
+
+	h := &handlers{
+		engine: &querytest.MockEngine{
+			Attachments: map[int64]*query.AttachmentInfo{99: oversizeAtt},
+		},
+		attachmentsDir: t.TempDir(),
+	}
+
+	r := runToolExpectError(t, "export_attachment", h.exportAttachment, map[string]any{
+		"attachment_id": float64(99),
+		"destination":   t.TempDir(),
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "too large") {
+		t.Fatalf("expected 'too large' rejection from metadata check, got: %s", txt)
+	}
+}
+
 func TestLimitArgClamping(t *testing.T) {
 	tests := []struct {
 		name string
