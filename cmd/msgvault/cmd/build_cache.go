@@ -115,16 +115,50 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 		maxID = maxMessageID.Int64
 	}
 
-	if maxID <= lastMessageID && !fullRebuild {
+	// Empty database - always skip (no point building cache with no messages)
+	if maxID == 0 && !fullRebuild {
 		return &buildResult{Skipped: true}, nil
 	}
 
-	// Open DuckDB for the actual export
+	// Open DuckDB (needed for both checking junction tables and exporting)
 	db, err := sql.Open("duckdb", "")
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb: %w", err)
 	}
 	defer db.Close()
+
+	// Check if junction table files need rebuild (missing or have 0 rows)
+	// This handles corrupt/incomplete builds where files exist but have no data.
+	junctionTablesNeedRebuild := false
+	if !fullRebuild && maxID > 0 {
+		junctionFiles := []string{
+			filepath.Join(analyticsDir, "message_recipients", "message_recipients.parquet"),
+			filepath.Join(analyticsDir, "message_labels", "message_labels.parquet"),
+			filepath.Join(analyticsDir, "attachments", "attachments.parquet"),
+		}
+		for _, f := range junctionFiles {
+			if _, err := os.Stat(f); err != nil {
+				// File doesn't exist
+				junctionTablesNeedRebuild = true
+				fmt.Printf("Junction table %s needs rebuild (missing)\n", filepath.Base(f))
+				break
+			}
+			// File exists - check if it has any rows
+			escapedFile := strings.ReplaceAll(f, "'", "''")
+			var rowCount int64
+			if err := db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM read_parquet('%s')", escapedFile)).Scan(&rowCount); err != nil || rowCount == 0 {
+				junctionTablesNeedRebuild = true
+				fmt.Printf("Junction table %s needs rebuild (empty or unreadable)\n", filepath.Base(f))
+				// Delete corrupt file to allow clean rebuild
+				os.Remove(f)
+				break
+			}
+		}
+	}
+
+	if maxID <= lastMessageID && !fullRebuild && !junctionTablesNeedRebuild {
+		return &buildResult{Skipped: true}, nil
+	}
 
 	// Install and load SQLite extension
 	if _, err := db.Exec("INSTALL sqlite; LOAD sqlite;"); err != nil {
@@ -161,6 +195,23 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 	idFilter := ""
 	if !fullRebuild && lastMessageID > 0 {
 		idFilter = fmt.Sprintf(" AND m.id > %d", lastMessageID)
+	}
+
+	// needsFullExport checks if a parquet file is missing or has 0 rows.
+	// If the file exists but has 0 rows (corrupt/incomplete build), it's deleted for a clean rebuild.
+	needsFullExport := func(filePath string) bool {
+		if _, err := os.Stat(filePath); err != nil {
+			return true // file doesn't exist
+		}
+		// Check if file has any rows
+		escapedFile := strings.ReplaceAll(filePath, "'", "''")
+		var rowCount int64
+		if err := db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM read_parquet('%s')", escapedFile)).Scan(&rowCount); err != nil || rowCount == 0 {
+			// File is corrupt or empty - delete it for a clean rebuild
+			os.Remove(filePath)
+			return true
+		}
+		return false
 	}
 
 	// runExport executes a COPY query and prints timing info.
@@ -217,8 +268,9 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 	// 2. Export message_recipients (large junction table)
 	recipientsDir := filepath.Join(analyticsDir, "message_recipients")
 	escapedRecipientsDir := strings.ReplaceAll(recipientsDir, "'", "''")
+	recipientsFile := filepath.Join(recipientsDir, "message_recipients.parquet")
 	recipientsFilter := ""
-	if !fullRebuild && lastMessageID > 0 {
+	if !fullRebuild && lastMessageID > 0 && !needsFullExport(recipientsFile) {
 		recipientsFilter = fmt.Sprintf(" WHERE message_id > %d", lastMessageID)
 	}
 	if err := runExport("message_recipients", fmt.Sprintf(`
@@ -241,8 +293,9 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 	// 3. Export message_labels (large junction table)
 	messageLabelsDir := filepath.Join(analyticsDir, "message_labels")
 	escapedMessageLabelsDir := strings.ReplaceAll(messageLabelsDir, "'", "''")
+	messageLabelsFile := filepath.Join(messageLabelsDir, "message_labels.parquet")
 	messageLabelsFilter := ""
-	if !fullRebuild && lastMessageID > 0 {
+	if !fullRebuild && lastMessageID > 0 && !needsFullExport(messageLabelsFile) {
 		messageLabelsFilter = fmt.Sprintf(" WHERE message_id > %d", lastMessageID)
 	}
 	if err := runExport("message_labels", fmt.Sprintf(`
@@ -263,8 +316,9 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 	// 4. Export attachments
 	attachmentsDir := filepath.Join(analyticsDir, "attachments")
 	escapedAttachmentsDir := strings.ReplaceAll(attachmentsDir, "'", "''")
+	attachmentsFile := filepath.Join(attachmentsDir, "attachments.parquet")
 	attachmentsFilter := ""
-	if !fullRebuild && lastMessageID > 0 {
+	if !fullRebuild && lastMessageID > 0 && !needsFullExport(attachmentsFile) {
 		attachmentsFilter = fmt.Sprintf(" WHERE message_id > %d", lastMessageID)
 	}
 	if err := runExport("attachments", fmt.Sprintf(`
