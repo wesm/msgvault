@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"time"
 
@@ -235,7 +236,11 @@ func (s *Syncer) Full(ctx context.Context, email string) (summary *gmail.SyncSum
 	// Defer failure handling — recover from panics and return as error
 	defer func() {
 		if r := recover(); r != nil {
-			_ = s.store.FailSync(state.syncID, fmt.Sprintf("panic: %v", r))
+			stack := debug.Stack()
+			s.logger.Error("sync panic recovered", "panic", r, "stack", string(stack))
+			if failErr := s.store.FailSync(state.syncID, fmt.Sprintf("panic: %v", r)); failErr != nil {
+				s.logger.Error("failed to record sync failure", "error", failErr)
+			}
 			summary = nil
 			err = fmt.Errorf("sync panicked: %v", r)
 		}

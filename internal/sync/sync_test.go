@@ -41,6 +41,36 @@ func TestFullSync_PanicReturnsError(t *testing.T) {
 	}
 }
 
+// panicOnHistoryAPI wraps a MockAPI and panics when ListHistory is called.
+// Used to test that Incremental() recovers from panics gracefully.
+type panicOnHistoryAPI struct {
+	*gmail.MockAPI
+}
+
+func (p *panicOnHistoryAPI) ListHistory(_ context.Context, _ uint64, _ string) (*gmail.HistoryResponse, error) {
+	panic("unexpected nil pointer in history processing")
+}
+
+func TestIncrementalSync_PanicReturnsError(t *testing.T) {
+	env := newTestEnv(t)
+	env.CreateSourceWithHistory(t, "12340")
+
+	env.Mock.Profile.MessagesTotal = 10
+	env.Mock.Profile.HistoryID = 12350
+
+	// Replace the client with one that panics during history fetch
+	env.Syncer = New(&panicOnHistoryAPI{MockAPI: env.Mock}, env.Store, nil)
+
+	// Should return an error, NOT panic and crash the program
+	_, err := env.Syncer.Incremental(env.Context, testEmail)
+	if err == nil {
+		t.Fatal("expected error from panic recovery, got nil")
+	}
+	if !strings.Contains(err.Error(), "panic") {
+		t.Errorf("expected error to mention panic, got: %v", err)
+	}
+}
+
 func TestFullSync(t *testing.T) {
 	env := newTestEnv(t)
 	seedMessages(env, 3, 12345, "msg1", "msg2", "msg3")
