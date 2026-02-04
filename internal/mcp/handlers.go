@@ -242,10 +242,19 @@ func (h *handlers) exportAttachment(ctx context.Context, req mcp.CallToolRequest
 	if filename == "" || filename == "." {
 		filename = att.ContentHash
 	}
-	outPath := uniquePath(filepath.Join(destDir, filename))
-
-	if err := os.WriteFile(outPath, data, 0644); err != nil {
+	f, outPath, err := createExclusive(filepath.Join(destDir, filename))
+	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("write failed: %v", err)), nil
+	}
+	_, writeErr := f.Write(data)
+	closeErr := f.Close()
+	if writeErr != nil {
+		os.Remove(outPath)
+		return mcp.NewToolResultError(fmt.Sprintf("write failed: %v", writeErr)), nil
+	}
+	if closeErr != nil {
+		os.Remove(outPath)
+		return mcp.NewToolResultError(fmt.Sprintf("write failed: %v", closeErr)), nil
 	}
 
 	resp := struct {
@@ -274,18 +283,28 @@ func sanitizeFilename(s string) string {
 	return string(result)
 }
 
-// uniquePath returns a path that doesn't collide with existing files by
-// appending _1, _2, etc. before the extension.
-func uniquePath(p string) string {
-	if _, err := os.Stat(p); os.IsNotExist(err) {
-		return p
+// createExclusive atomically creates a file that doesn't already exist,
+// trying name, name_1, name_2, etc. until it succeeds. Returns the open
+// file and the path that was used. Uses O_CREATE|O_EXCL to avoid TOCTOU
+// races with symlinks or concurrent writes.
+func createExclusive(p string) (*os.File, string, error) {
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err == nil {
+		return f, p, nil
+	}
+	if !os.IsExist(err) {
+		return nil, "", err
 	}
 	ext := filepath.Ext(p)
 	base := p[:len(p)-len(ext)]
 	for i := 1; ; i++ {
 		candidate := fmt.Sprintf("%s_%d%s", base, i, ext)
-		if _, err := os.Stat(candidate); os.IsNotExist(err) {
-			return candidate
+		f, err = os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		if err == nil {
+			return f, candidate, nil
+		}
+		if !os.IsExist(err) {
+			return nil, "", err
 		}
 	}
 }

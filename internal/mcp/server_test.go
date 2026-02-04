@@ -598,6 +598,69 @@ func TestExportAttachment(t *testing.T) {
 	})
 }
 
+func TestSanitizeFilename(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{"report.pdf", "report.pdf"},
+		{"file:name.pdf", "file_name.pdf"},
+		{"path/to/file.txt", "path_to_file.txt"},
+		{"back\\slash.doc", "back_slash.doc"},
+		{"tab\there.txt", "tab_here.txt"},
+		{"new\nline.txt", "new_line.txt"},
+		{"pipe|star*.txt", "pipe_star_.txt"},
+		{"quotes\"angle<>.txt", "quotes_angle__.txt"},
+		{"clean-file_v2.pdf", "clean-file_v2.pdf"},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			got := sanitizeFilename(tc.input)
+			if got != tc.want {
+				t.Fatalf("sanitizeFilename(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExportAttachment_EdgeFilenames(t *testing.T) {
+	srcDir := t.TempDir()
+	hash := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	content := []byte("data")
+	createAttachmentFixture(t, srcDir, hash, content)
+
+	tests := []struct {
+		name         string
+		filename     string
+		wantFilename string // expected output filename
+	}{
+		{"empty filename falls back to hash", "", hash},
+		{"dot filename falls back to hash", ".", hash},
+		{"path traversal stripped by Base", "../evil.pdf", "evil.pdf"},
+		{"special chars sanitized", "file:name|v2.pdf", "file_name_v2.pdf"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			destDir := t.TempDir()
+			h := &handlers{
+				engine: &querytest.MockEngine{
+					Attachments: map[int64]*query.AttachmentInfo{
+						1: {ID: 1, Filename: tc.filename, MimeType: "application/pdf", Size: int64(len(content)), ContentHash: hash},
+					},
+				},
+				attachmentsDir: srcDir,
+			}
+			resp := runTool[exportResponse](t, "export_attachment", h.exportAttachment, map[string]any{
+				"attachment_id": float64(1),
+				"destination":   destDir,
+			})
+			if resp.Filename != tc.wantFilename {
+				t.Fatalf("expected filename %q, got %q", tc.wantFilename, resp.Filename)
+			}
+		})
+	}
+}
+
 func TestLimitArgClamping(t *testing.T) {
 	tests := []struct {
 		name string

@@ -140,7 +140,7 @@ func (e *DuckDBEngine) parquetCTEs() string {
 				CAST(subject AS VARCHAR) AS subject,
 				CAST(snippet AS VARCHAR) AS snippet,
 				CAST(size_estimate AS BIGINT) AS size_estimate,
-				CAST(has_attachments AS BOOLEAN) AS has_attachments
+				COALESCE(TRY_CAST(has_attachments AS BOOLEAN), false) AS has_attachments
 			) FROM read_parquet('%s', hive_partitioning=true)
 		),
 		mr AS (
@@ -173,7 +173,7 @@ func (e *DuckDBEngine) parquetCTEs() string {
 		),
 		att AS (
 			SELECT CAST(message_id AS BIGINT) AS message_id,
-				SUM(CAST(size AS BIGINT)) as attachment_size,
+				SUM(COALESCE(TRY_CAST(size AS BIGINT), 0)) as attachment_size,
 				COUNT(*) as attachment_count
 			FROM read_parquet('%s')
 			GROUP BY 1

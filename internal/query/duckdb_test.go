@@ -2704,12 +2704,13 @@ func TestDuckDBEngine_SubAggregate_InvalidViewType(t *testing.T) {
 //  2. "Cannot compare values of type BIGINT and VARCHAR in IN/ANY/ALL clause"
 //     (triggered by filtered_msgs CTE in ListMessages with sender/recipient filters)
 func TestDuckDBEngine_VARCHARParquetColumns(t *testing.T) {
-	// Create Parquet where conversation_id and size_estimate are VARCHAR
-	// (no ::BIGINT cast) to reproduce the type mismatch in COALESCE.
+	// Create Parquet where conversation_id, size_estimate, and has_attachments
+	// are VARCHAR (no ::BIGINT/boolean cast), and attachment size is a VARCHAR
+	// string, to reproduce type mismatches in COALESCE, JOINs, and TRY_CAST paths.
 	engine := createEngineFromBuilder(t, newParquetBuilder(t).
 		addTable("messages", "messages/year=2024", "data.parquet", messagesCols, `
-			(1::BIGINT, 1::BIGINT, 'msg1', '100', 'Hello World', 'snippet1', TIMESTAMP '2024-01-15 10:00:00', '1000', false, NULL::TIMESTAMP, 2024, 1),
-			(2::BIGINT, 1::BIGINT, 'msg2', '101', 'Goodbye', 'snippet2', TIMESTAMP '2024-01-16 10:00:00', '2000', false, NULL::TIMESTAMP, 2024, 1)
+			(1::BIGINT, 1::BIGINT, 'msg1', '100', 'Hello World', 'snippet1', TIMESTAMP '2024-01-15 10:00:00', '1000', '0', NULL::TIMESTAMP, 2024, 1),
+			(2::BIGINT, 1::BIGINT, 'msg2', '101', 'Goodbye', 'snippet2', TIMESTAMP '2024-01-16 10:00:00', '2000', '1', NULL::TIMESTAMP, 2024, 1)
 		`).
 		addTable("sources", "sources", "sources.parquet", sourcesCols, `
 			(1::BIGINT, 'test@gmail.com')
@@ -2723,7 +2724,7 @@ func TestDuckDBEngine_VARCHARParquetColumns(t *testing.T) {
 		`).
 		addEmptyTable("labels", "labels", "labels.parquet", labelsCols, `(1::BIGINT, 'x')`).
 		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
-		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`))
+		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, '100', 'x')`))
 
 	ctx := context.Background()
 

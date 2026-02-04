@@ -138,6 +138,11 @@ func TestParseDate(t *testing.T) {
 			time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)},
 		{"UnixDate format", "Mon Jan  2 15:04:05 MST 2006",
 			time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)},
+		// Verify named TZ works regardless of system timezone (was broken on CST systems)
+		{"RFC1123 named zone EST", "Mon, 02 Jan 2006 15:04:05 EST",
+			time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)},
+		{"RFC1123 named zone CST", "Mon, 02 Jan 2006 15:04:05 CST",
+			time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC)},
 
 		// No timezone at all - treated like named TZ (no offset to convert)
 		{"SQL-like no tz", "2006-01-02 15:04:05",
