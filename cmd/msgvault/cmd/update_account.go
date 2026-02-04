@@ -27,7 +27,7 @@ Examples:
 			return fmt.Errorf("nothing to update: use --display-name to set a display name")
 		}
 
-		dbPath := cfg.DatabasePath()
+		dbPath := cfg.DatabaseDSN()
 		s, err := store.Open(dbPath)
 		if err != nil {
 			return fmt.Errorf("open database: %w", err)
