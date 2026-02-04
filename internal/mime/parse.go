@@ -221,35 +221,16 @@ var dateFormats = []string{
 	"2006-01-02 15:04:05",                   // SQL-like without TZ
 }
 
-// numericOffsetRe matches numeric timezone offsets like +0000, -0700, +00:00, -07:00
-var numericOffsetRe = regexp.MustCompile(`[+-]\d{2}:?\d{2}`)
-
-// hasNumericOffset returns true if the string contains a numeric timezone offset or Z (UTC).
-// Named timezones like "MST" have platform-dependent behavior in Go's time.Parse,
-// so we need to handle them specially.
-func hasNumericOffset(s string) bool {
-	if strings.HasSuffix(s, "Z") {
-		return true
-	}
-	return numericOffsetRe.MatchString(s)
-}
-
-// toUTC converts a time to UTC. If the original had a numeric offset, perform
-// proper timezone conversion. Otherwise (named timezone only), keep the same
-// local time values but mark them as UTC (since named TZ offsets are unreliable
-// across platforms).
-func toUTC(t time.Time, numericOffset bool) time.Time {
-	if numericOffset {
-		return t.UTC()
-	}
-	// Named timezone: keep same time values, mark as UTC
-	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.UTC)
-}
-
 // parseDate attempts to parse a date string in various formats.
 // Returns the time in UTC for consistent storage.
-// Named timezones (like "MST") are treated as UTC since their offsets
-// can't be reliably determined across platforms.
+//
+// Uses time.ParseInLocation with time.UTC so that named timezone
+// abbreviations (like "MST", "EST") are treated as UTC offset 0.
+// Go's time.Parse resolves named timezones against the local system
+// timezone, which produces platform-dependent results (e.g., "EST"
+// resolves to -5h on US/Eastern but gets converted to local time on
+// other systems). ParseInLocation with UTC avoids this entirely.
+// Numeric offsets (like -0700) are absolute and unaffected.
 func parseDate(s string) (time.Time, error) {
 	// Normalize whitespace efficiently: split on whitespace runs and rejoin
 	s = strings.Join(strings.Fields(s), " ")
@@ -261,23 +242,18 @@ func parseDate(s string) (time.Time, error) {
 		baseStr = strings.TrimSpace(s[:idx])
 	}
 
-	// Check if we have a numeric offset for proper UTC conversion
-	numericOffset := hasNumericOffset(baseStr)
-
 	// Try parsing with base string (parenthesized TZ stripped)
 	for _, format := range dateFormats {
-		if t, err := time.Parse(format, baseStr); err == nil {
-			return toUTC(t, numericOffset), nil
+		if t, err := time.ParseInLocation(format, baseStr, time.UTC); err == nil {
+			return t.UTC(), nil
 		}
 	}
 
 	// Try original string (some formats expect the parenthesized part)
 	if baseStr != s {
 		for _, format := range dateFormats {
-			if t, err := time.Parse(format, s); err == nil {
-				// Recompute numericOffset for the original string since it may
-				// have a different offset than baseStr (e.g., "+0700 (UTC)")
-				return toUTC(t, hasNumericOffset(s)), nil
+			if t, err := time.ParseInLocation(format, s, time.UTC); err == nil {
+				return t.UTC(), nil
 			}
 		}
 	}
