@@ -159,19 +159,29 @@ func (h *handlers) getAttachment(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	resp := struct {
-		Filename      string `json:"filename"`
-		MimeType      string `json:"mime_type"`
-		Size          int64  `json:"size"`
-		ContentBase64 string `json:"content_base64"`
-	}{
-		Filename:      att.Filename,
-		MimeType:      att.MimeType,
-		Size:          att.Size,
-		ContentBase64: base64.StdEncoding.EncodeToString(data),
+	mimeType := att.MimeType
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
 	}
 
-	return jsonResult(resp)
+	meta := fmt.Sprintf(`{"filename":%q,"mime_type":%q,"size":%d}`, att.Filename, mimeType, att.Size)
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			mcp.TextContent{
+				Type: "text",
+				Text: meta,
+			},
+			mcp.EmbeddedResource{
+				Type: "resource",
+				Resource: mcp.BlobResourceContents{
+					URI:      fmt.Sprintf("attachment:///%d/%s", att.ID, att.Filename),
+					MIMEType: mimeType,
+					Blob:     base64.StdEncoding.EncodeToString(data),
+				},
+			},
+		},
+	}, nil
 }
 
 func (h *handlers) listMessages(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

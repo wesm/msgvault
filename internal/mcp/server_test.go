@@ -25,11 +25,10 @@ type statsResponse struct {
 	Accounts []query.AccountInfo `json:"accounts"`
 }
 
-type attachmentResponse struct {
-	Filename      string `json:"filename"`
-	MimeType      string `json:"mime_type"`
-	Size          int64  `json:"size"`
-	ContentBase64 string `json:"content_base64"`
+type attachmentMeta struct {
+	Filename string `json:"filename"`
+	MimeType string `json:"mime_type"`
+	Size     int64  `json:"size"`
 }
 
 // newTestHandlers creates a handlers instance with the given mock engine.
@@ -286,15 +285,48 @@ func TestGetAttachment(t *testing.T) {
 	h := &handlers{engine: eng, attachmentsDir: tmpDir}
 
 	t.Run("valid", func(t *testing.T) {
-		resp := runTool[attachmentResponse](t, "get_attachment", h.getAttachment, map[string]any{"attachment_id": float64(10)})
+		r := callToolDirect(t, "get_attachment", h.getAttachment, map[string]any{"attachment_id": float64(10)})
+		if r.IsError {
+			t.Fatalf("unexpected error: %s", resultText(t, r))
+		}
 
-		if resp.Filename != "report.pdf" {
-			t.Fatalf("unexpected filename: %s", resp.Filename)
+		// Should have 2 content blocks: text metadata + embedded resource.
+		if len(r.Content) != 2 {
+			t.Fatalf("expected 2 content blocks, got %d", len(r.Content))
 		}
-		if resp.MimeType != "application/pdf" {
-			t.Fatalf("unexpected mime_type: %s", resp.MimeType)
+
+		// First block: text with metadata JSON.
+		tc, ok := r.Content[0].(mcp.TextContent)
+		if !ok {
+			t.Fatalf("expected TextContent, got %T", r.Content[0])
 		}
-		decoded, err := base64.StdEncoding.DecodeString(resp.ContentBase64)
+		var meta attachmentMeta
+		if err := json.Unmarshal([]byte(tc.Text), &meta); err != nil {
+			t.Fatalf("unmarshal metadata: %v", err)
+		}
+		if meta.Filename != "report.pdf" {
+			t.Fatalf("unexpected filename: %s", meta.Filename)
+		}
+		if meta.MimeType != "application/pdf" {
+			t.Fatalf("unexpected mime_type: %s", meta.MimeType)
+		}
+		if meta.Size != int64(len(content)) {
+			t.Fatalf("unexpected size: %d", meta.Size)
+		}
+
+		// Second block: embedded resource with blob.
+		er, ok := r.Content[1].(mcp.EmbeddedResource)
+		if !ok {
+			t.Fatalf("expected EmbeddedResource, got %T", r.Content[1])
+		}
+		blob, ok := er.Resource.(mcp.BlobResourceContents)
+		if !ok {
+			t.Fatalf("expected BlobResourceContents, got %T", er.Resource)
+		}
+		if blob.MIMEType != "application/pdf" {
+			t.Fatalf("unexpected blob MIME type: %s", blob.MIMEType)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(blob.Blob)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -93,7 +93,7 @@ func getMessageTool() mcp.Tool {
 
 func getAttachmentTool() mcp.Tool {
 	return mcp.NewTool(ToolGetAttachment,
-		mcp.WithDescription("Get attachment content by attachment ID. Returns base64-encoded content with metadata. Use get_message first to find attachment IDs."),
+		mcp.WithDescription("Get attachment content by attachment ID. Returns metadata as text and the file content as an embedded resource blob. Use get_message first to find attachment IDs."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithNumber("attachment_id",
 			mcp.Required(),
