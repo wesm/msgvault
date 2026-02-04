@@ -163,6 +163,15 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 		idFilter = fmt.Sprintf(" AND m.id > %d", lastMessageID)
 	}
 
+	// Junction tables (message_recipients, message_labels, attachments) need
+	// unique filenames per batch because Parquet files cannot be appended to —
+	// DuckDB's COPY with APPEND silently overwrites a single file.
+	// Using *.parquet glob in queries reads all batch files together.
+	junctionFile := "data.parquet"
+	if !fullRebuild && lastMessageID > 0 {
+		junctionFile = fmt.Sprintf("incr_%d.parquet", lastMessageID)
+	}
+
 	// runExport executes a COPY query and prints timing info.
 	runExport := func(label, query string) error {
 		start := time.Now()
@@ -229,12 +238,11 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 			recipient_type,
 			COALESCE(TRY_CAST(display_name AS VARCHAR), '') as display_name
 		FROM sqlite_db.message_recipients%s
-	) TO '%s/message_recipients.parquet' (
+	) TO '%s/%s' (
 		FORMAT PARQUET,
-		COMPRESSION 'zstd',
-		APPEND
+		COMPRESSION 'zstd'
 	)
-	`, recipientsFilter, escapedRecipientsDir)); err != nil {
+	`, recipientsFilter, escapedRecipientsDir, junctionFile)); err != nil {
 		return nil, fmt.Errorf("export message_recipients: %w", err)
 	}
 
@@ -251,12 +259,11 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 			message_id,
 			label_id
 		FROM sqlite_db.message_labels%s
-	) TO '%s/message_labels.parquet' (
+	) TO '%s/%s' (
 		FORMAT PARQUET,
-		COMPRESSION 'zstd',
-		APPEND
+		COMPRESSION 'zstd'
 	)
-	`, messageLabelsFilter, escapedMessageLabelsDir)); err != nil {
+	`, messageLabelsFilter, escapedMessageLabelsDir, junctionFile)); err != nil {
 		return nil, fmt.Errorf("export message_labels: %w", err)
 	}
 
@@ -274,12 +281,11 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 			size,
 			COALESCE(TRY_CAST(filename AS VARCHAR), '') as filename
 		FROM sqlite_db.attachments%s
-	) TO '%s/attachments.parquet' (
+	) TO '%s/%s' (
 		FORMAT PARQUET,
-		COMPRESSION 'zstd',
-		APPEND
+		COMPRESSION 'zstd'
 	)
-	`, attachmentsFilter, escapedAttachmentsDir)); err != nil {
+	`, attachmentsFilter, escapedAttachmentsDir, junctionFile)); err != nil {
 		return nil, fmt.Errorf("export attachments: %w", err)
 	}
 
