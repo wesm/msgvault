@@ -2,13 +2,14 @@ package cmd
 
 import (
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+	"github.com/wesm/msgvault/internal/export"
 )
 
 var (
@@ -39,63 +40,128 @@ Export all attachments from a message with original filenames:
   msgvault export-attachment 61ccf192... --base64  # stdout (base64)
   msgvault export-attachment 61ccf192... --json    # JSON with base64 data`,
 	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		contentHash := args[0]
+	RunE: runExportAttachment,
+}
 
-		// Validate hash format (64 hex characters = SHA-256)
-		if len(contentHash) != 64 {
-			return fmt.Errorf("invalid content hash: must be 64 hex characters (SHA-256), got %d", len(contentHash))
-		}
-		if _, err := hex.DecodeString(contentHash); err != nil {
-			return fmt.Errorf("invalid content hash: must be hex characters: %w", err)
-		}
+func runExportAttachment(cmd *cobra.Command, args []string) error {
+	contentHash := args[0]
 
-		// Construct storage path: attachmentsDir/hash[:2]/hash
-		attachmentsDir := cfg.AttachmentsDir()
-		storagePath := filepath.Join(attachmentsDir, contentHash[:2], contentHash)
+	// Validate hash format using shared validation
+	if err := export.ValidateContentHash(contentHash); err != nil {
+		return err
+	}
 
-		// Read attachment file
-		data, err := os.ReadFile(storagePath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return fmt.Errorf("attachment not found: no file for hash %s", contentHash)
-			}
-			return fmt.Errorf("read attachment: %w", err)
-		}
-
-		// Output based on flags
+	// Validate flag combinations: --json and --base64 write to stdout,
+	// so --output is contradictory
+	if exportAttachmentOutput != "" && exportAttachmentOutput != "-" {
 		if exportAttachmentJSON {
-			output := map[string]any{
-				"content_hash": contentHash,
-				"size":         len(data),
-				"data_base64":  base64.StdEncoding.EncodeToString(data),
-			}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(output)
+			return fmt.Errorf("--json and --output are mutually exclusive (--json writes to stdout)")
 		}
-
 		if exportAttachmentBase64 {
-			fmt.Println(base64.StdEncoding.EncodeToString(data))
-			return nil
+			return fmt.Errorf("--base64 and --output are mutually exclusive (--base64 writes to stdout)")
 		}
+	}
 
-		// Binary output
-		outputPath := exportAttachmentOutput
-		if outputPath == "" || outputPath == "-" {
-			_, err = os.Stdout.Write(data)
-			return err
+	// Construct storage path: attachmentsDir/hash[:2]/hash
+	attachmentsDir := cfg.AttachmentsDir()
+	storagePath := filepath.Join(attachmentsDir, contentHash[:2], contentHash)
+
+	// For base64/JSON modes we need the full content in memory.
+	// For binary output, stream directly to avoid loading large files.
+	if exportAttachmentJSON {
+		return exportAttachmentAsJSON(storagePath, contentHash)
+	}
+	if exportAttachmentBase64 {
+		return exportAttachmentAsBase64(storagePath)
+	}
+	return exportAttachmentBinary(storagePath, contentHash)
+}
+
+func exportAttachmentAsJSON(storagePath, contentHash string) error {
+	data, err := readAttachmentFile(storagePath, contentHash)
+	if err != nil {
+		return err
+	}
+
+	output := map[string]any{
+		"content_hash": contentHash,
+		"size":         len(data),
+		"data_base64":  base64.StdEncoding.EncodeToString(data),
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(output)
+}
+
+func exportAttachmentAsBase64(storagePath string) error {
+	f, err := openAttachmentFile(storagePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	encoder := base64.NewEncoder(base64.StdEncoding, os.Stdout)
+	if _, err := io.Copy(encoder, f); err != nil {
+		return fmt.Errorf("encode attachment: %w", err)
+	}
+	if err := encoder.Close(); err != nil {
+		return fmt.Errorf("finalize base64: %w", err)
+	}
+	fmt.Println() // trailing newline
+	return nil
+}
+
+func exportAttachmentBinary(storagePath, contentHash string) error {
+	f, err := openAttachmentFile(storagePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	outputPath := exportAttachmentOutput
+	if outputPath == "" || outputPath == "-" {
+		_, err = io.Copy(os.Stdout, f)
+		return err
+	}
+
+	dst, err := os.OpenFile(outputPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("create output file: %w", err)
+	}
+
+	n, copyErr := io.Copy(dst, f)
+	closeErr := dst.Close()
+	if copyErr != nil {
+		return fmt.Errorf("write file: %w", copyErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close file: %w", closeErr)
+	}
+
+	fmt.Fprintf(os.Stderr, "Exported attachment to: %s (%d bytes)\n", outputPath, n)
+	return nil
+}
+
+func openAttachmentFile(storagePath string) (*os.File, error) {
+	f, err := os.Open(storagePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("attachment not found: %s", filepath.Base(storagePath))
 		}
+		return nil, fmt.Errorf("read attachment: %w", err)
+	}
+	return f, nil
+}
 
-		// Write to file
-		err = os.WriteFile(outputPath, data, 0600)
-		if err != nil {
-			return fmt.Errorf("write file: %w", err)
+func readAttachmentFile(storagePath, contentHash string) ([]byte, error) {
+	data, err := os.ReadFile(storagePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("attachment not found: no file for hash %s", contentHash)
 		}
-
-		fmt.Fprintf(os.Stderr, "Exported attachment to: %s (%d bytes)\n", outputPath, len(data))
-		return nil
-	},
+		return nil, fmt.Errorf("read attachment: %w", err)
+	}
+	return data, nil
 }
 
 func init() {
