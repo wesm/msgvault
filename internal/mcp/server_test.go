@@ -397,14 +397,12 @@ func TestGetAttachment(t *testing.T) {
 			t.Fatalf("unexpected filename: %s", meta.Filename)
 		}
 
-		// URI must not contain raw spaces or unescaped characters.
+		// URI must percent-encode spaces and non-ASCII characters.
 		er := r.Content[1].(mcp.EmbeddedResource)
 		blob := er.Resource.(mcp.BlobResourceContents)
-		if strings.Contains(blob.URI, " ") {
-			t.Fatalf("URI contains unescaped space: %s", blob.URI)
-		}
-		if !strings.Contains(blob.URI, "51") {
-			t.Fatalf("URI missing attachment ID: %s", blob.URI)
+		const wantURI = "attachment:///51/report%202024%E2%9C%93.pdf"
+		if blob.URI != wantURI {
+			t.Fatalf("unexpected URI:\n got: %s\nwant: %s", blob.URI, wantURI)
 		}
 	})
 
