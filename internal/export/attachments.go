@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/wesm/msgvault/internal/query"
 )
@@ -192,6 +193,125 @@ func SanitizeFilename(s string) string {
 		}
 	}
 	return string(result)
+}
+
+// StoragePath returns the content-addressed file path for an attachment:
+// attachmentsDir/<hash[:2]>/<hash>.
+func StoragePath(attachmentsDir, contentHash string) string {
+	return filepath.Join(attachmentsDir, contentHash[:2], contentHash)
+}
+
+// ExportedFile represents a single file written to a directory.
+type ExportedFile struct {
+	Path string // absolute path of the written file
+	Size int64
+}
+
+// DirExportResult contains the results of exporting attachments to a directory.
+type DirExportResult struct {
+	Files  []ExportedFile
+	Errors []string
+}
+
+// TotalSize returns the sum of all exported file sizes.
+func (r DirExportResult) TotalSize() int64 {
+	var total int64
+	for _, f := range r.Files {
+		total += f.Size
+	}
+	return total
+}
+
+// AttachmentsToDir exports attachments as individual files into outputDir.
+// It reads attachment content from attachmentsDir using content-hash based paths
+// and writes each file with its original filename (sanitized, deduplicated).
+// Files are created with O_EXCL to avoid overwriting existing files.
+func AttachmentsToDir(outputDir, attachmentsDir string, attachments []query.AttachmentInfo) DirExportResult {
+	var result DirExportResult
+	usedNames := make(map[string]int)
+
+	for _, att := range attachments {
+		if err := ValidateContentHash(att.ContentHash); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", att.Filename, err))
+			continue
+		}
+
+		filename := resolveUniqueFilename(att.Filename, att.ContentHash, usedNames)
+		exported, err := exportAttachmentToFile(outputDir, attachmentsDir, att.ContentHash, filename)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", att.Filename, err))
+			continue
+		}
+
+		result.Files = append(result.Files, exported)
+	}
+
+	return result
+}
+
+// exportAttachmentToFile streams a single attachment from content-addressed
+// storage to outputDir/filename. Uses O_EXCL to avoid overwriting; appends
+// _1, _2, etc. on conflict.
+func exportAttachmentToFile(outputDir, attachmentsDir, contentHash, filename string) (ExportedFile, error) {
+	srcPath := StoragePath(attachmentsDir, contentHash)
+	src, err := os.Open(srcPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ExportedFile{}, fmt.Errorf("attachment file not found for hash %s", contentHash)
+		}
+		return ExportedFile{}, fmt.Errorf("open source: %w", err)
+	}
+	defer src.Close()
+
+	destPath := filepath.Join(outputDir, filename)
+	dst, finalPath, err := CreateExclusiveFile(destPath, 0600)
+	if err != nil {
+		return ExportedFile{}, fmt.Errorf("create output file: %w", err)
+	}
+
+	n, copyErr := io.Copy(dst, src)
+	closeErr := dst.Close()
+	if copyErr != nil {
+		os.Remove(finalPath)
+		return ExportedFile{}, fmt.Errorf("write: %w", copyErr)
+	}
+	if closeErr != nil {
+		os.Remove(finalPath)
+		return ExportedFile{}, fmt.Errorf("close: %w", closeErr)
+	}
+
+	return ExportedFile{Path: finalPath, Size: n}, nil
+}
+
+// CreateExclusiveFile atomically creates a file that doesn't already exist,
+// trying path, path_1, path_2, etc. on conflict. Returns the open file and
+// the path that was actually used. Uses O_CREATE|O_EXCL to avoid TOCTOU races.
+func CreateExclusiveFile(p string, perm os.FileMode) (*os.File, string, error) {
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err == nil {
+		return f, p, nil
+	}
+	if !pathConflict(err) {
+		return nil, "", err
+	}
+	ext := filepath.Ext(p)
+	base := p[:len(p)-len(ext)]
+	for i := 1; ; i++ {
+		candidate := fmt.Sprintf("%s_%d%s", base, i, ext)
+		f, err = os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+		if err == nil {
+			return f, candidate, nil
+		}
+		if !pathConflict(err) {
+			return nil, "", err
+		}
+	}
+}
+
+// pathConflict reports whether err indicates the path already exists as a
+// file or directory.
+func pathConflict(err error) bool {
+	return os.IsExist(err) || errors.Is(err, syscall.EISDIR)
 }
 
 // FormatBytesLong formats bytes with full precision for export results.
