@@ -349,6 +349,9 @@ func TestBuildCache_IncrementalExport(t *testing.T) {
 		INSERT INTO message_labels (message_id, label_id) VALUES
 			(6, 1),
 			(7, 1);
+
+		INSERT INTO attachments (message_id, filename, mime_type, size) VALUES
+			(7, 'notes.txt', 'text/plain', 500);
 	`)
 	db.Close()
 	if err != nil {
@@ -379,6 +382,8 @@ func TestBuildCache_IncrementalExport(t *testing.T) {
 
 	countRows := func(pattern string) int64 {
 		var count int64
+		// Use forward slashes for DuckDB glob patterns (backslashes fail on Windows)
+		pattern = filepath.ToSlash(pattern)
 		if err := duckdb.QueryRow("SELECT COUNT(*) FROM read_parquet('" + pattern + "')").Scan(&count); err != nil {
 			t.Fatalf("count %s: %v", pattern, err)
 		}
@@ -398,6 +403,11 @@ func TestBuildCache_IncrementalExport(t *testing.T) {
 	// Message labels: 10 total (8 original + 2 new)
 	if c := countRows(filepath.Join(analyticsDir, "message_labels", "*.parquet")); c != 10 {
 		t.Errorf("message_labels: expected 10, got %d", c)
+	}
+
+	// Attachments: 4 total (3 original + 1 new)
+	if c := countRows(filepath.Join(analyticsDir, "attachments", "*.parquet")); c != 4 {
+		t.Errorf("attachments: expected 4, got %d", c)
 	}
 
 	// Participants: 4 (overwritten each run, not appended)
