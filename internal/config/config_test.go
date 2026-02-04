@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -159,6 +160,90 @@ rate_limit_qps = 10
 
 	if cfg.Sync.RateLimitQPS != 10 {
 		t.Errorf("Sync.RateLimitQPS = %d, want 10", cfg.Sync.RateLimitQPS)
+	}
+}
+
+func TestLoadExplicitPathNotFound(t *testing.T) {
+	// When --config explicitly specifies a file that doesn't exist, Load should error
+	_, err := Load("/nonexistent/path/config.toml")
+	if err == nil {
+		t.Fatal("Load with explicit nonexistent path should return error")
+	}
+	if got := err.Error(); !strings.Contains(got, "config file not found") {
+		t.Errorf("error = %q, want it to contain %q", got, "config file not found")
+	}
+}
+
+func TestLoadExplicitPathDerivedHomeDir(t *testing.T) {
+	// When --config points to a custom location, HomeDir and DataDir
+	// should derive from the config file's parent directory
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+
+	// Write a minimal config (no data_dir override)
+	configContent := `
+[oauth]
+client_secrets = "/tmp/secret.json"
+
+[sync]
+rate_limit_qps = 3
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load(%q) failed: %v", configPath, err)
+	}
+
+	if cfg.HomeDir != tmpDir {
+		t.Errorf("HomeDir = %q, want %q", cfg.HomeDir, tmpDir)
+	}
+	if cfg.Data.DataDir != tmpDir {
+		t.Errorf("Data.DataDir = %q, want %q", cfg.Data.DataDir, tmpDir)
+	}
+	if cfg.Sync.RateLimitQPS != 3 {
+		t.Errorf("Sync.RateLimitQPS = %d, want 3", cfg.Sync.RateLimitQPS)
+	}
+
+	// Derived paths should use the custom directory
+	expectedDB := filepath.Join(tmpDir, "msgvault.db")
+	if cfg.DatabaseDSN() != expectedDB {
+		t.Errorf("DatabaseDSN() = %q, want %q", cfg.DatabaseDSN(), expectedDB)
+	}
+	expectedTokens := filepath.Join(tmpDir, "tokens")
+	if cfg.TokensDir() != expectedTokens {
+		t.Errorf("TokensDir() = %q, want %q", cfg.TokensDir(), expectedTokens)
+	}
+}
+
+func TestLoadExplicitPathWithDataDirOverride(t *testing.T) {
+	// When config file explicitly sets data_dir, that should take precedence
+	tmpDir := t.TempDir()
+	customDataDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+
+	configContent := `
+[data]
+data_dir = "` + filepath.ToSlash(customDataDir) + `"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load(%q) failed: %v", configPath, err)
+	}
+
+	// HomeDir should be config file's directory
+	if cfg.HomeDir != tmpDir {
+		t.Errorf("HomeDir = %q, want %q", cfg.HomeDir, tmpDir)
+	}
+	// DataDir should be the explicit override from config
+	if cfg.Data.DataDir != customDataDir {
+		t.Errorf("Data.DataDir = %q, want %q", cfg.Data.DataDir, customDataDir)
 	}
 }
 

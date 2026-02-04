@@ -64,17 +64,32 @@ func NewDefaultConfig() *Config {
 }
 
 // Load reads the configuration from the specified file.
-// If path is empty, uses the default location (~/.msgvault/config.toml).
+// If path is empty, uses the default location (~/.msgvault/config.toml),
+// which is optional (missing file returns defaults).
+// If path is explicitly provided, the file must exist.
 func Load(path string) (*Config, error) {
+	explicit := path != ""
+
 	cfg := NewDefaultConfig()
 
-	if path == "" {
+	if !explicit {
 		path = filepath.Join(cfg.HomeDir, "config.toml")
 	}
 
-	// Config file is optional - use defaults if not present
 	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if explicit {
+			return nil, fmt.Errorf("config file not found: %s", path)
+		}
+		// Default config file is optional
 		return cfg, nil
+	}
+
+	// When --config points to a custom location, derive HomeDir and
+	// default DataDir from the config file's parent directory so that
+	// tokens, database, attachments, etc. live alongside the config.
+	if explicit {
+		cfg.HomeDir = filepath.Dir(path)
+		cfg.Data.DataDir = cfg.HomeDir
 	}
 
 	if _, err := toml.DecodeFile(path, cfg); err != nil {
