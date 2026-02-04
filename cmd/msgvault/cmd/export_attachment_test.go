@@ -164,6 +164,7 @@ func TestExportAttachment_FlagMutualExclusivity(t *testing.T) {
 		base64 bool
 		errMsg string
 	}{
+		{"json+base64", "", true, true, "--json and --base64 are mutually exclusive"},
 		{"json+output", "file.bin", true, false, "--json and --output are mutually exclusive"},
 		{"base64+output", "file.bin", false, true, "--base64 and --output are mutually exclusive"},
 	}

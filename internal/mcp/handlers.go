@@ -238,7 +238,7 @@ func (h *handlers) exportAttachment(ctx context.Context, req mcp.CallToolRequest
 	if filename == "" || filename == "." {
 		filename = att.ContentHash
 	}
-	f, outPath, err := export.CreateExclusiveFile(filepath.Join(destDir, filename), 0644)
+	f, outPath, err := export.CreateExclusiveFile(filepath.Join(destDir, filename), 0600)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("write failed: %v", err)), nil
 	}

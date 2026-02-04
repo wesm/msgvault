@@ -51,8 +51,10 @@ func runExportAttachment(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Validate flag combinations: --json and --base64 write to stdout,
-	// so --output is contradictory
+	// Validate flag combinations
+	if exportAttachmentJSON && exportAttachmentBase64 {
+		return fmt.Errorf("--json and --base64 are mutually exclusive")
+	}
 	if exportAttachmentOutput != "" && exportAttachmentOutput != "-" {
 		if exportAttachmentJSON {
 			return fmt.Errorf("--json and --output are mutually exclusive (--json writes to stdout)")
@@ -132,9 +134,11 @@ func exportAttachmentBinary(storagePath, contentHash string) error {
 	n, copyErr := io.Copy(dst, f)
 	closeErr := dst.Close()
 	if copyErr != nil {
+		os.Remove(outputPath)
 		return fmt.Errorf("write file: %w", copyErr)
 	}
 	if closeErr != nil {
+		os.Remove(outputPath)
 		return fmt.Errorf("close file: %w", closeErr)
 	}
 
