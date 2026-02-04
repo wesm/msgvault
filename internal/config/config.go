@@ -17,7 +17,8 @@ type Config struct {
 	Sync  SyncConfig  `toml:"sync"`
 
 	// Computed paths (not from config file)
-	HomeDir string `toml:"-"`
+	HomeDir    string `toml:"-"`
+	configPath string // resolved path to the loaded config file
 }
 
 // DataConfig holds data storage configuration.
@@ -37,10 +38,10 @@ type SyncConfig struct {
 }
 
 // DefaultHome returns the default msgvault home directory.
-// Respects MSGVAULT_HOME environment variable.
+// Respects MSGVAULT_HOME environment variable and expands ~ in its value.
 func DefaultHome() string {
 	if h := os.Getenv("MSGVAULT_HOME"); h != "" {
-		return h
+		return expandPath(h)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -74,6 +75,10 @@ func Load(path string) (*Config, error) {
 
 	if !explicit {
 		path = filepath.Join(cfg.HomeDir, "config.toml")
+	} else {
+		// Expand ~ for explicit paths (e.g. --config "~/.msgvault/config.toml"
+		// where the shell didn't expand it, or on Windows where ~ is never expanded).
+		path = expandPath(path)
 	}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -83,6 +88,8 @@ func Load(path string) (*Config, error) {
 		// Default config file is optional
 		return cfg, nil
 	}
+
+	cfg.configPath = path
 
 	// When --config points to a custom location, derive HomeDir and
 	// default DataDir from the config file's parent directory so that
@@ -132,7 +139,12 @@ func (c *Config) EnsureHomeDir() error {
 }
 
 // ConfigFilePath returns the path to the config file.
+// If a config was loaded (including via --config), returns the actual path used.
+// Otherwise returns the default location based on HomeDir.
 func (c *Config) ConfigFilePath() string {
+	if c.configPath != "" {
+		return c.configPath
+	}
 	return filepath.Join(c.HomeDir, "config.toml")
 }
 

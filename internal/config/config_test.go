@@ -224,6 +224,7 @@ func TestLoadExplicitPathWithDataDirOverride(t *testing.T) {
 	customDataDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.toml")
 
+	// Use forward slashes in TOML (works cross-platform)
 	configContent := `
 [data]
 data_dir = "` + filepath.ToSlash(customDataDir) + `"
@@ -241,9 +242,72 @@ data_dir = "` + filepath.ToSlash(customDataDir) + `"
 	if cfg.HomeDir != tmpDir {
 		t.Errorf("HomeDir = %q, want %q", cfg.HomeDir, tmpDir)
 	}
-	// DataDir should be the explicit override from config
-	if cfg.Data.DataDir != customDataDir {
+	// DataDir should be the explicit override from config.
+	// Normalize both sides since TOML preserves forward slashes on Windows.
+	if filepath.Clean(cfg.Data.DataDir) != filepath.Clean(customDataDir) {
 		t.Errorf("Data.DataDir = %q, want %q", cfg.Data.DataDir, customDataDir)
+	}
+}
+
+func TestLoadExplicitPathWithTilde(t *testing.T) {
+	// Explicit --config with ~ should be expanded before stat
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("failed to get user home dir: %v", err)
+	}
+
+	// Create a config file in a temp subdir of home to test ~ expansion
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("[sync]\nrate_limit_qps = 7\n"), 0o644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	// Construct a ~ path: replace the home prefix with ~
+	if !strings.HasPrefix(tmpDir, home) {
+		t.Skip("temp dir is not under home directory, cannot test ~ expansion")
+	}
+	tildePath := "~" + tmpDir[len(home):] + "/config.toml"
+
+	cfg, err := Load(tildePath)
+	if err != nil {
+		t.Fatalf("Load(%q) failed: %v", tildePath, err)
+	}
+
+	if cfg.Sync.RateLimitQPS != 7 {
+		t.Errorf("Sync.RateLimitQPS = %d, want 7", cfg.Sync.RateLimitQPS)
+	}
+}
+
+func TestLoadConfigFilePath(t *testing.T) {
+	// ConfigFilePath should return the actual loaded path, not the default
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load(%q) failed: %v", configPath, err)
+	}
+
+	if cfg.ConfigFilePath() != configPath {
+		t.Errorf("ConfigFilePath() = %q, want %q", cfg.ConfigFilePath(), configPath)
+	}
+}
+
+func TestDefaultHomeExpandsTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("failed to get user home dir: %v", err)
+	}
+
+	t.Setenv("MSGVAULT_HOME", "~/.msgvault")
+	got := DefaultHome()
+	expected := filepath.Join(home, ".msgvault")
+	if got != expected {
+		t.Errorf("DefaultHome() = %q, want %q", got, expected)
 	}
 }
 

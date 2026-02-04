@@ -10,6 +10,11 @@ function Write-Info($msg) { Write-Host $msg -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host $msg -ForegroundColor Yellow }
 function Write-Err($msg) { Write-Host $msg -ForegroundColor Red }
 
+function Test-EnvBool($name) {
+    $val = [Environment]::GetEnvironmentVariable($name)
+    return ($val -match '^(1|true|yes)$')
+}
+
 function Get-Architecture {
     # Check if running on ARM64
     if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
@@ -38,6 +43,11 @@ function Get-Architecture {
 function Invoke-WebRequestCompat {
     # -UseBasicParsing is required in PowerShell 5.x but removed in 6+
     param([string]$Uri, [string]$OutFile)
+
+    # Ensure TLS 1.2 for older PowerShell (5.x defaults may be TLS 1.0)
+    if ($PSVersionTable.PSVersion.Major -lt 6) {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    }
 
     $params = @{ Uri = $Uri }
     if ($OutFile) { $params.OutFile = $OutFile }
@@ -133,7 +143,7 @@ function Install-Msgvault {
         $checksumUrl = "https://github.com/$repo/releases/download/$version/SHA256SUMS"
         $checksumFile = Join-Path $tmpDir "SHA256SUMS"
 
-        if ($env:MSGVAULT_SKIP_CHECKSUM) {
+        if (Test-EnvBool 'MSGVAULT_SKIP_CHECKSUM') {
             Write-Warn "Warning: Skipping checksum verification (MSGVAULT_SKIP_CHECKSUM is set)"
         } else {
             Write-Info "Verifying checksum..."
@@ -188,10 +198,24 @@ function Install-Msgvault {
 
         Write-Info "Extracting..."
         # Windows 10+ has tar built-in
+        if (-not (Get-Command tar -ErrorAction SilentlyContinue)) {
+            Write-Err "Error: 'tar' command not found. Windows 10 build 17063+ includes tar."
+            Write-Err "Please update Windows or extract $archiveName manually."
+            exit 1
+        }
         tar -xzf $archivePath -C $tmpDir
+        if ($LASTEXITCODE -ne 0) {
+            Write-Err "Error: tar extraction failed with exit code $LASTEXITCODE"
+            exit 1
+        }
 
-        # Move binary to install dir
-        $binaryPath = Join-Path $tmpDir $binaryName
+        # Find the binary (may be in a top-level directory if GoReleaser wraps it)
+        $binaryFile = Get-ChildItem -Path $tmpDir -Recurse -Filter $binaryName | Select-Object -First 1
+        if (-not $binaryFile) {
+            Write-Err "Error: Could not find $binaryName in extracted archive"
+            exit 1
+        }
+
         $destPath = Join-Path $installDir $binaryName
 
         # Remove existing binary if present
@@ -199,14 +223,14 @@ function Install-Msgvault {
             Remove-Item $destPath -Force
         }
 
-        Move-Item $binaryPath $destPath -Force
+        Move-Item $binaryFile.FullName $destPath -Force
 
         Write-Host ""
         Write-Info "Installation complete!"
         Write-Host ""
 
         # Add to PATH
-        if (-not $env:MSGVAULT_NO_MODIFY_PATH) {
+        if (-not (Test-EnvBool 'MSGVAULT_NO_MODIFY_PATH')) {
             $pathUpdated = Add-ToPath $installDir
             if ($pathUpdated) {
                 Write-Info "Added $installDir to PATH"
