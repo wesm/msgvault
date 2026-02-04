@@ -28,3 +28,4 @@ oauth_client*.json
 .vscode/
 *.swp
 *.swo
+.projects/
