@@ -197,6 +197,99 @@ func (h *handlers) getAttachment(ctx context.Context, req mcp.CallToolRequest) (
 	}, nil
 }
 
+func (h *handlers) exportAttachment(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+
+	id, err := getIDArg(args, "attachment_id")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	att, err := h.engine.GetAttachment(ctx, id)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("get attachment failed: %v", err)), nil
+	}
+	if att == nil {
+		return mcp.NewToolResultError("attachment not found"), nil
+	}
+
+	if h.attachmentsDir == "" {
+		return mcp.NewToolResultError("attachments directory not configured"), nil
+	}
+
+	data, err := h.readAttachmentFile(att.ContentHash)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	// Determine destination directory.
+	destDir, _ := args["destination"].(string)
+	if destDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("cannot determine home directory: %v", err)), nil
+		}
+		destDir = filepath.Join(home, "Downloads")
+	}
+
+	info, err := os.Stat(destDir)
+	if err != nil || !info.IsDir() {
+		return mcp.NewToolResultError(fmt.Sprintf("destination directory does not exist: %s", destDir)), nil
+	}
+
+	// Sanitize and deduplicate filename.
+	filename := sanitizeFilename(filepath.Base(att.Filename))
+	if filename == "" || filename == "." {
+		filename = att.ContentHash
+	}
+	outPath := uniquePath(filepath.Join(destDir, filename))
+
+	if err := os.WriteFile(outPath, data, 0644); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("write failed: %v", err)), nil
+	}
+
+	resp := struct {
+		Path     string `json:"path"`
+		Filename string `json:"filename"`
+		Size     int64  `json:"size"`
+	}{
+		Path:     outPath,
+		Filename: filepath.Base(outPath),
+		Size:     int64(len(data)),
+	}
+	return jsonResult(resp)
+}
+
+// sanitizeFilename replaces characters that are invalid in filenames.
+func sanitizeFilename(s string) string {
+	var result []rune
+	for _, r := range s {
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|', '\n', '\r', '\t':
+			result = append(result, '_')
+		default:
+			result = append(result, r)
+		}
+	}
+	return string(result)
+}
+
+// uniquePath returns a path that doesn't collide with existing files by
+// appending _1, _2, etc. before the extension.
+func uniquePath(p string) string {
+	if _, err := os.Stat(p); os.IsNotExist(err) {
+		return p
+	}
+	ext := filepath.Ext(p)
+	base := p[:len(p)-len(ext)]
+	for i := 1; ; i++ {
+		candidate := fmt.Sprintf("%s_%d%s", base, i, ext)
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
+}
+
 func (h *handlers) listMessages(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 

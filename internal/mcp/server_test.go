@@ -494,6 +494,110 @@ func TestGetAttachment(t *testing.T) {
 	})
 }
 
+type exportResponse struct {
+	Path     string `json:"path"`
+	Filename string `json:"filename"`
+	Size     int64  `json:"size"`
+}
+
+func TestExportAttachment(t *testing.T) {
+	srcDir := t.TempDir()
+	hash := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	content := []byte("hello world PDF content")
+	createAttachmentFixture(t, srcDir, hash, content)
+
+	eng := &querytest.MockEngine{
+		Attachments: map[int64]*query.AttachmentInfo{
+			10: {ID: 10, Filename: "report.pdf", MimeType: "application/pdf", Size: int64(len(content)), ContentHash: hash},
+		},
+	}
+	h := &handlers{engine: eng, attachmentsDir: srcDir}
+
+	t.Run("export to custom destination", func(t *testing.T) {
+		destDir := t.TempDir()
+		resp := runTool[exportResponse](t, "export_attachment", h.exportAttachment, map[string]any{
+			"attachment_id": float64(10),
+			"destination":   destDir,
+		})
+		if resp.Filename != "report.pdf" {
+			t.Fatalf("unexpected filename: %s", resp.Filename)
+		}
+		if resp.Size != int64(len(content)) {
+			t.Fatalf("unexpected size: %d", resp.Size)
+		}
+		wantPath := filepath.Join(destDir, "report.pdf")
+		if resp.Path != wantPath {
+			t.Fatalf("unexpected path: %s (want %s)", resp.Path, wantPath)
+		}
+		got, err := os.ReadFile(wantPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(content) {
+			t.Fatalf("content mismatch")
+		}
+	})
+
+	t.Run("filename collision appends suffix", func(t *testing.T) {
+		destDir := t.TempDir()
+		// Create existing file to force collision.
+		if err := os.WriteFile(filepath.Join(destDir, "report.pdf"), []byte("old"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		resp := runTool[exportResponse](t, "export_attachment", h.exportAttachment, map[string]any{
+			"attachment_id": float64(10),
+			"destination":   destDir,
+		})
+		if resp.Filename != "report_1.pdf" {
+			t.Fatalf("expected report_1.pdf, got %s", resp.Filename)
+		}
+		// Original file should be untouched.
+		old, _ := os.ReadFile(filepath.Join(destDir, "report.pdf"))
+		if string(old) != "old" {
+			t.Fatal("original file was overwritten")
+		}
+	})
+
+	t.Run("default destination is ~/Downloads", func(t *testing.T) {
+		// This test only verifies the handler doesn't error when
+		// ~/Downloads exists (it does on macOS).
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Skip("cannot determine home dir")
+		}
+		downloads := filepath.Join(home, "Downloads")
+		if _, err := os.Stat(downloads); os.IsNotExist(err) {
+			t.Skip("~/Downloads does not exist")
+		}
+
+		resp := runTool[exportResponse](t, "export_attachment", h.exportAttachment, map[string]any{
+			"attachment_id": float64(10),
+		})
+		if !strings.HasPrefix(resp.Path, downloads) {
+			t.Fatalf("expected path under ~/Downloads, got %s", resp.Path)
+		}
+		// Clean up the file we just wrote.
+		os.Remove(resp.Path)
+	})
+
+	t.Run("invalid destination", func(t *testing.T) {
+		runToolExpectError(t, "export_attachment", h.exportAttachment, map[string]any{
+			"attachment_id": float64(10),
+			"destination":   "/nonexistent/path/that/does/not/exist",
+		})
+	})
+
+	t.Run("missing attachment_id", func(t *testing.T) {
+		runToolExpectError(t, "export_attachment", h.exportAttachment, map[string]any{})
+	})
+
+	t.Run("attachment not found", func(t *testing.T) {
+		runToolExpectError(t, "export_attachment", h.exportAttachment, map[string]any{
+			"attachment_id": float64(999),
+		})
+	})
+}
+
 func TestLimitArgClamping(t *testing.T) {
 	tests := []struct {
 		name string
