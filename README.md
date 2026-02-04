@@ -32,11 +32,17 @@ Currently supports Gmail, with WhatsApp and other messaging platforms planned.
 
 ## Installation
 
+**macOS / Linux:**
 ```bash
 curl -fsSL https://msgvault.io/install.sh | bash
 ```
 
-The installer detects your OS and architecture, downloads the latest release from [GitHub Releases](https://github.com/wesm/msgvault/releases), verifies the SHA-256 checksum, and installs the binary. You can [review the script](https://msgvault.io/install.sh) before running, or download a release binary directly from GitHub.
+**Windows (PowerShell):**
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://msgvault.io/install.ps1 | iex"
+```
+
+The installer detects your OS and architecture, downloads the latest release from [GitHub Releases](https://github.com/wesm/msgvault/releases), verifies the SHA-256 checksum, and installs the binary. You can review the script ([bash](https://msgvault.io/install.sh), [PowerShell](https://msgvault.io/install.ps1)) before running, or download a release binary directly from GitHub.
 
 To build from source instead (requires **Go 1.25+** and a C/C++ compiler for CGO and to statically link DuckDB):
 
