@@ -335,6 +335,79 @@ func TestGetAttachment(t *testing.T) {
 		}
 	})
 
+	t.Run("empty mime type defaults to octet-stream", func(t *testing.T) {
+		noMimeHash := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		noMimeContent := []byte("binary data")
+		createAttachmentFixture(t, tmpDir, noMimeHash, noMimeContent)
+
+		h2 := &handlers{
+			engine: &querytest.MockEngine{
+				Attachments: map[int64]*query.AttachmentInfo{
+					50: {ID: 50, Filename: "data.bin", MimeType: "", Size: int64(len(noMimeContent)), ContentHash: noMimeHash},
+				},
+			},
+			attachmentsDir: tmpDir,
+		}
+		r := callToolDirect(t, "get_attachment", h2.getAttachment, map[string]any{"attachment_id": float64(50)})
+		if r.IsError {
+			t.Fatalf("unexpected error: %s", resultText(t, r))
+		}
+
+		var meta attachmentMeta
+		tc := r.Content[0].(mcp.TextContent)
+		if err := json.Unmarshal([]byte(tc.Text), &meta); err != nil {
+			t.Fatalf("unmarshal metadata: %v", err)
+		}
+		if meta.MimeType != "application/octet-stream" {
+			t.Fatalf("expected default mime_type, got %s", meta.MimeType)
+		}
+
+		er := r.Content[1].(mcp.EmbeddedResource)
+		blob := er.Resource.(mcp.BlobResourceContents)
+		if blob.MIMEType != "application/octet-stream" {
+			t.Fatalf("expected default blob MIME type, got %s", blob.MIMEType)
+		}
+	})
+
+	t.Run("filename with spaces and unicode", func(t *testing.T) {
+		unicodeHash := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+		unicodeContent := []byte("unicode file")
+		createAttachmentFixture(t, tmpDir, unicodeHash, unicodeContent)
+
+		h2 := &handlers{
+			engine: &querytest.MockEngine{
+				Attachments: map[int64]*query.AttachmentInfo{
+					51: {ID: 51, Filename: "report 2024✓.pdf", MimeType: "application/pdf", Size: int64(len(unicodeContent)), ContentHash: unicodeHash},
+				},
+			},
+			attachmentsDir: tmpDir,
+		}
+		r := callToolDirect(t, "get_attachment", h2.getAttachment, map[string]any{"attachment_id": float64(51)})
+		if r.IsError {
+			t.Fatalf("unexpected error: %s", resultText(t, r))
+		}
+
+		// Metadata JSON must be valid and preserve the filename exactly.
+		var meta attachmentMeta
+		tc := r.Content[0].(mcp.TextContent)
+		if err := json.Unmarshal([]byte(tc.Text), &meta); err != nil {
+			t.Fatalf("metadata is not valid JSON: %v\nraw: %s", err, tc.Text)
+		}
+		if meta.Filename != "report 2024✓.pdf" {
+			t.Fatalf("unexpected filename: %s", meta.Filename)
+		}
+
+		// URI must not contain raw spaces or unescaped characters.
+		er := r.Content[1].(mcp.EmbeddedResource)
+		blob := er.Resource.(mcp.BlobResourceContents)
+		if strings.Contains(blob.URI, " ") {
+			t.Fatalf("URI contains unescaped space: %s", blob.URI)
+		}
+		if !strings.Contains(blob.URI, "51") {
+			t.Fatalf("URI missing attachment ID: %s", blob.URI)
+		}
+	})
+
 	// Error cases using the shared engine/handler.
 	sharedErrorCases := []struct {
 		name string

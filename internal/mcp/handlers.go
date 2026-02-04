@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -164,18 +165,30 @@ func (h *handlers) getAttachment(ctx context.Context, req mcp.CallToolRequest) (
 		mimeType = "application/octet-stream"
 	}
 
-	meta := fmt.Sprintf(`{"filename":%q,"mime_type":%q,"size":%d}`, att.Filename, mimeType, att.Size)
+	metaObj := struct {
+		Filename string `json:"filename"`
+		MimeType string `json:"mime_type"`
+		Size     int64  `json:"size"`
+	}{
+		Filename: att.Filename,
+		MimeType: mimeType,
+		Size:     att.Size,
+	}
+	metaJSON, err := json.Marshal(metaObj)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("marshal metadata: %v", err)), nil
+	}
 
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			mcp.TextContent{
 				Type: "text",
-				Text: meta,
+				Text: string(metaJSON),
 			},
 			mcp.EmbeddedResource{
 				Type: "resource",
 				Resource: mcp.BlobResourceContents{
-					URI:      fmt.Sprintf("attachment:///%d/%s", att.ID, att.Filename),
+					URI:      fmt.Sprintf("attachment:///%d/%s", att.ID, url.PathEscape(att.Filename)),
 					MIMEType: mimeType,
 					Blob:     base64.StdEncoding.EncodeToString(data),
 				},
