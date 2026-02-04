@@ -64,6 +64,13 @@ func runExportAttachment(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Validate output path before doing any work
+	if exportAttachmentOutput != "" && exportAttachmentOutput != "-" {
+		if err := export.ValidateOutputPath(exportAttachmentOutput); err != nil {
+			return err
+		}
+	}
+
 	// Construct storage path: attachmentsDir/hash[:2]/hash
 	attachmentsDir := cfg.AttachmentsDir()
 	storagePath := filepath.Join(attachmentsDir, contentHash[:2], contentHash)

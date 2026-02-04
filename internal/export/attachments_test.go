@@ -393,6 +393,34 @@ func TestCreateExclusiveFile(t *testing.T) {
 	})
 }
 
+func TestValidateOutputPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{"simple filename", "invoice.pdf", false},
+		{"filename with dot prefix", "./invoice.pdf", false},
+		{"subdirectory", "subdir/file.pdf", false},
+		{"absolute path", "/tmp/file.pdf", false},
+		{"stdout dash", "-", false},
+
+		// Path traversal attacks (e.g., from email-supplied filenames)
+		{"parent traversal", "../evil.txt", true},
+		{"deep traversal", "../../.ssh/authorized_keys", true},
+		{"traversal via subdir", "foo/../../evil.txt", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateOutputPath(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateOutputPath(%q) error = %v, wantErr %v", tt.path, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestAttachments(t *testing.T) {
 	tests := []struct {
 		name           string

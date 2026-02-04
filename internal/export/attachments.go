@@ -197,6 +197,19 @@ func SanitizeFilename(s string) string {
 	return string(result)
 }
 
+// ValidateOutputPath checks that an output file path does not escape the
+// current working directory via ".." traversal. This guards against
+// email-supplied filenames being passed to --output (e.g., an attachment
+// named "../../.ssh/authorized_keys"). Absolute paths are allowed because
+// they represent an explicit user choice.
+func ValidateOutputPath(outputPath string) error {
+	cleaned := filepath.Clean(outputPath)
+	if !filepath.IsAbs(cleaned) && strings.HasPrefix(cleaned, "..") {
+		return fmt.Errorf("output path %q escapes the working directory", outputPath)
+	}
+	return nil
+}
+
 // StoragePath returns the content-addressed file path for an attachment:
 // attachmentsDir/<hash[:2]>/<hash>. Returns an error if the content hash
 // is invalid (prevents panics from short/empty strings).
