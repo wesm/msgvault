@@ -5,12 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/url"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -283,6 +285,13 @@ func sanitizeFilename(s string) string {
 	return string(result)
 }
 
+// pathConflict reports whether err indicates the path already exists as a
+// file or directory. O_EXCL returns EEXIST for files, but EISDIR when a
+// directory occupies the name.
+func pathConflict(err error) bool {
+	return os.IsExist(err) || errors.Is(err, syscall.EISDIR)
+}
+
 // createExclusive atomically creates a file that doesn't already exist,
 // trying name, name_1, name_2, etc. until it succeeds. Returns the open
 // file and the path that was used. Uses O_CREATE|O_EXCL to avoid TOCTOU
@@ -292,7 +301,7 @@ func createExclusive(p string) (*os.File, string, error) {
 	if err == nil {
 		return f, p, nil
 	}
-	if !os.IsExist(err) {
+	if !pathConflict(err) {
 		return nil, "", err
 	}
 	ext := filepath.Ext(p)
@@ -303,7 +312,7 @@ func createExclusive(p string) (*os.File, string, error) {
 		if err == nil {
 			return f, candidate, nil
 		}
-		if !os.IsExist(err) {
+		if !pathConflict(err) {
 			return nil, "", err
 		}
 	}

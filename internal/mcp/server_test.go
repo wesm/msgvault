@@ -558,6 +558,21 @@ func TestExportAttachment(t *testing.T) {
 		}
 	})
 
+	t.Run("directory collision appends suffix", func(t *testing.T) {
+		destDir := t.TempDir()
+		// Create a directory with the same name as the attachment.
+		if err := os.Mkdir(filepath.Join(destDir, "report.pdf"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		resp := runTool[exportResponse](t, "export_attachment", h.exportAttachment, map[string]any{
+			"attachment_id": float64(10),
+			"destination":   destDir,
+		})
+		if resp.Filename != "report_1.pdf" {
+			t.Fatalf("expected report_1.pdf, got %s", resp.Filename)
+		}
+	})
+
 	t.Run("default destination is ~/Downloads", func(t *testing.T) {
 		// This test only verifies the handler doesn't error when
 		// ~/Downloads exists (it does on macOS).
