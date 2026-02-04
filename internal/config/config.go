@@ -107,6 +107,13 @@ func Load(path string) (*Config, error) {
 	cfg.Data.DataDir = expandPath(cfg.Data.DataDir)
 	cfg.OAuth.ClientSecrets = expandPath(cfg.OAuth.ClientSecrets)
 
+	// When --config is used, resolve relative paths against the config file's
+	// directory so behavior doesn't depend on the working directory.
+	if explicit {
+		cfg.Data.DataDir = resolveRelative(cfg.Data.DataDir, cfg.HomeDir)
+		cfg.OAuth.ClientSecrets = resolveRelative(cfg.OAuth.ClientSecrets, cfg.HomeDir)
+	}
+
 	return cfg, nil
 }
 
@@ -146,6 +153,15 @@ func (c *Config) ConfigFilePath() string {
 		return c.configPath
 	}
 	return filepath.Join(c.HomeDir, "config.toml")
+}
+
+// resolveRelative makes a relative path absolute by joining it with base.
+// Absolute paths and empty strings are returned unchanged.
+func resolveRelative(path, base string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(base, path)
 }
 
 // expandPath expands ~ to the user's home directory.

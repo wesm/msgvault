@@ -249,6 +249,39 @@ data_dir = "` + filepath.ToSlash(customDataDir) + `"
 	}
 }
 
+func TestLoadExplicitPathRelativePaths(t *testing.T) {
+	// When --config is used, relative data_dir and client_secrets should
+	// resolve against the config file's directory, not the working directory.
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+
+	configContent := `
+[data]
+data_dir = "data"
+
+[oauth]
+client_secrets = "secrets/client.json"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load(%q) failed: %v", configPath, err)
+	}
+
+	expectedDataDir := filepath.Join(tmpDir, "data")
+	if cfg.Data.DataDir != expectedDataDir {
+		t.Errorf("Data.DataDir = %q, want %q", cfg.Data.DataDir, expectedDataDir)
+	}
+
+	expectedSecrets := filepath.Join(tmpDir, "secrets/client.json")
+	if cfg.OAuth.ClientSecrets != expectedSecrets {
+		t.Errorf("OAuth.ClientSecrets = %q, want %q", cfg.OAuth.ClientSecrets, expectedSecrets)
+	}
+}
+
 func TestLoadExplicitPathWithTilde(t *testing.T) {
 	// Explicit --config with ~ should be expanded before stat
 	home, err := os.UserHomeDir()

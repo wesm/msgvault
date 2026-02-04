@@ -85,7 +85,12 @@ function Get-InstallDir {
 function Add-ToPath($dir) {
     $currentPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 
-    if ($currentPath -split ';' | Where-Object { $_ -eq $dir }) {
+    # Normalize for comparison: trim trailing slashes, compare case-insensitively
+    $normalizedDir = $dir.TrimEnd('\', '/')
+    $alreadyInPath = $currentPath -split ';' | Where-Object {
+        $_.TrimEnd('\', '/') -ieq $normalizedDir
+    }
+    if ($alreadyInPath) {
         Write-Info "Directory already in PATH"
         return $false
     }
