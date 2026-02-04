@@ -2698,9 +2698,11 @@ func TestDuckDBEngine_SubAggregate_InvalidViewType(t *testing.T) {
 
 // TestDuckDBEngine_VARCHARParquetColumns verifies that SearchFast, ListMessages,
 // and Aggregate queries work when Parquet integer columns are stored as VARCHAR.
-// This reproduces a DuckDB binder error: "Cannot mix values of VARCHAR and
-// INTEGER_LITERAL in COALESCE operator" that occurred when Parquet schema
-// inference stored numeric columns as VARCHAR (e.g., from SQLite dynamic typing).
+// This reproduces two DuckDB binder errors that occurred when Parquet schema
+// inference stored numeric columns as VARCHAR (e.g., from SQLite dynamic typing):
+//  1. "Cannot mix values of VARCHAR and INTEGER_LITERAL in COALESCE operator"
+//  2. "Cannot compare values of type BIGINT and VARCHAR in IN/ANY/ALL clause"
+//     (triggered by filtered_msgs CTE in ListMessages with sender/recipient filters)
 func TestDuckDBEngine_VARCHARParquetColumns(t *testing.T) {
 	// Create Parquet where conversation_id and size_estimate are VARCHAR
 	// (no ::BIGINT cast) to reproduce the type mismatch in COALESCE.
@@ -2732,6 +2734,34 @@ func TestDuckDBEngine_VARCHARParquetColumns(t *testing.T) {
 		}
 		if len(results) != 2 {
 			t.Fatalf("expected 2 messages, got %d", len(results))
+		}
+	})
+
+	// ListMessages with a sender filter exercises the filtered_msgs CTE path
+	// where mr.message_id IN (SELECT id FROM filtered_msgs) must compare
+	// compatible types (both BIGINT after CTE-level casting).
+	t.Run("ListMessages_SenderFilter", func(t *testing.T) {
+		results, err := engine.ListMessages(ctx, MessageFilter{
+			Sender: "alice@test.com",
+		})
+		if err != nil {
+			t.Fatalf("ListMessages with sender filter and VARCHAR columns: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("expected 2 messages from alice, got %d", len(results))
+		}
+	})
+
+	t.Run("ListMessages_RecipientFilter", func(t *testing.T) {
+		results, err := engine.ListMessages(ctx, MessageFilter{
+			Recipient: "alice@test.com",
+		})
+		if err != nil {
+			t.Fatalf("ListMessages with recipient filter and VARCHAR columns: %v", err)
+		}
+		// alice is 'from', not 'to'/'cc'/'bcc', so expect 0
+		if len(results) != 0 {
+			t.Fatalf("expected 0 messages to alice as recipient, got %d", len(results))
 		}
 	})
 
