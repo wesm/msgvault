@@ -2,13 +2,16 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/wesm/msgvault/internal/api"
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/oauth"
 	"github.com/wesm/msgvault/internal/scheduler"
@@ -22,6 +25,7 @@ var serveCmd = &cobra.Command{
 	Long: `Run msgvault as a long-running daemon that syncs email accounts on schedule.
 
 The daemon runs in the foreground and performs:
+  - HTTP API server on configured port (default: 8080)
   - Scheduled incremental syncs based on account config
   - Automatic cache rebuilds after each sync
 
@@ -105,7 +109,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Start the scheduler
 	sched.Start()
 
+	// Create and start API server
+	apiServer := api.NewServer(cfg, s, sched, logger)
+
+	// Start API server in goroutine
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := apiServer.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
+
 	fmt.Printf("msgvault daemon started\n")
+	fmt.Printf("  API server: http://localhost:%d\n", cfg.Server.APIPort)
 	fmt.Printf("  Scheduled accounts: %d\n", count)
 	fmt.Printf("  Data directory: %s\n", cfg.Data.DataDir)
 	fmt.Println()
@@ -118,22 +134,32 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println()
 
-	// Wait for shutdown signal
+	// Wait for shutdown signal or server error
 	select {
 	case sig := <-sigChan:
 		logger.Info("received shutdown signal", "signal", sig)
 		fmt.Printf("\nReceived %s, shutting down...\n", sig)
+	case err := <-serverErr:
+		logger.Error("API server error", "error", err)
+		fmt.Printf("\nAPI server error: %v\n", err)
 	case <-ctx.Done():
 		logger.Info("context cancelled")
 	}
 
 	// Graceful shutdown
+	fmt.Println("Shutting down API server...")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := apiServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("API server shutdown error", "error", err)
+	}
+
 	fmt.Println("Waiting for running syncs to complete...")
-	shutdownCtx := sched.Stop()
+	schedCtx := sched.Stop()
 
 	// Wait for scheduler to stop (with timeout)
 	select {
-	case <-shutdownCtx.Done():
+	case <-schedCtx.Done():
 		fmt.Println("Shutdown complete.")
 	case <-time.After(30 * time.Second):
 		fmt.Println("Shutdown timed out after 30 seconds.")
