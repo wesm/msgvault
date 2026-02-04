@@ -139,9 +139,7 @@ func isWriteError(err error) bool {
 }
 
 func addAttachmentToZip(zw *zip.Writer, root string, att query.AttachmentInfo, usedNames map[string]int) (int64, error) {
-	storagePath := filepath.Join(root, att.ContentHash[:2], att.ContentHash)
-
-	srcFile, err := os.Open(storagePath)
+	srcFile, err := os.Open(StoragePath(root, att.ContentHash))
 	if err != nil {
 		return 0, err
 	}

@@ -3,19 +3,17 @@ package mcp
 import (
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/url"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/wesm/msgvault/internal/export"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/search"
 )
@@ -55,14 +53,11 @@ func getDateArg(args map[string]any, key string) (*time.Time, error) {
 // readAttachmentFile reads the content-addressed attachment file after
 // validating the hash and checking size limits.
 func (h *handlers) readAttachmentFile(contentHash string) ([]byte, error) {
-	if contentHash == "" || len(contentHash) < 2 {
-		return nil, fmt.Errorf("attachment has no stored content")
-	}
-	if _, err := hex.DecodeString(contentHash); err != nil {
+	if err := export.ValidateContentHash(contentHash); err != nil {
 		return nil, fmt.Errorf("attachment has invalid content hash")
 	}
 
-	filePath := filepath.Join(h.attachmentsDir, contentHash[:2], contentHash)
+	filePath := export.StoragePath(h.attachmentsDir, contentHash)
 
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -240,11 +235,11 @@ func (h *handlers) exportAttachment(ctx context.Context, req mcp.CallToolRequest
 	}
 
 	// Sanitize and deduplicate filename.
-	filename := sanitizeFilename(filepath.Base(att.Filename))
+	filename := export.SanitizeFilename(filepath.Base(att.Filename))
 	if filename == "" || filename == "." {
 		filename = att.ContentHash
 	}
-	f, outPath, err := createExclusive(filepath.Join(destDir, filename))
+	f, outPath, err := export.CreateExclusiveFile(filepath.Join(destDir, filename), 0644)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("write failed: %v", err)), nil
 	}
@@ -269,53 +264,6 @@ func (h *handlers) exportAttachment(ctx context.Context, req mcp.CallToolRequest
 		Size:     int64(len(data)),
 	}
 	return jsonResult(resp)
-}
-
-// sanitizeFilename replaces characters that are invalid in filenames.
-func sanitizeFilename(s string) string {
-	var result []rune
-	for _, r := range s {
-		switch r {
-		case '/', '\\', ':', '*', '?', '"', '<', '>', '|', '\n', '\r', '\t':
-			result = append(result, '_')
-		default:
-			result = append(result, r)
-		}
-	}
-	return string(result)
-}
-
-// pathConflict reports whether err indicates the path already exists as a
-// file or directory. O_EXCL returns EEXIST for files, but EISDIR when a
-// directory occupies the name.
-func pathConflict(err error) bool {
-	return os.IsExist(err) || errors.Is(err, syscall.EISDIR)
-}
-
-// createExclusive atomically creates a file that doesn't already exist,
-// trying name, name_1, name_2, etc. until it succeeds. Returns the open
-// file and the path that was used. Uses O_CREATE|O_EXCL to avoid TOCTOU
-// races with symlinks or concurrent writes.
-func createExclusive(p string) (*os.File, string, error) {
-	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
-	if err == nil {
-		return f, p, nil
-	}
-	if !pathConflict(err) {
-		return nil, "", err
-	}
-	ext := filepath.Ext(p)
-	base := p[:len(p)-len(ext)]
-	for i := 1; ; i++ {
-		candidate := fmt.Sprintf("%s_%d%s", base, i, ext)
-		f, err = os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
-		if err == nil {
-			return f, candidate, nil
-		}
-		if !pathConflict(err) {
-			return nil, "", err
-		}
-	}
 }
 
 func (h *handlers) listMessages(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/wesm/msgvault/internal/export"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/query/querytest"
 	"github.com/wesm/msgvault/internal/testutil"
@@ -630,9 +631,9 @@ func TestSanitizeFilename(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
-			got := sanitizeFilename(tc.input)
+			got := export.SanitizeFilename(tc.input)
 			if got != tc.want {
-				t.Fatalf("sanitizeFilename(%q) = %q, want %q", tc.input, got, tc.want)
+				t.Fatalf("SanitizeFilename(%q) = %q, want %q", tc.input, got, tc.want)
 			}
 		})
 	}
