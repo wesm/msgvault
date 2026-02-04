@@ -11,12 +11,13 @@ import (
 
 // Tool name constants.
 const (
-	ToolSearchMessages = "search_messages"
-	ToolGetMessage     = "get_message"
-	ToolGetAttachment  = "get_attachment"
-	ToolListMessages   = "list_messages"
-	ToolGetStats       = "get_stats"
-	ToolAggregate      = "aggregate"
+	ToolSearchMessages   = "search_messages"
+	ToolGetMessage       = "get_message"
+	ToolGetAttachment    = "get_attachment"
+	ToolExportAttachment = "export_attachment"
+	ToolListMessages     = "list_messages"
+	ToolGetStats         = "get_stats"
+	ToolAggregate        = "aggregate"
 )
 
 // Common argument helpers for recurring tool option definitions.
@@ -59,6 +60,7 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir string) erro
 	s.AddTool(searchMessagesTool(), h.searchMessages)
 	s.AddTool(getMessageTool(), h.getMessage)
 	s.AddTool(getAttachmentTool(), h.getAttachment)
+	s.AddTool(exportAttachmentTool(), h.exportAttachment)
 	s.AddTool(listMessagesTool(), h.listMessages)
 	s.AddTool(getStatsTool(), h.getStats)
 	s.AddTool(aggregateTool(), h.aggregate)
@@ -93,11 +95,24 @@ func getMessageTool() mcp.Tool {
 
 func getAttachmentTool() mcp.Tool {
 	return mcp.NewTool(ToolGetAttachment,
-		mcp.WithDescription("Get attachment content by attachment ID. Returns base64-encoded content with metadata. Use get_message first to find attachment IDs."),
+		mcp.WithDescription("Get attachment content by attachment ID. Returns metadata as text and the file content as an embedded resource blob. Use get_message first to find attachment IDs."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithNumber("attachment_id",
 			mcp.Required(),
 			mcp.Description("Attachment ID (from get_message response)"),
+		),
+	)
+}
+
+func exportAttachmentTool() mcp.Tool {
+	return mcp.NewTool(ToolExportAttachment,
+		mcp.WithDescription("Save an attachment to the local filesystem. Use this for file types that cannot be displayed inline (e.g. PDFs, documents). Returns the saved file path."),
+		mcp.WithNumber("attachment_id",
+			mcp.Required(),
+			mcp.Description("Attachment ID (from get_message response)"),
+		),
+		mcp.WithString("destination",
+			mcp.Description("Directory to save the file to (default: ~/Downloads)"),
 		),
 	)
 }

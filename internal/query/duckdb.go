@@ -124,30 +124,64 @@ func (e *DuckDBEngine) parquetPath(table string) string {
 
 // parquetCTEs returns common CTEs for reading all Parquet tables.
 // This is used by aggregate queries that need to join across tables.
+// parquetCTEs returns the WITH clause body that defines CTEs for all Parquet
+// tables. Columns are explicitly cast to their expected types using DuckDB's
+// REPLACE syntax, because Parquet schema inference from SQLite can store
+// integer/boolean columns as VARCHAR, causing type mismatch errors in JOINs
+// and COALESCE expressions.
 func (e *DuckDBEngine) parquetCTEs() string {
 	return fmt.Sprintf(`
 		msg AS (
-			SELECT * FROM read_parquet('%s', hive_partitioning=true)
+			SELECT * REPLACE (
+				CAST(id AS BIGINT) AS id,
+				CAST(source_id AS BIGINT) AS source_id,
+				CAST(source_message_id AS VARCHAR) AS source_message_id,
+				CAST(conversation_id AS BIGINT) AS conversation_id,
+				CAST(subject AS VARCHAR) AS subject,
+				CAST(snippet AS VARCHAR) AS snippet,
+				CAST(size_estimate AS BIGINT) AS size_estimate,
+				COALESCE(TRY_CAST(has_attachments AS BOOLEAN), false) AS has_attachments
+			) FROM read_parquet('%s', hive_partitioning=true)
 		),
 		mr AS (
-			SELECT * FROM read_parquet('%s')
+			SELECT * REPLACE (
+				CAST(message_id AS BIGINT) AS message_id,
+				CAST(participant_id AS BIGINT) AS participant_id,
+				CAST(recipient_type AS VARCHAR) AS recipient_type,
+				CAST(display_name AS VARCHAR) AS display_name
+			) FROM read_parquet('%s')
 		),
 		p AS (
-			SELECT * FROM read_parquet('%s')
+			SELECT * REPLACE (
+				CAST(id AS BIGINT) AS id,
+				CAST(email_address AS VARCHAR) AS email_address,
+				CAST(domain AS VARCHAR) AS domain,
+				CAST(display_name AS VARCHAR) AS display_name
+			) FROM read_parquet('%s')
 		),
 		lbl AS (
-			SELECT * FROM read_parquet('%s')
+			SELECT * REPLACE (
+				CAST(id AS BIGINT) AS id,
+				CAST(name AS VARCHAR) AS name
+			) FROM read_parquet('%s')
 		),
 		ml AS (
-			SELECT * FROM read_parquet('%s')
+			SELECT * REPLACE (
+				CAST(message_id AS BIGINT) AS message_id,
+				CAST(label_id AS BIGINT) AS label_id
+			) FROM read_parquet('%s')
 		),
 		att AS (
-			SELECT message_id, SUM(size) as attachment_size, COUNT(*) as attachment_count
+			SELECT CAST(message_id AS BIGINT) AS message_id,
+				SUM(COALESCE(TRY_CAST(size AS BIGINT), 0)) as attachment_size,
+				COUNT(*) as attachment_count
 			FROM read_parquet('%s')
-			GROUP BY message_id
+			GROUP BY 1
 		),
 		src AS (
-			SELECT * FROM read_parquet('%s')
+			SELECT * REPLACE (
+				CAST(id AS BIGINT) AS id
+			) FROM read_parquet('%s')
 		)
 	`, e.parquetGlob(),
 		e.parquetPath("message_recipients"),
@@ -504,7 +538,7 @@ func (e *DuckDBEngine) runAggregation(ctx context.Context, def aggViewDef, where
 			SELECT
 				%s as key,
 				COUNT(*) as count,
-				COALESCE(SUM(msg.size_estimate), 0) as total_size,
+				COALESCE(SUM(CAST(msg.size_estimate AS BIGINT)), 0) as total_size,
 				CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
 				CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
 				COUNT(*) OVER() as total_unique
@@ -829,7 +863,7 @@ func (e *DuckDBEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 		WITH %s
 		SELECT
 			COUNT(*) as message_count,
-			COALESCE(SUM(msg.size_estimate), 0) as total_size,
+			COALESCE(SUM(CAST(msg.size_estimate AS BIGINT)), 0) as total_size,
 			CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
 			CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
 			COUNT(DISTINCT msg.source_id) as account_count

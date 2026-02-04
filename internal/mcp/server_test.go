@@ -25,11 +25,10 @@ type statsResponse struct {
 	Accounts []query.AccountInfo `json:"accounts"`
 }
 
-type attachmentResponse struct {
-	Filename      string `json:"filename"`
-	MimeType      string `json:"mime_type"`
-	Size          int64  `json:"size"`
-	ContentBase64 string `json:"content_base64"`
+type attachmentMeta struct {
+	Filename string `json:"filename"`
+	MimeType string `json:"mime_type"`
+	Size     int64  `json:"size"`
 }
 
 // newTestHandlers creates a handlers instance with the given mock engine.
@@ -286,20 +285,124 @@ func TestGetAttachment(t *testing.T) {
 	h := &handlers{engine: eng, attachmentsDir: tmpDir}
 
 	t.Run("valid", func(t *testing.T) {
-		resp := runTool[attachmentResponse](t, "get_attachment", h.getAttachment, map[string]any{"attachment_id": float64(10)})
+		r := callToolDirect(t, "get_attachment", h.getAttachment, map[string]any{"attachment_id": float64(10)})
+		if r.IsError {
+			t.Fatalf("unexpected error: %s", resultText(t, r))
+		}
 
-		if resp.Filename != "report.pdf" {
-			t.Fatalf("unexpected filename: %s", resp.Filename)
+		// Should have 2 content blocks: text metadata + embedded resource.
+		if len(r.Content) != 2 {
+			t.Fatalf("expected 2 content blocks, got %d", len(r.Content))
 		}
-		if resp.MimeType != "application/pdf" {
-			t.Fatalf("unexpected mime_type: %s", resp.MimeType)
+
+		// First block: text with metadata JSON.
+		tc, ok := r.Content[0].(mcp.TextContent)
+		if !ok {
+			t.Fatalf("expected TextContent, got %T", r.Content[0])
 		}
-		decoded, err := base64.StdEncoding.DecodeString(resp.ContentBase64)
+		var meta attachmentMeta
+		if err := json.Unmarshal([]byte(tc.Text), &meta); err != nil {
+			t.Fatalf("unmarshal metadata: %v", err)
+		}
+		if meta.Filename != "report.pdf" {
+			t.Fatalf("unexpected filename: %s", meta.Filename)
+		}
+		if meta.MimeType != "application/pdf" {
+			t.Fatalf("unexpected mime_type: %s", meta.MimeType)
+		}
+		if meta.Size != int64(len(content)) {
+			t.Fatalf("unexpected size: %d", meta.Size)
+		}
+
+		// Second block: embedded resource with blob.
+		er, ok := r.Content[1].(mcp.EmbeddedResource)
+		if !ok {
+			t.Fatalf("expected EmbeddedResource, got %T", r.Content[1])
+		}
+		blob, ok := er.Resource.(mcp.BlobResourceContents)
+		if !ok {
+			t.Fatalf("expected BlobResourceContents, got %T", er.Resource)
+		}
+		if blob.MIMEType != "application/pdf" {
+			t.Fatalf("unexpected blob MIME type: %s", blob.MIMEType)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(blob.Blob)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if string(decoded) != string(content) {
 			t.Fatalf("content mismatch: got %q", string(decoded))
+		}
+	})
+
+	t.Run("empty mime type defaults to octet-stream", func(t *testing.T) {
+		noMimeHash := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		noMimeContent := []byte("binary data")
+		createAttachmentFixture(t, tmpDir, noMimeHash, noMimeContent)
+
+		h2 := &handlers{
+			engine: &querytest.MockEngine{
+				Attachments: map[int64]*query.AttachmentInfo{
+					50: {ID: 50, Filename: "data.bin", MimeType: "", Size: int64(len(noMimeContent)), ContentHash: noMimeHash},
+				},
+			},
+			attachmentsDir: tmpDir,
+		}
+		r := callToolDirect(t, "get_attachment", h2.getAttachment, map[string]any{"attachment_id": float64(50)})
+		if r.IsError {
+			t.Fatalf("unexpected error: %s", resultText(t, r))
+		}
+
+		var meta attachmentMeta
+		tc := r.Content[0].(mcp.TextContent)
+		if err := json.Unmarshal([]byte(tc.Text), &meta); err != nil {
+			t.Fatalf("unmarshal metadata: %v", err)
+		}
+		if meta.MimeType != "application/octet-stream" {
+			t.Fatalf("expected default mime_type, got %s", meta.MimeType)
+		}
+
+		er := r.Content[1].(mcp.EmbeddedResource)
+		blob := er.Resource.(mcp.BlobResourceContents)
+		if blob.MIMEType != "application/octet-stream" {
+			t.Fatalf("expected default blob MIME type, got %s", blob.MIMEType)
+		}
+	})
+
+	t.Run("filename with spaces and unicode", func(t *testing.T) {
+		unicodeHash := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+		unicodeContent := []byte("unicode file")
+		createAttachmentFixture(t, tmpDir, unicodeHash, unicodeContent)
+
+		h2 := &handlers{
+			engine: &querytest.MockEngine{
+				Attachments: map[int64]*query.AttachmentInfo{
+					51: {ID: 51, Filename: "report 2024✓.pdf", MimeType: "application/pdf", Size: int64(len(unicodeContent)), ContentHash: unicodeHash},
+				},
+			},
+			attachmentsDir: tmpDir,
+		}
+		r := callToolDirect(t, "get_attachment", h2.getAttachment, map[string]any{"attachment_id": float64(51)})
+		if r.IsError {
+			t.Fatalf("unexpected error: %s", resultText(t, r))
+		}
+
+		// Metadata JSON must be valid and preserve the filename exactly.
+		var meta attachmentMeta
+		tc := r.Content[0].(mcp.TextContent)
+		if err := json.Unmarshal([]byte(tc.Text), &meta); err != nil {
+			t.Fatalf("metadata is not valid JSON: %v\nraw: %s", err, tc.Text)
+		}
+		if meta.Filename != "report 2024✓.pdf" {
+			t.Fatalf("unexpected filename: %s", meta.Filename)
+		}
+
+		// URI must percent-encode spaces and non-ASCII characters.
+		er := r.Content[1].(mcp.EmbeddedResource)
+		blob := er.Resource.(mcp.BlobResourceContents)
+		const wantURI = "attachment:///51/report%202024%E2%9C%93.pdf"
+		if blob.URI != wantURI {
+			t.Fatalf("unexpected URI:\n got: %s\nwant: %s", blob.URI, wantURI)
 		}
 	})
 
@@ -389,6 +492,188 @@ func TestGetAttachment(t *testing.T) {
 			t.Fatalf("expected 'too large' error, got: %s", txt)
 		}
 	})
+}
+
+type exportResponse struct {
+	Path     string `json:"path"`
+	Filename string `json:"filename"`
+	Size     int64  `json:"size"`
+}
+
+func TestExportAttachment(t *testing.T) {
+	srcDir := t.TempDir()
+	hash := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	content := []byte("hello world PDF content")
+	createAttachmentFixture(t, srcDir, hash, content)
+
+	eng := &querytest.MockEngine{
+		Attachments: map[int64]*query.AttachmentInfo{
+			10: {ID: 10, Filename: "report.pdf", MimeType: "application/pdf", Size: int64(len(content)), ContentHash: hash},
+		},
+	}
+	h := &handlers{engine: eng, attachmentsDir: srcDir}
+
+	t.Run("export to custom destination", func(t *testing.T) {
+		destDir := t.TempDir()
+		resp := runTool[exportResponse](t, "export_attachment", h.exportAttachment, map[string]any{
+			"attachment_id": float64(10),
+			"destination":   destDir,
+		})
+		if resp.Filename != "report.pdf" {
+			t.Fatalf("unexpected filename: %s", resp.Filename)
+		}
+		if resp.Size != int64(len(content)) {
+			t.Fatalf("unexpected size: %d", resp.Size)
+		}
+		wantPath := filepath.Join(destDir, "report.pdf")
+		if resp.Path != wantPath {
+			t.Fatalf("unexpected path: %s (want %s)", resp.Path, wantPath)
+		}
+		got, err := os.ReadFile(wantPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(content) {
+			t.Fatalf("content mismatch")
+		}
+	})
+
+	t.Run("filename collision appends suffix", func(t *testing.T) {
+		destDir := t.TempDir()
+		// Create existing file to force collision.
+		if err := os.WriteFile(filepath.Join(destDir, "report.pdf"), []byte("old"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		resp := runTool[exportResponse](t, "export_attachment", h.exportAttachment, map[string]any{
+			"attachment_id": float64(10),
+			"destination":   destDir,
+		})
+		if resp.Filename != "report_1.pdf" {
+			t.Fatalf("expected report_1.pdf, got %s", resp.Filename)
+		}
+		// Original file should be untouched.
+		old, _ := os.ReadFile(filepath.Join(destDir, "report.pdf"))
+		if string(old) != "old" {
+			t.Fatal("original file was overwritten")
+		}
+	})
+
+	t.Run("directory collision appends suffix", func(t *testing.T) {
+		destDir := t.TempDir()
+		// Create a directory with the same name as the attachment.
+		if err := os.Mkdir(filepath.Join(destDir, "report.pdf"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		resp := runTool[exportResponse](t, "export_attachment", h.exportAttachment, map[string]any{
+			"attachment_id": float64(10),
+			"destination":   destDir,
+		})
+		if resp.Filename != "report_1.pdf" {
+			t.Fatalf("expected report_1.pdf, got %s", resp.Filename)
+		}
+	})
+
+	t.Run("default destination is ~/Downloads", func(t *testing.T) {
+		// This test only verifies the handler doesn't error when
+		// ~/Downloads exists (it does on macOS).
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Skip("cannot determine home dir")
+		}
+		downloads := filepath.Join(home, "Downloads")
+		if _, err := os.Stat(downloads); os.IsNotExist(err) {
+			t.Skip("~/Downloads does not exist")
+		}
+
+		resp := runTool[exportResponse](t, "export_attachment", h.exportAttachment, map[string]any{
+			"attachment_id": float64(10),
+		})
+		if !strings.HasPrefix(resp.Path, downloads) {
+			t.Fatalf("expected path under ~/Downloads, got %s", resp.Path)
+		}
+		// Clean up the file we just wrote.
+		os.Remove(resp.Path)
+	})
+
+	t.Run("invalid destination", func(t *testing.T) {
+		runToolExpectError(t, "export_attachment", h.exportAttachment, map[string]any{
+			"attachment_id": float64(10),
+			"destination":   "/nonexistent/path/that/does/not/exist",
+		})
+	})
+
+	t.Run("missing attachment_id", func(t *testing.T) {
+		runToolExpectError(t, "export_attachment", h.exportAttachment, map[string]any{})
+	})
+
+	t.Run("attachment not found", func(t *testing.T) {
+		runToolExpectError(t, "export_attachment", h.exportAttachment, map[string]any{
+			"attachment_id": float64(999),
+		})
+	})
+}
+
+func TestSanitizeFilename(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{"report.pdf", "report.pdf"},
+		{"file:name.pdf", "file_name.pdf"},
+		{"path/to/file.txt", "path_to_file.txt"},
+		{"back\\slash.doc", "back_slash.doc"},
+		{"tab\there.txt", "tab_here.txt"},
+		{"new\nline.txt", "new_line.txt"},
+		{"pipe|star*.txt", "pipe_star_.txt"},
+		{"quotes\"angle<>.txt", "quotes_angle__.txt"},
+		{"clean-file_v2.pdf", "clean-file_v2.pdf"},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			got := sanitizeFilename(tc.input)
+			if got != tc.want {
+				t.Fatalf("sanitizeFilename(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExportAttachment_EdgeFilenames(t *testing.T) {
+	srcDir := t.TempDir()
+	hash := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	content := []byte("data")
+	createAttachmentFixture(t, srcDir, hash, content)
+
+	tests := []struct {
+		name         string
+		filename     string
+		wantFilename string // expected output filename
+	}{
+		{"empty filename falls back to hash", "", hash},
+		{"dot filename falls back to hash", ".", hash},
+		{"path traversal stripped by Base", "../evil.pdf", "evil.pdf"},
+		{"special chars sanitized", "file:name|v2.pdf", "file_name_v2.pdf"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			destDir := t.TempDir()
+			h := &handlers{
+				engine: &querytest.MockEngine{
+					Attachments: map[int64]*query.AttachmentInfo{
+						1: {ID: 1, Filename: tc.filename, MimeType: "application/pdf", Size: int64(len(content)), ContentHash: hash},
+					},
+				},
+				attachmentsDir: srcDir,
+			}
+			resp := runTool[exportResponse](t, "export_attachment", h.exportAttachment, map[string]any{
+				"attachment_id": float64(1),
+				"destination":   destDir,
+			})
+			if resp.Filename != tc.wantFilename {
+				t.Fatalf("expected filename %q, got %q", tc.wantFilename, resp.Filename)
+			}
+		})
+	}
 }
 
 func TestLimitArgClamping(t *testing.T) {

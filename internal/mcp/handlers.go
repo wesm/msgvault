@@ -5,11 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -159,19 +162,160 @@ func (h *handlers) getAttachment(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	resp := struct {
-		Filename      string `json:"filename"`
-		MimeType      string `json:"mime_type"`
-		Size          int64  `json:"size"`
-		ContentBase64 string `json:"content_base64"`
-	}{
-		Filename:      att.Filename,
-		MimeType:      att.MimeType,
-		Size:          att.Size,
-		ContentBase64: base64.StdEncoding.EncodeToString(data),
+	mimeType := att.MimeType
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
 	}
 
+	metaObj := struct {
+		Filename string `json:"filename"`
+		MimeType string `json:"mime_type"`
+		Size     int64  `json:"size"`
+	}{
+		Filename: att.Filename,
+		MimeType: mimeType,
+		Size:     att.Size,
+	}
+	metaJSON, err := json.Marshal(metaObj)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("marshal metadata: %v", err)), nil
+	}
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			mcp.TextContent{
+				Type: "text",
+				Text: string(metaJSON),
+			},
+			mcp.EmbeddedResource{
+				Type: "resource",
+				Resource: mcp.BlobResourceContents{
+					URI:      fmt.Sprintf("attachment:///%d/%s", att.ID, url.PathEscape(att.Filename)),
+					MIMEType: mimeType,
+					Blob:     base64.StdEncoding.EncodeToString(data),
+				},
+			},
+		},
+	}, nil
+}
+
+func (h *handlers) exportAttachment(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+
+	id, err := getIDArg(args, "attachment_id")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	att, err := h.engine.GetAttachment(ctx, id)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("get attachment failed: %v", err)), nil
+	}
+	if att == nil {
+		return mcp.NewToolResultError("attachment not found"), nil
+	}
+
+	if h.attachmentsDir == "" {
+		return mcp.NewToolResultError("attachments directory not configured"), nil
+	}
+
+	data, err := h.readAttachmentFile(att.ContentHash)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	// Determine destination directory.
+	destDir, _ := args["destination"].(string)
+	if destDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("cannot determine home directory: %v", err)), nil
+		}
+		destDir = filepath.Join(home, "Downloads")
+	}
+
+	info, err := os.Stat(destDir)
+	if err != nil || !info.IsDir() {
+		return mcp.NewToolResultError(fmt.Sprintf("destination directory does not exist: %s", destDir)), nil
+	}
+
+	// Sanitize and deduplicate filename.
+	filename := sanitizeFilename(filepath.Base(att.Filename))
+	if filename == "" || filename == "." {
+		filename = att.ContentHash
+	}
+	f, outPath, err := createExclusive(filepath.Join(destDir, filename))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("write failed: %v", err)), nil
+	}
+	_, writeErr := f.Write(data)
+	closeErr := f.Close()
+	if writeErr != nil {
+		os.Remove(outPath)
+		return mcp.NewToolResultError(fmt.Sprintf("write failed: %v", writeErr)), nil
+	}
+	if closeErr != nil {
+		os.Remove(outPath)
+		return mcp.NewToolResultError(fmt.Sprintf("write failed: %v", closeErr)), nil
+	}
+
+	resp := struct {
+		Path     string `json:"path"`
+		Filename string `json:"filename"`
+		Size     int64  `json:"size"`
+	}{
+		Path:     outPath,
+		Filename: filepath.Base(outPath),
+		Size:     int64(len(data)),
+	}
 	return jsonResult(resp)
+}
+
+// sanitizeFilename replaces characters that are invalid in filenames.
+func sanitizeFilename(s string) string {
+	var result []rune
+	for _, r := range s {
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|', '\n', '\r', '\t':
+			result = append(result, '_')
+		default:
+			result = append(result, r)
+		}
+	}
+	return string(result)
+}
+
+// pathConflict reports whether err indicates the path already exists as a
+// file or directory. O_EXCL returns EEXIST for files, but EISDIR when a
+// directory occupies the name.
+func pathConflict(err error) bool {
+	return os.IsExist(err) || errors.Is(err, syscall.EISDIR)
+}
+
+// createExclusive atomically creates a file that doesn't already exist,
+// trying name, name_1, name_2, etc. until it succeeds. Returns the open
+// file and the path that was used. Uses O_CREATE|O_EXCL to avoid TOCTOU
+// races with symlinks or concurrent writes.
+func createExclusive(p string) (*os.File, string, error) {
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err == nil {
+		return f, p, nil
+	}
+	if !pathConflict(err) {
+		return nil, "", err
+	}
+	ext := filepath.Ext(p)
+	base := p[:len(p)-len(ext)]
+	for i := 1; ; i++ {
+		candidate := fmt.Sprintf("%s_%d%s", base, i, ext)
+		f, err = os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		if err == nil {
+			return f, candidate, nil
+		}
+		if !pathConflict(err) {
+			return nil, "", err
+		}
+	}
 }
 
 func (h *handlers) listMessages(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

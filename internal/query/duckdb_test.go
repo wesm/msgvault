@@ -2695,3 +2695,119 @@ func TestDuckDBEngine_SubAggregate_InvalidViewType(t *testing.T) {
 		})
 	}
 }
+
+// TestDuckDBEngine_VARCHARParquetColumns verifies that SearchFast, ListMessages,
+// and Aggregate queries work when Parquet integer columns are stored as VARCHAR.
+// This reproduces two DuckDB binder errors that occurred when Parquet schema
+// inference stored numeric columns as VARCHAR (e.g., from SQLite dynamic typing):
+//  1. "Cannot mix values of VARCHAR and INTEGER_LITERAL in COALESCE operator"
+//  2. "Cannot compare values of type BIGINT and VARCHAR in IN/ANY/ALL clause"
+//     (triggered by filtered_msgs CTE in ListMessages with sender/recipient filters)
+func TestDuckDBEngine_VARCHARParquetColumns(t *testing.T) {
+	// Create Parquet where conversation_id, size_estimate, and has_attachments
+	// are VARCHAR (no ::BIGINT/boolean cast), and attachment size is a VARCHAR
+	// string, to reproduce type mismatches in COALESCE, JOINs, and TRY_CAST paths.
+	engine := createEngineFromBuilder(t, newParquetBuilder(t).
+		addTable("messages", "messages/year=2024", "data.parquet", messagesCols, `
+			(1::BIGINT, 1::BIGINT, 'msg1', '100', 'Hello World', 'snippet1', TIMESTAMP '2024-01-15 10:00:00', '1000', '0', NULL::TIMESTAMP, 2024, 1),
+			(2::BIGINT, 1::BIGINT, 'msg2', '101', 'Goodbye', 'snippet2', TIMESTAMP '2024-01-16 10:00:00', '2000', '1', NULL::TIMESTAMP, 2024, 1)
+		`).
+		addTable("sources", "sources", "sources.parquet", sourcesCols, `
+			(1::BIGINT, 'test@gmail.com')
+		`).
+		addTable("participants", "participants", "participants.parquet", participantsCols, `
+			(1::BIGINT, 'alice@test.com', 'test.com', 'Alice')
+		`).
+		addTable("message_recipients", "message_recipients", "message_recipients.parquet", messageRecipientsCols, `
+			(1::BIGINT, 1::BIGINT, 'from', 'Alice'),
+			(2::BIGINT, 1::BIGINT, 'from', 'Alice')
+		`).
+		addEmptyTable("labels", "labels", "labels.parquet", labelsCols, `(1::BIGINT, 'x')`).
+		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
+		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, '100', 'x')`))
+
+	ctx := context.Background()
+
+	t.Run("ListMessages", func(t *testing.T) {
+		results, err := engine.ListMessages(ctx, MessageFilter{})
+		if err != nil {
+			t.Fatalf("ListMessages with VARCHAR columns: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("expected 2 messages, got %d", len(results))
+		}
+	})
+
+	// ListMessages with a sender filter exercises the filtered_msgs CTE path
+	// where mr.message_id IN (SELECT id FROM filtered_msgs) must compare
+	// compatible types (both BIGINT after CTE-level casting).
+	t.Run("ListMessages_SenderFilter", func(t *testing.T) {
+		results, err := engine.ListMessages(ctx, MessageFilter{
+			Sender: "alice@test.com",
+		})
+		if err != nil {
+			t.Fatalf("ListMessages with sender filter and VARCHAR columns: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("expected 2 messages from alice, got %d", len(results))
+		}
+	})
+
+	t.Run("ListMessages_RecipientFilter", func(t *testing.T) {
+		results, err := engine.ListMessages(ctx, MessageFilter{
+			Recipient: "alice@test.com",
+		})
+		if err != nil {
+			t.Fatalf("ListMessages with recipient filter and VARCHAR columns: %v", err)
+		}
+		// alice is 'from', not 'to'/'cc'/'bcc', so expect 0
+		if len(results) != 0 {
+			t.Fatalf("expected 0 messages to alice as recipient, got %d", len(results))
+		}
+	})
+
+	t.Run("SearchFast", func(t *testing.T) {
+		q := search.Parse("Hello")
+		results, err := engine.SearchFast(ctx, q, MessageFilter{}, 100, 0)
+		if err != nil {
+			t.Fatalf("SearchFast with VARCHAR columns: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Subject != "Hello World" {
+			t.Fatalf("unexpected subject: %s", results[0].Subject)
+		}
+	})
+
+	t.Run("SearchFastCount", func(t *testing.T) {
+		q := search.Parse("Hello")
+		count, err := engine.SearchFastCount(ctx, q, MessageFilter{})
+		if err != nil {
+			t.Fatalf("SearchFastCount with VARCHAR columns: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("expected count 1, got %d", count)
+		}
+	})
+
+	t.Run("Aggregate", func(t *testing.T) {
+		results, err := engine.Aggregate(ctx, ViewSenders, DefaultAggregateOptions())
+		if err != nil {
+			t.Fatalf("Aggregate with VARCHAR columns: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 sender, got %d", len(results))
+		}
+	})
+
+	t.Run("GetTotalStats", func(t *testing.T) {
+		stats, err := engine.GetTotalStats(ctx, StatsOptions{})
+		if err != nil {
+			t.Fatalf("GetTotalStats with VARCHAR columns: %v", err)
+		}
+		if stats.MessageCount != 2 {
+			t.Fatalf("expected 2 messages, got %d", stats.MessageCount)
+		}
+	})
+}
