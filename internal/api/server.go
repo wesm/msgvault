@@ -48,6 +48,13 @@ func (s *Server) setupRouter() chi.Router {
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.Timeout(60 * time.Second))
 
+	// CORS middleware
+	r.Use(CORSMiddleware(DefaultCORSConfig()))
+
+	// Rate limiting (10 req/sec with burst of 20)
+	rateLimiter := NewRateLimiter(10, 20)
+	r.Use(RateLimitMiddleware(rateLimiter))
+
 	// Health check (no auth required)
 	r.Get("/health", s.handleHealth)
 
