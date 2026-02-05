@@ -630,6 +630,35 @@ func TestMessageListPaginationBreadcrumbRestore(t *testing.T) {
 		}
 	})
 
+	t.Run("goBack resets stale msgListLoadingMore", func(t *testing.T) {
+		// Simulate: user is in a paginated message list, a load-more request is
+		// in-flight (msgListLoadingMore=true), and the user navigates to detail
+		// view. The breadcrumb captures the stale loading flag. When they go
+		// back, the flag must be cleared so pagination can resume.
+		msgs := makeMessages(messageListPageSize)
+		model := NewBuilder().
+			WithMessages(msgs...).
+			WithLevel(levelMessageList).
+			WithPageSize(20).
+			Build()
+		model.msgListOffset = messageListPageSize
+		model.msgListLoadingMore = true // In-flight load-more
+
+		// Push breadcrumb (captures msgListLoadingMore=true) and navigate to detail
+		model.pushBreadcrumb()
+		model.level = levelMessageDetail
+		model.cursor = 0
+
+		// Go back — loadingMore must be cleared since the in-flight request
+		// is stale (loadRequestID has changed)
+		m, _ := sendKey(t, model, keyEsc())
+
+		assertLevel(t, m, levelMessageList)
+		if m.msgListLoadingMore {
+			t.Error("expected msgListLoadingMore=false after goBack, but it was still true")
+		}
+	})
+
 	t.Run("goBack preserves msgListComplete flag", func(t *testing.T) {
 		msgs := makeMessages(300) // Short page = all data loaded
 		model := NewBuilder().

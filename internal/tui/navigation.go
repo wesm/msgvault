@@ -179,6 +179,11 @@ func (m Model) goBack() (tea.Model, tea.Cmd) {
 	m.err = nil       // Clear any stale error
 	m.loading = false // Data is restored from snapshot
 
+	// Reset loading-more flag: any in-flight pagination request from the
+	// snapshotted view is stale (loadRequestID has changed), so clear the
+	// flag to allow fresh pagination.
+	m.msgListLoadingMore = false
+
 	return m, nil
 }
 
