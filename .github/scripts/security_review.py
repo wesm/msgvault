@@ -328,8 +328,11 @@ def validate_issue(issue: dict, index: int) -> bool:
     return True
 
 
-def parse_claude_response(response: str) -> list[dict]:
-    """Parse and validate Claude's JSON response into issues."""
+def parse_claude_response(response: str) -> list[dict] | None:
+    """Parse and validate Claude's JSON response into issues.
+
+    Returns a list of validated issues, or None if parsing failed entirely.
+    """
     # Claude might wrap JSON in markdown code blocks
     response = response.strip()
 
@@ -346,7 +349,7 @@ def parse_claude_response(response: str) -> list[dict]:
         issues = json.loads(response)
         if not isinstance(issues, list):
             print(f"Warning: Expected list, got {type(issues)}", file=sys.stderr)
-            return []
+            return None
 
         # Validate each issue and filter out invalid ones
         valid_issues = []
@@ -370,7 +373,7 @@ def parse_claude_response(response: str) -> list[dict]:
     except json.JSONDecodeError as e:
         print(f"Error parsing Claude response: {e}", file=sys.stderr)
         print(f"Response was: {response[:500]}", file=sys.stderr)
-        return []
+        return None
 
 
 def get_existing_bot_comments(pr) -> set[str]:
@@ -444,9 +447,10 @@ def post_review_comments(issues: list[dict]) -> None:
                 target_file = next((f for f in files if f.filename == issue["file"]), None)
 
                 if target_file and target_file.patch:
+                    last_commit = list(pr.get_commits())[-1]
                     pr.create_review_comment(
                         body=comment_body,
-                        commit=pr.get_commits().reversed[0],
+                        commit=last_commit,
                         path=issue["file"],
                         line=issue["line"],
                     )
@@ -526,6 +530,24 @@ Claude's automated security review identified potential security concerns. Pleas
     pr.create_issue_comment(summary)
 
 
+def post_analysis_failed_comment() -> None:
+    """Post a comment indicating the security analysis failed to produce valid output."""
+    g = Github(os.environ["GITHUB_TOKEN"])
+    repo = g.get_repo(os.environ["REPO_NAME"])
+    pr = repo.get_pull(int(os.environ["PR_NUMBER"]))
+
+    summary = """## Security Review: Analysis Failed
+
+Claude's automated security review failed to produce valid output. This PR has **not** been reviewed for security issues.
+
+**Action required:** A maintainer should manually review this PR for security concerns, or re-run the workflow.
+
+---
+*Powered by Claude 4.5 Sonnet*
+"""
+    pr.create_issue_comment(summary)
+
+
 def main() -> None:
     """Main entry point."""
     print("Starting security review...")
@@ -582,6 +604,11 @@ def main() -> None:
 
         # Parse response
         issues = parse_claude_response(response_text)
+        if issues is None:
+            print("ERROR: Failed to parse Claude response", file=sys.stderr)
+            post_analysis_failed_comment()
+            sys.exit(1)
+
         print(f"Found {len(issues)} issue(s)")
 
         # Post comments
