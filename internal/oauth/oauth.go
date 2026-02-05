@@ -369,8 +369,14 @@ func hasPathPrefix(path, dir string) bool {
 	if err != nil {
 		return false
 	}
-	// rel must not start with ".." (escape) and must not be absolute
-	return rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel))
+	// rel must not escape via ".." and must not be absolute
+	if rel == "." {
+		return true
+	}
+	if filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // isPathWithinDir checks if path is within dir, resolving symlinks in dir.

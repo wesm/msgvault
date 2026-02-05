@@ -166,6 +166,37 @@ func TestTokenFileScopesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveToken_OverwriteExisting(t *testing.T) {
+	mgr := setupTestManager(t, Scopes)
+
+	token1 := &oauth2.Token{
+		AccessToken:  "first",
+		RefreshToken: "refresh1",
+		TokenType:    "Bearer",
+	}
+	if err := mgr.saveToken("test@gmail.com", token1, Scopes); err != nil {
+		t.Fatal(err)
+	}
+
+	// Save again with a different access token — must overwrite (not fail).
+	token2 := &oauth2.Token{
+		AccessToken:  "second",
+		RefreshToken: "refresh2",
+		TokenType:    "Bearer",
+	}
+	if err := mgr.saveToken("test@gmail.com", token2, Scopes); err != nil {
+		t.Fatalf("second saveToken should overwrite existing file: %v", err)
+	}
+
+	loaded, err := mgr.loadToken("test@gmail.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.AccessToken != "second" {
+		t.Errorf("expected access token 'second' after overwrite, got %q", loaded.AccessToken)
+	}
+}
+
 func TestHasScope_LegacyToken(t *testing.T) {
 	mgr := setupTestManager(t, Scopes)
 
@@ -315,6 +346,7 @@ func TestHasPathPrefix(t *testing.T) {
 		{"root dir child", "/foo", "/", true},
 		{"root dir exact", "/", "/", true},
 		{"unrelated", "/x/y", "/a/b", false},
+		{"dotdot prefix child", "/a/b/..backup", "/a/b", true},
 	}
 
 	// Add Windows drive-root cases when running on Windows.
