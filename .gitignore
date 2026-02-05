@@ -22,7 +22,6 @@ oauth_client*.json
 
 # Local development state
 .beads/
-.githooks/post-commit
 
 # IDE
 .idea/

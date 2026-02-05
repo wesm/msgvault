@@ -36,6 +36,11 @@ type viewState struct {
 	searchQuery      string              // Active search query (for aggregate filtering)
 	searchFilter     query.MessageFilter // Context filter applied to search
 
+	// Message list pagination
+	msgListOffset      int  // Current offset for non-search message pagination
+	msgListLoadingMore bool // True when loading additional message pages
+	msgListComplete    bool // True when all pages have been loaded (no more data)
+
 	// Data
 	rows          []query.AggregateRow
 	messages      []query.MessageSummary
@@ -80,7 +85,12 @@ func calculateScrollOffset(cursor, currentOffset, pageSize int) int {
 }
 
 func (m *Model) ensureThreadCursorVisible() {
-	m.threadScrollOffset = calculateScrollOffset(m.threadCursor, m.threadScrollOffset, m.pageSize)
+	// Use pageSize-1 because views reserve one row for the info/notification line
+	visibleRows := m.pageSize - 1
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+	m.threadScrollOffset = calculateScrollOffset(m.threadCursor, m.threadScrollOffset, visibleRows)
 }
 
 func (m Model) navigateDetailPrev() (tea.Model, tea.Cmd) {
@@ -169,11 +179,21 @@ func (m Model) goBack() (tea.Model, tea.Cmd) {
 	m.err = nil       // Clear any stale error
 	m.loading = false // Data is restored from snapshot
 
+	// Reset loading-more flag: any in-flight pagination request from the
+	// snapshotted view is stale (loadRequestID has changed), so clear the
+	// flag to allow fresh pagination.
+	m.msgListLoadingMore = false
+
 	return m, nil
 }
 
 func (m *Model) ensureCursorVisible() {
-	m.scrollOffset = calculateScrollOffset(m.cursor, m.scrollOffset, m.pageSize)
+	// Use pageSize-1 because views reserve one row for the info/notification line
+	visibleRows := m.pageSize - 1
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+	m.scrollOffset = calculateScrollOffset(m.cursor, m.scrollOffset, visibleRows)
 }
 
 func (m *Model) pushBreadcrumb() {

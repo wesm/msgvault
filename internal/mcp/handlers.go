@@ -3,16 +3,17 @@ package mcp
 import (
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/wesm/msgvault/internal/export"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/search"
 )
@@ -52,14 +53,10 @@ func getDateArg(args map[string]any, key string) (*time.Time, error) {
 // readAttachmentFile reads the content-addressed attachment file after
 // validating the hash and checking size limits.
 func (h *handlers) readAttachmentFile(contentHash string) ([]byte, error) {
-	if contentHash == "" || len(contentHash) < 2 {
-		return nil, fmt.Errorf("attachment has no stored content")
-	}
-	if _, err := hex.DecodeString(contentHash); err != nil {
+	filePath, err := export.StoragePath(h.attachmentsDir, contentHash)
+	if err != nil {
 		return nil, fmt.Errorf("attachment has invalid content hash")
 	}
-
-	filePath := filepath.Join(h.attachmentsDir, contentHash[:2], contentHash)
 
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -154,23 +151,125 @@ func (h *handlers) getAttachment(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError("attachments directory not configured"), nil
 	}
 
+	if att.Size > maxAttachmentSize {
+		return mcp.NewToolResultError(fmt.Sprintf("attachment too large: %d bytes (max %d)", att.Size, maxAttachmentSize)), nil
+	}
+
 	data, err := h.readAttachmentFile(att.ContentHash)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	resp := struct {
-		Filename      string `json:"filename"`
-		MimeType      string `json:"mime_type"`
-		Size          int64  `json:"size"`
-		ContentBase64 string `json:"content_base64"`
-	}{
-		Filename:      att.Filename,
-		MimeType:      att.MimeType,
-		Size:          att.Size,
-		ContentBase64: base64.StdEncoding.EncodeToString(data),
+	mimeType := att.MimeType
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
 	}
 
+	metaObj := struct {
+		Filename string `json:"filename"`
+		MimeType string `json:"mime_type"`
+		Size     int64  `json:"size"`
+	}{
+		Filename: att.Filename,
+		MimeType: mimeType,
+		Size:     att.Size,
+	}
+	metaJSON, err := json.Marshal(metaObj)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("marshal metadata: %v", err)), nil
+	}
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			mcp.TextContent{
+				Type: "text",
+				Text: string(metaJSON),
+			},
+			mcp.EmbeddedResource{
+				Type: "resource",
+				Resource: mcp.BlobResourceContents{
+					URI:      fmt.Sprintf("attachment:///%d/%s", att.ID, url.PathEscape(att.Filename)),
+					MIMEType: mimeType,
+					Blob:     base64.StdEncoding.EncodeToString(data),
+				},
+			},
+		},
+	}, nil
+}
+
+func (h *handlers) exportAttachment(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+
+	id, err := getIDArg(args, "attachment_id")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	att, err := h.engine.GetAttachment(ctx, id)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("get attachment failed: %v", err)), nil
+	}
+	if att == nil {
+		return mcp.NewToolResultError("attachment not found"), nil
+	}
+
+	if h.attachmentsDir == "" {
+		return mcp.NewToolResultError("attachments directory not configured"), nil
+	}
+
+	if att.Size > maxAttachmentSize {
+		return mcp.NewToolResultError(fmt.Sprintf("attachment too large: %d bytes (max %d)", att.Size, maxAttachmentSize)), nil
+	}
+
+	data, err := h.readAttachmentFile(att.ContentHash)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	// Determine destination directory.
+	destDir, _ := args["destination"].(string)
+	if destDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("cannot determine home directory: %v", err)), nil
+		}
+		destDir = filepath.Join(home, "Downloads")
+	}
+
+	info, err := os.Stat(destDir)
+	if err != nil || !info.IsDir() {
+		return mcp.NewToolResultError(fmt.Sprintf("destination directory does not exist: %s", destDir)), nil
+	}
+
+	// Sanitize and deduplicate filename.
+	filename := export.SanitizeFilename(filepath.Base(att.Filename))
+	if filename == "" || filename == "." {
+		filename = att.ContentHash
+	}
+	f, outPath, err := export.CreateExclusiveFile(filepath.Join(destDir, filename), 0600)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("write failed: %v", err)), nil
+	}
+	_, writeErr := f.Write(data)
+	closeErr := f.Close()
+	if writeErr != nil {
+		os.Remove(outPath)
+		return mcp.NewToolResultError(fmt.Sprintf("write failed: %v", writeErr)), nil
+	}
+	if closeErr != nil {
+		os.Remove(outPath)
+		return mcp.NewToolResultError(fmt.Sprintf("write failed: %v", closeErr)), nil
+	}
+
+	resp := struct {
+		Path     string `json:"path"`
+		Filename string `json:"filename"`
+		Size     int64  `json:"size"`
+	}{
+		Path:     outPath,
+		Filename: filepath.Base(outPath),
+		Size:     int64(len(data)),
+	}
 	return jsonResult(resp)
 }
 

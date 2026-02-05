@@ -81,6 +81,38 @@ func TestStore_Source_UpdateSyncCursor(t *testing.T) {
 	}
 }
 
+func TestStore_Source_UpdateDisplayName(t *testing.T) {
+	f := storetest.New(t)
+
+	err := f.Store.UpdateSourceDisplayName(f.Source.ID, "Work Account")
+	testutil.MustNoErr(t, err, "UpdateSourceDisplayName()")
+
+	// Verify display name was updated
+	updated, err := f.Store.GetSourceByIdentifier("test@example.com")
+	testutil.MustNoErr(t, err, "GetSourceByIdentifier()")
+
+	if !updated.DisplayName.Valid || updated.DisplayName.String != "Work Account" {
+		t.Errorf("DisplayName = %v, want 'Work Account'", updated.DisplayName)
+	}
+}
+
+func TestStore_ListSources(t *testing.T) {
+	f := storetest.New(t)
+
+	sources, err := f.Store.ListSources("")
+	testutil.MustNoErr(t, err, "ListSources()")
+
+	if len(sources) != 1 {
+		t.Fatalf("len(sources) = %d, want 1", len(sources))
+	}
+	if sources[0].Identifier != "test@example.com" {
+		t.Errorf("Identifier = %q, want %q", sources[0].Identifier, "test@example.com")
+	}
+	if sources[0].ID != f.Source.ID {
+		t.Errorf("ID = %d, want %d", sources[0].ID, f.Source.ID)
+	}
+}
+
 func TestStore_Conversation(t *testing.T) {
 	f := storetest.New(t)
 

@@ -12,6 +12,7 @@ import (
 )
 
 var mcpForceSQL bool
+var mcpNoSQLiteScanner bool
 
 var mcpCmd = &cobra.Command{
 	Use:   "mcp",
@@ -43,7 +44,11 @@ Add to Claude Desktop config:
 		analyticsDir := cfg.AnalyticsDir()
 
 		if !mcpForceSQL && query.HasParquetData(analyticsDir) {
-			duckEngine, err := query.NewDuckDBEngine(analyticsDir, dbPath, s.DB())
+			var duckOpts query.DuckDBOptions
+			if mcpNoSQLiteScanner {
+				duckOpts.DisableSQLiteScanner = true
+			}
+			duckEngine, err := query.NewDuckDBEngine(analyticsDir, dbPath, s.DB(), duckOpts)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: Failed to open Parquet engine: %v\n", err)
 				fmt.Fprintf(os.Stderr, "Falling back to SQLite\n")
@@ -66,4 +71,6 @@ Add to Claude Desktop config:
 func init() {
 	rootCmd.AddCommand(mcpCmd)
 	mcpCmd.Flags().BoolVar(&mcpForceSQL, "force-sql", false, "Force SQLite queries instead of Parquet")
+	mcpCmd.Flags().BoolVar(&mcpNoSQLiteScanner, "no-sqlite-scanner", false, "Disable DuckDB sqlite_scanner extension (use direct SQLite fallback)")
+	_ = mcpCmd.Flags().MarkHidden("no-sqlite-scanner")
 }

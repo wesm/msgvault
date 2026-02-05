@@ -472,6 +472,19 @@ Examples:
 		}
 
 		fmt.Println("\nDeletion complete!")
+
+		// Refresh analytics cache to reflect deleted messages
+		analyticsDir := cfg.AnalyticsDir()
+		if _, err := os.Stat(analyticsDir); err == nil {
+			fmt.Println("\nRefreshing analytics cache...")
+			if result, err := buildCache(dbPath, analyticsDir, true); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to refresh cache: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Run 'msgvault build-cache --full-rebuild' manually to update.\n")
+			} else if !result.Skipped {
+				fmt.Printf("Cache refreshed (%d messages).\n", result.ExportedCount)
+			}
+		}
+
 		return nil
 	},
 }

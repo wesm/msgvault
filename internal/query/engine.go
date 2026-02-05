@@ -40,6 +40,17 @@ type Engine interface {
 	// This is used for pagination UI to show "N of M results".
 	SearchFastCount(ctx context.Context, query *search.Query, filter MessageFilter) (int64, error)
 
+	// SearchFastWithStats performs a fast metadata search and returns paginated
+	// results, total count, and aggregate stats in a single operation. The DuckDB
+	// implementation materializes matching IDs into a temp table with one Parquet
+	// scan, then reuses it for count, pagination, and stats — replacing 3-4
+	// separate scans with one.
+	//
+	// queryStr is the raw search string (needed for stats; search.Query doesn't store it).
+	// statsGroupBy controls which view's key columns are used for stats search filtering.
+	SearchFastWithStats(ctx context.Context, query *search.Query, queryStr string,
+		filter MessageFilter, statsGroupBy ViewType, limit, offset int) (*SearchFastResult, error)
+
 	// GetGmailIDsByFilter returns Gmail message IDs (source_message_id) matching a filter.
 	// This is useful for batch operations like staging messages for deletion.
 	GetGmailIDsByFilter(ctx context.Context, filter MessageFilter) ([]string, error)
@@ -52,6 +63,15 @@ type Engine interface {
 
 	// Close releases any resources held by the engine.
 	Close() error
+}
+
+// SearchFastResult holds the combined results of a fast search:
+// paginated messages, total count, and aggregate stats — all from a single
+// materialized scan of the matching message IDs.
+type SearchFastResult struct {
+	Messages   []MessageSummary
+	TotalCount int64
+	Stats      *TotalStats
 }
 
 // TotalStats provides overall database statistics.

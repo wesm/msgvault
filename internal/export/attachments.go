@@ -4,14 +4,38 @@ package export
 
 import (
 	"archive/zip"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/wesm/msgvault/internal/query"
 )
+
+// ErrInvalidContentHash is returned when a content hash fails validation.
+var ErrInvalidContentHash = errors.New("invalid content hash")
+
+// ValidateContentHash validates that a content hash is a valid SHA-256 hex string.
+// This prevents path traversal attacks by ensuring the hash contains only
+// hexadecimal characters and is exactly 64 characters long.
+func ValidateContentHash(hash string) error {
+	// SHA-256 produces 32 bytes = 64 hex characters
+	if len(hash) != 64 {
+		return fmt.Errorf("%w: must be exactly 64 hex characters, got %d", ErrInvalidContentHash, len(hash))
+	}
+
+	// Verify all characters are valid hexadecimal
+	_, err := hex.DecodeString(hash)
+	if err != nil {
+		return fmt.Errorf("%w: contains non-hexadecimal characters", ErrInvalidContentHash)
+	}
+
+	return nil
+}
 
 // ExportStats contains structured results of an attachment export operation.
 type ExportStats struct {
@@ -37,8 +61,8 @@ func Attachments(zipFilename, attachmentsDir string, attachments []query.Attachm
 
 	usedNames := make(map[string]int)
 	for _, att := range attachments {
-		if len(att.ContentHash) < 2 {
-			stats.Errors = append(stats.Errors, fmt.Sprintf("%s: missing or invalid content hash", att.Filename))
+		if err := ValidateContentHash(att.ContentHash); err != nil {
+			stats.Errors = append(stats.Errors, fmt.Sprintf("%s: %v", att.Filename, err))
 			continue
 		}
 
@@ -115,8 +139,10 @@ func isWriteError(err error) bool {
 }
 
 func addAttachmentToZip(zw *zip.Writer, root string, att query.AttachmentInfo, usedNames map[string]int) (int64, error) {
-	storagePath := filepath.Join(root, att.ContentHash[:2], att.ContentHash)
-
+	storagePath, err := StoragePath(root, att.ContentHash)
+	if err != nil {
+		return 0, err
+	}
 	srcFile, err := os.Open(storagePath)
 	if err != nil {
 		return 0, err
@@ -169,6 +195,158 @@ func SanitizeFilename(s string) string {
 		}
 	}
 	return string(result)
+}
+
+// ValidateOutputPath checks that an output file path does not escape the
+// current working directory. This guards against email-supplied filenames
+// being passed to --output (e.g., an attachment named
+// "../../.ssh/authorized_keys" or "/etc/cron.d/evil").
+// Both absolute paths and ".." traversal are rejected.
+func ValidateOutputPath(outputPath string) error {
+	cleaned := filepath.Clean(outputPath)
+	if filepath.IsAbs(cleaned) {
+		return fmt.Errorf("output path %q is absolute; use a relative path", outputPath)
+	}
+	// Reject Windows drive-relative (C:foo) and UNC (\\server\share) paths,
+	// which filepath.IsAbs does not catch.
+	if filepath.VolumeName(cleaned) != "" {
+		return fmt.Errorf("output path %q contains a drive or UNC prefix; use a relative path", outputPath)
+	}
+	// Reject rooted paths (leading / or \) which are drive-relative on Windows
+	// and absolute on Unix. filepath.IsAbs misses these on Windows.
+	if len(cleaned) > 0 && (cleaned[0] == '/' || cleaned[0] == '\\') {
+		return fmt.Errorf("output path %q is rooted; use a relative path", outputPath)
+	}
+	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("output path %q escapes the working directory", outputPath)
+	}
+	return nil
+}
+
+// StoragePath returns the content-addressed file path for an attachment:
+// attachmentsDir/<hash[:2]>/<hash>. Returns an error if the content hash
+// is invalid (prevents panics from short/empty strings).
+func StoragePath(attachmentsDir, contentHash string) (string, error) {
+	if err := ValidateContentHash(contentHash); err != nil {
+		return "", err
+	}
+	return filepath.Join(attachmentsDir, contentHash[:2], contentHash), nil
+}
+
+// ExportedFile represents a single file written to a directory.
+type ExportedFile struct {
+	Path string // absolute path of the written file
+	Size int64
+}
+
+// DirExportResult contains the results of exporting attachments to a directory.
+type DirExportResult struct {
+	Files  []ExportedFile
+	Errors []string
+}
+
+// TotalSize returns the sum of all exported file sizes.
+func (r DirExportResult) TotalSize() int64 {
+	var total int64
+	for _, f := range r.Files {
+		total += f.Size
+	}
+	return total
+}
+
+// AttachmentsToDir exports attachments as individual files into outputDir.
+// It reads attachment content from attachmentsDir using content-hash based paths
+// and writes each file with its original filename (sanitized, deduplicated).
+// Files are created with O_EXCL to avoid overwriting existing files.
+func AttachmentsToDir(outputDir, attachmentsDir string, attachments []query.AttachmentInfo) DirExportResult {
+	var result DirExportResult
+	usedNames := make(map[string]int)
+
+	for _, att := range attachments {
+		if err := ValidateContentHash(att.ContentHash); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", att.Filename, err))
+			continue
+		}
+
+		filename := resolveUniqueFilename(att.Filename, att.ContentHash, usedNames)
+		exported, err := exportAttachmentToFile(outputDir, attachmentsDir, att.ContentHash, filename)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", att.Filename, err))
+			continue
+		}
+
+		result.Files = append(result.Files, exported)
+	}
+
+	return result
+}
+
+// exportAttachmentToFile streams a single attachment from content-addressed
+// storage to outputDir/filename. Uses O_EXCL to avoid overwriting; appends
+// _1, _2, etc. on conflict.
+func exportAttachmentToFile(outputDir, attachmentsDir, contentHash, filename string) (ExportedFile, error) {
+	srcPath, err := StoragePath(attachmentsDir, contentHash)
+	if err != nil {
+		return ExportedFile{}, err
+	}
+	src, err := os.Open(srcPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ExportedFile{}, fmt.Errorf("attachment file not found for hash %s", contentHash)
+		}
+		return ExportedFile{}, fmt.Errorf("open source: %w", err)
+	}
+	defer src.Close()
+
+	destPath := filepath.Join(outputDir, filename)
+	dst, finalPath, err := CreateExclusiveFile(destPath, 0600)
+	if err != nil {
+		return ExportedFile{}, fmt.Errorf("create output file: %w", err)
+	}
+
+	n, copyErr := io.Copy(dst, src)
+	closeErr := dst.Close()
+	if copyErr != nil {
+		os.Remove(finalPath)
+		return ExportedFile{}, fmt.Errorf("write: %w", copyErr)
+	}
+	if closeErr != nil {
+		os.Remove(finalPath)
+		return ExportedFile{}, fmt.Errorf("close: %w", closeErr)
+	}
+
+	return ExportedFile{Path: finalPath, Size: n}, nil
+}
+
+// CreateExclusiveFile atomically creates a file that doesn't already exist,
+// trying path, path_1, path_2, etc. on conflict. Returns the open file and
+// the path that was actually used. Uses O_CREATE|O_EXCL to avoid TOCTOU races.
+func CreateExclusiveFile(p string, perm os.FileMode) (*os.File, string, error) {
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err == nil {
+		return f, p, nil
+	}
+	if !pathConflict(err) {
+		return nil, "", err
+	}
+	ext := filepath.Ext(p)
+	base := p[:len(p)-len(ext)]
+	for i := 1; ; i++ {
+		candidate := fmt.Sprintf("%s_%d%s", base, i, ext)
+		f, err = os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+		if err == nil {
+			return f, candidate, nil
+		}
+		if !pathConflict(err) {
+			return nil, "", err
+		}
+	}
+}
+
+// pathConflict reports whether err indicates the path already exists as a
+// file or directory.
+func pathConflict(err error) bool {
+	return os.IsExist(err) || errors.Is(err, syscall.EISDIR)
 }
 
 // FormatBytesLong formats bytes with full precision for export results.

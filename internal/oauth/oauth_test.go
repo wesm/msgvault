@@ -1,11 +1,14 @@
 package oauth
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -163,6 +166,37 @@ func TestTokenFileScopesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveToken_OverwriteExisting(t *testing.T) {
+	mgr := setupTestManager(t, Scopes)
+
+	token1 := &oauth2.Token{
+		AccessToken:  "first",
+		RefreshToken: "refresh1",
+		TokenType:    "Bearer",
+	}
+	if err := mgr.saveToken("test@gmail.com", token1, Scopes); err != nil {
+		t.Fatal(err)
+	}
+
+	// Save again with a different access token — must overwrite (not fail).
+	token2 := &oauth2.Token{
+		AccessToken:  "second",
+		RefreshToken: "refresh2",
+		TokenType:    "Bearer",
+	}
+	if err := mgr.saveToken("test@gmail.com", token2, Scopes); err != nil {
+		t.Fatalf("second saveToken should overwrite existing file: %v", err)
+	}
+
+	loaded, err := mgr.loadToken("test@gmail.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.AccessToken != "second" {
+		t.Errorf("expected access token 'second' after overwrite, got %q", loaded.AccessToken)
+	}
+}
+
 func TestHasScope_LegacyToken(t *testing.T) {
 	mgr := setupTestManager(t, Scopes)
 
@@ -244,6 +278,102 @@ func TestSanitizeEmail(t *testing.T) {
 			got := sanitizeEmail(tt.email)
 			if got != tt.want {
 				t.Errorf("sanitizeEmail(%q) = %q, want %q", tt.email, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTokenPath_SymlinkEscape(t *testing.T) {
+	// This test verifies that symlinks inside tokensDir cannot be used
+	// to write tokens outside the tokens directory.
+	//
+	// Attack scenario:
+	// 1. Attacker creates symlink: tokensDir/evil.json -> /tmp/outside/evil.json
+	// 2. saveToken("evil", ...) would follow the symlink and write outside tokensDir
+	// 3. The fix should detect this and use a hash-based fallback path
+
+	dir := t.TempDir()
+	tokensDir := filepath.Join(dir, "tokens")
+	outsideDir := filepath.Join(dir, "outside")
+
+	if err := os.MkdirAll(tokensDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outsideDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a symlink inside tokensDir that points outside
+	symlinkPath := filepath.Join(tokensDir, "evil.json")
+	outsideTarget := filepath.Join(outsideDir, "evil.json")
+	if err := os.Symlink(outsideTarget, symlinkPath); err != nil {
+		t.Skipf("cannot create symlink (may require admin on Windows): %v", err)
+	}
+
+	mgr := &Manager{
+		config:    &oauth2.Config{Scopes: Scopes},
+		tokensDir: tokensDir,
+	}
+
+	// Get the token path for "evil" - this should NOT return the symlink path
+	// because following it would write outside tokensDir
+	gotPath := mgr.tokenPath("evil")
+
+	// The path should NOT be the symlink (which would write outside tokensDir)
+	if gotPath == symlinkPath {
+		t.Errorf("tokenPath returned symlink path %q, should use hash-based fallback to prevent escape", gotPath)
+	}
+
+	// Verify the returned path is exactly the expected hash-based fallback
+	expectedPath := filepath.Join(tokensDir, fmt.Sprintf("%x.json", sha256.Sum256([]byte("evil"))))
+	if gotPath != expectedPath {
+		t.Errorf("tokenPath = %q, want hash-based fallback %q", gotPath, expectedPath)
+	}
+}
+
+func TestHasPathPrefix(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		dir  string
+		want bool
+	}{
+		{"child path", "/a/b/c", "/a/b", true},
+		{"exact match", "/a/b", "/a/b", true},
+		{"prefix attack", "/a/b-evil/c", "/a/b", false},
+		{"sibling", "/a/c", "/a/b", false},
+		{"parent escape", "/a", "/a/b", false},
+		{"root dir child", "/foo", "/", true},
+		{"root dir exact", "/", "/", true},
+		{"unrelated", "/x/y", "/a/b", false},
+		{"dotdot prefix child", "/a/b/..backup", "/a/b", true},
+	}
+
+	// Add Windows drive-root cases when running on Windows.
+	if runtime.GOOS == "windows" {
+		vol := filepath.VolumeName(os.TempDir())
+		root := vol + string(filepath.Separator)
+		tests = append(tests,
+			struct {
+				name string
+				path string
+				dir  string
+				want bool
+			}{"windows drive root exact", root, root, true},
+			struct {
+				name string
+				path string
+				dir  string
+				want bool
+			}{"windows drive root child", root + "Users", root, true},
+		)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasPathPrefix(tt.path, tt.dir)
+			if got != tt.want {
+				t.Errorf("hasPathPrefix(%q, %q) = %v, want %v", tt.path, tt.dir, got, tt.want)
 			}
 		})
 	}
@@ -447,6 +577,47 @@ func TestNewCallbackHandler(t *testing.T) {
 				}
 			} else {
 				assertNoSend(t, errChan, "errChan")
+			}
+		})
+	}
+}
+
+func TestValidateBrowserURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		url     string
+		wantErr string
+	}{
+		{"http allowed", "http://localhost:8080/callback", ""},
+		{"https allowed", "https://accounts.google.com/o/oauth2/auth", ""},
+		{"HTTP uppercase allowed", "HTTP://example.com", ""},
+		{"Https mixed case allowed", "Https://example.com", ""},
+		{"HTTPS all caps allowed", "HTTPS://example.com", ""},
+		{"file scheme rejected", "file:///etc/passwd", "only http and https are allowed"},
+		{"javascript scheme rejected", "javascript:alert(1)", "only http and https are allowed"},
+		{"custom scheme rejected", "myapp://callback", "only http and https are allowed"},
+		{"ftp scheme rejected", "ftp://example.com/file", "only http and https are allowed"},
+		{"empty scheme rejected", "://no-scheme", "invalid URL"},
+		{"no scheme rejected", "example.com", "only http and https are allowed"},
+		{"malformed URL", "://", "invalid URL"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateBrowserURL(tt.url)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("validateBrowserURL(%q) = %v, want nil", tt.url, err)
+				}
+			} else {
+				if err == nil {
+					t.Errorf("validateBrowserURL(%q) = nil, want error containing %q", tt.url, tt.wantErr)
+				} else if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("validateBrowserURL(%q) error = %q, want to contain %q", tt.url, err.Error(), tt.wantErr)
+				}
 			}
 		})
 	}

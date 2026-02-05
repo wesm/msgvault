@@ -967,3 +967,72 @@ func TestMultipleEmptyTargets(t *testing.T) {
 		t.Errorf("expected 0 domain sub-aggregate rows for no-sender message, got %d", len(rows))
 	}
 }
+
+// TestGetTotalStatsWithSearchQuery verifies that GetTotalStats filters stats
+// to reflect only messages matching the search query. This is a regression test
+// for a bug where SQLiteEngine.GetTotalStats ignored opts.SearchQuery, returning
+// global stats instead of search-filtered stats.
+func TestGetTotalStatsWithSearchQuery(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Without search: 5 messages total
+	allStats := env.MustGetTotalStats(StatsOptions{})
+	if allStats.MessageCount != 5 {
+		t.Fatalf("expected 5 total messages, got %d", allStats.MessageCount)
+	}
+
+	// Search "Hello" matches 2 messages: "Hello World" (id=1, size=1000, no att)
+	// and "Re: Hello" (id=2, size=2000, 2 attachments: 10000+5000 bytes).
+	stats := env.MustGetTotalStats(StatsOptions{SearchQuery: "Hello"})
+
+	if stats.MessageCount != 2 {
+		t.Errorf("SearchQuery=Hello: expected 2 messages, got %d", stats.MessageCount)
+	}
+	expectedSize := int64(1000 + 2000)
+	if stats.TotalSize != expectedSize {
+		t.Errorf("SearchQuery=Hello: expected total size %d, got %d", expectedSize, stats.TotalSize)
+	}
+	if stats.AttachmentCount != 2 {
+		t.Errorf("SearchQuery=Hello: expected 2 attachments, got %d", stats.AttachmentCount)
+	}
+	expectedAttSize := int64(10000 + 5000)
+	if stats.AttachmentSize != expectedAttSize {
+		t.Errorf("SearchQuery=Hello: expected attachment size %d, got %d", expectedAttSize, stats.AttachmentSize)
+	}
+}
+
+// TestGetTotalStatsWithSearchQuery_FromFilter verifies that from: search
+// filters are applied correctly to stats.
+func TestGetTotalStatsWithSearchQuery_FromFilter(t *testing.T) {
+	env := newTestEnv(t)
+
+	// "from:alice" should match 3 messages (ids 1,2,3)
+	stats := env.MustGetTotalStats(StatsOptions{SearchQuery: "from:alice@example.com"})
+
+	if stats.MessageCount != 3 {
+		t.Errorf("SearchQuery=from:alice: expected 3 messages, got %d", stats.MessageCount)
+	}
+	expectedSize := int64(1000 + 2000 + 1500)
+	if stats.TotalSize != expectedSize {
+		t.Errorf("SearchQuery=from:alice: expected total size %d, got %d", expectedSize, stats.TotalSize)
+	}
+}
+
+// TestGetTotalStatsWithSearchQuery_Combined verifies that SearchQuery combines
+// with other StatsOptions filters (e.g., WithAttachmentsOnly).
+func TestGetTotalStatsWithSearchQuery_Combined(t *testing.T) {
+	env := newTestEnv(t)
+
+	// "from:alice" matches 3 messages (ids 1,2,3), but only id=2 has attachments.
+	stats := env.MustGetTotalStats(StatsOptions{
+		SearchQuery:         "from:alice@example.com",
+		WithAttachmentsOnly: true,
+	})
+
+	if stats.MessageCount != 1 {
+		t.Errorf("SearchQuery+WithAttachments: expected 1 message, got %d", stats.MessageCount)
+	}
+	if stats.TotalSize != 2000 {
+		t.Errorf("SearchQuery+WithAttachments: expected total size 2000, got %d", stats.TotalSize)
+	}
+}

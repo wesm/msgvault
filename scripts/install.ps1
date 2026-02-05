@@ -122,7 +122,7 @@ function Install-Msgvault {
     Write-Info "Latest version: $version"
 
     $versionNum = $version.TrimStart('v')
-    $archiveName = "msgvault_${versionNum}_windows_${arch}.tar.gz"
+    $archiveName = "msgvault_${versionNum}_windows_${arch}.zip"
     $downloadUrl = "https://github.com/$repo/releases/download/$version/$archiveName"
 
     $installDir = Get-InstallDir
@@ -202,15 +202,15 @@ function Install-Msgvault {
         }
 
         Write-Info "Extracting..."
-        # Windows 10+ has tar built-in
-        if (-not (Get-Command tar -ErrorAction SilentlyContinue)) {
-            Write-Err "Error: 'tar' command not found. Windows 10 build 17063+ includes tar."
-            Write-Err "Please update Windows or extract $archiveName manually."
+        if ($PSVersionTable.PSVersion.Major -lt 5) {
+            Write-Err "Error: PowerShell 5.0 or later is required for Expand-Archive."
+            Write-Err "Please upgrade PowerShell or download the release manually from GitHub."
             exit 1
         }
-        tar -xzf $archivePath -C $tmpDir
-        if ($LASTEXITCODE -ne 0) {
-            Write-Err "Error: tar extraction failed with exit code $LASTEXITCODE"
+        try {
+            Expand-Archive -Path $archivePath -DestinationPath $tmpDir -Force
+        } catch {
+            Write-Err "Error: Failed to extract archive: $_"
             exit 1
         }
 

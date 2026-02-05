@@ -173,6 +173,9 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cursor = 0
 		m.scrollOffset = 0
 		m.messages = nil // Clear stale messages from previous view
+		m.msgListOffset = 0
+		m.msgListLoadingMore = false
+		m.msgListComplete = false
 		m.loading = true
 		m.err = nil
 
@@ -290,9 +293,12 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Handle list navigation.
-	// NOTE: Unlike handleAggregateKeys, we check for deep search
-	// loading between navigation and the early return. This is because pgdown/ctrl+d may
-	// need to trigger loading more search results after updating the cursor position.
+	// NOTE: Unlike handleAggregateKeys, we check for search pagination
+	// between navigation and the early return. This is because navigation keys
+	// (even when cursor is clamped at the boundary) may need to trigger loading
+	// more search results. navigateList only returns true for navigation keys
+	// (up/down/j/k/pgup/pgdown/home/end/G), so handled=true is safe to use
+	// as the gate for pagination checks.
 	handled := m.navigateList(msg.String(), len(m.messages))
 
 	// Check if we need to load more deep search results after pgdown
@@ -308,6 +314,15 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if handled {
+		// Check if navigation requires loading more results (search or list).
+		// This fires even when cursor is clamped at the boundary (e.g., pressing
+		// down at the last loaded item) so pagination can still trigger.
+		if cmd := m.maybeLoadMoreSearchResults(); cmd != nil {
+			return m, cmd
+		}
+		if cmd := m.maybeLoadMoreMessages(); cmd != nil {
+			return m, cmd
+		}
 		return m, nil
 	}
 
@@ -544,6 +559,56 @@ func (m *Model) maybeLoadMoreSearchResults() tea.Cmd {
 		m.searchLoadingMore = true
 		m.searchRequestID++
 		return m.loadSearchWithOffset(m.searchQuery, m.searchOffset, true)
+	}
+
+	return nil
+}
+
+// maybeLoadMoreMessages checks if we're near the end of the loaded message list and should load more.
+// This enables infinite-scroll pagination for non-search message lists.
+func (m *Model) maybeLoadMoreMessages() tea.Cmd {
+	// Don't paginate during search — search has its own pagination
+	if m.searchQuery != "" {
+		return nil
+	}
+
+	// Don't load more if already loading
+	if m.msgListLoadingMore || m.loading {
+		return nil
+	}
+
+	// Don't load more if we have no messages (empty results)
+	if len(m.messages) == 0 {
+		return nil
+	}
+
+	// Don't load more if we already know all data has been loaded
+	if m.msgListComplete {
+		return nil
+	}
+
+	// If total loaded messages isn't a multiple of the page size,
+	// the last page was short — we've reached the end of the data.
+	if len(m.messages)%messageListPageSize != 0 {
+		return nil
+	}
+
+	// Check if contextStats tells us we have all results
+	if m.contextStats != nil && m.contextStats.MessageCount > 0 &&
+		int64(len(m.messages)) >= m.contextStats.MessageCount {
+		return nil
+	}
+	if m.allMessages && m.stats != nil && m.stats.MessageCount > 0 &&
+		int64(len(m.messages)) >= m.stats.MessageCount {
+		return nil
+	}
+
+	// Load more when cursor is within 20 rows of the end
+	threshold := 20
+	if m.cursor >= len(m.messages)-threshold {
+		m.msgListLoadingMore = true
+		m.loadRequestID++
+		return m.loadMessagesWithOffset(m.msgListOffset, true)
 	}
 
 	return nil
@@ -1070,6 +1135,9 @@ func (m Model) enterDrillDown(row query.AggregateRow) (tea.Model, tea.Cmd) {
 	m.cursor = 0
 	m.scrollOffset = 0
 	m.messages = nil // Clear stale messages from previous drill-down
+	m.msgListOffset = 0
+	m.msgListLoadingMore = false
+	m.msgListComplete = false
 	m.loading = true
 	m.err = nil
 

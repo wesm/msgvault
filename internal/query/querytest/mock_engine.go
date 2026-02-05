@@ -35,6 +35,7 @@ type MockEngine struct {
 	ListMessagesFunc         func(context.Context, query.MessageFilter) ([]query.MessageSummary, error)
 	SearchFastCountFunc      func(context.Context, *search.Query, query.MessageFilter) (int64, error)
 	GetGmailIDsByFilterFunc  func(context.Context, query.MessageFilter) ([]string, error)
+	SearchFastWithStatsFunc  func(context.Context, *search.Query, string, query.MessageFilter, query.ViewType, int, int) (*query.SearchFastResult, error)
 }
 
 // Compile-time check.
@@ -107,6 +108,18 @@ func (m *MockEngine) SearchFastCount(ctx context.Context, q *search.Query, filte
 		return m.SearchFastCountFunc(ctx, q, filter)
 	}
 	return 0, nil
+}
+
+func (m *MockEngine) SearchFastWithStats(ctx context.Context, q *search.Query, queryStr string,
+	filter query.MessageFilter, statsGroupBy query.ViewType, limit, offset int) (*query.SearchFastResult, error) {
+	if m.SearchFastWithStatsFunc != nil {
+		return m.SearchFastWithStatsFunc(ctx, q, queryStr, filter, statsGroupBy, limit, offset)
+	}
+	return &query.SearchFastResult{
+		Messages:   m.SearchFastResults,
+		TotalCount: int64(len(m.SearchFastResults)),
+		Stats:      m.Stats,
+	}, nil
 }
 
 func (m *MockEngine) GetGmailIDsByFilter(ctx context.Context, filter query.MessageFilter) ([]string, error) {

@@ -3,6 +3,7 @@ package deletion
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -819,9 +820,12 @@ func TestManifest_Save_FilePermissions(t *testing.T) {
 	}
 
 	// File should have 0600 permissions (owner read/write only)
-	got := info.Mode().Perm()
-	want := os.FileMode(0600)
-	if got != want {
-		t.Errorf("file permissions = %04o, want %04o", got, want)
+	// Windows does not support Unix permissions.
+	if runtime.GOOS != "windows" {
+		got := info.Mode().Perm()
+		want := os.FileMode(0600)
+		if got != want {
+			t.Errorf("file permissions = %04o, want %04o", got, want)
+		}
 	}
 }

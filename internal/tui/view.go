@@ -432,7 +432,10 @@ func (m Model) messageListView() string {
 		return m.fillScreen(errorStyle.Render(padRight(fmt.Sprintf("Error: %v", m.err), m.width)), 1)
 	}
 
-	if len(m.messages) == 0 && !m.loading {
+	// Non-search empty state: show simple "No messages" without header/info line.
+	// When a search is active (or search bar is open), fall through to full
+	// rendering so the search bar stays visible and the user can edit their query.
+	if len(m.messages) == 0 && !m.loading && !m.inlineSearchActive && m.searchQuery == "" {
 		return m.fillScreen(normalRowStyle.Render(padRight("No messages", m.width)), 1)
 	}
 
@@ -488,6 +491,12 @@ func (m Model) messageListView() string {
 	endRow := m.scrollOffset + m.pageSize - 1
 	if endRow > len(m.messages) {
 		endRow = len(m.messages)
+	}
+
+	// Show "No results" indicator when search returned zero matches
+	if len(m.messages) == 0 && !m.loading {
+		sb.WriteString(normalRowStyle.Render(padRight("   No results found", m.width)))
+		sb.WriteString("\n")
 	}
 
 	for i := m.scrollOffset; i < endRow; i++ {
@@ -559,8 +568,13 @@ func (m Model) messageListView() string {
 		sb.WriteString("\n")
 	}
 
-	// Fill remaining space (minus 1 for info line)
-	for i := endRow - m.scrollOffset; i < m.pageSize-1; i++ {
+	// Fill remaining space (minus 1 for info line).
+	// Account for the "No results found" line when messages is empty.
+	dataRows := endRow - m.scrollOffset
+	if len(m.messages) == 0 && !m.loading {
+		dataRows = 1 // the "No results found" row
+	}
+	for i := dataRows; i < m.pageSize-1; i++ {
 		sb.WriteString(normalRowStyle.Render(strings.Repeat(" ", m.width)))
 		sb.WriteString("\n")
 	}
@@ -578,6 +592,8 @@ func (m Model) messageListView() string {
 		infoContent = fmt.Sprintf(" Search: %q", m.searchQuery)
 		if m.searchTotalCount > 0 {
 			infoContent += fmt.Sprintf(" (%d results)", m.searchTotalCount)
+		} else if m.searchTotalCount == 0 {
+			infoContent += " (0 results)"
 		} else if m.searchTotalCount == -1 {
 			infoContent += fmt.Sprintf(" (%d+ results, PgDn for more)", len(m.messages))
 		}

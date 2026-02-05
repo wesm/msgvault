@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"unicode/utf8"
 
@@ -55,6 +56,7 @@ type repairStats struct {
 	labels       int
 	filenames    int
 	convTitles   int
+	skippedRows  int
 }
 
 func repairEncoding(s *store.Store) error {
@@ -107,6 +109,9 @@ func repairEncoding(s *store.Store) error {
 	}
 	if stats.convTitles > 0 {
 		fmt.Printf("  Conv titles:   %d\n", stats.convTitles)
+	}
+	if stats.skippedRows > 0 {
+		fmt.Printf("  Skipped rows:  %d (scan errors)\n", stats.skippedRows)
 	}
 	fmt.Printf("  Total fields:  %d\n", total)
 	fmt.Println("\nRun 'msgvault build-cache --full-rebuild' to update the analytics cache.")
@@ -211,6 +216,8 @@ func repairMessageFields(s *store.Store, stats *repairStats) error {
 		var compression sql.NullString
 
 		if err := rows.Scan(&id, &subject, &bodyText, &bodyHTML, &snippet, &rawData, &compression); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: skipping message row: scan error: %v\n", err)
+			stats.skippedRows++
 			continue
 		}
 
@@ -380,6 +387,8 @@ func repairDisplayNames(s *store.Store, stats *repairStats) error {
 			var id int64
 			var name string
 			if err := rows.Scan(&id, &name); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: skipping %s row: scan error: %v\n", table.name, err)
+				stats.skippedRows++
 				continue
 			}
 
@@ -511,6 +520,8 @@ func repairOtherStrings(s *store.Store, stats *repairStats) error {
 			var id int64
 			var value string
 			if err := rows.Scan(&id, &value); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: skipping %s.%s row: scan error: %v\n", table.name, table.column, err)
+				stats.skippedRows++
 				continue
 			}
 

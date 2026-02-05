@@ -1,15 +1,75 @@
 package sync
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/store"
 	testemail "github.com/wesm/msgvault/internal/testutil/email"
 )
+
+// panicOnBatchAPI wraps a MockAPI and panics when GetMessagesRawBatch is called.
+// Used to test that Full() recovers from panics gracefully.
+type panicOnBatchAPI struct {
+	*gmail.MockAPI
+}
+
+func (p *panicOnBatchAPI) GetMessagesRawBatch(_ context.Context, _ []string) ([]*gmail.RawMessage, error) {
+	panic("unexpected nil pointer in batch processing")
+}
+
+func TestFullSync_PanicReturnsError(t *testing.T) {
+	env := newTestEnv(t)
+	seedMessages(env, 1, 12345, "msg1")
+
+	// Replace the client with one that panics during batch fetch
+	env.Syncer = New(&panicOnBatchAPI{MockAPI: env.Mock}, env.Store, nil)
+
+	// Should return an error, NOT panic and crash the program
+	_, err := env.Syncer.Full(env.Context, testEmail)
+	if err == nil {
+		t.Fatal("expected error from panic recovery, got nil")
+	}
+	if !strings.Contains(err.Error(), "panic") {
+		t.Errorf("expected error to mention panic, got: %v", err)
+	}
+}
+
+// panicOnHistoryAPI wraps a MockAPI and panics when ListHistory is called.
+// Used to test that Incremental() recovers from panics gracefully.
+type panicOnHistoryAPI struct {
+	*gmail.MockAPI
+}
+
+func (p *panicOnHistoryAPI) ListHistory(_ context.Context, _ uint64, _ string) (*gmail.HistoryResponse, error) {
+	panic("unexpected nil pointer in history processing")
+}
+
+func TestIncrementalSync_PanicReturnsError(t *testing.T) {
+	env := newTestEnv(t)
+	env.CreateSourceWithHistory(t, "12340")
+
+	env.Mock.Profile.MessagesTotal = 10
+	env.Mock.Profile.HistoryID = 12350
+
+	// Replace the client with one that panics during history fetch
+	env.Syncer = New(&panicOnHistoryAPI{MockAPI: env.Mock}, env.Store, nil)
+
+	// Should return an error, NOT panic and crash the program
+	_, err := env.Syncer.Incremental(env.Context, testEmail)
+	if err == nil {
+		t.Fatal("expected error from panic recovery, got nil")
+	}
+	if !strings.Contains(err.Error(), "panic") {
+		t.Errorf("expected error to mention panic, got: %v", err)
+	}
+}
 
 func TestFullSync(t *testing.T) {
 	env := newTestEnv(t)
@@ -1012,9 +1072,12 @@ func TestAttachmentFilePermissions(t *testing.T) {
 	}
 
 	// File should have 0600 permissions (owner read/write only)
-	got := info.Mode().Perm()
-	want := os.FileMode(0600)
-	if got != want {
-		t.Errorf("attachment file permissions = %04o, want %04o", got, want)
+	// Windows does not support Unix permissions.
+	if runtime.GOOS != "windows" {
+		got := info.Mode().Perm()
+		want := os.FileMode(0600)
+		if got != want {
+			t.Errorf("attachment file permissions = %04o, want %04o", got, want)
+		}
 	}
 }

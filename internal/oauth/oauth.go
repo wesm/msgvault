@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -295,7 +296,34 @@ func (m *Manager) saveToken(email string, token *oauth2.Token, scopes []string) 
 	}
 
 	path := m.tokenPath(email)
-	return os.WriteFile(path, data, 0600)
+
+	// Atomic write via temp file + rename to avoid TOCTOU symlink races.
+	// If an attacker creates a symlink between tokenPath() returning and
+	// the write, os.Rename replaces the symlink itself rather than following it.
+	tmpFile, err := os.CreateTemp(m.tokensDir, ".token-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp token file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("write temp token file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close temp token file: %w", err)
+	}
+	if err := os.Chmod(tmpPath, 0600); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("chmod temp token file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename temp token file: %w", err)
+	}
+	return nil
 }
 
 // tokenPath returns the path to the token file for an email.
@@ -306,14 +334,61 @@ func (m *Manager) tokenPath(email string) string {
 	// Ensure the final path is within tokensDir
 	path := filepath.Join(m.tokensDir, safe+".json")
 	cleanPath := filepath.Clean(path)
+	cleanTokensDir := filepath.Clean(m.tokensDir)
 
-	// Verify the path is still within tokensDir
-	if !strings.HasPrefix(cleanPath, filepath.Clean(m.tokensDir)) {
+	// Verify the path is still within tokensDir (using proper directory check
+	// to avoid prefix attacks like tokensDir-evil matching tokensDir)
+	if !hasPathPrefix(cleanPath, cleanTokensDir) {
 		// If path escapes tokensDir, use a hash-based fallback
 		return filepath.Join(m.tokensDir, fmt.Sprintf("%x.json", sha256.Sum256([]byte(email))))
 	}
 
+	// Check if path is a symlink that could escape tokensDir.
+	// Note: There is an inherent TOCTOU (time-of-check to time-of-use) race between
+	// this check and when the token is actually written. An attacker could create a
+	// symlink after this check passes but before the write occurs. However, exploiting
+	// this would require the attacker to have write access to the tokens directory and
+	// precise timing, making it difficult to exploit in practice.
+	if info, err := os.Lstat(cleanPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		// Path exists and is a symlink - resolve it and verify it stays within tokensDir
+		resolved, err := filepath.EvalSymlinks(cleanPath)
+		if err != nil || !isPathWithinDir(resolved, cleanTokensDir) {
+			// Symlink resolution failed or escapes tokensDir - use hash-based fallback
+			return filepath.Join(m.tokensDir, fmt.Sprintf("%x.json", sha256.Sum256([]byte(email))))
+		}
+	}
+
 	return cleanPath
+}
+
+// hasPathPrefix checks if path is equal to or a child of dir.
+// This prevents prefix attacks like tokensDir-evil matching tokensDir,
+// and correctly handles filesystem roots (/, C:\).
+// Does not resolve symlinks - use isPathWithinDir when symlink resolution is needed.
+func hasPathPrefix(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	// rel must not escape via ".." and must not be absolute
+	if rel == "." {
+		return true
+	}
+	if filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// isPathWithinDir checks if path is within dir, resolving symlinks in dir.
+// Use this when checking resolved symlink targets.
+func isPathWithinDir(path, dir string) bool {
+	// Resolve symlinks in dir to get the real base directory
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		resolvedDir = dir // fallback to original if dir doesn't exist yet
+	}
+	return hasPathPrefix(filepath.Clean(path), filepath.Clean(resolvedDir))
 }
 
 // scopesToString joins scopes with spaces.
@@ -321,17 +396,37 @@ func scopesToString(scopes []string) string {
 	return strings.Join(scopes, " ")
 }
 
+// validateBrowserURL checks that rawURL is a valid http or https URL.
+// Returns an error for invalid URLs or disallowed schemes.
+func validateBrowserURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("refused to open URL with scheme %q: only http and https are allowed", parsed.Scheme)
+	}
+	return nil
+}
+
 // openBrowser opens the default browser to the given URL.
-func openBrowser(url string) error {
+// Only http and https URLs are allowed to prevent command injection
+// via dangerous URL schemes (e.g., file://, custom protocol handlers).
+func openBrowser(rawURL string) error {
+	if err := validateBrowserURL(rawURL); err != nil {
+		return err
+	}
+
 	var cmd *exec.Cmd
 
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", url)
+		cmd = exec.Command("open", rawURL)
 	case "linux":
-		cmd = exec.Command("xdg-open", url)
+		cmd = exec.Command("xdg-open", rawURL)
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
 	default:
 		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}
