@@ -141,13 +141,13 @@ func PerformUpdate(info *UpdateInfo, progressFn func(downloaded, total int64)) e
 	defer os.RemoveAll(tempDir)
 
 	archivePath := filepath.Join(tempDir, info.AssetName)
-	_, err = downloadFile(info.DownloadURL, archivePath, info.Size, progressFn)
+	downloadChecksum, err := downloadFile(info.DownloadURL, archivePath, info.Size, progressFn)
 	if err != nil {
 		return fmt.Errorf("download: %w", err)
 	}
 
 	fmt.Println("Verifying and installing...")
-	if err := InstallFromArchive(archivePath, info.Checksum); err != nil {
+	if err := installFromArchiveWithChecksum(archivePath, info.Checksum, downloadChecksum); err != nil {
 		return err
 	}
 	fmt.Println("Update complete.")
@@ -171,14 +171,22 @@ func hashFile(path string) (string, error) {
 
 // installFromArchiveTo verifies the checksum, extracts the archive, and installs
 // the binary to dstPath. It handles both .zip and .tar.gz archives.
-func installFromArchiveTo(archivePath, expectedChecksum, dstPath string) error {
+// If precomputedChecksum is non-empty, it is used instead of re-reading the file,
+// avoiding redundant I/O when the caller already computed the hash (e.g. during download).
+func installFromArchiveTo(archivePath, expectedChecksum, dstPath string, precomputedChecksum ...string) error {
 	if expectedChecksum == "" {
 		return fmt.Errorf("empty checksum - refusing to install unverified binary")
 	}
 
-	checksum, err := hashFile(archivePath)
-	if err != nil {
-		return fmt.Errorf("hash archive: %w", err)
+	checksum := ""
+	if len(precomputedChecksum) > 0 && precomputedChecksum[0] != "" {
+		checksum = precomputedChecksum[0]
+	} else {
+		var err error
+		checksum, err = hashFile(archivePath)
+		if err != nil {
+			return fmt.Errorf("hash archive: %w", err)
+		}
 	}
 
 	if !strings.EqualFold(checksum, expectedChecksum) {
@@ -213,9 +221,9 @@ func installFromArchiveTo(archivePath, expectedChecksum, dstPath string) error {
 	return installBinaryTo(srcPath, dstPath)
 }
 
-// InstallFromArchive verifies the checksum, extracts the archive, and installs
-// the binary to the current executable's location.
-func InstallFromArchive(archivePath, expectedChecksum string) error {
+// installFromArchiveWithChecksum is like InstallFromArchive but accepts a
+// precomputed checksum to avoid re-reading the archive file.
+func installFromArchiveWithChecksum(archivePath, expectedChecksum, precomputedChecksum string) error {
 	currentExe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("find current executable: %w", err)
@@ -231,7 +239,13 @@ func InstallFromArchive(archivePath, expectedChecksum string) error {
 	}
 	dstPath := filepath.Join(binDir, binaryName)
 
-	return installFromArchiveTo(archivePath, expectedChecksum, dstPath)
+	return installFromArchiveTo(archivePath, expectedChecksum, dstPath, precomputedChecksum)
+}
+
+// InstallFromArchive verifies the checksum, extracts the archive, and installs
+// the binary to the current executable's location.
+func InstallFromArchive(archivePath, expectedChecksum string) error {
+	return installFromArchiveWithChecksum(archivePath, expectedChecksum, "")
 }
 
 // installBinaryTo performs the actual binary installation with backup/restore logic.
