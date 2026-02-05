@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -42,6 +43,14 @@ type DuckDBEngine struct {
 	sqliteEngine     *SQLiteEngine // Reusable engine for FTS cache, created once if sqliteDB is set
 	hasSQLiteScanner bool          // true if DuckDB's sqlite extension is loaded
 	tempTableSeq     atomic.Uint64 // Unique suffix for temp tables to avoid concurrent collisions
+
+	// Search result cache: keeps the materialized temp table alive across
+	// pagination calls for the same search query, avoiding repeated Parquet scans.
+	searchCacheMu    sync.Mutex  // protects cache fields from concurrent goroutines
+	searchCacheKey   string      // deterministic key from conditions+args
+	searchCacheTable string      // temp table name (e.g. "_search_matches_42")
+	searchCacheCount int64       // cached COUNT(*) from materialization
+	searchCacheStats *TotalStats // cached stats from Phase 4
 }
 
 // NewDuckDBEngine creates a new DuckDB-backed query engine.
@@ -113,8 +122,11 @@ func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB) (
 	}, nil
 }
 
-// Close releases DuckDB resources.
+// Close releases DuckDB resources, including any cached search temp table.
 func (e *DuckDBEngine) Close() error {
+	e.searchCacheMu.Lock()
+	e.dropSearchCache(context.Background())
+	e.searchCacheMu.Unlock()
 	return e.db.Close()
 }
 
@@ -1853,16 +1865,183 @@ func (e *DuckDBEngine) SearchFastCount(ctx context.Context, q *search.Query, fil
 	return count, nil
 }
 
+// searchCacheKeyFor builds a deterministic cache key from search conditions and args.
+// Same query+filter always produces the same key.
+func searchCacheKeyFor(conditions []string, args []interface{}) string {
+	var b strings.Builder
+	for i, cond := range conditions {
+		if i > 0 {
+			b.WriteByte('|')
+		}
+		b.WriteString(cond)
+	}
+	b.WriteByte('#')
+	for i, arg := range args {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, "%v", arg)
+	}
+	return b.String()
+}
+
+// dropSearchCache drops the cached temp table and clears all cache fields.
+// Caller must hold e.searchCacheMu.
+func (e *DuckDBEngine) dropSearchCache(ctx context.Context) {
+	if e.searchCacheTable != "" {
+		_, _ = e.db.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", e.searchCacheTable))
+	}
+	e.searchCacheKey = ""
+	e.searchCacheTable = ""
+	e.searchCacheCount = 0
+	e.searchCacheStats = nil
+}
+
+// searchPageFromCache executes Phase 3 (paginated results) from the cached temp table.
+// Returns a SearchFastResult with cached count and stats.
+func (e *DuckDBEngine) searchPageFromCache(ctx context.Context, limit, offset int) (*SearchFastResult, error) {
+	pageQuery := fmt.Sprintf(`
+		WITH %s,
+		page AS (
+			SELECT sm.id FROM %s sm
+			ORDER BY sm.sent_at DESC
+			LIMIT ? OFFSET ?
+		),
+		msg_labels AS (
+			SELECT ml.message_id, LIST(lbl.name ORDER BY lbl.name) as labels
+			FROM ml
+			JOIN lbl ON lbl.id = ml.label_id
+			WHERE ml.message_id IN (SELECT id FROM page)
+			GROUP BY ml.message_id
+		)
+		SELECT
+			sm.id,
+			sm.source_message_id,
+			sm.conversation_id,
+			sm.subject,
+			sm.snippet,
+			sm.from_email,
+			sm.from_name,
+			sm.sent_at,
+			sm.size_estimate,
+			sm.has_attachments,
+			COALESCE(att.attachment_count, 0) as attachment_count,
+			CAST(COALESCE(to_json(mlbl.labels), '[]') AS VARCHAR) as labels,
+			sm.deleted_from_source_at
+		FROM %s sm
+		JOIN page p ON p.id = sm.id
+		LEFT JOIN att ON att.message_id = sm.id
+		LEFT JOIN msg_labels mlbl ON mlbl.message_id = sm.id
+		ORDER BY sm.sent_at DESC
+	`, e.parquetCTEs(), e.searchCacheTable, e.searchCacheTable)
+
+	rows, err := e.db.QueryContext(ctx, pageQuery, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("search fast page: %w", err)
+	}
+	defer rows.Close()
+
+	result := &SearchFastResult{
+		TotalCount: e.searchCacheCount,
+		Stats:      e.searchCacheStats,
+	}
+
+	for rows.Next() {
+		var msg MessageSummary
+		var sentAt sql.NullTime
+		var deletedAt sql.NullTime
+		var labelsJSON string
+		if err := rows.Scan(
+			&msg.ID,
+			&msg.SourceMessageID,
+			&msg.ConversationID,
+			&msg.Subject,
+			&msg.Snippet,
+			&msg.FromEmail,
+			&msg.FromName,
+			&sentAt,
+			&msg.SizeEstimate,
+			&msg.HasAttachments,
+			&msg.AttachmentCount,
+			&labelsJSON,
+			&deletedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan message: %w", err)
+		}
+		if sentAt.Valid {
+			msg.SentAt = sentAt.Time
+		}
+		if deletedAt.Valid {
+			msg.DeletedAt = &deletedAt.Time
+		}
+		msg.Labels = parseLabelsJSON(labelsJSON)
+		result.Messages = append(result.Messages, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate messages: %w", err)
+	}
+
+	return result, nil
+}
+
+// computeSearchStats computes stats (Phase 4) from the cached temp table.
+// Returns nil stats on failure (best-effort).
+func (e *DuckDBEngine) computeSearchStats(ctx context.Context) *TotalStats {
+	msgStatsQuery := fmt.Sprintf(`
+		WITH %s
+		SELECT
+			COUNT(*) as message_count,
+			COALESCE(SUM(sm.size_estimate), 0) as total_size,
+			CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
+			CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
+			COUNT(DISTINCT sm.source_id) as account_count
+		FROM %s sm
+		LEFT JOIN att ON att.message_id = sm.id
+	`, e.parquetCTEs(), e.searchCacheTable)
+
+	stats := &TotalStats{}
+	var attachmentSize sql.NullFloat64
+	if err := e.db.QueryRowContext(ctx, msgStatsQuery).Scan(
+		&stats.MessageCount,
+		&stats.TotalSize,
+		&stats.AttachmentCount,
+		&attachmentSize,
+		&stats.AccountCount,
+	); err != nil {
+		log.Printf("warning: search stats query failed (stats will be nil): %v", err)
+		return nil
+	}
+	if attachmentSize.Valid {
+		stats.AttachmentSize = int64(attachmentSize.Float64)
+	}
+
+	// Label count — only ml/lbl Parquet tables needed.
+	labelStatsQuery := fmt.Sprintf(`
+		WITH %s
+		SELECT COUNT(DISTINCT lbl.name)
+		FROM %s sm
+		JOIN ml ON ml.message_id = sm.id
+		JOIN lbl ON lbl.id = ml.label_id
+	`, e.parquetCTEs(), e.searchCacheTable)
+
+	if err := e.db.QueryRowContext(ctx, labelStatsQuery).Scan(&stats.LabelCount); err != nil {
+		log.Printf("warning: search label count query failed (using 0): %v", err)
+		stats.LabelCount = 0
+	}
+
+	return stats
+}
+
 // SearchFastWithStats performs a single-scan fast search with temp table materialization.
 // It denormalizes matching messages (with sender info) into a temp table using one
 // Parquet scan, then reuses the in-memory temp table for count, pagination, and stats
 // — eliminating all subsequent msg Parquet reads. Only small page-scoped lookups
 // into label/attachment Parquet tables remain.
 //
-// Each call uses a unique temp table name (via atomic counter) to prevent
-// concurrent goroutines from clobbering each other's temp tables. Although
-// SetMaxOpenConns(1) serializes connection access, overlapping goroutines
-// can still interleave phases if one releases the connection between queries.
+// The temp table is cached internally: if the same search conditions+args are
+// requested again (e.g. pagination), the Parquet scan is skipped and the page
+// is served directly from the cached temp table. A new search invalidates the
+// old cache.
 func (e *DuckDBEngine) SearchFastWithStats(ctx context.Context, q *search.Query, queryStr string,
 	filter MessageFilter, statsGroupBy ViewType, limit, offset int) (*SearchFastResult, error) {
 
@@ -1871,6 +2050,18 @@ func (e *DuckDBEngine) SearchFastWithStats(ctx context.Context, q *search.Query,
 	if limit == 0 {
 		limit = 100
 	}
+
+	e.searchCacheMu.Lock()
+	defer e.searchCacheMu.Unlock()
+
+	// Check cache: same conditions+args means same search, serve from cached table.
+	cacheKey := searchCacheKeyFor(conditions, args)
+	if cacheKey == e.searchCacheKey && e.searchCacheTable != "" {
+		return e.searchPageFromCache(ctx, limit, offset)
+	}
+
+	// Cache miss — drop old cache and materialize fresh.
+	e.dropSearchCache(ctx)
 
 	// Unique temp table name to avoid concurrent collisions.
 	seq := e.tempTableSeq.Add(1)
@@ -1909,150 +2100,30 @@ func (e *DuckDBEngine) SearchFastWithStats(ctx context.Context, q *search.Query,
 		WHERE %s
 	`, tempTable, e.parquetCTEs(), strings.Join(conditions, " AND "))
 
-	// Ensure cleanup of temp table
-	defer func() { _, _ = e.db.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tempTable)) }()
-
 	if _, err := e.db.ExecContext(ctx, materializeQuery, args...); err != nil {
 		return nil, fmt.Errorf("materialize search matches: %w", err)
 	}
 
-	result := &SearchFastResult{}
+	// Store temp table name so we can clean up on error.
+	e.searchCacheTable = tempTable
 
 	// Phase 2: Count (trivial — reads in-memory temp table only).
-	// Best-effort: if count fails, fall back to -1 (unknown total).
-	if err := e.db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", tempTable)).Scan(&result.TotalCount); err != nil {
-		log.Printf("warning: search count query failed (using -1): %v", err)
-		result.TotalCount = -1
+	var count int64
+	if err := e.db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", tempTable)).Scan(&count); err != nil {
+		log.Printf("warning: search count query failed, dropping cache: %v", err)
+		e.dropSearchCache(ctx)
+		return nil, fmt.Errorf("search count: %w", err)
 	}
+	e.searchCacheCount = count
 
-	// Phase 3: Paginated results from temp table. Only label and attachment CTEs
-	// need Parquet reads, scoped to the ~100 page IDs.
-	pageQuery := fmt.Sprintf(`
-		WITH %s,
-		page AS (
-			SELECT sm.id FROM %s sm
-			ORDER BY sm.sent_at DESC
-			LIMIT ? OFFSET ?
-		),
-		msg_labels AS (
-			SELECT ml.message_id, LIST(lbl.name ORDER BY lbl.name) as labels
-			FROM ml
-			JOIN lbl ON lbl.id = ml.label_id
-			WHERE ml.message_id IN (SELECT id FROM page)
-			GROUP BY ml.message_id
-		)
-		SELECT
-			sm.id,
-			sm.source_message_id,
-			sm.conversation_id,
-			sm.subject,
-			sm.snippet,
-			sm.from_email,
-			sm.from_name,
-			sm.sent_at,
-			sm.size_estimate,
-			sm.has_attachments,
-			COALESCE(att.attachment_count, 0) as attachment_count,
-			CAST(COALESCE(to_json(mlbl.labels), '[]') AS VARCHAR) as labels,
-			sm.deleted_from_source_at
-		FROM %s sm
-		JOIN page p ON p.id = sm.id
-		LEFT JOIN att ON att.message_id = sm.id
-		LEFT JOIN msg_labels mlbl ON mlbl.message_id = sm.id
-		ORDER BY sm.sent_at DESC
-	`, e.parquetCTEs(), tempTable, tempTable)
+	// Phase 4: Stats from temp table (compute before page so cache is fully populated).
+	e.searchCacheStats = e.computeSearchStats(ctx)
 
-	rows, err := e.db.QueryContext(ctx, pageQuery, limit, offset)
-	if err != nil {
-		return nil, fmt.Errorf("search fast page: %w", err)
-	}
-	defer rows.Close()
+	// Store cache key — cache is now valid.
+	e.searchCacheKey = cacheKey
 
-	for rows.Next() {
-		var msg MessageSummary
-		var sentAt sql.NullTime
-		var deletedAt sql.NullTime
-		var labelsJSON string
-		if err := rows.Scan(
-			&msg.ID,
-			&msg.SourceMessageID,
-			&msg.ConversationID,
-			&msg.Subject,
-			&msg.Snippet,
-			&msg.FromEmail,
-			&msg.FromName,
-			&sentAt,
-			&msg.SizeEstimate,
-			&msg.HasAttachments,
-			&msg.AttachmentCount,
-			&labelsJSON,
-			&deletedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan message: %w", err)
-		}
-		if sentAt.Valid {
-			msg.SentAt = sentAt.Time
-		}
-		if deletedAt.Valid {
-			msg.DeletedAt = &deletedAt.Time
-		}
-		msg.Labels = parseLabelsJSON(labelsJSON)
-		result.Messages = append(result.Messages, msg)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate messages: %w", err)
-	}
-
-	// Phase 4: Stats from temp table (best-effort — failures leave Stats nil).
-	// Only the att CTE needs a Parquet read; size_estimate and source_id are
-	// already in the temp table.
-	msgStatsQuery := fmt.Sprintf(`
-		WITH %s
-		SELECT
-			COUNT(*) as message_count,
-			COALESCE(SUM(sm.size_estimate), 0) as total_size,
-			CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
-			CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
-			COUNT(DISTINCT sm.source_id) as account_count
-		FROM %s sm
-		LEFT JOIN att ON att.message_id = sm.id
-	`, e.parquetCTEs(), tempTable)
-
-	stats := &TotalStats{}
-	var attachmentSize sql.NullFloat64
-	if err := e.db.QueryRowContext(ctx, msgStatsQuery).Scan(
-		&stats.MessageCount,
-		&stats.TotalSize,
-		&stats.AttachmentCount,
-		&attachmentSize,
-		&stats.AccountCount,
-	); err != nil {
-		log.Printf("warning: search stats query failed (stats will be nil): %v", err)
-		stats = nil
-	}
-	if stats != nil && attachmentSize.Valid {
-		stats.AttachmentSize = int64(attachmentSize.Float64)
-	}
-
-	// Label count — only ml/lbl Parquet tables needed.
-	if stats != nil {
-		labelStatsQuery := fmt.Sprintf(`
-			WITH %s
-			SELECT COUNT(DISTINCT lbl.name)
-			FROM %s sm
-			JOIN ml ON ml.message_id = sm.id
-			JOIN lbl ON lbl.id = ml.label_id
-		`, e.parquetCTEs(), tempTable)
-
-		if err := e.db.QueryRowContext(ctx, labelStatsQuery).Scan(&stats.LabelCount); err != nil {
-			log.Printf("warning: search label count query failed (using 0): %v", err)
-			stats.LabelCount = 0
-		}
-	}
-
-	result.Stats = stats
-
-	return result, nil
+	// Phase 3: Paginated results from cached temp table.
+	return e.searchPageFromCache(ctx, limit, offset)
 }
 
 // buildSearchConditions builds WHERE conditions for search queries.
