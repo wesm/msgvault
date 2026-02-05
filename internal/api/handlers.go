@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/wesm/msgvault/internal/scheduler"
@@ -73,28 +74,194 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// MessageSummary represents a message in list responses.
+type MessageSummary struct {
+	ID          int64    `json:"id"`
+	Subject     string   `json:"subject"`
+	From        string   `json:"from"`
+	To          []string `json:"to"`
+	SentAt      string   `json:"sent_at"`
+	Snippet     string   `json:"snippet"`
+	Labels      []string `json:"labels"`
+	HasAttach   bool     `json:"has_attachments"`
+	SizeBytes   int64    `json:"size_bytes"`
+}
+
+// MessageDetail represents a full message response.
+type MessageDetail struct {
+	MessageSummary
+	Body        string            `json:"body"`
+	Attachments []AttachmentInfo  `json:"attachments"`
+}
+
+// AttachmentInfo represents attachment metadata.
+type AttachmentInfo struct {
+	Filename string `json:"filename"`
+	MimeType string `json:"mime_type"`
+	Size     int64  `json:"size_bytes"`
+}
+
+// SearchResult represents search results.
+type SearchResult struct {
+	Query    string           `json:"query"`
+	Total    int64            `json:"total"`
+	Page     int              `json:"page"`
+	PageSize int              `json:"page_size"`
+	Messages []MessageSummary `json:"messages"`
+}
+
 // handleListMessages returns a paginated list of messages.
-// TODO(T-11): Implement with proper pagination and message listing
 func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotImplemented, "not_implemented", "Message listing not yet implemented")
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "Database not available")
+		return
+	}
+
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	offset := (page - 1) * pageSize
+
+	messages, total, err := s.store.ListMessages(offset, pageSize)
+	if err != nil {
+		s.logger.Error("failed to list messages", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to retrieve messages")
+		return
+	}
+
+	summaries := make([]MessageSummary, len(messages))
+	for i, m := range messages {
+		summaries[i] = MessageSummary{
+			ID:        m.ID,
+			Subject:   m.Subject,
+			From:      m.From,
+			To:        m.To,
+			SentAt:    m.SentAt.Format("2006-01-02T15:04:05Z"),
+			Snippet:   m.Snippet,
+			Labels:    m.Labels,
+			HasAttach: m.HasAttachments,
+			SizeBytes: m.SizeEstimate,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+		"messages":  summaries,
+	})
 }
 
 // handleGetMessage returns a single message by ID.
-// TODO(T-11): Implement with full message details
 func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotImplemented, "not_implemented", "Message retrieval not yet implemented")
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "Database not available")
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_id", "Message ID must be a number")
+		return
+	}
+
+	msg, err := s.store.GetMessage(id)
+	if err != nil {
+		s.logger.Error("failed to get message", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to retrieve message")
+		return
+	}
+	if msg == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Message not found")
+		return
+	}
+
+	detail := MessageDetail{
+		MessageSummary: MessageSummary{
+			ID:        msg.ID,
+			Subject:   msg.Subject,
+			From:      msg.From,
+			To:        msg.To,
+			SentAt:    msg.SentAt.Format("2006-01-02T15:04:05Z"),
+			Snippet:   msg.Snippet,
+			Labels:    msg.Labels,
+			HasAttach: msg.HasAttachments,
+			SizeBytes: msg.SizeEstimate,
+		},
+		Body: msg.Body,
+	}
+
+	for _, att := range msg.Attachments {
+		detail.Attachments = append(detail.Attachments, AttachmentInfo{
+			Filename: att.Filename,
+			MimeType: att.MimeType,
+			Size:     att.Size,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, detail)
 }
 
 // handleSearch searches messages.
-// TODO(T-11): Implement with FTS5 search
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "Database not available")
+		return
+	}
+
 	query := r.URL.Query().Get("q")
 	if query == "" {
 		writeError(w, http.StatusBadRequest, "missing_query", "Query parameter 'q' is required")
 		return
 	}
 
-	writeError(w, http.StatusNotImplemented, "not_implemented", "Search not yet implemented")
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	offset := (page - 1) * pageSize
+
+	messages, total, err := s.store.SearchMessages(query, offset, pageSize)
+	if err != nil {
+		s.logger.Error("search failed", "query", query, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Search failed")
+		return
+	}
+
+	summaries := make([]MessageSummary, len(messages))
+	for i, m := range messages {
+		summaries[i] = MessageSummary{
+			ID:        m.ID,
+			Subject:   m.Subject,
+			From:      m.From,
+			To:        m.To,
+			SentAt:    m.SentAt.Format("2006-01-02T15:04:05Z"),
+			Snippet:   m.Snippet,
+			Labels:    m.Labels,
+			HasAttach: m.HasAttachments,
+			SizeBytes: m.SizeEstimate,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, SearchResult{
+		Query:    query,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+		Messages: summaries,
+	})
 }
 
 // handleListAccounts returns all configured accounts.
