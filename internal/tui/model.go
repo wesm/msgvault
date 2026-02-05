@@ -158,6 +158,10 @@ type Model struct {
 	searchOffset      int             // Current offset for pagination
 	searchLoadingMore bool            // True when loading additional results
 
+	// Message list pagination state
+	msgListOffset      int  // Current offset for non-search message pagination
+	msgListLoadingMore bool // True when loading additional message pages
+
 	// Navigation restoration state
 	restorePosition bool // When true, don't reset cursor/scroll on data load (used by goBack)
 
@@ -366,6 +370,7 @@ type messagesLoadedMsg struct {
 	messages  []query.MessageSummary
 	err       error
 	requestID uint64 // To detect stale responses
+	append    bool   // True when appending paginated results to existing list
 }
 
 // messageDetailLoadedMsg is sent when message detail is loaded.
@@ -429,6 +434,9 @@ const flashDuration = 4 * time.Second
 
 // searchPageSize is the number of results per page for search pagination.
 const searchPageSize = 100
+
+// messageListPageSize is the number of results per page for message list pagination.
+const messageListPageSize = 500
 
 // headerFooterLines is the number of fixed lines reserved for the UI chrome:
 // title bar (1) + breadcrumb (1) + table header (1) + separator (1) + footer (1).
@@ -507,55 +515,69 @@ func (m Model) loadSearchWithOffset(queryStr string, offset int, appendResults b
 	)
 }
 
-// loadMessages fetches messages based on current filter.
+// buildMessageFilter constructs a MessageFilter from the current model state.
+func (m Model) buildMessageFilter() query.MessageFilter {
+	// Start with drillFilter if set, otherwise build fresh filter
+	var filter query.MessageFilter
+	if m.hasDrillFilter() {
+		filter = m.drillFilter
+	}
+
+	// Override sorting and pagination
+	filter.SourceID = m.accountFilter
+	filter.Sorting.Field = m.msgSortField
+	filter.Sorting.Direction = m.msgSortDirection
+	filter.WithAttachmentsOnly = m.attachmentFilter
+
+	// If not showing all messages and no drill filter, apply simple filter
+	if !m.allMessages && !m.hasDrillFilter() {
+		switch m.viewType {
+		case query.ViewSenders:
+			filter.Sender = m.filterKey
+			if m.filterKey == "" {
+				filter.SetEmptyTarget(query.ViewSenders)
+			}
+		case query.ViewRecipients:
+			filter.Recipient = m.filterKey
+			if m.filterKey == "" {
+				filter.SetEmptyTarget(query.ViewRecipients)
+			}
+		case query.ViewDomains:
+			filter.Domain = m.filterKey
+			if m.filterKey == "" {
+				filter.SetEmptyTarget(query.ViewDomains)
+			}
+		case query.ViewLabels:
+			filter.Label = m.filterKey
+			if m.filterKey == "" {
+				filter.SetEmptyTarget(query.ViewLabels)
+			}
+		case query.ViewTime:
+			filter.TimeRange.Period = m.filterKey
+			filter.TimeRange.Granularity = m.timeGranularity
+		}
+	}
+
+	return filter
+}
+
+// loadMessages fetches messages based on current filter (first page).
 func (m Model) loadMessages() tea.Cmd {
+	return m.loadMessagesWithOffset(0, false)
+}
+
+// loadMessagesWithOffset fetches messages at the given offset. When appendMode
+// is true, the results are appended to the existing message list.
+func (m Model) loadMessagesWithOffset(offset int, appendMode bool) tea.Cmd {
 	requestID := m.loadRequestID
 	return safeCmdWithPanic(
 		func() tea.Msg {
-			// Start with drillFilter if set, otherwise build fresh filter
-			var filter query.MessageFilter
-			if m.hasDrillFilter() {
-				filter = m.drillFilter
-			}
-
-			// Override sorting and pagination
-			filter.SourceID = m.accountFilter
-			filter.Sorting.Field = m.msgSortField
-			filter.Sorting.Direction = m.msgSortDirection
-			filter.Pagination.Limit = 500
-			filter.WithAttachmentsOnly = m.attachmentFilter
-
-			// If not showing all messages and no drill filter, apply simple filter
-			if !m.allMessages && !m.hasDrillFilter() {
-				switch m.viewType {
-				case query.ViewSenders:
-					filter.Sender = m.filterKey
-					if m.filterKey == "" {
-						filter.SetEmptyTarget(query.ViewSenders)
-					}
-				case query.ViewRecipients:
-					filter.Recipient = m.filterKey
-					if m.filterKey == "" {
-						filter.SetEmptyTarget(query.ViewRecipients)
-					}
-				case query.ViewDomains:
-					filter.Domain = m.filterKey
-					if m.filterKey == "" {
-						filter.SetEmptyTarget(query.ViewDomains)
-					}
-				case query.ViewLabels:
-					filter.Label = m.filterKey
-					if m.filterKey == "" {
-						filter.SetEmptyTarget(query.ViewLabels)
-					}
-				case query.ViewTime:
-					filter.TimeRange.Period = m.filterKey
-					filter.TimeRange.Granularity = m.timeGranularity
-				}
-			}
+			filter := m.buildMessageFilter()
+			filter.Pagination.Limit = messageListPageSize
+			filter.Pagination.Offset = offset
 
 			messages, err := m.engine.ListMessages(context.Background(), filter)
-			return messagesLoadedMsg{messages: messages, err: err, requestID: requestID}
+			return messagesLoadedMsg{messages: messages, err: err, requestID: requestID, append: appendMode}
 		},
 		func(r any) tea.Msg {
 			return messagesLoadedMsg{err: fmt.Errorf("messages panic: %v", r), requestID: requestID}
@@ -825,18 +847,26 @@ func (m Model) handleMessagesLoaded(msg messagesLoadedMsg) (tea.Model, tea.Cmd) 
 	m.transitionBuffer = "" // Unfreeze view now that data is ready
 	m.loading = false
 	m.inlineSearchLoading = false
+	m.msgListLoadingMore = false
 	if msg.err != nil {
 		m.err = msg.err
 		m.restorePosition = false // Clear flag on error to prevent stale state
 	} else {
 		m.err = nil // Clear any previous error
-		m.messages = msg.messages
-		// Only reset position on fresh loads, not when restoring from breadcrumb
-		if !m.restorePosition {
-			m.cursor = 0
-			m.scrollOffset = 0
+		if msg.append {
+			// Append paginated results to existing list
+			m.messages = append(m.messages, msg.messages...)
+		} else {
+			m.messages = msg.messages
+			// Only reset position on fresh loads, not when restoring from breadcrumb
+			if !m.restorePosition {
+				m.cursor = 0
+				m.scrollOffset = 0
+			}
 		}
 		m.restorePosition = false // Clear flag after use
+		// Update pagination offset
+		m.msgListOffset = len(m.messages)
 	}
 	return m, nil
 }

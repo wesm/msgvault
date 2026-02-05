@@ -394,6 +394,149 @@ func TestFastSearchPaginationTriggersOnNavigation(t *testing.T) {
 	})
 }
 
+// TestMessageListPaginationTriggersOnNavigation verifies that cursor movement
+// near the end of a non-search message list triggers loading more messages.
+func TestMessageListPaginationTriggersOnNavigation(t *testing.T) {
+	t.Run("near end triggers load more", func(t *testing.T) {
+		msgs := makeMessages(messageListPageSize) // Exactly one full page
+		model := NewBuilder().
+			WithMessages(msgs...).
+			WithLevel(levelMessageList).
+			WithPageSize(20).
+			Build()
+		model.msgListOffset = messageListPageSize // Simulate having loaded a full page
+		model.cursor = messageListPageSize - 10   // Within threshold of end
+
+		m, cmd := applyMessageListKeyWithCmd(t, model, keyDown())
+
+		if m.cursor != messageListPageSize-9 {
+			t.Errorf("expected cursor=%d, got %d", messageListPageSize-9, m.cursor)
+		}
+		if cmd == nil {
+			t.Error("expected load-more command to be returned for message list pagination")
+		}
+		if !m.msgListLoadingMore {
+			t.Error("expected msgListLoadingMore=true")
+		}
+	})
+
+	t.Run("far from end does not trigger load", func(t *testing.T) {
+		msgs := makeMessages(messageListPageSize)
+		model := NewBuilder().
+			WithMessages(msgs...).
+			WithLevel(levelMessageList).
+			WithPageSize(20).
+			Build()
+		model.msgListOffset = messageListPageSize
+		model.cursor = 10 // Far from end
+
+		m, cmd := applyMessageListKeyWithCmd(t, model, keyDown())
+
+		if m.cursor != 11 {
+			t.Errorf("expected cursor=11, got %d", m.cursor)
+		}
+		if cmd != nil {
+			t.Error("expected no command when cursor is far from end")
+		}
+	})
+
+	t.Run("short last page means no more data", func(t *testing.T) {
+		// 300 messages loaded but page size is 500 — last page was short
+		msgs := makeMessages(300)
+		model := NewBuilder().
+			WithMessages(msgs...).
+			WithLevel(levelMessageList).
+			WithPageSize(20).
+			Build()
+		model.msgListOffset = 300
+		model.cursor = 290 // Near end
+
+		m, cmd := applyMessageListKeyWithCmd(t, model, keyDown())
+
+		if m.cursor != 291 {
+			t.Errorf("expected cursor=291, got %d", m.cursor)
+		}
+		if cmd != nil {
+			t.Error("expected no command when last page was short (all data loaded)")
+		}
+	})
+
+	t.Run("no pagination during search", func(t *testing.T) {
+		msgs := makeMessages(messageListPageSize)
+		model := NewBuilder().
+			WithMessages(msgs...).
+			WithLevel(levelMessageList).
+			WithPageSize(20).
+			Build()
+		model.searchQuery = "test"
+		model.searchMode = searchModeFast
+		model.msgListOffset = messageListPageSize
+		model.cursor = messageListPageSize - 10
+
+		_, cmd := applyMessageListKeyWithCmd(t, model, keyDown())
+
+		// Should use search pagination, not message list pagination
+		// (maybeLoadMoreMessages returns nil when searchQuery is set)
+		// Note: search pagination may or may not fire depending on searchTotalCount
+		_ = cmd // Don't assert — just verify no panic
+	})
+
+	t.Run("contextStats prevents extra load when all loaded", func(t *testing.T) {
+		msgs := makeMessages(messageListPageSize)
+		model := NewBuilder().
+			WithMessages(msgs...).
+			WithLevel(levelMessageList).
+			WithPageSize(20).
+			WithContextStats(&query.TotalStats{MessageCount: int64(messageListPageSize)}).
+			Build()
+		model.msgListOffset = messageListPageSize
+		model.cursor = messageListPageSize - 10
+
+		m, cmd := applyMessageListKeyWithCmd(t, model, keyDown())
+
+		if m.cursor != messageListPageSize-9 {
+			t.Errorf("expected cursor=%d, got %d", messageListPageSize-9, m.cursor)
+		}
+		if cmd != nil {
+			t.Error("expected no command when contextStats shows all messages loaded")
+		}
+	})
+
+	t.Run("append mode preserves cursor and appends messages", func(t *testing.T) {
+		msgs := makeMessages(messageListPageSize)
+		model := NewBuilder().
+			WithMessages(msgs...).
+			WithLevel(levelMessageList).
+			WithPageSize(20).
+			Build()
+		model.msgListOffset = messageListPageSize
+		model.cursor = 400 // Preserve this cursor position
+		model.loadRequestID = 5
+
+		// Simulate appended results arriving
+		newMsgs := makeMessages(100)
+		loadMsg := messagesLoadedMsg{
+			messages:  newMsgs,
+			requestID: 5,
+			append:    true,
+		}
+		m, _ := sendMsg(t, model, loadMsg)
+
+		if len(m.messages) != messageListPageSize+100 {
+			t.Errorf("expected %d messages after append, got %d", messageListPageSize+100, len(m.messages))
+		}
+		if m.cursor != 400 {
+			t.Errorf("expected cursor=400 (preserved), got %d", m.cursor)
+		}
+		if m.msgListOffset != messageListPageSize+100 {
+			t.Errorf("expected msgListOffset=%d, got %d", messageListPageSize+100, m.msgListOffset)
+		}
+		if m.msgListLoadingMore {
+			t.Error("expected msgListLoadingMore=false after load completes")
+		}
+	})
+}
+
 // TestSearchResultsPreservesDrillDownContextStats verifies that when drilling down
 // from a search-filtered aggregate, contextStats (TotalSize, AttachmentCount) set
 // from the selected row is preserved when searchResultsMsg arrives.
