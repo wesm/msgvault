@@ -2,6 +2,7 @@ package update
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
@@ -97,7 +98,11 @@ func CheckForUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error)
 		return nil, nil
 	}
 
-	assetName := fmt.Sprintf("msgvault_%s_%s_%s.tar.gz", latestVersion, runtime.GOOS, runtime.GOARCH)
+	ext := ".tar.gz"
+	if runtime.GOOS == "windows" {
+		ext = ".zip"
+	}
+	assetName := fmt.Sprintf("msgvault_%s_%s_%s%s", latestVersion, runtime.GOOS, runtime.GOARCH, ext)
 	asset, checksumsAsset := findAssets(release.Assets, assetName)
 	if asset == nil {
 		return nil, fmt.Errorf("no release asset found for %s/%s", runtime.GOOS, runtime.GOARCH)
@@ -150,11 +155,21 @@ func PerformUpdate(info *UpdateInfo, progressFn func(downloaded, total int64)) e
 
 	fmt.Println("Extracting...")
 	extractDir := filepath.Join(tempDir, "extracted")
-	if err := extractTarGz(archivePath, extractDir); err != nil {
-		return fmt.Errorf("extract: %w", err)
+	if strings.HasSuffix(info.AssetName, ".zip") {
+		if err := extractZip(archivePath, extractDir); err != nil {
+			return fmt.Errorf("extract: %w", err)
+		}
+	} else {
+		if err := extractTarGz(archivePath, extractDir); err != nil {
+			return fmt.Errorf("extract: %w", err)
+		}
 	}
 
-	srcPath := filepath.Join(extractDir, "msgvault")
+	binaryName := "msgvault"
+	if runtime.GOOS == "windows" {
+		binaryName = "msgvault.exe"
+	}
+	srcPath := filepath.Join(extractDir, binaryName)
 	return installBinary(srcPath)
 }
 
@@ -174,7 +189,11 @@ func installBinary(srcPath string) error {
 		return fmt.Errorf("resolve symlinks: %w", err)
 	}
 	binDir := filepath.Dir(currentExe)
-	dstPath := filepath.Join(binDir, "msgvault")
+	binaryName := "msgvault"
+	if runtime.GOOS == "windows" {
+		binaryName = "msgvault.exe"
+	}
+	dstPath := filepath.Join(binDir, binaryName)
 
 	fmt.Printf("Installing msgvault to %s... ", binDir)
 	if err := installBinaryTo(srcPath, dstPath); err != nil {
@@ -392,6 +411,64 @@ func sanitizeTarPath(destDir, name string) (string, error) {
 	}
 
 	return target, nil
+}
+
+func extractZip(archivePath, destDir string) error {
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return err
+	}
+
+	absDestDir, err := filepath.Abs(destDir)
+	if err != nil {
+		return fmt.Errorf("resolve dest dir: %w", err)
+	}
+
+	r, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		target, err := sanitizeTarPath(absDestDir, f.Name)
+		if err != nil {
+			return fmt.Errorf("invalid zip entry %q: %w", f.Name, err)
+		}
+
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+
+		outFile, err := os.Create(target)
+		if err != nil {
+			rc.Close()
+			return err
+		}
+
+		_, copyErr := io.Copy(outFile, rc)
+		closeErr := outFile.Close()
+		rc.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+
+	return nil
 }
 
 func copyFile(src, dst string) error {

@@ -92,6 +92,50 @@ func TestExtractTarGzSymlinkSkipped(t *testing.T) {
 	testutil.MustNotExist(t, filepath.Join(extractDir, "evil-link"))
 }
 
+func TestExtractZip(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "test.zip")
+	extractDir := filepath.Join(tmpDir, "extract")
+
+	testutil.CreateZip(t, archivePath, []testutil.ArchiveEntry{
+		{Name: "msgvault.exe", Content: "binary content"},
+		{Name: "README.md", Content: "readme"},
+	})
+
+	if err := extractZip(archivePath, extractDir); err != nil {
+		t.Fatalf("extractZip failed: %v", err)
+	}
+
+	testutil.MustExist(t, filepath.Join(extractDir, "msgvault.exe"))
+	testutil.MustExist(t, filepath.Join(extractDir, "README.md"))
+
+	content, err := os.ReadFile(filepath.Join(extractDir, "msgvault.exe"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.AssertEqual(t, string(content), "binary content")
+}
+
+func TestExtractZipPathTraversal(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "malicious.zip")
+	extractDir := filepath.Join(tmpDir, "extract")
+	outsideFile := filepath.Join(tmpDir, "pwned")
+
+	testutil.CreateZip(t, archivePath, []testutil.ArchiveEntry{
+		{Name: "../pwned", Content: "owned"},
+	})
+
+	err := extractZip(archivePath, extractDir)
+	if err == nil {
+		t.Error("extractZip should fail with path traversal attempt")
+	}
+
+	testutil.MustNotExist(t, outsideFile)
+}
+
 func TestExtractChecksum(t *testing.T) {
 	t.Parallel()
 

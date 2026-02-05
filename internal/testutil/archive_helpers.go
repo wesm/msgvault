@@ -56,6 +56,32 @@ func CreateTarGz(t *testing.T, path string, entries []ArchiveEntry) {
 	}
 }
 
+// CreateZip creates a zip archive at path containing the given entries.
+func CreateZip(t *testing.T, path string, entries []ArchiveEntry) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	w := zip.NewWriter(f)
+	for _, e := range entries {
+		fw, err := w.Create(e.Name)
+		if err != nil {
+			t.Fatalf("create zip entry %s: %v", e.Name, err)
+		}
+		if len(e.Content) > 0 {
+			if _, err := fw.Write([]byte(e.Content)); err != nil {
+				t.Fatalf("write zip entry %s: %v", e.Name, err)
+			}
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close zip writer: %v", err)
+	}
+}
+
 // CreateTempZip creates a zip file in a temporary directory containing the
 // provided entries (filename -> content). Returns the path to the zip file.
 func CreateTempZip(t *testing.T, entries map[string]string) string {
