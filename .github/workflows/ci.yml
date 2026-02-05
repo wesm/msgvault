@@ -42,3 +42,8 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: go test -tags fts5 ./...
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: msgvault-windows-amd64
+          path: msgvault.exe
