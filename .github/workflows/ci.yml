@@ -24,6 +24,12 @@ jobs:
       - name: Lint
         run: make lint
 
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+
+      - name: Vulnerability check
+        run: govulncheck -tags fts5 ./...
+
   test-windows:
     runs-on: windows-latest
     steps:
