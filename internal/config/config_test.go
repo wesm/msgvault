@@ -408,6 +408,14 @@ func TestMkTempDir(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = os.Chmod(restrictedTmp, 0o700) })
 
+		// Probe whether the restriction actually works (root and some ACL
+		// configurations can still write to 0500 directories).
+		probe, probeErr := os.MkdirTemp(restrictedTmp, "probe-*")
+		if probeErr == nil {
+			os.Remove(probe)
+			t.Skip("chmod 0500 did not restrict writes (running as root or permissive ACLs)")
+		}
+
 		// Point TMPDIR to the restricted dir and MSGVAULT_HOME to a writable dir
 		msgvaultHome := t.TempDir()
 		t.Setenv("TMPDIR", restrictedTmp)
