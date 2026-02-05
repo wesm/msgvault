@@ -396,16 +396,26 @@ func scopesToString(scopes []string) string {
 	return strings.Join(scopes, " ")
 }
 
-// openBrowser opens the default browser to the given URL.
-// Only http and https URLs are allowed to prevent command injection
-// via dangerous URL schemes (e.g., file://, custom protocol handlers).
-func openBrowser(rawURL string) error {
+// validateBrowserURL checks that rawURL is a valid http or https URL.
+// Returns an error for invalid URLs or disallowed schemes.
+func validateBrowserURL(rawURL string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
 		return fmt.Errorf("refused to open URL with scheme %q: only http and https are allowed", parsed.Scheme)
+	}
+	return nil
+}
+
+// openBrowser opens the default browser to the given URL.
+// Only http and https URLs are allowed to prevent command injection
+// via dangerous URL schemes (e.g., file://, custom protocol handlers).
+func openBrowser(rawURL string) error {
+	if err := validateBrowserURL(rawURL); err != nil {
+		return err
 	}
 
 	var cmd *exec.Cmd

@@ -581,3 +581,44 @@ func TestNewCallbackHandler(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateBrowserURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		url     string
+		wantErr string
+	}{
+		{"http allowed", "http://localhost:8080/callback", ""},
+		{"https allowed", "https://accounts.google.com/o/oauth2/auth", ""},
+		{"HTTP uppercase allowed", "HTTP://example.com", ""},
+		{"Https mixed case allowed", "Https://example.com", ""},
+		{"HTTPS all caps allowed", "HTTPS://example.com", ""},
+		{"file scheme rejected", "file:///etc/passwd", "only http and https are allowed"},
+		{"javascript scheme rejected", "javascript:alert(1)", "only http and https are allowed"},
+		{"custom scheme rejected", "myapp://callback", "only http and https are allowed"},
+		{"ftp scheme rejected", "ftp://example.com/file", "only http and https are allowed"},
+		{"empty scheme rejected", "://no-scheme", "invalid URL"},
+		{"no scheme rejected", "example.com", "only http and https are allowed"},
+		{"malformed URL", "://", "invalid URL"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateBrowserURL(tt.url)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("validateBrowserURL(%q) = %v, want nil", tt.url, err)
+				}
+			} else {
+				if err == nil {
+					t.Errorf("validateBrowserURL(%q) = nil, want error containing %q", tt.url, tt.wantErr)
+				} else if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("validateBrowserURL(%q) error = %q, want to contain %q", tt.url, err.Error(), tt.wantErr)
+				}
+			}
+		})
+	}
+}
