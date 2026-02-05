@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -126,16 +128,13 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 	}
 	defer db.Close()
 
-	// Install and load SQLite extension
-	if _, err := db.Exec("INSTALL sqlite; LOAD sqlite;"); err != nil {
-		return nil, fmt.Errorf("load sqlite extension: %w", err)
+	// Set up sqlite_db tables — either via DuckDB's sqlite extension (Linux/macOS)
+	// or via CSV intermediate files (Windows, where sqlite_scanner is unavailable).
+	cleanup, err := setupSQLiteSource(db, dbPath)
+	if err != nil {
+		return nil, err
 	}
-
-	// Attach SQLite database
-	escapedPath := strings.ReplaceAll(dbPath, "'", "''")
-	if _, err := db.Exec(fmt.Sprintf("ATTACH '%s' AS sqlite_db (TYPE sqlite, READ_ONLY)", escapedPath)); err != nil {
-		return nil, fmt.Errorf("attach sqlite: %w", err)
-	}
+	defer cleanup()
 
 	// On full rebuild, clear existing cache
 	if fullRebuild {
@@ -485,6 +484,142 @@ var cacheStatsCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+// setupSQLiteSource makes SQLite tables available to DuckDB as sqlite_db.*.
+// On Linux/macOS it uses DuckDB's sqlite extension (ATTACH).
+// On Windows it exports tables to CSV and creates DuckDB views, since the
+// sqlite_scanner extension is not available for MinGW builds.
+func setupSQLiteSource(duckDB *sql.DB, dbPath string) (cleanup func(), err error) {
+	if runtime.GOOS != "windows" {
+		if _, err := duckDB.Exec("INSTALL sqlite; LOAD sqlite;"); err != nil {
+			return nil, fmt.Errorf("load sqlite extension: %w", err)
+		}
+		escapedPath := strings.ReplaceAll(dbPath, "'", "''")
+		if _, err := duckDB.Exec(fmt.Sprintf("ATTACH '%s' AS sqlite_db (TYPE sqlite, READ_ONLY)", escapedPath)); err != nil {
+			return nil, fmt.Errorf("attach sqlite: %w", err)
+		}
+		return func() {}, nil
+	}
+
+	// Windows: export SQLite tables to CSV, create DuckDB views.
+	tmpDir, err := os.MkdirTemp("", "msgvault-cache-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temp dir: %w", err)
+	}
+
+	sqliteDB, err := sql.Open("sqlite3", dbPath+"?mode=ro")
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		return nil, fmt.Errorf("open sqlite for CSV export: %w", err)
+	}
+
+	// Tables and the SELECT queries to export them.
+	// Column lists match what the COPY-to-Parquet queries expect.
+	tables := []struct {
+		name  string
+		query string
+	}{
+		{"messages", "SELECT id, source_id, source_message_id, conversation_id, subject, snippet, sent_at, size_estimate, has_attachments, deleted_from_source_at FROM messages WHERE sent_at IS NOT NULL"},
+		{"message_recipients", "SELECT message_id, participant_id, recipient_type, display_name FROM message_recipients"},
+		{"message_labels", "SELECT message_id, label_id FROM message_labels"},
+		{"attachments", "SELECT message_id, size, filename FROM attachments"},
+		{"participants", "SELECT id, email_address, domain, display_name FROM participants"},
+		{"labels", "SELECT id, name FROM labels"},
+		{"sources", "SELECT id, identifier FROM sources"},
+	}
+
+	for _, t := range tables {
+		csvPath := filepath.Join(tmpDir, t.name+".csv")
+		if err := exportToCSV(sqliteDB, t.query, csvPath); err != nil {
+			sqliteDB.Close()
+			os.RemoveAll(tmpDir)
+			return nil, fmt.Errorf("export %s to CSV: %w", t.name, err)
+		}
+	}
+	sqliteDB.Close()
+
+	// Create sqlite_db schema with views pointing to CSV files.
+	// This lets the existing COPY queries reference sqlite_db.tablename unchanged.
+	if _, err := duckDB.Exec("CREATE SCHEMA sqlite_db"); err != nil {
+		os.RemoveAll(tmpDir)
+		return nil, fmt.Errorf("create sqlite_db schema: %w", err)
+	}
+	for _, t := range tables {
+		csvPath := filepath.Join(tmpDir, t.name+".csv")
+		// DuckDB handles both forward and backslash paths, but normalize to forward.
+		escaped := strings.ReplaceAll(csvPath, "\\", "/")
+		escaped = strings.ReplaceAll(escaped, "'", "''")
+		viewSQL := fmt.Sprintf(
+			`CREATE VIEW sqlite_db."%s" AS SELECT * FROM read_csv_auto('%s', header=true, nullstr='\N')`,
+			t.name, escaped,
+		)
+		if _, err := duckDB.Exec(viewSQL); err != nil {
+			os.RemoveAll(tmpDir)
+			return nil, fmt.Errorf("create view sqlite_db.%s: %w", t.name, err)
+		}
+	}
+
+	return func() { os.RemoveAll(tmpDir) }, nil
+}
+
+// csvNullStr is written for NULL values in CSV exports so DuckDB can
+// distinguish NULL from empty string via the nullstr option.
+const csvNullStr = `\N`
+
+// exportToCSV exports the results of a SQL query to a CSV file.
+// NULL values are written as \N (PostgreSQL convention).
+func exportToCSV(db *sql.DB, query string, dest string) error {
+	rows, err := db.Query(query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	f, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return err
+	}
+	if err := w.Write(cols); err != nil {
+		return err
+	}
+
+	values := make([]sql.NullString, len(cols))
+	ptrs := make([]interface{}, len(cols))
+	for i := range values {
+		ptrs[i] = &values[i]
+	}
+
+	for rows.Next() {
+		if err := rows.Scan(ptrs...); err != nil {
+			return err
+		}
+		record := make([]string, len(cols))
+		for i, v := range values {
+			if v.Valid {
+				record[i] = v.String
+			} else {
+				record[i] = csvNullStr
+			}
+		}
+		if err := w.Write(record); err != nil {
+			return err
+		}
+	}
+
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return err
+	}
+	return rows.Err()
 }
 
 func init() {

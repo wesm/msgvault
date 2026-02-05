@@ -22,19 +22,24 @@ import (
 // DuckDBEngine implements Engine using DuckDB for fast Parquet queries.
 // It uses a hybrid approach:
 //   - DuckDB with Parquet for fast aggregate queries
-//   - DuckDB's sqlite_scan for list queries (ListMessages, ListAccounts)
+//   - DuckDB's sqlite_scan for list queries (ListMessages, ListAccounts) — non-Windows only
 //   - Direct SQLite for FTS search and message body retrieval (sqlite_scan can't use FTS5)
+//
+// On Windows, the sqlite_scanner extension is not available (DuckDB's extension
+// repository does not publish MinGW builds). All SQLite queries route through
+// sqliteEngine instead.
 //
 // Deletion handling: The Python ETL excludes deleted messages (deleted_from_source_at IS NOT NULL)
 // when building Parquet files. However, messages deleted AFTER the Parquet build will still
 // appear in aggregates until the next `build-parquet --full-rebuild`. For the full deletion
 // index solution, see beads issue msgvault-ozj.
 type DuckDBEngine struct {
-	db           *sql.DB
-	analyticsDir string
-	sqlitePath   string        // Path to SQLite database for sqlite_scan queries
-	sqliteDB     *sql.DB       // Direct SQLite connection for FTS and body retrieval
-	sqliteEngine *SQLiteEngine // Reusable engine for FTS cache, created once if sqliteDB is set
+	db               *sql.DB
+	analyticsDir     string
+	sqlitePath       string        // Path to SQLite database for sqlite_scan queries
+	sqliteDB         *sql.DB       // Direct SQLite connection for FTS and body retrieval
+	sqliteEngine     *SQLiteEngine // Reusable engine for FTS cache, created once if sqliteDB is set
+	hasSQLiteScanner bool          // true if DuckDB's sqlite extension is loaded
 }
 
 // NewDuckDBEngine creates a new DuckDB-backed query engine.
@@ -69,8 +74,11 @@ func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB) (
 		return nil, fmt.Errorf("set threads: %w", err)
 	}
 
-	// Install and load SQLite extension if we have a SQLite path
-	if sqlitePath != "" {
+	// Install and load SQLite extension if we have a SQLite path.
+	// On Windows, the sqlite_scanner extension is not available for MinGW
+	// builds — all detail queries route through sqliteEngine instead.
+	var hasSQLiteScanner bool
+	if sqlitePath != "" && runtime.GOOS != "windows" {
 		if _, err := db.Exec("INSTALL sqlite; LOAD sqlite;"); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("load sqlite extension: %w", err)
@@ -84,6 +92,7 @@ func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB) (
 			db.Close()
 			return nil, fmt.Errorf("attach sqlite database: %w", err)
 		}
+		hasSQLiteScanner = true
 	}
 
 	// Create reusable SQLiteEngine if we have a direct connection
@@ -94,11 +103,12 @@ func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB) (
 	}
 
 	return &DuckDBEngine{
-		db:           db,
-		analyticsDir: analyticsDir,
-		sqlitePath:   sqlitePath,
-		sqliteDB:     sqliteDB,
-		sqliteEngine: sqliteEngine,
+		db:               db,
+		analyticsDir:     analyticsDir,
+		sqlitePath:       sqlitePath,
+		sqliteDB:         sqliteDB,
+		sqliteEngine:     sqliteEngine,
+		hasSQLiteScanner: hasSQLiteScanner,
 	}, nil
 }
 
@@ -107,9 +117,10 @@ func (e *DuckDBEngine) Close() error {
 	return e.db.Close()
 }
 
-// hasSQLite returns true if SQLite is available for detail queries.
+// hasSQLite returns true if DuckDB's sqlite_scanner extension is loaded,
+// allowing sqlite_db.* queries. On Windows this is always false.
 func (e *DuckDBEngine) hasSQLite() bool {
-	return e.sqlitePath != ""
+	return e.hasSQLiteScanner
 }
 
 // parquetGlob returns the glob pattern for reading message Parquet files.
@@ -907,8 +918,12 @@ func (e *DuckDBEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 	return stats, nil
 }
 
-// ListAccounts returns accounts from SQLite via DuckDB's sqlite_scan.
+// ListAccounts returns accounts from SQLite via DuckDB's sqlite_scan,
+// or via direct SQLite connection on platforms without sqlite_scanner.
 func (e *DuckDBEngine) ListAccounts(ctx context.Context) ([]AccountInfo, error) {
+	if e.sqliteEngine != nil {
+		return e.sqliteEngine.ListAccounts(ctx)
+	}
 	if !e.hasSQLite() {
 		return nil, fmt.Errorf("ListAccounts requires SQLite: pass sqlitePath to NewDuckDBEngine")
 	}
@@ -1064,9 +1079,19 @@ func parseLabelsJSON(s string) []string {
 }
 
 // fetchLabelsForMessages adds labels to message summaries.
+// Uses DuckDB's sqlite_scanner when available, otherwise direct SQLite.
 func (e *DuckDBEngine) fetchLabelsForMessages(ctx context.Context, messages []MessageSummary) error {
 	if len(messages) == 0 {
 		return nil
+	}
+
+	// Prefer direct SQLite (works on all platforms including Windows)
+	if e.sqliteEngine != nil {
+		return e.sqliteEngine.fetchLabelsForMessages(ctx, messages)
+	}
+
+	if !e.hasSQLite() {
+		return nil // No label source available
 	}
 
 	// Build message ID list
