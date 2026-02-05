@@ -13,6 +13,7 @@ import (
 
 var (
 	cfgFile string
+	homeDir string
 	verbose bool
 	cfg     *config.Config
 	logger  *slog.Logger
@@ -46,6 +47,11 @@ in a single binary.`,
 		cfg, err = config.Load(cfgFile)
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
+		}
+
+		// --home overrides MSGVAULT_HOME / config-derived home
+		if homeDir != "" {
+			cfg.OverrideHome(homeDir)
 		}
 
 		// Ensure home directory exists on first use
@@ -101,5 +107,6 @@ func wrapOAuthError(err error) error {
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ~/.msgvault/config.toml)")
+	rootCmd.PersistentFlags().StringVar(&homeDir, "home", "", "home directory (overrides MSGVAULT_HOME)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 }

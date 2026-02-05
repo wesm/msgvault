@@ -102,6 +102,11 @@ func Load(path string) (*Config, error) {
 	}
 
 	if _, err := toml.DecodeFile(path, cfg); err != nil {
+		if strings.Contains(err.Error(), "invalid escape") {
+			return nil, fmt.Errorf("decode config: %w\n\nhint: Windows paths in TOML must use "+
+				"forward slashes (C:/Games/msgvault) or single quotes ('C:\\Games\\msgvault'). "+
+				"Alternatively, use --home to set the home directory without editing config.toml.", err)
+		}
 		return nil, fmt.Errorf("decode config: %w", err)
 	}
 
@@ -117,6 +122,14 @@ func Load(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// OverrideHome sets both HomeDir and DataDir to the given directory,
+// expanding ~ in the path. This is used by --home to bypass TOML config.
+func (c *Config) OverrideHome(dir string) {
+	dir = expandPath(dir)
+	c.HomeDir = dir
+	c.Data.DataDir = dir
 }
 
 // DatabaseDSN returns the database connection string or file path.
