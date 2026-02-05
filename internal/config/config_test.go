@@ -496,8 +496,8 @@ func TestLoadBackslashErrorHint(t *testing.T) {
 			if !strings.Contains(errMsg, "forward slashes") {
 				t.Errorf("error should mention forward slashes, got: %s", errMsg)
 			}
-			if !strings.Contains(errMsg, "--home") {
-				t.Errorf("error should mention --home flag, got: %s", errMsg)
+			if !strings.Contains(errMsg, "single quotes") {
+				t.Errorf("error should mention single quotes, got: %s", errMsg)
 			}
 		})
 	}
