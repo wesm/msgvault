@@ -378,7 +378,8 @@ type messageDetailLoadedMsg struct {
 // searchResultsMsg is sent when search results are loaded.
 type searchResultsMsg struct {
 	messages   []query.MessageSummary
-	totalCount int64 // Total matching messages (for "N of M" display)
+	totalCount int64             // Total matching messages (for "N of M" display)
+	stats      *query.TotalStats // Aggregate stats for the search results (size, attachments, etc.)
 	err        error
 	requestID  uint64 // To detect stale responses
 	append     bool   // True if these results should be appended (pagination)
@@ -448,6 +449,7 @@ func (m Model) loadSearchWithOffset(queryStr string, offset int, appendResults b
 
 			var results []query.MessageSummary
 			var totalCount int64
+			var stats *query.TotalStats
 			var err error
 
 			if m.searchMode == searchModeFast {
@@ -470,9 +472,22 @@ func (m Model) loadSearchWithOffset(queryStr string, offset int, appendResults b
 				}
 			}
 
+			// Fetch aggregate stats (size, attachments) for the search results
+			// on the initial page load so the header metrics are accurate.
+			if err == nil && !appendResults {
+				statsOpts := query.StatsOptions{
+					SourceID:            m.searchFilter.SourceID,
+					WithAttachmentsOnly: m.searchFilter.WithAttachmentsOnly,
+					SearchQuery:         queryStr,
+					GroupBy:             m.viewType,
+				}
+				stats, _ = m.engine.GetTotalStats(ctx, statsOpts)
+			}
+
 			return searchResultsMsg{
 				messages:   results,
 				totalCount: totalCount,
+				stats:      stats,
 				err:        err,
 				requestID:  requestID,
 				append:     appendResults,
@@ -905,9 +920,9 @@ func (m *Model) replaceSearchResults(msg searchResultsMsg) {
 	m.cursor = 0
 	m.scrollOffset = 0
 
-	// Set contextStats for search results to update header metrics
-	// Preserve TotalSize/AttachmentCount if already set from drill-down
-	// (drill-down sets these from the aggregate row before loading search results)
+	// Set contextStats for search results to update header metrics.
+	// Prefer stats from GetTotalStats (accurate size/attachments),
+	// but preserve drill-down stats if they were already set.
 	hasDrillDownStats := m.contextStats != nil &&
 		(m.contextStats.TotalSize > 0 || m.contextStats.AttachmentCount > 0)
 
@@ -916,12 +931,18 @@ func (m *Model) replaceSearchResults(msg searchResultsMsg) {
 		if hasDrillDownStats {
 			// Preserve drill-down stats, only update MessageCount
 			m.contextStats.MessageCount = msg.totalCount
+		} else if msg.stats != nil {
+			// Use accurate aggregate stats from GetTotalStats
+			m.contextStats = msg.stats
 		} else {
 			m.contextStats = &query.TotalStats{MessageCount: msg.totalCount}
 		}
 	case msg.totalCount == -1:
 		// Unknown total, use loaded count
 		if hasDrillDownStats {
+			m.contextStats.MessageCount = int64(len(msg.messages))
+		} else if msg.stats != nil {
+			m.contextStats = msg.stats
 			m.contextStats.MessageCount = int64(len(msg.messages))
 		} else {
 			m.contextStats = &query.TotalStats{MessageCount: int64(len(msg.messages))}
