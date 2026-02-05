@@ -1941,9 +1941,16 @@ func (e *DuckDBEngine) searchPageFromCache(ctx context.Context, limit, offset in
 	}
 	defer rows.Close()
 
+	// Return a copy of cached stats to prevent callers from mutating the cache
+	var statsCopy *TotalStats
+	if e.searchCacheStats != nil {
+		tmp := *e.searchCacheStats
+		statsCopy = &tmp
+	}
+
 	result := &SearchFastResult{
 		TotalCount: e.searchCacheCount,
-		Stats:      e.searchCacheStats,
+		Stats:      statsCopy,
 	}
 
 	for rows.Next() {

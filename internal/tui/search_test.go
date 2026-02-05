@@ -265,6 +265,108 @@ func TestSearchPaginationUpdatesContextStats(t *testing.T) {
 	assertContextStats(t, m, 100, -1, -1)
 }
 
+// TestFastSearchPaginationTriggersOnNavigation verifies that cursor movement
+// near the end of loaded fast search results triggers loading more results.
+// This was a bug where navigateList returned early before maybeLoadMoreSearchResults
+// could fire, making fast search pagination completely non-functional.
+func TestFastSearchPaginationTriggersOnNavigation(t *testing.T) {
+	t.Run("down arrow near end triggers load more", func(t *testing.T) {
+		msgs := makeMessages(100)
+		model := NewBuilder().
+			WithMessages(msgs...).
+			WithLevel(levelMessageList).
+			WithPageSize(20).
+			Build()
+		model.searchQuery = "test"
+		model.searchMode = searchModeFast
+		model.searchTotalCount = -1 // Unknown total = more pages available
+		model.searchOffset = 100
+		model.cursor = 90 // Within 20 of end (threshold)
+
+		// Press down arrow — cursor moves to 91, which is within threshold
+		m, cmd := applyMessageListKeyWithCmd(t, model, keyDown())
+
+		if m.cursor != 91 {
+			t.Errorf("expected cursor=91, got %d", m.cursor)
+		}
+		if cmd == nil {
+			t.Error("expected load-more command to be returned for fast search pagination")
+		}
+		if !m.searchLoadingMore {
+			t.Error("expected searchLoadingMore=true")
+		}
+	})
+
+	t.Run("down arrow far from end does not trigger load", func(t *testing.T) {
+		msgs := makeMessages(100)
+		model := NewBuilder().
+			WithMessages(msgs...).
+			WithLevel(levelMessageList).
+			WithPageSize(20).
+			Build()
+		model.searchQuery = "test"
+		model.searchMode = searchModeFast
+		model.searchTotalCount = -1
+		model.searchOffset = 100
+		model.cursor = 10 // Far from end
+
+		m, cmd := applyMessageListKeyWithCmd(t, model, keyDown())
+
+		if m.cursor != 11 {
+			t.Errorf("expected cursor=11, got %d", m.cursor)
+		}
+		if cmd != nil {
+			t.Error("expected no command when cursor is far from end")
+		}
+	})
+
+	t.Run("no pagination when all results loaded", func(t *testing.T) {
+		msgs := makeMessages(50)
+		model := NewBuilder().
+			WithMessages(msgs...).
+			WithLevel(levelMessageList).
+			WithPageSize(20).
+			Build()
+		model.searchQuery = "test"
+		model.searchMode = searchModeFast
+		model.searchTotalCount = 50 // Known total, all loaded
+		model.searchOffset = 50
+		model.cursor = 40 // Near end
+
+		m, cmd := applyMessageListKeyWithCmd(t, model, keyDown())
+
+		if m.cursor != 41 {
+			t.Errorf("expected cursor=41, got %d", m.cursor)
+		}
+		if cmd != nil {
+			t.Error("expected no command when all results are loaded")
+		}
+	})
+
+	t.Run("no pagination for deep search mode", func(t *testing.T) {
+		msgs := makeMessages(100)
+		model := NewBuilder().
+			WithMessages(msgs...).
+			WithLevel(levelMessageList).
+			WithPageSize(20).
+			Build()
+		model.searchQuery = "test"
+		model.searchMode = searchModeDeep // Deep mode uses different pagination
+		model.searchTotalCount = -1
+		model.searchOffset = 100
+		model.cursor = 90
+
+		m, cmd := applyMessageListKeyWithCmd(t, model, keyDown())
+
+		if m.cursor != 91 {
+			t.Errorf("expected cursor=91, got %d", m.cursor)
+		}
+		if cmd != nil {
+			t.Error("expected no command for deep search mode (uses different pagination)")
+		}
+	})
+}
+
 // TestSearchResultsPreservesDrillDownContextStats verifies that when drilling down
 // from a search-filtered aggregate, contextStats (TotalSize, AttachmentCount) set
 // from the selected row is preserved when searchResultsMsg arrives.
