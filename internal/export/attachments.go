@@ -207,6 +207,11 @@ func ValidateOutputPath(outputPath string) error {
 	if filepath.IsAbs(cleaned) {
 		return fmt.Errorf("output path %q is absolute; use a relative path", outputPath)
 	}
+	// Reject Windows drive-relative (C:foo) and UNC (\\server\share) paths,
+	// which filepath.IsAbs does not catch.
+	if filepath.VolumeName(cleaned) != "" {
+		return fmt.Errorf("output path %q contains a drive or UNC prefix; use a relative path", outputPath)
+	}
 	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("output path %q escapes the working directory", outputPath)
 	}

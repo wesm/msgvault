@@ -416,6 +416,33 @@ func TestValidateOutputPath(t *testing.T) {
 		{"traversal via subdir", "foo/../../evil.txt", true},
 	}
 
+	// Windows drive and UNC paths — only meaningful on Windows where
+	// filepath.VolumeName returns non-empty for these forms.
+	if runtime.GOOS == "windows" {
+		tests = append(tests,
+			struct {
+				name    string
+				path    string
+				wantErr bool
+			}{"windows absolute", `C:\tmp\file.pdf`, true},
+			struct {
+				name    string
+				path    string
+				wantErr bool
+			}{"windows drive-relative", `C:tmp\file.pdf`, true},
+			struct {
+				name    string
+				path    string
+				wantErr bool
+			}{"windows drive-relative traversal", `C:..\evil`, true},
+			struct {
+				name    string
+				path    string
+				wantErr bool
+			}{"windows UNC path", `\\server\share\file.pdf`, true},
+		)
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateOutputPath(tt.path)
