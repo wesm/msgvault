@@ -93,7 +93,7 @@ func TestLoadEmptyPath(t *testing.T) {
 	t.Setenv("MSGVAULT_HOME", tmpDir)
 
 	// Load with empty path should use defaults
-	cfg, err := Load("")
+	cfg, err := Load("", "")
 	if err != nil {
 		t.Fatalf("Load(\"\") failed: %v", err)
 	}
@@ -137,7 +137,7 @@ rate_limit_qps = 10
 		t.Fatalf("failed to write config file: %v", err)
 	}
 
-	cfg, err := Load("")
+	cfg, err := Load("", "")
 	if err != nil {
 		t.Fatalf("Load(\"\") failed: %v", err)
 	}
@@ -165,7 +165,7 @@ rate_limit_qps = 10
 
 func TestLoadExplicitPathNotFound(t *testing.T) {
 	// When --config explicitly specifies a file that doesn't exist, Load should error
-	_, err := Load("/nonexistent/path/config.toml")
+	_, err := Load("/nonexistent/path/config.toml", "")
 	if err == nil {
 		t.Fatal("Load with explicit nonexistent path should return error")
 	}
@@ -192,7 +192,7 @@ rate_limit_qps = 3
 		t.Fatalf("failed to write config file: %v", err)
 	}
 
-	cfg, err := Load(configPath)
+	cfg, err := Load(configPath, "")
 	if err != nil {
 		t.Fatalf("Load(%q) failed: %v", configPath, err)
 	}
@@ -233,7 +233,7 @@ data_dir = "` + filepath.ToSlash(customDataDir) + `"
 		t.Fatalf("failed to write config file: %v", err)
 	}
 
-	cfg, err := Load(configPath)
+	cfg, err := Load(configPath, "")
 	if err != nil {
 		t.Fatalf("Load(%q) failed: %v", configPath, err)
 	}
@@ -266,7 +266,7 @@ client_secrets = "secrets/client.json"
 		t.Fatalf("failed to write config file: %v", err)
 	}
 
-	cfg, err := Load(configPath)
+	cfg, err := Load(configPath, "")
 	if err != nil {
 		t.Fatalf("Load(%q) failed: %v", configPath, err)
 	}
@@ -302,7 +302,7 @@ func TestLoadExplicitPathWithTilde(t *testing.T) {
 	}
 	tildePath := "~" + tmpDir[len(home):] + "/config.toml"
 
-	cfg, err := Load(tildePath)
+	cfg, err := Load(tildePath, "")
 	if err != nil {
 		t.Fatalf("Load(%q) failed: %v", tildePath, err)
 	}
@@ -320,7 +320,7 @@ func TestLoadConfigFilePath(t *testing.T) {
 		t.Fatalf("failed to write config file: %v", err)
 	}
 
-	cfg, err := Load(configPath)
+	cfg, err := Load(configPath, "")
 	if err != nil {
 		t.Fatalf("Load(%q) failed: %v", configPath, err)
 	}
@@ -471,7 +471,7 @@ data_dir = "C:\Games\msgvault"
 		t.Fatalf("failed to write config file: %v", err)
 	}
 
-	_, err := Load("")
+	_, err := Load("", "")
 	if err == nil {
 		t.Fatal("Load should fail on invalid TOML escape")
 	}
@@ -491,51 +491,73 @@ data_dir = "C:\Games\msgvault"
 	}
 }
 
-func TestOverrideHome(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("MSGVAULT_HOME", tmpDir)
+func TestLoadWithHomeDir(t *testing.T) {
+	homeDir := t.TempDir()
 
-	cfg, err := Load("")
+	cfg, err := Load("", homeDir)
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	overrideDir := t.TempDir()
-	cfg.OverrideHome(overrideDir)
-
-	if cfg.Data.DataDir != overrideDir {
-		t.Errorf("Data.DataDir = %q, want %q", cfg.Data.DataDir, overrideDir)
+	if cfg.HomeDir != homeDir {
+		t.Errorf("HomeDir = %q, want %q", cfg.HomeDir, homeDir)
 	}
-	if cfg.HomeDir != overrideDir {
-		t.Errorf("HomeDir = %q, want %q", cfg.HomeDir, overrideDir)
+	if cfg.Data.DataDir != homeDir {
+		t.Errorf("Data.DataDir = %q, want %q", cfg.Data.DataDir, homeDir)
 	}
 
-	// Derived paths should use the override directory
-	expectedDB := filepath.Join(overrideDir, "msgvault.db")
+	// Derived paths should use the home directory
+	expectedDB := filepath.Join(homeDir, "msgvault.db")
 	if cfg.DatabaseDSN() != expectedDB {
 		t.Errorf("DatabaseDSN() = %q, want %q", cfg.DatabaseDSN(), expectedDB)
 	}
-	expectedTokens := filepath.Join(overrideDir, "tokens")
+	expectedTokens := filepath.Join(homeDir, "tokens")
 	if cfg.TokensDir() != expectedTokens {
 		t.Errorf("TokensDir() = %q, want %q", cfg.TokensDir(), expectedTokens)
 	}
 }
 
-func TestOverrideHomeExpandsTilde(t *testing.T) {
+func TestLoadWithHomeDirReadsConfig(t *testing.T) {
+	// --home should load config.toml from that directory
+	homeDir := t.TempDir()
+	configPath := filepath.Join(homeDir, "config.toml")
+	configContent := `[sync]
+rate_limit_qps = 42
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load("", homeDir)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.Sync.RateLimitQPS != 42 {
+		t.Errorf("Sync.RateLimitQPS = %d, want 42", cfg.Sync.RateLimitQPS)
+	}
+	if cfg.HomeDir != homeDir {
+		t.Errorf("HomeDir = %q, want %q", cfg.HomeDir, homeDir)
+	}
+}
+
+func TestLoadWithHomeDirExpandsTilde(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatalf("failed to get user home dir: %v", err)
 	}
 
-	cfg := NewDefaultConfig()
-	cfg.OverrideHome("~/custom-data")
+	cfg, err := Load("", "~/custom-data")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
 
 	expected := filepath.Join(home, "custom-data")
-	if cfg.Data.DataDir != expected {
-		t.Errorf("Data.DataDir = %q, want %q", cfg.Data.DataDir, expected)
-	}
 	if cfg.HomeDir != expected {
 		t.Errorf("HomeDir = %q, want %q", cfg.HomeDir, expected)
+	}
+	if cfg.Data.DataDir != expected {
+		t.Errorf("Data.DataDir = %q, want %q", cfg.Data.DataDir, expected)
 	}
 }
 

@@ -42,16 +42,12 @@ in a single binary.`,
 			Level: level,
 		}))
 
-		// Load config
+		// Load config (--home is passed through so it influences
+		// where config.toml is loaded from, like MSGVAULT_HOME).
 		var err error
-		cfg, err = config.Load(cfgFile)
+		cfg, err = config.Load(cfgFile, homeDir)
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
-		}
-
-		// --home overrides MSGVAULT_HOME / config-derived home
-		if homeDir != "" {
-			cfg.OverrideHome(homeDir)
 		}
 
 		// Ensure home directory exists on first use

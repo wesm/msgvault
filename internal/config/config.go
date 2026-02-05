@@ -70,10 +70,20 @@ func NewDefaultConfig() *Config {
 // If path is empty, uses the default location (~/.msgvault/config.toml),
 // which is optional (missing file returns defaults).
 // If path is explicitly provided, the file must exist.
-func Load(path string) (*Config, error) {
+//
+// homeDir overrides the home directory (equivalent to MSGVAULT_HOME).
+// When set, config.toml is loaded from homeDir unless path is also set.
+func Load(path, homeDir string) (*Config, error) {
 	explicit := path != ""
 
 	cfg := NewDefaultConfig()
+
+	// --home overrides the default home directory, just like MSGVAULT_HOME.
+	if homeDir != "" {
+		homeDir = expandPath(homeDir)
+		cfg.HomeDir = homeDir
+		cfg.Data.DataDir = homeDir
+	}
 
 	if !explicit {
 		path = filepath.Join(cfg.HomeDir, "config.toml")
@@ -93,10 +103,11 @@ func Load(path string) (*Config, error) {
 
 	cfg.configPath = path
 
-	// When --config points to a custom location, derive HomeDir and
-	// default DataDir from the config file's parent directory so that
-	// tokens, database, attachments, etc. live alongside the config.
-	if explicit {
+	// When --config points to a custom location without --home,
+	// derive HomeDir and default DataDir from the config file's parent
+	// directory so that tokens, database, attachments, etc. live alongside
+	// the config.
+	if explicit && homeDir == "" {
 		cfg.HomeDir = filepath.Dir(path)
 		cfg.Data.DataDir = cfg.HomeDir
 	}
@@ -122,14 +133,6 @@ func Load(path string) (*Config, error) {
 	}
 
 	return cfg, nil
-}
-
-// OverrideHome sets both HomeDir and DataDir to the given directory,
-// expanding ~ in the path. This is used by --home to bypass TOML config.
-func (c *Config) OverrideHome(dir string) {
-	dir = expandPath(dir)
-	c.HomeDir = dir
-	c.Data.DataDir = dir
 }
 
 // DatabaseDSN returns the database connection string or file path.
