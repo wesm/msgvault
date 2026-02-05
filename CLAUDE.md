@@ -180,6 +180,13 @@ The TUI automatically builds/updates the Parquet cache on launch when new messag
 
 Sync is **read-only** - no modifications to Gmail.
 
+## Git Workflow
+
+- **Never commit directly to `main`.** Always create a feature branch and open a PR.
+- Never switch branches without being asked. Stay on the current branch.
+- Never push to remote unless explicitly asked.
+- Never force push unless explicitly asked.
+
 ## Code Style & Linting
 
 All code must pass formatting and linting checks before commit. A pre-commit
