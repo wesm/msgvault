@@ -18,6 +18,7 @@ msgvault/
 │   ├── store/               # SQLite database access
 │   ├── deletion/            # Deletion staging and manifest
 │   ├── gmail/               # Gmail API client
+│   ├── export/              # Attachment export helpers
 │   ├── sync/                # Sync orchestration
 │   ├── oauth/               # OAuth2 flows (browser + device)
 │   └── mime/                # MIME parsing
@@ -39,10 +40,17 @@ make lint                     # Run linter
 # CLI usage
 ./msgvault init-db                                    # Initialize database
 ./msgvault add-account you@gmail.com                  # Browser OAuth
-./msgvault add-account you@gmail.com --headless       # Device flow
+./msgvault add-account you@gmail.com --headless       # Headless setup instructions
+./msgvault add-account you@gmail.com --display-name "Work"  # Set display name
+./msgvault --config /path/to/config.toml <command>    # Custom config file
 ./msgvault sync-full you@gmail.com --limit 100        # Sync with limit
 ./msgvault sync-full you@gmail.com --after 2024-01-01 # Sync date range
 ./msgvault sync-incremental you@gmail.com             # Incremental sync
+
+# Account management
+./msgvault list-accounts                              # List accounts
+./msgvault list-accounts --json                       # JSON output
+./msgvault update-account you@gmail.com --display-name "Work"
 
 # TUI and analytics
 ./msgvault tui                                        # Launch TUI
@@ -50,6 +58,10 @@ make lint                     # Run linter
 ./msgvault build-cache                                # Build Parquet cache
 ./msgvault build-cache --full-rebuild                 # Full rebuild
 ./msgvault stats                                      # Show archive stats
+
+# Attachment export
+./msgvault export-attachment <hash> -o file.pdf       # Export single attachment
+./msgvault export-attachments <msg-id> -o ~/Downloads # Export all attachments
 
 # Maintenance
 ./msgvault repair-encoding                            # Fix UTF-8 encoding issues
@@ -66,6 +78,7 @@ make lint                     # Run linter
 - `repair_encoding.go` - UTF-8 encoding repair
 
 ### Core (`internal/`)
+- `export/attachments.go` - Shared attachment export, filename sanitization, content-hash validation
 - `tui/model.go` - Bubble Tea TUI model and update logic
 - `tui/view.go` - View rendering with lipgloss styling
 - `query/engine.go` - DuckDB query engine over Parquet files
@@ -148,6 +161,9 @@ The TUI automatically builds/updates the Parquet cache on launch when new messag
 - **TUI**: Full-featured TUI with drill-down navigation, search, selection, deletion staging
 - **UTF-8 Repair**: Comprehensive encoding repair for all string fields
 - **Deletion Execution**: Execute staged deletions via Gmail API (trash or permanent delete)
+- **Account Management CLI**: list-accounts, update-account, display names
+- **Attachment Export CLI**: export-attachment, export-attachments
+- **Windows Support**: PowerShell installer, --config flag, path fixes
 
 ### Not Yet Implemented
 - **App-level encryption**: Encrypt database and attachments at rest

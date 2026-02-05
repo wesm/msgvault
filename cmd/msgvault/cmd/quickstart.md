@@ -24,8 +24,12 @@ run multiple times — tables are only created if they don't exist.
 # Browser-based OAuth (default)
 msgvault add-account user@gmail.com
 
-# Headless / device code flow (for SSH sessions, no browser)
+# Headless setup (for SSH sessions or servers without a browser)
+# Prints instructions for copying an OAuth token from another machine
 msgvault add-account user@gmail.com --headless
+
+# Set a display name when adding an account
+msgvault add-account user@gmail.com --display-name "Work"
 ```
 
 Requires `oauth.client_secrets` to be set in `~/.msgvault/config.toml` pointing
@@ -33,7 +37,13 @@ to a Google Cloud OAuth client secrets JSON file.
 
 ### Configuration
 
-The config file is at `~/.msgvault/config.toml`:
+Use `--config` to specify an alternate config file location:
+
+```bash
+msgvault --config /path/to/config.toml <command>
+```
+
+The default config file is at `~/.msgvault/config.toml`:
 
 ```toml
 [oauth]
@@ -41,6 +51,19 @@ client_secrets = "/path/to/client_secret.json"
 
 [sync]
 rate_limit_qps = 5
+```
+
+### Account management
+
+```bash
+# List all synced accounts
+msgvault list-accounts
+
+# JSON output (for scripting)
+msgvault list-accounts --json
+
+# Update an account's display name
+msgvault update-account user@gmail.com --display-name "Work"
 ```
 
 ## Syncing email
@@ -193,6 +216,43 @@ msgvault export-eml 12345 --output message.eml
 Exports the raw MIME data as a standard `.eml` file compatible with most email
 clients.
 
+## Export attachments
+
+### Export a single attachment by content hash
+
+```bash
+# Get the content hash from show-message
+msgvault show-message 45 --json | jq '.attachments[0].content_hash'
+
+# Export to a file
+msgvault export-attachment <content-hash> -o invoice.pdf
+
+# Output to stdout (binary)
+msgvault export-attachment <content-hash> -o -
+
+# Output as base64
+msgvault export-attachment <content-hash> --base64
+
+# JSON output with base64-encoded data
+msgvault export-attachment <content-hash> --json
+```
+
+### Export all attachments from a message
+
+```bash
+# Export all attachments to the current directory
+msgvault export-attachments 45
+
+# Export to a specific directory
+msgvault export-attachments 45 -o ~/Downloads
+
+# By Gmail message ID
+msgvault export-attachments 18f0abc123def
+```
+
+Filenames are sanitized and deduplicated automatically. Existing files are never
+overwritten — a numeric suffix is appended on conflict.
+
 ## Deletion management
 
 Messages are staged for deletion in the TUI (select messages, press `d`).
@@ -296,7 +356,7 @@ msgvault tui --account user@gmail.com
 ## Tips
 
 - **Always use `--json`** for programmatic access. Available on: `search`,
-  `show-message`, `list-senders`, `list-domains`, `list-labels`.
+  `show-message`, `list-accounts`, `list-senders`, `list-domains`, `list-labels`.
 - Search results return an `id` field — use it with `show-message` for full content.
 - Date filters use `YYYY-MM-DD` format.
 - Relative date units: `d` (days), `w` (weeks), `m` (months), `y` (years).

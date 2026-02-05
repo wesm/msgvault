@@ -8,8 +8,6 @@
 
 > **Pre-alpha software.** APIs, storage format, and CLI flags may change without notice. Back up your data.
 
-> **Windows users:** There are a number of known issues on Windows that I am actively working to resolve. Fixes are coming within the next few days. Thank you for your patience.
-
 Archive a lifetime of email. Analytics and search in milliseconds, entirely offline.
 
 ## Why msgvault?
@@ -77,7 +75,11 @@ msgvault tui
 | `mcp` | Start the MCP server for AI assistant integration |
 | `stats` | Show archive statistics |
 | `verify EMAIL` | Verify archive integrity against Gmail |
+| `list-accounts` | List synced accounts (`--json` for machine output) |
+| `update-account EMAIL` | Update account settings (e.g. `--display-name`) |
 | `export-eml` | Export a message as `.eml` |
+| `export-attachment HASH` | Export an attachment by content hash |
+| `export-attachments MSG-ID` | Export all attachments from a message |
 | `build-cache` | Rebuild the Parquet analytics cache |
 | `repair-encoding` | Fix UTF-8 encoding issues |
 | `list-senders` / `list-domains` / `list-labels` | Explore metadata |
@@ -86,7 +88,11 @@ See the [CLI Reference](https://msgvault.io/cli-reference/) for full details.
 
 ## Configuration
 
-All data lives in `~/.msgvault/` by default (override with `MSGVAULT_HOME`).
+All data lives in `~/.msgvault/` by default (override with `MSGVAULT_HOME`). Use `--config` to specify an alternate config file:
+
+```bash
+msgvault --config /path/to/config.toml <command>
+```
 
 ```toml
 # ~/.msgvault/config.toml
