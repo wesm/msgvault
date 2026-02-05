@@ -1,6 +1,7 @@
 {
   "trusted_github_usernames": [
-    "wesm"
+    "wesm",
+    "dependabot[bot]"
   ],
-  "description": "GitHub usernames of repository owners/maintainers who bypass automated security review"
+  "description": "GitHub usernames of repository owners/maintainers and trusted bots who bypass automated security review"
 }
