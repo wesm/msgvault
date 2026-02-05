@@ -113,7 +113,8 @@ func Load(path, homeDir string) (*Config, error) {
 	}
 
 	if _, err := toml.DecodeFile(path, cfg); err != nil {
-		if strings.Contains(err.Error(), "invalid escape") {
+		if strings.Contains(err.Error(), "invalid escape") ||
+			strings.Contains(err.Error(), "hexadecimal digits after") {
 			return nil, fmt.Errorf("decode config: %w\n\nhint: Windows paths in TOML must use "+
 				"forward slashes (C:/Games/msgvault) or single quotes ('C:\\Games\\msgvault'). "+
 				"Alternatively, use --home to set the home directory without editing config.toml.", err)

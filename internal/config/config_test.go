@@ -458,36 +458,48 @@ func TestMkTempDir(t *testing.T) {
 }
 
 func TestLoadBackslashErrorHint(t *testing.T) {
-	// A TOML file with Windows-style backslash paths should produce a helpful hint
-	tmpDir := t.TempDir()
-	t.Setenv("MSGVAULT_HOME", tmpDir)
-
-	configPath := filepath.Join(tmpDir, "config.toml")
-	// \G is not a valid TOML escape, so this triggers an "invalid escape" error
-	configContent := `[data]
-data_dir = "C:\Games\msgvault"
-`
-	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
-		t.Fatalf("failed to write config file: %v", err)
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "invalid escape (backslash G)",
+			// \G is not a valid TOML escape → "invalid escape" error
+			content: "[data]\ndata_dir = \"C:\\Games\\msgvault\"\n",
+		},
+		{
+			name: "unicode escape (backslash U)",
+			// \U is a TOML Unicode escape expecting 8 hex digits → "hexadecimal digits" error
+			content: "[data]\ndata_dir = \"C:\\Users\\wesmc\\msgvault\"\n",
+		},
 	}
 
-	_, err := Load("", "")
-	if err == nil {
-		t.Fatal("Load should fail on invalid TOML escape")
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			t.Setenv("MSGVAULT_HOME", tmpDir)
 
-	errMsg := err.Error()
-	if !strings.Contains(errMsg, "invalid escape") {
-		t.Errorf("error should mention invalid escape, got: %s", errMsg)
-	}
-	if !strings.Contains(errMsg, "hint:") {
-		t.Errorf("error should contain hint, got: %s", errMsg)
-	}
-	if !strings.Contains(errMsg, "forward slashes") {
-		t.Errorf("error should mention forward slashes, got: %s", errMsg)
-	}
-	if !strings.Contains(errMsg, "--home") {
-		t.Errorf("error should mention --home flag, got: %s", errMsg)
+			configPath := filepath.Join(tmpDir, "config.toml")
+			if err := os.WriteFile(configPath, []byte(tt.content), 0o644); err != nil {
+				t.Fatalf("failed to write config file: %v", err)
+			}
+
+			_, err := Load("", "")
+			if err == nil {
+				t.Fatal("Load should fail on TOML backslash error")
+			}
+
+			errMsg := err.Error()
+			if !strings.Contains(errMsg, "hint:") {
+				t.Errorf("error should contain hint, got: %s", errMsg)
+			}
+			if !strings.Contains(errMsg, "forward slashes") {
+				t.Errorf("error should mention forward slashes, got: %s", errMsg)
+			}
+			if !strings.Contains(errMsg, "--home") {
+				t.Errorf("error should mention --home flag, got: %s", errMsg)
+			}
+		})
 	}
 }
 
