@@ -134,9 +134,9 @@ func PerformUpdate(info *UpdateInfo, progressFn func(downloaded, total int64)) e
 	}
 
 	fmt.Printf("Downloading %s...\n", info.AssetName)
-	tempDir, err := os.MkdirTemp("", "msgvault-update-*")
+	tempDir, err := mkTempDir("msgvault-update-*")
 	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
+		return err
 	}
 	defer os.RemoveAll(tempDir)
 
@@ -193,9 +193,9 @@ func installFromArchiveTo(archivePath, expectedChecksum, dstPath string, precomp
 		return fmt.Errorf("checksum mismatch: expected %s, got %s", expectedChecksum, checksum)
 	}
 
-	extractDir, err := os.MkdirTemp("", "msgvault-extract-*")
+	extractDir, err := mkTempDir("msgvault-extract-*")
 	if err != nil {
-		return fmt.Errorf("create extract dir: %w", err)
+		return err
 	}
 	defer os.RemoveAll(extractDir)
 
@@ -282,6 +282,28 @@ func installBinaryTo(srcPath, dstPath string) error {
 
 func getCacheDir() string {
 	return config.DefaultHome()
+}
+
+// mkTempDir creates a temporary directory, trying the system temp dir first
+// and falling back to a "tmp" subdirectory under the msgvault home directory.
+// This works around Windows environments where %TEMP% may be inaccessible
+// (e.g. due to permissions, antivirus, or group policy).
+func mkTempDir(pattern string) (string, error) {
+	dir, err := os.MkdirTemp("", pattern)
+	if err == nil {
+		return dir, nil
+	}
+
+	// Fallback: use ~/.msgvault/tmp/
+	fallbackBase := filepath.Join(config.DefaultHome(), "tmp")
+	if mkErr := os.MkdirAll(fallbackBase, 0700); mkErr != nil {
+		return "", fmt.Errorf("create temp dir: %w (fallback also failed: %v)", err, mkErr)
+	}
+	dir, fallbackErr := os.MkdirTemp(fallbackBase, pattern)
+	if fallbackErr != nil {
+		return "", fmt.Errorf("create temp dir: %w (fallback also failed: %v)", err, fallbackErr)
+	}
+	return dir, nil
 }
 
 func fetchLatestRelease() (*Release, error) {
