@@ -453,11 +453,16 @@ func (m Model) loadSearchWithOffset(queryStr string, offset int, appendResults b
 			var err error
 
 			if m.searchMode == searchModeFast {
-				// Fast search: Parquet metadata only
-				results, err = m.engine.SearchFast(ctx, q, m.searchFilter, searchPageSize, offset)
-				if err == nil {
-					totalCount, _ = m.engine.SearchFastCount(ctx, q, m.searchFilter)
+				// Fast search: single-scan with temp table materialization
+				result, fastErr := m.engine.SearchFastWithStats(ctx, q, queryStr, m.searchFilter, m.viewType, searchPageSize, offset)
+				if fastErr == nil {
+					results = result.Messages
+					totalCount = result.TotalCount
+					if !appendResults {
+						stats = result.Stats
+					}
 				}
+				err = fastErr
 			} else {
 				// Deep search: FTS5 body search
 				// Merge context filter into query to honor drill-down context
@@ -470,18 +475,18 @@ func (m Model) loadSearchWithOffset(queryStr string, offset int, appendResults b
 						totalCount = -1 // Indicate more results available
 					}
 				}
-			}
 
-			// Fetch aggregate stats (size, attachments) for the search results
-			// on the initial page load so the header metrics are accurate.
-			if err == nil && !appendResults {
-				statsOpts := query.StatsOptions{
-					SourceID:            m.searchFilter.SourceID,
-					WithAttachmentsOnly: m.searchFilter.WithAttachmentsOnly,
-					SearchQuery:         queryStr,
-					GroupBy:             m.viewType,
+				// Fetch aggregate stats (size, attachments) for the search results
+				// on the initial page load so the header metrics are accurate.
+				if err == nil && !appendResults {
+					statsOpts := query.StatsOptions{
+						SourceID:            m.searchFilter.SourceID,
+						WithAttachmentsOnly: m.searchFilter.WithAttachmentsOnly,
+						SearchQuery:         queryStr,
+						GroupBy:             m.viewType,
+					}
+					stats, _ = m.engine.GetTotalStats(ctx, statsOpts)
 				}
-				stats, _ = m.engine.GetTotalStats(ctx, statsOpts)
 			}
 
 			return searchResultsMsg{

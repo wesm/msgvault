@@ -1851,6 +1851,199 @@ func (e *DuckDBEngine) SearchFastCount(ctx context.Context, q *search.Query, fil
 	return count, nil
 }
 
+// SearchFastWithStats performs a single-scan fast search with temp table materialization.
+// It denormalizes matching messages (with sender info) into a temp table using one
+// Parquet scan, then reuses the in-memory temp table for count, pagination, and stats
+// — eliminating all subsequent msg Parquet reads. Only small page-scoped lookups
+// into label/attachment Parquet tables remain.
+func (e *DuckDBEngine) SearchFastWithStats(ctx context.Context, q *search.Query, queryStr string,
+	filter MessageFilter, statsGroupBy ViewType, limit, offset int) (*SearchFastResult, error) {
+
+	conditions, args := e.buildSearchConditions(q, filter)
+
+	if limit == 0 {
+		limit = 100
+	}
+
+	// Phase 1: Materialize matching messages into temp table (single Parquet scan).
+	// Stores all columns needed by later phases so they never re-read msg Parquet.
+	// The msg_sender CTE is required because buildSearchConditions references ms.from_email.
+	materializeQuery := fmt.Sprintf(`
+		CREATE OR REPLACE TEMP TABLE _search_matches AS
+		WITH %s,
+		msg_sender AS (
+			SELECT mr.message_id,
+				   FIRST(p.email_address) as from_email,
+				   FIRST(COALESCE(mr.display_name, p.display_name, '')) as from_name
+			FROM mr
+			JOIN p ON p.id = mr.participant_id
+			WHERE mr.recipient_type = 'from'
+			GROUP BY mr.message_id
+		)
+		SELECT
+			msg.id,
+			COALESCE(msg.source_message_id, '') as source_message_id,
+			COALESCE(msg.conversation_id, 0) as conversation_id,
+			COALESCE(msg.subject, '') as subject,
+			COALESCE(msg.snippet, '') as snippet,
+			COALESCE(ms.from_email, '') as from_email,
+			COALESCE(ms.from_name, '') as from_name,
+			msg.sent_at,
+			COALESCE(CAST(msg.size_estimate AS BIGINT), 0) as size_estimate,
+			COALESCE(msg.has_attachments, false) as has_attachments,
+			msg.deleted_from_source_at,
+			COALESCE(CAST(msg.source_id AS BIGINT), 0) as source_id
+		FROM msg
+		LEFT JOIN msg_sender ms ON ms.message_id = msg.id
+		WHERE %s
+	`, e.parquetCTEs(), strings.Join(conditions, " AND "))
+
+	// Ensure cleanup of temp table
+	defer func() { _, _ = e.db.ExecContext(ctx, "DROP TABLE IF EXISTS _search_matches") }()
+
+	if _, err := e.db.ExecContext(ctx, materializeQuery, args...); err != nil {
+		return nil, fmt.Errorf("materialize search matches: %w", err)
+	}
+
+	result := &SearchFastResult{}
+
+	// Phase 2: Count (trivial — reads in-memory temp table only).
+	// Best-effort: if count fails, fall back to -1 (unknown total).
+	if err := e.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM _search_matches").Scan(&result.TotalCount); err != nil {
+		log.Printf("warning: search count query failed (using -1): %v", err)
+		result.TotalCount = -1
+	}
+
+	// Phase 3: Paginated results from temp table. Only label and attachment CTEs
+	// need Parquet reads, scoped to the ~100 page IDs.
+	pageQuery := fmt.Sprintf(`
+		WITH %s,
+		page AS (
+			SELECT sm.id FROM _search_matches sm
+			ORDER BY sm.sent_at DESC
+			LIMIT ? OFFSET ?
+		),
+		msg_labels AS (
+			SELECT ml.message_id, LIST(lbl.name ORDER BY lbl.name) as labels
+			FROM ml
+			JOIN lbl ON lbl.id = ml.label_id
+			WHERE ml.message_id IN (SELECT id FROM page)
+			GROUP BY ml.message_id
+		)
+		SELECT
+			sm.id,
+			sm.source_message_id,
+			sm.conversation_id,
+			sm.subject,
+			sm.snippet,
+			sm.from_email,
+			sm.from_name,
+			sm.sent_at,
+			sm.size_estimate,
+			sm.has_attachments,
+			COALESCE(att.attachment_count, 0) as attachment_count,
+			CAST(COALESCE(to_json(mlbl.labels), '[]') AS VARCHAR) as labels,
+			sm.deleted_from_source_at
+		FROM _search_matches sm
+		JOIN page p ON p.id = sm.id
+		LEFT JOIN att ON att.message_id = sm.id
+		LEFT JOIN msg_labels mlbl ON mlbl.message_id = sm.id
+		ORDER BY sm.sent_at DESC
+	`, e.parquetCTEs())
+
+	rows, err := e.db.QueryContext(ctx, pageQuery, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("search fast page: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var msg MessageSummary
+		var sentAt sql.NullTime
+		var deletedAt sql.NullTime
+		var labelsJSON string
+		if err := rows.Scan(
+			&msg.ID,
+			&msg.SourceMessageID,
+			&msg.ConversationID,
+			&msg.Subject,
+			&msg.Snippet,
+			&msg.FromEmail,
+			&msg.FromName,
+			&sentAt,
+			&msg.SizeEstimate,
+			&msg.HasAttachments,
+			&msg.AttachmentCount,
+			&labelsJSON,
+			&deletedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan message: %w", err)
+		}
+		if sentAt.Valid {
+			msg.SentAt = sentAt.Time
+		}
+		if deletedAt.Valid {
+			msg.DeletedAt = &deletedAt.Time
+		}
+		msg.Labels = parseLabelsJSON(labelsJSON)
+		result.Messages = append(result.Messages, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate messages: %w", err)
+	}
+
+	// Phase 4: Stats from temp table (best-effort — failures leave Stats nil).
+	// Only the att CTE needs a Parquet read; size_estimate and source_id are
+	// already in the temp table.
+	msgStatsQuery := fmt.Sprintf(`
+		WITH %s
+		SELECT
+			COUNT(*) as message_count,
+			COALESCE(SUM(sm.size_estimate), 0) as total_size,
+			CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
+			CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
+			COUNT(DISTINCT sm.source_id) as account_count
+		FROM _search_matches sm
+		LEFT JOIN att ON att.message_id = sm.id
+	`, e.parquetCTEs())
+
+	stats := &TotalStats{}
+	var attachmentSize sql.NullFloat64
+	if err := e.db.QueryRowContext(ctx, msgStatsQuery).Scan(
+		&stats.MessageCount,
+		&stats.TotalSize,
+		&stats.AttachmentCount,
+		&attachmentSize,
+		&stats.AccountCount,
+	); err != nil {
+		log.Printf("warning: search stats query failed (stats will be nil): %v", err)
+		stats = nil
+	}
+	if stats != nil && attachmentSize.Valid {
+		stats.AttachmentSize = int64(attachmentSize.Float64)
+	}
+
+	// Label count — only ml/lbl Parquet tables needed.
+	if stats != nil {
+		labelStatsQuery := fmt.Sprintf(`
+			WITH %s
+			SELECT COUNT(DISTINCT lbl.name)
+			FROM _search_matches sm
+			JOIN ml ON ml.message_id = sm.id
+			JOIN lbl ON lbl.id = ml.label_id
+		`, e.parquetCTEs())
+
+		if err := e.db.QueryRowContext(ctx, labelStatsQuery).Scan(&stats.LabelCount); err != nil {
+			log.Printf("warning: search label count query failed (using 0): %v", err)
+			stats.LabelCount = 0
+		}
+	}
+
+	result.Stats = stats
+
+	return result, nil
+}
+
 // buildSearchConditions builds WHERE conditions for search queries.
 // Shared by SearchFast and SearchFastCount.
 // Note: These conditions reference msg and ms (msg_sender) CTEs.

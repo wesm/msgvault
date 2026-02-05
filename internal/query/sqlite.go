@@ -1470,3 +1470,34 @@ func (e *SQLiteEngine) SearchFastCount(ctx context.Context, q *search.Query, fil
 	}
 	return count, nil
 }
+
+// SearchFastWithStats delegates to SearchFast + SearchFastCount + GetTotalStats.
+// SQLite doesn't benefit from temp table materialization, so we just call the
+// existing methods independently.
+func (e *SQLiteEngine) SearchFastWithStats(ctx context.Context, q *search.Query, queryStr string,
+	filter MessageFilter, statsGroupBy ViewType, limit, offset int) (*SearchFastResult, error) {
+
+	results, err := e.SearchFast(ctx, q, filter, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	count, countErr := e.SearchFastCount(ctx, q, filter)
+	if countErr != nil {
+		return nil, countErr
+	}
+
+	statsOpts := StatsOptions{
+		SourceID:            filter.SourceID,
+		WithAttachmentsOnly: filter.WithAttachmentsOnly,
+		SearchQuery:         queryStr,
+		GroupBy:             statsGroupBy,
+	}
+	stats, _ := e.GetTotalStats(ctx, statsOpts)
+
+	return &SearchFastResult{
+		Messages:   results,
+		TotalCount: count,
+		Stats:      stats,
+	}, nil
+}
