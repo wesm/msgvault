@@ -3,6 +3,7 @@
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Docs](https://img.shields.io/badge/Docs-msgvault.io-blue)](https://msgvault.io)
+[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/fDnmxB8Wkq)
 
 [Documentation](https://msgvault.io) · [Setup Guide](https://msgvault.io/guides/oauth-setup/) · [Interactive TUI](https://msgvault.io/usage/tui/)
 
@@ -113,6 +114,10 @@ msgvault includes an MCP server that lets AI assistants search, analyze, and rea
 - [MCP Server](https://msgvault.io/usage/chat/): AI assistant integration
 - [Troubleshooting](https://msgvault.io/troubleshooting/): common issues and fixes
 - [Development](https://msgvault.io/development/): contributing, testing, building
+
+## Community
+
+Join the [msgvault Discord](https://discord.gg/fDnmxB8Wkq) to ask questions, share feedback, report issues, and connect with other users.
 
 ## Development
 
