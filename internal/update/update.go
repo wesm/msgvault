@@ -250,20 +250,29 @@ func InstallFromArchive(archivePath, expectedChecksum string) error {
 
 // installBinaryTo performs the actual binary installation with backup/restore logic.
 // This is separated from installBinary for testability.
+//
+// On Windows, the running executable cannot be deleted or overwritten, but it
+// can be renamed. The rename-then-copy pattern works: the running process keeps
+// its file handle to the renamed .old file, and the new binary is written to a
+// fresh file at the original path. The .old file cannot be removed while the
+// process is running, so cleanup is deferred to the next update invocation.
 func installBinaryTo(srcPath, dstPath string) error {
 	backupPath := dstPath + ".old"
 
-	// Remove any stale backup from a previous update
+	// Remove stale backup from a previous update. On Windows this may fail
+	// if the previous binary is still running; that's fine — it will be
+	// cleaned up on the next successful update.
 	os.Remove(backupPath)
 
-	// Backup existing binary if it exists
+	// Backup existing binary if it exists (rename works even on Windows
+	// for the currently running executable).
 	if _, err := os.Stat(dstPath); err == nil {
 		if err := os.Rename(dstPath, backupPath); err != nil {
 			return fmt.Errorf("backup: %w", err)
 		}
 	}
 
-	// Copy new binary
+	// Copy new binary to the now-vacant path.
 	if err := copyFile(srcPath, dstPath); err != nil {
 		// Attempt to restore backup on failure
 		_ = os.Rename(backupPath, dstPath)
@@ -274,7 +283,9 @@ func installBinaryTo(srcPath, dstPath string) error {
 		return fmt.Errorf("chmod: %w", err)
 	}
 
-	// Clean up backup on success
+	// Clean up backup. On Windows this will fail for the running executable
+	// (silently ignored); the stale .old file is removed at the top of the
+	// next update.
 	os.Remove(backupPath)
 
 	return nil
