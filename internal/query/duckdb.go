@@ -53,6 +53,15 @@ type DuckDBEngine struct {
 	searchCacheStats *TotalStats // cached stats from Phase 4
 }
 
+// DuckDBOptions configures optional DuckDB engine behavior.
+type DuckDBOptions struct {
+	// DisableSQLiteScanner prevents loading the sqlite_scanner extension even
+	// on platforms where it would normally be available. This forces all SQLite
+	// queries to route through sqliteEngine, matching the Windows code path.
+	// Useful for testing the non-scanner code path on Linux/macOS.
+	DisableSQLiteScanner bool
+}
+
 // NewDuckDBEngine creates a new DuckDB-backed query engine.
 // analyticsDir should point to ~/.msgvault/analytics/
 // sqlitePath should point to ~/.msgvault/msgvault.db
@@ -65,7 +74,11 @@ type DuckDBEngine struct {
 // If sqlitePath is empty, only aggregate queries and GetTotalStats will work.
 // If sqliteDB is nil, Search will fall back to LIKE queries and body extraction
 // from raw MIME may be slower.
-func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB) (*DuckDBEngine, error) {
+func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB, opts ...DuckDBOptions) (*DuckDBEngine, error) {
+	var opt DuckDBOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 	// Open in-memory DuckDB
 	db, err := sql.Open("duckdb", "")
 	if err != nil {
@@ -88,9 +101,10 @@ func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB) (
 	// Install and load SQLite extension if we have a SQLite path.
 	// On Windows, the sqlite_scanner extension is not available for MinGW
 	// builds — all detail queries route through sqliteEngine instead.
+	// DisableSQLiteScanner forces the same fallback on any platform (for testing).
 	// On other platforms, try to load but fall back gracefully (e.g. no internet).
 	var hasSQLiteScanner bool
-	if sqlitePath != "" && runtime.GOOS != "windows" {
+	if sqlitePath != "" && runtime.GOOS != "windows" && !opt.DisableSQLiteScanner {
 		if _, err := db.Exec("INSTALL sqlite; LOAD sqlite;"); err != nil {
 			log.Printf("[warn] sqlite_scanner extension unavailable, falling back to direct SQLite: %v", err)
 		} else {
