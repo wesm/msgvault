@@ -125,7 +125,7 @@ func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB) (
 // Close releases DuckDB resources, including any cached search temp table.
 func (e *DuckDBEngine) Close() error {
 	e.searchCacheMu.Lock()
-	e.dropSearchCache(context.Background())
+	e.dropSearchCache()
 	e.searchCacheMu.Unlock()
 	return e.db.Close()
 }
@@ -1866,30 +1866,30 @@ func (e *DuckDBEngine) SearchFastCount(ctx context.Context, q *search.Query, fil
 }
 
 // searchCacheKeyFor builds a deterministic cache key from search conditions and args.
-// Same query+filter always produces the same key.
+// Same query+filter always produces the same key. Uses JSON encoding to avoid
+// ambiguity from delimiter collisions (e.g. args containing commas or pipes).
 func searchCacheKeyFor(conditions []string, args []interface{}) string {
-	var b strings.Builder
-	for i, cond := range conditions {
-		if i > 0 {
-			b.WriteByte('|')
-		}
-		b.WriteString(cond)
+	// JSON marshaling is unambiguous: each element is quoted/escaped independently.
+	// Errors are impossible for string/int/float/bool args, but fall back to fmt.
+	key := struct {
+		C []string      `json:"c"`
+		A []interface{} `json:"a"`
+	}{conditions, args}
+	b, err := json.Marshal(key)
+	if err != nil {
+		// Fallback: should never happen with the types buildSearchConditions produces.
+		return fmt.Sprintf("%v#%v", conditions, args)
 	}
-	b.WriteByte('#')
-	for i, arg := range args {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		fmt.Fprintf(&b, "%v", arg)
-	}
-	return b.String()
+	return string(b)
 }
 
 // dropSearchCache drops the cached temp table and clears all cache fields.
+// Uses context.Background() so cleanup succeeds even if the caller's context
+// is canceled (avoiding leaked temp tables on the single DuckDB connection).
 // Caller must hold e.searchCacheMu.
-func (e *DuckDBEngine) dropSearchCache(ctx context.Context) {
+func (e *DuckDBEngine) dropSearchCache() {
 	if e.searchCacheTable != "" {
-		_, _ = e.db.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", e.searchCacheTable))
+		_, _ = e.db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", e.searchCacheTable))
 	}
 	e.searchCacheKey = ""
 	e.searchCacheTable = ""
@@ -2057,11 +2057,15 @@ func (e *DuckDBEngine) SearchFastWithStats(ctx context.Context, q *search.Query,
 	// Check cache: same conditions+args means same search, serve from cached table.
 	cacheKey := searchCacheKeyFor(conditions, args)
 	if cacheKey == e.searchCacheKey && e.searchCacheTable != "" {
+		// Retry stats if a previous attempt failed (transient error).
+		if e.searchCacheStats == nil {
+			e.searchCacheStats = e.computeSearchStats(ctx)
+		}
 		return e.searchPageFromCache(ctx, limit, offset)
 	}
 
 	// Cache miss — drop old cache and materialize fresh.
-	e.dropSearchCache(ctx)
+	e.dropSearchCache()
 
 	// Unique temp table name to avoid concurrent collisions.
 	seq := e.tempTableSeq.Add(1)
@@ -2094,7 +2098,7 @@ func (e *DuckDBEngine) SearchFastWithStats(ctx context.Context, q *search.Query,
 			COALESCE(CAST(msg.size_estimate AS BIGINT), 0) as size_estimate,
 			COALESCE(msg.has_attachments, false) as has_attachments,
 			msg.deleted_from_source_at,
-			COALESCE(CAST(msg.source_id AS BIGINT), 0) as source_id
+			CAST(msg.source_id AS BIGINT) as source_id
 		FROM msg
 		LEFT JOIN msg_sender ms ON ms.message_id = msg.id
 		WHERE %s
@@ -2108,11 +2112,11 @@ func (e *DuckDBEngine) SearchFastWithStats(ctx context.Context, q *search.Query,
 	e.searchCacheTable = tempTable
 
 	// Phase 2: Count (trivial — reads in-memory temp table only).
+	// Best-effort: if count fails, use -1 (unknown total) and continue.
 	var count int64
 	if err := e.db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", tempTable)).Scan(&count); err != nil {
-		log.Printf("warning: search count query failed, dropping cache: %v", err)
-		e.dropSearchCache(ctx)
-		return nil, fmt.Errorf("search count: %w", err)
+		log.Printf("warning: search count query failed (using -1): %v", err)
+		count = -1
 	}
 	e.searchCacheCount = count
 

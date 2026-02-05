@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"sync"
 
@@ -961,16 +962,27 @@ func (e *SQLiteEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 		return nil, fmt.Errorf("message stats: %w", err)
 	}
 
-	// Attachment stats — filter by search-matching messages when search is active.
-	attQuery := fmt.Sprintf(`
-		SELECT COUNT(*), COALESCE(SUM(a.size), 0)
-		FROM attachments a
-		WHERE a.message_id IN (
-			SELECT DISTINCT m.id FROM messages m
-			%s
+	// Attachment stats — use IN subquery only when search joins are present
+	// (to de-duplicate 1:N join rows). Without joins, a direct query is faster.
+	var attQuery string
+	if joinClause != "" {
+		attQuery = fmt.Sprintf(`
+			SELECT COUNT(*), COALESCE(SUM(a.size), 0)
+			FROM attachments a
+			WHERE a.message_id IN (
+				SELECT DISTINCT m.id FROM messages m
+				%s
+				WHERE %s
+			)
+		`, joinClause, whereClause)
+	} else {
+		attQuery = fmt.Sprintf(`
+			SELECT COUNT(*), COALESCE(SUM(a.size), 0)
+			FROM attachments a
+			JOIN messages m ON m.id = a.message_id
 			WHERE %s
-		)
-	`, joinClause, whereClause)
+		`, whereClause)
+	}
 
 	if err := e.db.QueryRowContext(ctx, attQuery, args...).Scan(&stats.AttachmentCount, &stats.AttachmentSize); err != nil {
 		return nil, fmt.Errorf("attachment stats: %w", err)
@@ -1511,9 +1523,11 @@ func (e *SQLiteEngine) SearchFastWithStats(ctx context.Context, q *search.Query,
 		return nil, err
 	}
 
+	// Best-effort count: don't abort the search if count fails.
 	count, countErr := e.SearchFastCount(ctx, q, filter)
 	if countErr != nil {
-		return nil, countErr
+		log.Printf("warning: search count failed (using -1): %v", countErr)
+		count = -1
 	}
 
 	statsOpts := StatsOptions{
