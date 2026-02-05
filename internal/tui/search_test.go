@@ -731,5 +731,81 @@ func TestTwoStepEscClearsSearchThenGoesBack(t *testing.T) {
 	assertLevel(t, m3, levelAggregates)
 }
 
+// TestZeroSearchResultsRendersSearchBar verifies that the view still shows
+// the search bar, "No results found", and "(0 results)" when a fast search
+// returns zero matches (instead of breaking the layout).
+func TestZeroSearchResultsRendersSearchBar(t *testing.T) {
+	t.Run("inline search active with zero results", func(t *testing.T) {
+		model := NewBuilder().
+			WithPageSize(20).WithSize(100, 30).
+			Build()
+		model = resizeModel(t, model, 100, 30)
+		model.searchRequestID = 1
+
+		// Simulate: user activated inline search, typed a query, got zero results
+		m := applySearchResults(t, model, 1, []query.MessageSummary{}, 0)
+		m.inlineSearchActive = true
+		m.searchInput.SetValue("nonexistent_query")
+		m.searchMode = searchModeFast
+
+		view := m.View()
+		assertViewFitsHeight(t, view, 30)
+
+		if !strings.Contains(view, "No results found") {
+			t.Error("expected 'No results found' in view")
+		}
+		if !strings.Contains(view, "[Fast]/") {
+			t.Error("expected search bar with '[Fast]/' prefix in view")
+		}
+	})
+
+	t.Run("completed search with zero results shows count", func(t *testing.T) {
+		model := NewBuilder().
+			WithPageSize(20).WithSize(100, 30).
+			Build()
+		model = resizeModel(t, model, 100, 30)
+		model.searchRequestID = 1
+
+		// Simulate: user completed a search (pressed Enter), got zero results
+		m := applySearchResults(t, model, 1, []query.MessageSummary{}, 0)
+		m.searchQuery = "nonexistent_query"
+		m.searchTotalCount = 0
+
+		view := m.View()
+		assertViewFitsHeight(t, view, 30)
+
+		if !strings.Contains(view, "No results found") {
+			t.Error("expected 'No results found' in view")
+		}
+		if !strings.Contains(view, "(0 results)") {
+			t.Error("expected '(0 results)' in info line")
+		}
+		if !strings.Contains(view, "nonexistent_query") {
+			t.Error("expected search query shown in info line")
+		}
+	})
+
+	t.Run("non-search empty state still shows No messages", func(t *testing.T) {
+		model := NewBuilder().
+			WithLevel(levelMessageList).
+			WithLoading(false).
+			WithPageSize(20).WithSize(100, 30).
+			Build()
+		model = resizeModel(t, model, 100, 30)
+		// No search active, no search query — plain empty state
+
+		view := model.View()
+		assertViewFitsHeight(t, view, 30)
+
+		if !strings.Contains(view, "No messages") {
+			t.Error("expected 'No messages' in non-search empty view")
+		}
+		// Should NOT show the full table header in the simple empty state
+		if strings.Contains(view, "No results found") {
+			t.Error("should not show 'No results found' when no search is active")
+		}
+	})
+}
+
 // TestHighlightedColumnsAligned verifies that highlighting search terms in
 // aggregate rows doesn't break column alignment.
