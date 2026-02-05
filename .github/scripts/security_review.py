@@ -413,6 +413,10 @@ def post_review_comments(issues: list[dict]) -> None:
     existing_comments = get_existing_bot_comments(pr)
     print(f"Found {len(existing_comments)} existing bot comments")
 
+    # Fetch once outside the loop to avoid redundant API calls
+    head_commit = repo.get_commit(pr.head.sha)
+    pr_files = list(pr.get_files())
+
     severity_emoji = {"high": "\U0001f6a8", "medium": "\u26a0\ufe0f", "low": "\u2139\ufe0f"}
 
     comments_posted = 0
@@ -443,13 +447,12 @@ def post_review_comments(issues: list[dict]) -> None:
 
         try:
             if issue.get("line") and issue.get("file"):
-                files = list(pr.get_files())
-                target_file = next((f for f in files if f.filename == issue["file"]), None)
+                target_file = next((f for f in pr_files if f.filename == issue["file"]), None)
 
                 if target_file and target_file.patch:
                     pr.create_review_comment(
                         body=comment_body,
-                        commit=repo.get_commit(pr.head.sha),
+                        commit=head_commit,
                         path=issue["file"],
                         line=issue["line"],
                     )
