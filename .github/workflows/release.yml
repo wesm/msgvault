@@ -259,7 +259,7 @@ jobs:
           fi
 
       - name: Create Release
-        uses: softprops/action-gh-release@26994186c0ac3ef5cae75ac16aa32e8153525f77 # v1
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           files: |
             artifacts/*.tar.gz
