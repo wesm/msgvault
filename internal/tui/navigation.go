@@ -36,6 +36,11 @@ type viewState struct {
 	searchQuery      string              // Active search query (for aggregate filtering)
 	searchFilter     query.MessageFilter // Context filter applied to search
 
+	// Message list pagination
+	msgListOffset      int  // Current offset for non-search message pagination
+	msgListLoadingMore bool // True when loading additional message pages
+	msgListComplete    bool // True when all pages have been loaded (no more data)
+
 	// Data
 	rows          []query.AggregateRow
 	messages      []query.MessageSummary

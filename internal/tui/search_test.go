@@ -535,6 +535,124 @@ func TestMessageListPaginationTriggersOnNavigation(t *testing.T) {
 			t.Error("expected msgListLoadingMore=false after load completes")
 		}
 	})
+
+	t.Run("empty append marks end-of-data", func(t *testing.T) {
+		msgs := makeMessages(messageListPageSize)
+		model := NewBuilder().
+			WithMessages(msgs...).
+			WithLevel(levelMessageList).
+			WithPageSize(20).
+			Build()
+		model.msgListOffset = messageListPageSize
+		model.loadRequestID = 5
+
+		// Simulate empty append (no more data)
+		loadMsg := messagesLoadedMsg{
+			messages:  []query.MessageSummary{},
+			requestID: 5,
+			append:    true,
+		}
+		m, _ := sendMsg(t, model, loadMsg)
+
+		if !m.msgListComplete {
+			t.Error("expected msgListComplete=true after empty append")
+		}
+		if len(m.messages) != messageListPageSize {
+			t.Errorf("expected %d messages (unchanged), got %d", messageListPageSize, len(m.messages))
+		}
+
+		// Subsequent navigation near end should NOT trigger another load
+		m.cursor = messageListPageSize - 5
+		m2, cmd := applyMessageListKeyWithCmd(t, m, keyDown())
+
+		if cmd != nil {
+			t.Error("expected no command after end-of-data is known")
+		}
+		_ = m2
+	})
+
+	t.Run("fresh load resets msgListComplete", func(t *testing.T) {
+		model := NewBuilder().
+			WithLevel(levelMessageList).
+			WithPageSize(20).
+			Build()
+		model.msgListComplete = true
+		model.loadRequestID = 5
+
+		// Simulate fresh (non-append) load
+		loadMsg := messagesLoadedMsg{
+			messages:  makeMessages(messageListPageSize),
+			requestID: 5,
+			append:    false,
+		}
+		m, _ := sendMsg(t, model, loadMsg)
+
+		if m.msgListComplete {
+			t.Error("expected msgListComplete=false after fresh load")
+		}
+	})
+}
+
+// TestMessageListPaginationBreadcrumbRestore verifies that breadcrumb navigation
+// preserves message list pagination state. When navigating from a paginated list
+// to a detail view and back, the pagination offset should be restored so the
+// next page request uses the correct offset.
+func TestMessageListPaginationBreadcrumbRestore(t *testing.T) {
+	t.Run("goBack restores msgListOffset from breadcrumb", func(t *testing.T) {
+		// Build a model with a paginated message list (simulating 2 pages loaded)
+		totalMsgs := messageListPageSize + 200
+		msgs := makeMessages(totalMsgs)
+		model := NewBuilder().
+			WithMessages(msgs...).
+			WithLevel(levelMessageList).
+			WithPageSize(20).
+			Build()
+		model.msgListOffset = totalMsgs
+		model.cursor = 600
+
+		// Push breadcrumb and navigate to detail view
+		model.pushBreadcrumb()
+		model.level = levelMessageDetail
+		model.cursor = 0
+
+		// Change some pagination state in the detail view context
+		model.msgListOffset = 0 // Simulating stale/reset state
+
+		// Go back — should restore the snapshot
+		m, _ := sendKey(t, model, keyEsc())
+
+		assertLevel(t, m, levelMessageList)
+		if m.msgListOffset != totalMsgs {
+			t.Errorf("expected msgListOffset=%d after goBack, got %d", totalMsgs, m.msgListOffset)
+		}
+		if len(m.messages) != totalMsgs {
+			t.Errorf("expected %d messages after goBack, got %d", totalMsgs, len(m.messages))
+		}
+	})
+
+	t.Run("goBack preserves msgListComplete flag", func(t *testing.T) {
+		msgs := makeMessages(300) // Short page = all data loaded
+		model := NewBuilder().
+			WithMessages(msgs...).
+			WithLevel(levelMessageList).
+			WithPageSize(20).
+			Build()
+		model.msgListOffset = 300
+		model.msgListComplete = true
+
+		// Push breadcrumb and navigate forward
+		model.pushBreadcrumb()
+		model.level = levelMessageDetail
+		model.msgListComplete = false // State changes in new view
+
+		// Go back
+		m, _ := sendKey(t, model, keyEsc())
+
+		assertLevel(t, m, levelMessageList)
+		if !m.msgListComplete {
+			t.Error("expected msgListComplete=true after goBack (restored from breadcrumb)")
+		}
+	})
 }
 
 // TestSearchResultsPreservesDrillDownContextStats verifies that when drilling down

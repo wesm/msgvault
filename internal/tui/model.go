@@ -158,10 +158,6 @@ type Model struct {
 	searchOffset      int             // Current offset for pagination
 	searchLoadingMore bool            // True when loading additional results
 
-	// Message list pagination state
-	msgListOffset      int  // Current offset for non-search message pagination
-	msgListLoadingMore bool // True when loading additional message pages
-
 	// Navigation restoration state
 	restorePosition bool // When true, don't reset cursor/scroll on data load (used by goBack)
 
@@ -856,8 +852,13 @@ func (m Model) handleMessagesLoaded(msg messagesLoadedMsg) (tea.Model, tea.Cmd) 
 		if msg.append {
 			// Append paginated results to existing list
 			m.messages = append(m.messages, msg.messages...)
+			// Mark complete if append returned no new messages (end of data)
+			if len(msg.messages) == 0 {
+				m.msgListComplete = true
+			}
 		} else {
 			m.messages = msg.messages
+			m.msgListComplete = false // Reset on fresh load
 			// Only reset position on fresh loads, not when restoring from breadcrumb
 			if !m.restorePosition {
 				m.cursor = 0

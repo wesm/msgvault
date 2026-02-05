@@ -175,6 +175,7 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.messages = nil // Clear stale messages from previous view
 		m.msgListOffset = 0
 		m.msgListLoadingMore = false
+		m.msgListComplete = false
 		m.loading = true
 		m.err = nil
 
@@ -578,6 +579,11 @@ func (m *Model) maybeLoadMoreMessages() tea.Cmd {
 
 	// Don't load more if we have no messages (empty results)
 	if len(m.messages) == 0 {
+		return nil
+	}
+
+	// Don't load more if we already know all data has been loaded
+	if m.msgListComplete {
 		return nil
 	}
 
@@ -1131,6 +1137,7 @@ func (m Model) enterDrillDown(row query.AggregateRow) (tea.Model, tea.Cmd) {
 	m.messages = nil // Clear stale messages from previous drill-down
 	m.msgListOffset = 0
 	m.msgListLoadingMore = false
+	m.msgListComplete = false
 	m.loading = true
 	m.err = nil
 
