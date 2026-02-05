@@ -295,7 +295,34 @@ func (m *Manager) saveToken(email string, token *oauth2.Token, scopes []string) 
 	}
 
 	path := m.tokenPath(email)
-	return os.WriteFile(path, data, 0600)
+
+	// Atomic write via temp file + rename to avoid TOCTOU symlink races.
+	// If an attacker creates a symlink between tokenPath() returning and
+	// the write, os.Rename replaces the symlink itself rather than following it.
+	tmpFile, err := os.CreateTemp(m.tokensDir, ".token-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp token file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("write temp token file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close temp token file: %w", err)
+	}
+	if err := os.Chmod(tmpPath, 0600); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("chmod temp token file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename temp token file: %w", err)
+	}
+	return nil
 }
 
 // tokenPath returns the path to the token file for an email.
@@ -333,14 +360,17 @@ func (m *Manager) tokenPath(email string) string {
 	return cleanPath
 }
 
-// hasPathPrefix checks if path starts with dir using proper separator handling.
-// This prevents prefix attacks like tokensDir-evil matching tokensDir.
+// hasPathPrefix checks if path is equal to or a child of dir.
+// This prevents prefix attacks like tokensDir-evil matching tokensDir,
+// and correctly handles filesystem roots (/, C:\).
 // Does not resolve symlinks - use isPathWithinDir when symlink resolution is needed.
 func hasPathPrefix(path, dir string) bool {
-	cleanPath := filepath.Clean(path)
-	cleanDir := filepath.Clean(dir)
-	return strings.HasPrefix(cleanPath, cleanDir+string(filepath.Separator)) ||
-		cleanPath == cleanDir
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	// rel must not start with ".." (escape) and must not be absolute
+	return rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel))
 }
 
 // isPathWithinDir checks if path is within dir, resolving symlinks in dir.
@@ -351,14 +381,7 @@ func isPathWithinDir(path, dir string) bool {
 	if err != nil {
 		resolvedDir = dir // fallback to original if dir doesn't exist yet
 	}
-	resolvedDir = filepath.Clean(resolvedDir)
-
-	// Clean and check the path
-	cleanPath := filepath.Clean(path)
-
-	// Ensure path is within dir (with proper separator handling)
-	return strings.HasPrefix(cleanPath, resolvedDir+string(filepath.Separator)) ||
-		cleanPath == resolvedDir
+	return hasPathPrefix(filepath.Clean(path), filepath.Clean(resolvedDir))
 }
 
 // scopesToString joins scopes with spaces.

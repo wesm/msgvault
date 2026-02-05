@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -296,6 +297,53 @@ func TestTokenPath_SymlinkEscape(t *testing.T) {
 	expectedPath := filepath.Join(tokensDir, fmt.Sprintf("%x.json", sha256.Sum256([]byte("evil"))))
 	if gotPath != expectedPath {
 		t.Errorf("tokenPath = %q, want hash-based fallback %q", gotPath, expectedPath)
+	}
+}
+
+func TestHasPathPrefix(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		dir  string
+		want bool
+	}{
+		{"child path", "/a/b/c", "/a/b", true},
+		{"exact match", "/a/b", "/a/b", true},
+		{"prefix attack", "/a/b-evil/c", "/a/b", false},
+		{"sibling", "/a/c", "/a/b", false},
+		{"parent escape", "/a", "/a/b", false},
+		{"root dir child", "/foo", "/", true},
+		{"root dir exact", "/", "/", true},
+		{"unrelated", "/x/y", "/a/b", false},
+	}
+
+	// Add Windows drive-root cases when running on Windows.
+	if runtime.GOOS == "windows" {
+		vol := filepath.VolumeName(os.TempDir())
+		root := vol + string(filepath.Separator)
+		tests = append(tests,
+			struct {
+				name string
+				path string
+				dir  string
+				want bool
+			}{"windows drive root exact", root, root, true},
+			struct {
+				name string
+				path string
+				dir  string
+				want bool
+			}{"windows drive root child", root + "Users", root, true},
+		)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasPathPrefix(tt.path, tt.dir)
+			if got != tt.want {
+				t.Errorf("hasPathPrefix(%q, %q) = %v, want %v", tt.path, tt.dir, got, tt.want)
+			}
+		})
 	}
 }
 
