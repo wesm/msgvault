@@ -14,6 +14,7 @@ import (
 	_ "github.com/marcboeker/go-duckdb"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/spf13/cobra"
+	"github.com/wesm/msgvault/internal/config"
 )
 
 var fullRebuild bool
@@ -507,12 +508,12 @@ func setupSQLiteSource(duckDB *sql.DB, dbPath string) (cleanup func(), err error
 	}
 
 	// CSV fallback: export SQLite tables to CSV, create DuckDB views.
-	// Use the database's parent directory for temp files instead of the
-	// system temp dir, which can have restricted permissions on Windows
-	// (e.g. for downloaded executables).
-	tmpDir, err := os.MkdirTemp(filepath.Dir(dbPath), ".cache-tmp-*")
+	// Prefer the database's parent directory for temp files (avoids
+	// cross-device moves), but fall back through system temp and
+	// ~/.msgvault/tmp/ for read-only or restricted environments.
+	tmpDir, err := config.MkTempDir(".cache-tmp-*", filepath.Dir(dbPath))
 	if err != nil {
-		return nil, fmt.Errorf("create temp dir: %w", err)
+		return nil, err
 	}
 
 	sqliteDB, err := sql.Open("sqlite3", dbPath+"?mode=ro")

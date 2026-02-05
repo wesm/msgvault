@@ -344,6 +344,97 @@ func TestDefaultHomeExpandsTilde(t *testing.T) {
 	}
 }
 
+func TestMkTempDir(t *testing.T) {
+	t.Run("uses system temp when no preferred dirs", func(t *testing.T) {
+		dir, err := MkTempDir("test-*")
+		if err != nil {
+			t.Fatalf("MkTempDir failed: %v", err)
+		}
+		defer os.RemoveAll(dir)
+
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("temp dir does not exist: %v", err)
+		}
+	})
+
+	t.Run("uses preferred dir when available", func(t *testing.T) {
+		preferred := t.TempDir()
+		dir, err := MkTempDir("test-*", preferred)
+		if err != nil {
+			t.Fatalf("MkTempDir failed: %v", err)
+		}
+		defer os.RemoveAll(dir)
+
+		if !strings.HasPrefix(dir, preferred) {
+			t.Errorf("temp dir %q not under preferred %q", dir, preferred)
+		}
+	})
+
+	t.Run("skips empty preferred dir strings", func(t *testing.T) {
+		dir, err := MkTempDir("test-*", "")
+		if err != nil {
+			t.Fatalf("MkTempDir failed: %v", err)
+		}
+		defer os.RemoveAll(dir)
+
+		// Should have used system temp, not errored
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("temp dir does not exist: %v", err)
+		}
+	})
+
+	t.Run("falls back to system temp when preferred dir is inaccessible", func(t *testing.T) {
+		dir, err := MkTempDir("test-*", "/nonexistent-dir-that-does-not-exist")
+		if err != nil {
+			t.Fatalf("MkTempDir failed: %v", err)
+		}
+		defer os.RemoveAll(dir)
+
+		// Should have fallen back to system temp
+		if strings.Contains(dir, "nonexistent") {
+			t.Errorf("should not have used nonexistent dir, got %q", dir)
+		}
+	})
+
+	t.Run("falls back to msgvault home when system temp is unavailable", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("cannot make system temp dir unwritable on Windows")
+		}
+
+		// Create a restricted temp dir so os.MkdirTemp("", ...) fails
+		restrictedTmp := t.TempDir()
+		if err := os.Chmod(restrictedTmp, 0o500); err != nil {
+			t.Fatalf("chmod failed: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(restrictedTmp, 0o700) })
+
+		// Point TMPDIR to the restricted dir and MSGVAULT_HOME to a writable dir
+		msgvaultHome := t.TempDir()
+		t.Setenv("TMPDIR", restrictedTmp)
+		t.Setenv("MSGVAULT_HOME", msgvaultHome)
+
+		dir, err := MkTempDir("test-*")
+		if err != nil {
+			t.Fatalf("MkTempDir failed: %v", err)
+		}
+		defer os.RemoveAll(dir)
+
+		expectedBase := filepath.Join(msgvaultHome, "tmp")
+		if !strings.HasPrefix(dir, expectedBase) {
+			t.Errorf("temp dir %q not under fallback %q", dir, expectedBase)
+		}
+
+		// Verify the tmp dir was created with restrictive permissions
+		info, err := os.Stat(expectedBase)
+		if err != nil {
+			t.Fatalf("stat fallback dir: %v", err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o700 {
+			t.Errorf("fallback dir permissions = %04o, want 0700", perm)
+		}
+	})
+}
+
 func TestNewDefaultConfig(t *testing.T) {
 	// Use a temp directory as MSGVAULT_HOME
 	tmpDir := t.TempDir()

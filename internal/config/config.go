@@ -155,6 +155,47 @@ func (c *Config) ConfigFilePath() string {
 	return filepath.Join(c.HomeDir, "config.toml")
 }
 
+// MkTempDir creates a temporary directory with fallback logic for restricted
+// environments (e.g. Windows where %TEMP% may be inaccessible due to
+// permissions, antivirus, or group policy).
+//
+// It tries the following locations in order:
+//  1. Each directory in preferredDirs (if any)
+//  2. The system default temp directory (os.TempDir())
+//  3. A "tmp" subdirectory under the msgvault home directory (~/.msgvault/tmp/)
+//
+// The first successful location is used. If all locations fail, the error
+// from the system temp dir attempt is returned along with the final fallback error.
+func MkTempDir(pattern string, preferredDirs ...string) (string, error) {
+	// Try preferred directories first
+	for _, base := range preferredDirs {
+		if base == "" {
+			continue
+		}
+		dir, err := os.MkdirTemp(base, pattern)
+		if err == nil {
+			return dir, nil
+		}
+	}
+
+	// Try system temp dir
+	dir, sysErr := os.MkdirTemp("", pattern)
+	if sysErr == nil {
+		return dir, nil
+	}
+
+	// Fallback: use ~/.msgvault/tmp/
+	fallbackBase := filepath.Join(DefaultHome(), "tmp")
+	if err := os.MkdirAll(fallbackBase, 0700); err != nil {
+		return "", fmt.Errorf("create temp dir: %w (fallback also failed: %v)", sysErr, err)
+	}
+	dir, err := os.MkdirTemp(fallbackBase, pattern)
+	if err != nil {
+		return "", fmt.Errorf("create temp dir: %w (fallback also failed: %v)", sysErr, err)
+	}
+	return dir, nil
+}
+
 // resolveRelative makes a relative path absolute by joining it with base.
 // Absolute paths and empty strings are returned unchanged.
 func resolveRelative(path, base string) string {
