@@ -566,13 +566,15 @@ func TestInstallBinaryTo(t *testing.T) {
 		backupPath := dstPath + ".old"
 		testutil.MustNotExist(t, backupPath)
 
-		// Verify permissions
-		info, err := os.Stat(dstPath)
-		if err != nil {
-			t.Fatalf("Stat failed: %v", err)
-		}
-		if info.Mode().Perm() != 0755 {
-			t.Errorf("permissions = %04o, want 0755", info.Mode().Perm())
+		// Verify permissions (Windows does not support Unix permissions)
+		if runtime.GOOS != "windows" {
+			info, err := os.Stat(dstPath)
+			if err != nil {
+				t.Fatalf("Stat failed: %v", err)
+			}
+			if info.Mode().Perm() != 0755 {
+				t.Errorf("permissions = %04o, want 0755", info.Mode().Perm())
+			}
 		}
 	})
 

@@ -492,14 +492,18 @@ var cacheStatsCmd = &cobra.Command{
 // sqlite_scanner extension is not available for MinGW builds.
 func setupSQLiteSource(duckDB *sql.DB, dbPath string) (cleanup func(), err error) {
 	if runtime.GOOS != "windows" {
+		// Try sqlite_scanner extension; fall back to CSV if unavailable
+		// (e.g. air-gapped environment with no internet for extension download).
 		if _, err := duckDB.Exec("INSTALL sqlite; LOAD sqlite;"); err != nil {
-			return nil, fmt.Errorf("load sqlite extension: %w", err)
+			fmt.Fprintf(os.Stderr, "  sqlite_scanner unavailable, using CSV fallback: %v\n", err)
+		} else {
+			escapedPath := strings.ReplaceAll(dbPath, "'", "''")
+			if _, err := duckDB.Exec(fmt.Sprintf("ATTACH '%s' AS sqlite_db (TYPE sqlite, READ_ONLY)", escapedPath)); err != nil {
+				fmt.Fprintf(os.Stderr, "  sqlite attach failed, using CSV fallback: %v\n", err)
+			} else {
+				return func() {}, nil
+			}
 		}
-		escapedPath := strings.ReplaceAll(dbPath, "'", "''")
-		if _, err := duckDB.Exec(fmt.Sprintf("ATTACH '%s' AS sqlite_db (TYPE sqlite, READ_ONLY)", escapedPath)); err != nil {
-			return nil, fmt.Errorf("attach sqlite: %w", err)
-		}
-		return func() {}, nil
 	}
 
 	// Windows: export SQLite tables to CSV, create DuckDB views.

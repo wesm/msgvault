@@ -15,6 +15,13 @@ func validateRelativePath(dir, name string) error {
 		return fmt.Errorf("absolute path not allowed: %s", name)
 	}
 
+	// Reject rooted paths that filepath.IsAbs may not catch on Windows.
+	// On Windows, "\rooted\path" and "/abs/path" are rooted (relative to
+	// the current drive) but IsAbs returns false since there's no drive letter.
+	if len(name) > 0 && (name[0] == '/' || name[0] == '\\') {
+		return fmt.Errorf("rooted path not allowed: %s", name)
+	}
+
 	// Reject drive-relative paths on Windows (e.g., "C:foo").
 	// These are not absolute but filepath.Join(dir, "C:foo") ignores dir
 	// and resolves relative to the current directory on the C: drive.

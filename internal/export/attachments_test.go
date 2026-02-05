@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -276,12 +277,15 @@ func TestAttachmentsToDir_FilePermissions(t *testing.T) {
 		t.Fatalf("expected 1 file, got %d", len(result.Files))
 	}
 
-	info, err := os.Stat(result.Files[0].Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Errorf("file permissions = %o, want 0600", perm)
+	// Windows does not support Unix permissions.
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(result.Files[0].Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Errorf("file permissions = %o, want 0600", perm)
+		}
 	}
 }
 
@@ -328,9 +332,12 @@ func TestCreateExclusiveFile(t *testing.T) {
 		if path != p {
 			t.Errorf("path = %q, want %q", path, p)
 		}
-		info, _ := os.Stat(path)
-		if perm := info.Mode().Perm(); perm != 0600 {
-			t.Errorf("permissions = %o, want 0600", perm)
+		// Windows does not support Unix permissions.
+		if runtime.GOOS != "windows" {
+			info, _ := os.Stat(path)
+			if perm := info.Mode().Perm(); perm != 0600 {
+				t.Errorf("permissions = %o, want 0600", perm)
+			}
 		}
 	})
 

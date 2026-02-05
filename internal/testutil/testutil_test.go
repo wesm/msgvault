@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -47,17 +48,22 @@ func TestNewTestStore(t *testing.T) {
 // validation and be writable. Used by TestValidateRelativePath and
 // TestWriteFileWithValidPaths.
 func validRelativePaths() []string {
-	return []string{
+	paths := []string{
 		"simple.txt",
 		"subdir/file.txt",
 		"a/b/c/deep.txt",
 		"file-with-dots.test.txt",
 		"./current.txt",
 		// Paths that look like ".." but are actually valid filenames
-		"....",            // four dots - valid filename, not parent escape
 		"..foo",           // starts with dots but is a valid filename
 		"subdir/..hidden", // hidden-style name in subdir
 	}
+	// "…." (four dots) is valid on Unix but Windows strips trailing dots,
+	// treating it like ".." which escapes the directory.
+	if runtime.GOOS != "windows" {
+		paths = append(paths, "....") // four dots - valid filename, not parent escape
+	}
+	return paths
 }
 
 func TestWriteFileAndReadBack(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -61,10 +62,12 @@ func TestExportAttachment_BinaryToFile(t *testing.T) {
 		t.Errorf("output = %q, want %q", got, wantData)
 	}
 
-	// Verify file permissions
-	info, _ := os.Stat(outFile)
-	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Errorf("file permissions = %o, want 0600", perm)
+	// Verify file permissions (Windows does not support Unix permissions)
+	if runtime.GOOS != "windows" {
+		info, _ := os.Stat(outFile)
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Errorf("file permissions = %o, want 0600", perm)
+		}
 	}
 }
 

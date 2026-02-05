@@ -77,22 +77,21 @@ func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB) (
 	// Install and load SQLite extension if we have a SQLite path.
 	// On Windows, the sqlite_scanner extension is not available for MinGW
 	// builds — all detail queries route through sqliteEngine instead.
+	// On other platforms, try to load but fall back gracefully (e.g. no internet).
 	var hasSQLiteScanner bool
 	if sqlitePath != "" && runtime.GOOS != "windows" {
 		if _, err := db.Exec("INSTALL sqlite; LOAD sqlite;"); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("load sqlite extension: %w", err)
+			log.Printf("[warn] sqlite_scanner extension unavailable, falling back to direct SQLite: %v", err)
+		} else {
+			// Attach SQLite database as read-only
+			escapedPath := strings.ReplaceAll(sqlitePath, "'", "''")
+			attachSQL := fmt.Sprintf("ATTACH '%s' AS sqlite_db (TYPE sqlite, READ_ONLY)", escapedPath)
+			if _, err := db.Exec(attachSQL); err != nil {
+				log.Printf("[warn] failed to attach SQLite via sqlite_scanner, falling back to direct SQLite: %v", err)
+			} else {
+				hasSQLiteScanner = true
+			}
 		}
-
-		// Attach SQLite database as read-only
-		// Escape single quotes in path to prevent SQL injection
-		escapedPath := strings.ReplaceAll(sqlitePath, "'", "''")
-		attachSQL := fmt.Sprintf("ATTACH '%s' AS sqlite_db (TYPE sqlite, READ_ONLY)", escapedPath)
-		if _, err := db.Exec(attachSQL); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("attach sqlite database: %w", err)
-		}
-		hasSQLiteScanner = true
 	}
 
 	// Create reusable SQLiteEngine if we have a direct connection

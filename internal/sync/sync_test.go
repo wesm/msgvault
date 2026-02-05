@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/gmail"
@@ -1012,9 +1013,12 @@ func TestAttachmentFilePermissions(t *testing.T) {
 	}
 
 	// File should have 0600 permissions (owner read/write only)
-	got := info.Mode().Perm()
-	want := os.FileMode(0600)
-	if got != want {
-		t.Errorf("attachment file permissions = %04o, want %04o", got, want)
+	// Windows does not support Unix permissions.
+	if runtime.GOOS != "windows" {
+		got := info.Mode().Perm()
+		want := os.FileMode(0600)
+		if got != want {
+			t.Errorf("attachment file permissions = %04o, want %04o", got, want)
+		}
 	}
 }
