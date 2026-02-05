@@ -759,6 +759,19 @@ func applySearchResults(t *testing.T, m Model, reqID uint64, msgs []query.Messag
 	return newModel.(Model)
 }
 
+// applySearchResultsWithStats simulates search results that include aggregate stats.
+func applySearchResultsWithStats(t *testing.T, m Model, reqID uint64, msgs []query.MessageSummary, total int64, stats *query.TotalStats) Model {
+	t.Helper()
+	msg := searchResultsMsg{
+		messages:   msgs,
+		requestID:  reqID,
+		totalCount: total,
+		stats:      stats,
+	}
+	newModel, _ := m.Update(msg)
+	return newModel.(Model)
+}
+
 // applySearchResultsAppend simulates appended (paginated) search results.
 func applySearchResultsAppend(t *testing.T, m Model, reqID uint64, msgs []query.MessageSummary, total int64) Model {
 	t.Helper()

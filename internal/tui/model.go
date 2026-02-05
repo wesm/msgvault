@@ -926,28 +926,27 @@ func (m *Model) replaceSearchResults(msg searchResultsMsg) {
 	m.scrollOffset = 0
 
 	// Set contextStats for search results to update header metrics.
-	// Prefer stats from GetTotalStats (accurate size/attachments),
-	// but preserve drill-down stats if they were already set.
-	hasDrillDownStats := m.contextStats != nil &&
-		(m.contextStats.TotalSize > 0 || m.contextStats.AttachmentCount > 0)
-
+	// When fresh stats are provided (msg.stats != nil), always use them —
+	// they reflect the current search accurately. Only fall back to
+	// preserving existing drill-down stats when no fresh stats are available
+	// (e.g. deep/FTS search which doesn't compute aggregate stats).
 	switch {
 	case msg.totalCount > 0:
-		if hasDrillDownStats {
-			// Preserve drill-down stats, only update MessageCount
-			m.contextStats.MessageCount = msg.totalCount
-		} else if msg.stats != nil {
-			// Use accurate aggregate stats from GetTotalStats
+		if msg.stats != nil {
+			// Use fresh aggregate stats from SearchFastWithStats
 			m.contextStats = msg.stats
+		} else if m.contextStats != nil && (m.contextStats.TotalSize > 0 || m.contextStats.AttachmentCount > 0) {
+			// No fresh stats — preserve drill-down stats, only update MessageCount
+			m.contextStats.MessageCount = msg.totalCount
 		} else {
 			m.contextStats = &query.TotalStats{MessageCount: msg.totalCount}
 		}
 	case msg.totalCount == -1:
 		// Unknown total, use loaded count
-		if hasDrillDownStats {
-			m.contextStats.MessageCount = int64(len(msg.messages))
-		} else if msg.stats != nil {
+		if msg.stats != nil {
 			m.contextStats = msg.stats
+			m.contextStats.MessageCount = int64(len(msg.messages))
+		} else if m.contextStats != nil && (m.contextStats.TotalSize > 0 || m.contextStats.AttachmentCount > 0) {
 			m.contextStats.MessageCount = int64(len(msg.messages))
 		} else {
 			m.contextStats = &query.TotalStats{MessageCount: int64(len(msg.messages))}

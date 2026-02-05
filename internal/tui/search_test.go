@@ -300,6 +300,118 @@ func TestSearchResultsWithoutDrillDownContextStats(t *testing.T) {
 	assertContextStats(t, m, 50, 0, 0)
 }
 
+// TestSearchStatsUpdateOnSubsequentSearch verifies that typing more characters
+// (triggering a new search) updates ALL stats fields, not just MessageCount.
+// This was a regression where hasDrillDownStats incorrectly treated stats from
+// a previous search as drill-down stats, preventing fresh stats from being applied.
+func TestSearchStatsUpdateOnSubsequentSearch(t *testing.T) {
+	model := newTestModelAtLevel(levelMessageList)
+	model.searchRequestID = 1
+
+	// First search: returns 10 messages with specific stats
+	firstStats := &query.TotalStats{
+		MessageCount:    10,
+		TotalSize:       50000,
+		AttachmentCount: 5,
+		AttachmentSize:  20000,
+		AccountCount:    2,
+	}
+	m := applySearchResultsWithStats(t, model, 1, make([]query.MessageSummary, 10), 10, firstStats)
+
+	assertContextStats(t, m, 10, 50000, 5)
+
+	// Second search (user typed more): returns 3 messages with different stats
+	m.searchRequestID = 2
+	secondStats := &query.TotalStats{
+		MessageCount:    3,
+		TotalSize:       12000,
+		AttachmentCount: 1,
+		AttachmentSize:  5000,
+		AccountCount:    1,
+	}
+	m2 := applySearchResultsWithStats(t, m, 2, make([]query.MessageSummary, 3), 3, secondStats)
+
+	// ALL stats fields must reflect the second search, not the first
+	assertContextStats(t, m2, 3, 12000, 1)
+	if m2.contextStats.AttachmentSize != 5000 {
+		t.Errorf("expected AttachmentSize=5000, got %d", m2.contextStats.AttachmentSize)
+	}
+	if m2.contextStats.AccountCount != 1 {
+		t.Errorf("expected AccountCount=1, got %d", m2.contextStats.AccountCount)
+	}
+}
+
+// TestSearchStatsUpdateOnDeleteKey verifies that deleting characters (broadening
+// the search) also updates ALL stats fields correctly.
+func TestSearchStatsUpdateOnDeleteKey(t *testing.T) {
+	model := newTestModelAtLevel(levelMessageList)
+	model.searchRequestID = 1
+
+	// Narrow search: "foobar" → 2 messages
+	narrowStats := &query.TotalStats{
+		MessageCount:    2,
+		TotalSize:       8000,
+		AttachmentCount: 0,
+	}
+	m := applySearchResultsWithStats(t, model, 1, make([]query.MessageSummary, 2), 2, narrowStats)
+
+	assertContextStats(t, m, 2, 8000, 0)
+
+	// Broader search after delete: "foo" → 15 messages with more attachments
+	m.searchRequestID = 2
+	broadStats := &query.TotalStats{
+		MessageCount:    15,
+		TotalSize:       75000,
+		AttachmentCount: 8,
+		AttachmentSize:  40000,
+	}
+	m2 := applySearchResultsWithStats(t, m, 2, make([]query.MessageSummary, 15), 15, broadStats)
+
+	assertContextStats(t, m2, 15, 75000, 8)
+}
+
+// TestDrillDownStatsPreservedWhenSearchHasNoStats verifies that the drill-down
+// stats preservation still works correctly when search results arrive WITHOUT
+// fresh stats (e.g., deep/FTS search path).
+func TestDrillDownStatsPreservedWhenSearchHasNoStats(t *testing.T) {
+	model := newTestModelAtLevel(levelMessageList)
+	model.searchRequestID = 1
+	// Simulate drill-down context with known stats
+	model.contextStats = &query.TotalStats{
+		MessageCount:    100,
+		TotalSize:       500000,
+		AttachmentCount: 25,
+	}
+
+	// Search returns results WITHOUT stats (nil) — should preserve drill-down stats
+	m := applySearchResults(t, model, 1, make([]query.MessageSummary, 5), 50)
+
+	assertContextStats(t, m, 50, 500000, 25)
+}
+
+// TestFreshStatsOverrideDrillDownStats verifies that when a search returns
+// fresh stats, they replace even existing drill-down stats.
+func TestFreshStatsOverrideDrillDownStats(t *testing.T) {
+	model := newTestModelAtLevel(levelMessageList)
+	model.searchRequestID = 1
+	// Simulate drill-down context with known stats
+	model.contextStats = &query.TotalStats{
+		MessageCount:    100,
+		TotalSize:       500000,
+		AttachmentCount: 25,
+	}
+
+	// Search returns results WITH fresh stats — should replace drill-down stats
+	freshStats := &query.TotalStats{
+		MessageCount:    7,
+		TotalSize:       30000,
+		AttachmentCount: 2,
+	}
+	m := applySearchResultsWithStats(t, model, 1, make([]query.MessageSummary, 7), 7, freshStats)
+
+	assertContextStats(t, m, 7, 30000, 2)
+}
+
 // TestAggregateSearchFilterSetsContextStats verifies contextStats is calculated from
 // filtered aggregate rows when a search filter is active.
 func TestAggregateSearchFilterSetsContextStats(t *testing.T) {
