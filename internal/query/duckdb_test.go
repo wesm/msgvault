@@ -2811,3 +2811,175 @@ func TestDuckDBEngine_VARCHARParquetColumns(t *testing.T) {
 		}
 	})
 }
+
+// TestSearchCacheKeyFor verifies that the JSON-based cache key avoids
+// ambiguous collisions that a simple delimiter-based approach would have.
+func TestSearchCacheKeyFor(t *testing.T) {
+	tests := []struct {
+		name      string
+		conds1    []string
+		args1     []interface{}
+		conds2    []string
+		args2     []interface{}
+		wantEqual bool
+	}{
+		{
+			name:      "identical inputs produce same key",
+			conds1:    []string{"a = ?", "b = ?"},
+			args1:     []interface{}{"foo", 42},
+			conds2:    []string{"a = ?", "b = ?"},
+			args2:     []interface{}{"foo", 42},
+			wantEqual: true,
+		},
+		{
+			name:      "different conditions produce different keys",
+			conds1:    []string{"a = ?"},
+			args1:     []interface{}{"foo"},
+			conds2:    []string{"b = ?"},
+			args2:     []interface{}{"foo"},
+			wantEqual: false,
+		},
+		{
+			name:      "args with commas are not ambiguous",
+			conds1:    []string{"x = ?"},
+			args1:     []interface{}{"foo,bar"},
+			conds2:    []string{"x = ?"},
+			args2:     []interface{}{"foo", "bar"},
+			wantEqual: false,
+		},
+		{
+			name:      "args with pipes are not ambiguous",
+			conds1:    []string{"a|b"},
+			args1:     []interface{}{"x"},
+			conds2:    []string{"a", "b"},
+			args2:     []interface{}{"x"},
+			wantEqual: false,
+		},
+		{
+			name:      "different arg types produce different keys",
+			conds1:    []string{"x = ?"},
+			args1:     []interface{}{"42"},
+			conds2:    []string{"x = ?"},
+			args2:     []interface{}{42},
+			wantEqual: false,
+		},
+		{
+			name:      "empty inputs produce same key",
+			conds1:    []string{},
+			args1:     []interface{}{},
+			conds2:    []string{},
+			args2:     []interface{}{},
+			wantEqual: true,
+		},
+		{
+			name:      "condition containing JSON special chars",
+			conds1:    []string{`msg.subject ILIKE ? ESCAPE '\'`},
+			args1:     []interface{}{`%"quoted"%`},
+			conds2:    []string{`msg.subject ILIKE ? ESCAPE '\'`},
+			args2:     []interface{}{`%"quoted"%`},
+			wantEqual: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key1 := searchCacheKeyFor(tt.conds1, tt.args1)
+			key2 := searchCacheKeyFor(tt.conds2, tt.args2)
+			if tt.wantEqual && key1 != key2 {
+				t.Errorf("expected equal keys:\n  key1=%s\n  key2=%s", key1, key2)
+			}
+			if !tt.wantEqual && key1 == key2 {
+				t.Errorf("expected different keys but got same:\n  key=%s", key1)
+			}
+		})
+	}
+}
+
+// TestSearchFastWithStats_CacheHitSkipsRescan verifies that paginating the
+// same search reuses the cached temp table (cache hit) and returns consistent
+// count and stats across pages.
+func TestSearchFastWithStats_CacheHitSkipsRescan(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	q := search.Parse("Hello")
+	filter := MessageFilter{}
+
+	// First call — cache miss, materializes temp table.
+	result1, err := engine.SearchFastWithStats(ctx, q, "Hello", filter, ViewSenders, 2, 0)
+	if err != nil {
+		t.Fatalf("first SearchFastWithStats: %v", err)
+	}
+	if result1.TotalCount <= 0 {
+		t.Fatalf("expected positive total count, got %d", result1.TotalCount)
+	}
+	if result1.Stats == nil {
+		t.Fatal("expected stats on first call")
+	}
+
+	// Remember temp table seq before second call.
+	seqBefore := engine.tempTableSeq.Load()
+
+	// Second call — same conditions, different offset → cache hit.
+	result2, err := engine.SearchFastWithStats(ctx, q, "Hello", filter, ViewSenders, 2, 2)
+	if err != nil {
+		t.Fatalf("second SearchFastWithStats: %v", err)
+	}
+
+	// Cache hit should NOT increment temp table seq (no new materialization).
+	seqAfter := engine.tempTableSeq.Load()
+	if seqAfter != seqBefore {
+		t.Errorf("cache hit should not create new temp table: seq went from %d to %d", seqBefore, seqAfter)
+	}
+
+	// Count and stats must be identical across pages.
+	if result2.TotalCount != result1.TotalCount {
+		t.Errorf("total count mismatch: page1=%d, page2=%d", result1.TotalCount, result2.TotalCount)
+	}
+	if result2.Stats == nil {
+		t.Fatal("expected stats on cache hit")
+	}
+	if result2.Stats.MessageCount != result1.Stats.MessageCount {
+		t.Errorf("stats message count mismatch: page1=%d, page2=%d",
+			result1.Stats.MessageCount, result2.Stats.MessageCount)
+	}
+	if result2.Stats.TotalSize != result1.Stats.TotalSize {
+		t.Errorf("stats total size mismatch: page1=%d, page2=%d",
+			result1.Stats.TotalSize, result2.Stats.TotalSize)
+	}
+}
+
+// TestSearchFastWithStats_CacheInvalidatedOnNewSearch verifies that changing
+// the search query invalidates the cache and creates a new temp table.
+func TestSearchFastWithStats_CacheInvalidatedOnNewSearch(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	filter := MessageFilter{}
+
+	// First search.
+	q1 := search.Parse("Hello")
+	result1, err := engine.SearchFastWithStats(ctx, q1, "Hello", filter, ViewSenders, 100, 0)
+	if err != nil {
+		t.Fatalf("first search: %v", err)
+	}
+
+	seqBefore := engine.tempTableSeq.Load()
+
+	// Different search — must invalidate cache.
+	q2 := search.Parse("Meeting")
+	result2, err := engine.SearchFastWithStats(ctx, q2, "Meeting", filter, ViewSenders, 100, 0)
+	if err != nil {
+		t.Fatalf("second search: %v", err)
+	}
+
+	seqAfter := engine.tempTableSeq.Load()
+	if seqAfter == seqBefore {
+		t.Error("new search should create a new temp table (cache invalidation)")
+	}
+
+	// Results should differ (different search terms).
+	if result1.TotalCount == result2.TotalCount && result1.TotalCount > 0 {
+		t.Log("warning: both searches returned same count — test data may not differentiate them")
+	}
+}

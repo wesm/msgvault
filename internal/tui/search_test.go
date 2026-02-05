@@ -800,9 +800,15 @@ func TestZeroSearchResultsRendersSearchBar(t *testing.T) {
 		if !strings.Contains(view, "No messages") {
 			t.Error("expected 'No messages' in non-search empty view")
 		}
-		// Should NOT show the full table header in the simple empty state
+		// Should NOT show search UI elements in the non-search empty state
 		if strings.Contains(view, "No results found") {
 			t.Error("should not show 'No results found' when no search is active")
+		}
+		if strings.Contains(view, "[Fast]/") {
+			t.Error("should not show search bar prefix '[Fast]/' when no search is active")
+		}
+		if strings.Contains(view, "(0 results)") {
+			t.Error("should not show '(0 results)' when no search is active")
 		}
 	})
 }
