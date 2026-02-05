@@ -122,7 +122,7 @@ function Install-Msgvault {
     Write-Info "Latest version: $version"
 
     $versionNum = $version.TrimStart('v')
-    $archiveName = "msgvault_${versionNum}_windows_${arch}.tar.gz"
+    $archiveName = "msgvault_${versionNum}_windows_${arch}.zip"
     $downloadUrl = "https://github.com/$repo/releases/download/$version/$archiveName"
 
     $installDir = Get-InstallDir
@@ -202,17 +202,7 @@ function Install-Msgvault {
         }
 
         Write-Info "Extracting..."
-        # Windows 10+ has tar built-in
-        if (-not (Get-Command tar -ErrorAction SilentlyContinue)) {
-            Write-Err "Error: 'tar' command not found. Windows 10 build 17063+ includes tar."
-            Write-Err "Please update Windows or extract $archiveName manually."
-            exit 1
-        }
-        tar -xzf $archivePath -C $tmpDir
-        if ($LASTEXITCODE -ne 0) {
-            Write-Err "Error: tar extraction failed with exit code $LASTEXITCODE"
-            exit 1
-        }
+        Expand-Archive -Path $archivePath -DestinationPath $tmpDir -Force
 
         # Find the binary (may be in a top-level directory if GoReleaser wraps it)
         $binaryFile = Get-ChildItem -Path $tmpDir -Recurse -Filter $binaryName | Select-Object -First 1
