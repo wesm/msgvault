@@ -647,7 +647,7 @@ func saveCache(version string) {
 		return
 	}
 	cachePath := filepath.Join(getCacheDir(), cacheFileName)
-	os.MkdirAll(filepath.Dir(cachePath), 0755) //nolint:errcheck
+	os.MkdirAll(filepath.Dir(cachePath), 0755)      //nolint:errcheck
 	fileutil.SecureWriteFile(cachePath, data, 0600) //nolint:errcheck
 }
 
