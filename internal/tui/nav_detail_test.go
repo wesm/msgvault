@@ -490,10 +490,10 @@ func TestDetailNavigationFromThreadView(t *testing.T) {
 	if m.threadCursor != 3 {
 		t.Errorf("expected threadCursor=3 after right, got %d", m.threadCursor)
 	}
-	// With pageSize=3, cursor at 3 should adjust scroll offset to keep cursor visible
-	// threadCursor (3) >= threadScrollOffset (0) + pageSize (3), so offset should be 1
-	if m.threadScrollOffset != 1 {
-		t.Errorf("expected threadScrollOffset=1 to keep cursor visible, got %d", m.threadScrollOffset)
+	// With pageSize=3, views render pageSize-1=2 data rows (1 reserved for info line).
+	// threadCursor (3) >= threadScrollOffset (0) + visibleRows (2), so offset should be 2
+	if m.threadScrollOffset != 2 {
+		t.Errorf("expected threadScrollOffset=2 to keep cursor visible, got %d", m.threadScrollOffset)
 	}
 
 	// Press left arrow - should navigate back

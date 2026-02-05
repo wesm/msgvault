@@ -308,6 +308,10 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if handled {
+		// Check if cursor movement requires loading more fast search results
+		if cmd := m.maybeLoadMoreSearchResults(); cmd != nil {
+			return m, cmd
+		}
 		return m, nil
 	}
 

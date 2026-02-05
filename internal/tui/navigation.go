@@ -80,7 +80,12 @@ func calculateScrollOffset(cursor, currentOffset, pageSize int) int {
 }
 
 func (m *Model) ensureThreadCursorVisible() {
-	m.threadScrollOffset = calculateScrollOffset(m.threadCursor, m.threadScrollOffset, m.pageSize)
+	// Use pageSize-1 because views reserve one row for the info/notification line
+	visibleRows := m.pageSize - 1
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+	m.threadScrollOffset = calculateScrollOffset(m.threadCursor, m.threadScrollOffset, visibleRows)
 }
 
 func (m Model) navigateDetailPrev() (tea.Model, tea.Cmd) {
@@ -173,7 +178,12 @@ func (m Model) goBack() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) ensureCursorVisible() {
-	m.scrollOffset = calculateScrollOffset(m.cursor, m.scrollOffset, m.pageSize)
+	// Use pageSize-1 because views reserve one row for the info/notification line
+	visibleRows := m.pageSize - 1
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+	m.scrollOffset = calculateScrollOffset(m.cursor, m.scrollOffset, visibleRows)
 }
 
 func (m *Model) pushBreadcrumb() {
