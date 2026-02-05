@@ -506,8 +506,11 @@ func setupSQLiteSource(duckDB *sql.DB, dbPath string) (cleanup func(), err error
 		}
 	}
 
-	// Windows: export SQLite tables to CSV, create DuckDB views.
-	tmpDir, err := os.MkdirTemp("", "msgvault-cache-*")
+	// CSV fallback: export SQLite tables to CSV, create DuckDB views.
+	// Use the database's parent directory for temp files instead of the
+	// system temp dir, which can have restricted permissions on Windows
+	// (e.g. for downloaded executables).
+	tmpDir, err := os.MkdirTemp(filepath.Dir(dbPath), ".cache-tmp-*")
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)
 	}
