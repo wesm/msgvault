@@ -3,8 +3,10 @@
 package fileutil
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"golang.org/x/sys/windows"
 )
@@ -15,17 +17,15 @@ func isOwnerOnly(perm os.FileMode) bool {
 }
 
 // restrictToCurrentUser sets a DACL on path that grants GENERIC_ALL only to
-// the current user and blocks inherited ACEs. If any Windows API call fails,
-// a warning is logged and the error is returned, but callers may choose to
-// treat this as non-fatal (the file was already created with the requested
-// Unix mode, which is the best-effort default on Windows).
+// the current user and blocks inherited ACEs. Errors are returned to the
+// caller; the file was already created with the requested Unix mode, so
+// callers may treat DACL failures as non-fatal warnings.
 func restrictToCurrentUser(path string) error {
 	token := windows.GetCurrentProcessToken()
 
 	user, err := token.GetTokenUser()
 	if err != nil {
-		slog.Warn("fileutil: cannot get current user SID, skipping DACL", "path", path, "err", err)
-		return nil
+		return fmt.Errorf("fileutil: get current user SID for %s: %w", path, err)
 	}
 
 	trustee := windows.TrusteeValueFromSID(user.User.Sid)
@@ -45,8 +45,7 @@ func restrictToCurrentUser(path string) error {
 
 	acl, err := windows.ACLFromEntries(ea, nil)
 	if err != nil {
-		slog.Warn("fileutil: cannot build ACL, skipping DACL", "path", path, "err", err)
-		return nil
+		return fmt.Errorf("fileutil: build ACL for %s: %w", path, err)
 	}
 
 	secInfo := windows.DACL_SECURITY_INFORMATION | windows.PROTECTED_DACL_SECURITY_INFORMATION
@@ -60,45 +59,71 @@ func restrictToCurrentUser(path string) error {
 		nil,  // SACL (unchanged)
 	)
 	if err != nil {
-		slog.Warn("fileutil: cannot set DACL", "path", path, "err", err)
-		return nil
+		return fmt.Errorf("fileutil: set DACL on %s: %w", path, err)
 	}
 	return nil
 }
 
 // SecureWriteFile writes data to the named file, creating it if necessary.
 // For owner-only modes, a DACL restricting access to the current user is applied.
+// DACL failures are logged as warnings but do not fail the write.
 func SecureWriteFile(path string, data []byte, perm os.FileMode) error {
 	if err := os.WriteFile(path, data, perm); err != nil {
 		return err
 	}
 	if isOwnerOnly(perm) {
-		restrictToCurrentUser(path)
+		if err := restrictToCurrentUser(path); err != nil {
+			slog.Warn("fileutil: best-effort DACL failed", "path", path, "err", err)
+		}
 	}
 	return nil
 }
 
 // SecureMkdirAll creates a directory path and all parents that do not yet exist.
 // For owner-only modes, a DACL restricting access to the current user is applied
-// to the final directory.
+// to the leaf directory and every intermediate directory that was created.
 func SecureMkdirAll(path string, perm os.FileMode) error {
+	// Determine which directories already exist before creating.
+	var toSecure []string
+	if isOwnerOnly(perm) {
+		p := filepath.Clean(path)
+		for p != "" && p != "." && p != string(filepath.Separator) {
+			if _, err := os.Stat(p); err == nil {
+				break // already exists, stop climbing
+			}
+			toSecure = append(toSecure, p)
+			parent := filepath.Dir(p)
+			if parent == p {
+				break
+			}
+			p = parent
+		}
+	}
+
 	if err := os.MkdirAll(path, perm); err != nil {
 		return err
 	}
-	if isOwnerOnly(perm) {
-		restrictToCurrentUser(path)
+
+	// Secure all newly created directories (leaf-first order, but order doesn't matter).
+	for _, dir := range toSecure {
+		if err := restrictToCurrentUser(dir); err != nil {
+			slog.Warn("fileutil: best-effort DACL failed", "path", dir, "err", err)
+		}
 	}
 	return nil
 }
 
 // SecureChmod changes the mode of the named file.
 // For owner-only modes, a DACL restricting access to the current user is applied.
+// DACL failures are logged as warnings but do not fail the chmod.
 func SecureChmod(path string, perm os.FileMode) error {
 	if err := os.Chmod(path, perm); err != nil {
 		return err
 	}
 	if isOwnerOnly(perm) {
-		restrictToCurrentUser(path)
+		if err := restrictToCurrentUser(path); err != nil {
+			slog.Warn("fileutil: best-effort DACL failed", "path", path, "err", err)
+		}
 	}
 	return nil
 }
@@ -106,13 +131,21 @@ func SecureChmod(path string, perm os.FileMode) error {
 // SecureOpenFile opens the named file with specified flag and permissions.
 // For owner-only modes on newly created files, a DACL restricting access to
 // the current user is applied.
+//
+// Note: on Windows there is a small TOCTOU window between file creation and
+// DACL application because SetNamedSecurityInfo operates by path after the
+// file is already open. The window is very brief and exploitation would
+// require local access, so this is acceptable for the threat model.
+// DACL failures are logged as warnings but do not fail the open.
 func SecureOpenFile(path string, flag int, perm os.FileMode) (*os.File, error) {
 	f, err := os.OpenFile(path, flag, perm)
 	if err != nil {
 		return nil, err
 	}
 	if isOwnerOnly(perm) && (flag&os.O_CREATE != 0) {
-		restrictToCurrentUser(path)
+		if err := restrictToCurrentUser(path); err != nil {
+			slog.Warn("fileutil: best-effort DACL failed", "path", path, "err", err)
+		}
 	}
 	return f, nil
 }
