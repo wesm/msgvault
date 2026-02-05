@@ -23,6 +23,9 @@ oauth_client*.json
 # Local development state
 .beads/
 
+# Python
+__pycache__/
+
 # IDE
 .idea/
 .vscode/
