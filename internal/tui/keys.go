@@ -291,11 +291,12 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Handle list navigation.
 	// NOTE: Unlike handleAggregateKeys, we check for search pagination
-	// between navigation and the early return. This is because cursor movement may
-	// need to trigger loading more search results after updating the cursor position.
-	prevCursor := m.cursor
+	// between navigation and the early return. This is because navigation keys
+	// (even when cursor is clamped at the boundary) may need to trigger loading
+	// more search results. navigateList only returns true for navigation keys
+	// (up/down/j/k/pgup/pgdown/home/end/G), so handled=true is safe to use
+	// as the gate for pagination checks.
 	handled := m.navigateList(msg.String(), len(m.messages))
-	cursorMoved := m.cursor != prevCursor
 
 	// Check if we need to load more deep search results after pgdown
 	key := msg.String()
@@ -310,11 +311,11 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if handled {
-		// Check if cursor movement requires loading more fast search results
-		if cursorMoved {
-			if cmd := m.maybeLoadMoreSearchResults(); cmd != nil {
-				return m, cmd
-			}
+		// Check if navigation requires loading more fast search results.
+		// This fires even when cursor is clamped at the boundary (e.g., pressing
+		// down at the last loaded item) so pagination can still trigger.
+		if cmd := m.maybeLoadMoreSearchResults(); cmd != nil {
+			return m, cmd
 		}
 		return m, nil
 	}

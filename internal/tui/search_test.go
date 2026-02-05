@@ -343,6 +343,33 @@ func TestFastSearchPaginationTriggersOnNavigation(t *testing.T) {
 		}
 	})
 
+	t.Run("cursor at last item pressing down still triggers load", func(t *testing.T) {
+		msgs := makeMessages(100)
+		model := NewBuilder().
+			WithMessages(msgs...).
+			WithLevel(levelMessageList).
+			WithPageSize(20).
+			Build()
+		model.searchQuery = "test"
+		model.searchMode = searchModeFast
+		model.searchTotalCount = -1 // More results available
+		model.searchOffset = 100
+		model.cursor = 99 // Already at last item
+
+		// Press down — cursor can't move (clamped at 99), but pagination should still trigger
+		m, cmd := applyMessageListKeyWithCmd(t, model, keyDown())
+
+		if m.cursor != 99 {
+			t.Errorf("expected cursor=99 (unchanged), got %d", m.cursor)
+		}
+		if cmd == nil {
+			t.Error("expected load-more command even when cursor can't move beyond end")
+		}
+		if !m.searchLoadingMore {
+			t.Error("expected searchLoadingMore=true")
+		}
+	})
+
 	t.Run("no pagination for deep search mode", func(t *testing.T) {
 		msgs := makeMessages(100)
 		model := NewBuilder().
