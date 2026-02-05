@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -723,5 +724,186 @@ func TestInstallBinaryTo(t *testing.T) {
 			t.Fatalf("failed to read installed binary: %v", err)
 		}
 		testutil.AssertEqual(t, string(content), "new content")
+	})
+}
+
+func TestInstallFromArchiveTo(t *testing.T) {
+	t.Parallel()
+
+	binaryName := "msgvault"
+	if runtime.GOOS == "windows" {
+		binaryName = "msgvault.exe"
+	}
+
+	t.Run("zip happy path", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "test.zip")
+		binaryContent := "fake binary zip"
+
+		testutil.CreateZip(t, archivePath, []testutil.ArchiveEntry{
+			{Name: binaryName, Content: binaryContent},
+			{Name: "README.md", Content: "readme"},
+		})
+
+		checksum, err := hashFile(archivePath)
+		if err != nil {
+			t.Fatalf("hashFile: %v", err)
+		}
+
+		dstDir := filepath.Join(tmpDir, "dest")
+		if err := os.MkdirAll(dstDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		dstPath := filepath.Join(dstDir, binaryName)
+
+		if err := installFromArchiveTo(archivePath, checksum, dstPath); err != nil {
+			t.Fatalf("installFromArchiveTo: %v", err)
+		}
+
+		content, err := os.ReadFile(dstPath)
+		if err != nil {
+			t.Fatalf("read installed binary: %v", err)
+		}
+		testutil.AssertEqual(t, string(content), binaryContent)
+	})
+
+	t.Run("tar.gz happy path", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "test.tar.gz")
+		binaryContent := "fake binary targz"
+
+		testutil.CreateTarGz(t, archivePath, []testutil.ArchiveEntry{
+			{Name: binaryName, Content: binaryContent},
+		})
+
+		checksum, err := hashFile(archivePath)
+		if err != nil {
+			t.Fatalf("hashFile: %v", err)
+		}
+
+		dstDir := filepath.Join(tmpDir, "dest")
+		if err := os.MkdirAll(dstDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		dstPath := filepath.Join(dstDir, binaryName)
+
+		if err := installFromArchiveTo(archivePath, checksum, dstPath); err != nil {
+			t.Fatalf("installFromArchiveTo: %v", err)
+		}
+
+		content, err := os.ReadFile(dstPath)
+		if err != nil {
+			t.Fatalf("read installed binary: %v", err)
+		}
+		testutil.AssertEqual(t, string(content), binaryContent)
+	})
+
+	t.Run("checksum mismatch", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "test.zip")
+
+		testutil.CreateZip(t, archivePath, []testutil.ArchiveEntry{
+			{Name: binaryName, Content: "content"},
+		})
+
+		wrongChecksum := "0000000000000000000000000000000000000000000000000000000000000000"
+		dstPath := filepath.Join(tmpDir, "dest", binaryName)
+
+		err := installFromArchiveTo(archivePath, wrongChecksum, dstPath)
+		if err == nil {
+			t.Fatal("expected error for checksum mismatch")
+		}
+		if !strings.Contains(err.Error(), "checksum mismatch") {
+			t.Errorf("error should contain 'checksum mismatch', got: %v", err)
+		}
+	})
+
+	t.Run("empty checksum", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "test.zip")
+
+		testutil.CreateZip(t, archivePath, []testutil.ArchiveEntry{
+			{Name: binaryName, Content: "content"},
+		})
+
+		dstPath := filepath.Join(tmpDir, "dest", binaryName)
+
+		err := installFromArchiveTo(archivePath, "", dstPath)
+		if err == nil {
+			t.Fatal("expected error for empty checksum")
+		}
+	})
+
+	t.Run("missing binary in archive", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "test.zip")
+
+		testutil.CreateZip(t, archivePath, []testutil.ArchiveEntry{
+			{Name: "README.md", Content: "no binary here"},
+		})
+
+		checksum, err := hashFile(archivePath)
+		if err != nil {
+			t.Fatalf("hashFile: %v", err)
+		}
+
+		dstDir := filepath.Join(tmpDir, "dest")
+		if err := os.MkdirAll(dstDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		dstPath := filepath.Join(dstDir, binaryName)
+
+		err = installFromArchiveTo(archivePath, checksum, dstPath)
+		if err == nil {
+			t.Fatal("expected error for missing binary")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("error should contain 'not found', got: %v", err)
+		}
+	})
+
+	t.Run("overwrites existing binary", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "test.zip")
+		newContent := "new binary content"
+
+		testutil.CreateZip(t, archivePath, []testutil.ArchiveEntry{
+			{Name: binaryName, Content: newContent},
+		})
+
+		checksum, err := hashFile(archivePath)
+		if err != nil {
+			t.Fatalf("hashFile: %v", err)
+		}
+
+		dstDir := filepath.Join(tmpDir, "dest")
+		if err := os.MkdirAll(dstDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		dstPath := filepath.Join(dstDir, binaryName)
+
+		// Pre-existing binary
+		if err := os.WriteFile(dstPath, []byte("old content"), 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := installFromArchiveTo(archivePath, checksum, dstPath); err != nil {
+			t.Fatalf("installFromArchiveTo: %v", err)
+		}
+
+		content, err := os.ReadFile(dstPath)
+		if err != nil {
+			t.Fatalf("read installed binary: %v", err)
+		}
+		testutil.AssertEqual(t, string(content), newContent)
+
+		// Verify backup was cleaned up
+		testutil.MustNotExist(t, dstPath+".old")
 	})
 }

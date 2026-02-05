@@ -141,21 +141,57 @@ func PerformUpdate(info *UpdateInfo, progressFn func(downloaded, total int64)) e
 	defer os.RemoveAll(tempDir)
 
 	archivePath := filepath.Join(tempDir, info.AssetName)
-	checksum, err := downloadFile(info.DownloadURL, archivePath, info.Size, progressFn)
+	_, err = downloadFile(info.DownloadURL, archivePath, info.Size, progressFn)
 	if err != nil {
 		return fmt.Errorf("download: %w", err)
 	}
 
-	fmt.Printf("Verifying checksum... ")
-	if !strings.EqualFold(checksum, info.Checksum) {
-		fmt.Println("FAILED")
-		return fmt.Errorf("checksum mismatch: expected %s, got %s", info.Checksum, checksum)
+	fmt.Println("Verifying and installing...")
+	if err := InstallFromArchive(archivePath, info.Checksum); err != nil {
+		return err
 	}
-	fmt.Println("OK")
+	fmt.Println("Update complete.")
+	return nil
+}
 
-	fmt.Println("Extracting...")
-	extractDir := filepath.Join(tempDir, "extracted")
-	if strings.HasSuffix(info.AssetName, ".zip") {
+// hashFile computes the SHA-256 hash of a file on disk.
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// installFromArchiveTo verifies the checksum, extracts the archive, and installs
+// the binary to dstPath. It handles both .zip and .tar.gz archives.
+func installFromArchiveTo(archivePath, expectedChecksum, dstPath string) error {
+	if expectedChecksum == "" {
+		return fmt.Errorf("empty checksum - refusing to install unverified binary")
+	}
+
+	checksum, err := hashFile(archivePath)
+	if err != nil {
+		return fmt.Errorf("hash archive: %w", err)
+	}
+
+	if !strings.EqualFold(checksum, expectedChecksum) {
+		return fmt.Errorf("checksum mismatch: expected %s, got %s", expectedChecksum, checksum)
+	}
+
+	extractDir, err := os.MkdirTemp("", "msgvault-extract-*")
+	if err != nil {
+		return fmt.Errorf("create extract dir: %w", err)
+	}
+	defer os.RemoveAll(extractDir)
+
+	if strings.HasSuffix(archivePath, ".zip") {
 		if err := extractZip(archivePath, extractDir); err != nil {
 			return fmt.Errorf("extract: %w", err)
 		}
@@ -170,16 +206,16 @@ func PerformUpdate(info *UpdateInfo, progressFn func(downloaded, total int64)) e
 		binaryName = "msgvault.exe"
 	}
 	srcPath := filepath.Join(extractDir, binaryName)
-	return installBinary(srcPath)
-}
-
-// installBinary installs a new binary from srcPath to the current executable's location.
-// It creates a backup, copies the new binary, and cleans up on success.
-func installBinary(srcPath string) error {
 	if _, err := os.Stat(srcPath); os.IsNotExist(err) {
-		return fmt.Errorf("binary not found in archive")
+		return fmt.Errorf("binary %s not found in archive", binaryName)
 	}
 
+	return installBinaryTo(srcPath, dstPath)
+}
+
+// InstallFromArchive verifies the checksum, extracts the archive, and installs
+// the binary to the current executable's location.
+func InstallFromArchive(archivePath, expectedChecksum string) error {
 	currentExe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("find current executable: %w", err)
@@ -195,12 +231,7 @@ func installBinary(srcPath string) error {
 	}
 	dstPath := filepath.Join(binDir, binaryName)
 
-	fmt.Printf("Installing msgvault to %s... ", binDir)
-	if err := installBinaryTo(srcPath, dstPath); err != nil {
-		return err
-	}
-	fmt.Println("OK")
-	return nil
+	return installFromArchiveTo(archivePath, expectedChecksum, dstPath)
 }
 
 // installBinaryTo performs the actual binary installation with backup/restore logic.
