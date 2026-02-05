@@ -447,10 +447,9 @@ def post_review_comments(issues: list[dict]) -> None:
                 target_file = next((f for f in files if f.filename == issue["file"]), None)
 
                 if target_file and target_file.patch:
-                    last_commit = list(pr.get_commits())[-1]
                     pr.create_review_comment(
                         body=comment_body,
-                        commit=last_commit,
+                        commit=repo.get_commit(pr.head.sha),
                         path=issue["file"],
                         line=issue["line"],
                     )
