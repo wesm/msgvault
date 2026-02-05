@@ -6,9 +6,7 @@
 
 [Documentation](https://msgvault.io) · [Setup Guide](https://msgvault.io/guides/oauth-setup/) · [Interactive TUI](https://msgvault.io/usage/tui/)
 
-> **Pre-alpha software.** APIs, storage format, and CLI flags may change without notice. Back up your data.
-
-> **Windows users:** There are a number of known issues on Windows that I am actively working to resolve. Fixes are coming within the next few days. Thank you for your patience.
+> **Alpha software.** APIs, storage format, and CLI flags may change without notice. Back up your data.
 
 Archive a lifetime of email. Analytics and search in milliseconds, entirely offline.
 
