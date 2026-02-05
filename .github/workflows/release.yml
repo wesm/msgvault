@@ -75,7 +75,7 @@ jobs:
           tar czf "$ARCHIVE" msgvault
           rm msgvault
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: msgvault-linux-${{ matrix.goarch }}
           path: dist/*.tar.gz
@@ -136,7 +136,7 @@ jobs:
           tar czf "$ARCHIVE" msgvault
           rm msgvault
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: msgvault-darwin-${{ matrix.goarch }}
           path: dist/*.tar.gz
@@ -177,7 +177,7 @@ jobs:
           powershell -Command "Compress-Archive -Path msgvault.exe -DestinationPath '$ARCHIVE'"
           rm msgvault.exe
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: msgvault-windows-amd64
           path: dist/*.zip
