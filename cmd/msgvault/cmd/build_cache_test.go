@@ -3,8 +3,10 @@ package cmd
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -813,6 +815,166 @@ func TestBuildCache_EmptyDatabase(t *testing.T) {
 	// Should be skipped (no messages)
 	if !result.Skipped {
 		t.Error("expected empty database export to be skipped")
+	}
+}
+
+// TestCSVFallbackPath exercises the Windows-style CSV intermediate path:
+// SQLite → CSV → DuckDB views → COPY to Parquet.
+// This runs on all platforms to ensure the fallback logic works correctly.
+func TestCSVFallbackPath(t *testing.T) {
+	tmpDir, cleanup := setupTestSQLite(t)
+	defer cleanup()
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	csvDir := filepath.Join(tmpDir, "csv")
+	if err := os.MkdirAll(csvDir, 0755); err != nil {
+		t.Fatalf("create csv dir: %v", err)
+	}
+
+	// 1. Export tables to CSV (same as setupSQLiteSource Windows path)
+	sqliteDB, err := sql.Open("sqlite3", dbPath+"?mode=ro")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+
+	tables := []struct {
+		name          string
+		query         string
+		typeOverrides string
+	}{
+		{"messages", "SELECT id, source_id, source_message_id, conversation_id, subject, snippet, sent_at, size_estimate, has_attachments, deleted_from_source_at FROM messages WHERE sent_at IS NOT NULL",
+			"types={'sent_at': 'TIMESTAMP', 'deleted_from_source_at': 'TIMESTAMP'}"},
+		{"message_recipients", "SELECT message_id, participant_id, recipient_type, display_name FROM message_recipients", ""},
+		{"message_labels", "SELECT message_id, label_id FROM message_labels", ""},
+		{"attachments", "SELECT message_id, size, filename FROM attachments", ""},
+		{"participants", "SELECT id, email_address, domain, display_name FROM participants", ""},
+		{"labels", "SELECT id, name FROM labels", ""},
+		{"sources", "SELECT id, identifier FROM sources", ""},
+	}
+
+	for _, tbl := range tables {
+		csvPath := filepath.Join(csvDir, tbl.name+".csv")
+		if err := exportToCSV(sqliteDB, tbl.query, csvPath); err != nil {
+			sqliteDB.Close()
+			t.Fatalf("exportToCSV %s: %v", tbl.name, err)
+		}
+	}
+	sqliteDB.Close()
+
+	// 2. Open DuckDB and create views (same as setupSQLiteSource)
+	duckDB, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatalf("open duckdb: %v", err)
+	}
+	defer duckDB.Close()
+
+	if _, err := duckDB.Exec("CREATE SCHEMA sqlite_db"); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+
+	for _, tbl := range tables {
+		csvPath := filepath.Join(csvDir, tbl.name+".csv")
+		escaped := strings.ReplaceAll(csvPath, "\\", "/")
+		escaped = strings.ReplaceAll(escaped, "'", "''")
+		csvOpts := "header=true, nullstr='\\N'"
+		if tbl.typeOverrides != "" {
+			csvOpts += ", " + tbl.typeOverrides
+		}
+		viewSQL := fmt.Sprintf(
+			`CREATE VIEW sqlite_db."%s" AS SELECT * FROM read_csv_auto('%s', %s)`,
+			tbl.name, escaped, csvOpts,
+		)
+		if _, err := duckDB.Exec(viewSQL); err != nil {
+			t.Fatalf("create view %s: %v", tbl.name, err)
+		}
+	}
+
+	// 3. Verify sent_at is correctly typed as TIMESTAMP
+	var year int
+	err = duckDB.QueryRow(`SELECT CAST(EXTRACT(YEAR FROM sent_at) AS INTEGER) FROM sqlite_db.messages WHERE id = 1`).Scan(&year)
+	if err != nil {
+		t.Fatalf("EXTRACT(YEAR FROM sent_at) failed — sent_at may not be typed as TIMESTAMP: %v", err)
+	}
+	if year != 2024 {
+		t.Errorf("expected year 2024, got %d", year)
+	}
+
+	// 4. Verify NULLs round-trip correctly (deleted_from_source_at should be NULL)
+	var deletedAt sql.NullTime
+	err = duckDB.QueryRow(`SELECT deleted_from_source_at FROM sqlite_db.messages WHERE id = 1`).Scan(&deletedAt)
+	if err != nil {
+		t.Fatalf("query deleted_from_source_at: %v", err)
+	}
+	if deletedAt.Valid {
+		t.Errorf("expected deleted_from_source_at to be NULL, got %v", deletedAt.Time)
+	}
+
+	// 5. Verify row counts match expectations
+	counts := map[string]int64{
+		"messages":           5,
+		"message_recipients": 12,
+		"message_labels":     8,
+		"attachments":        3,
+		"participants":       4,
+		"labels":             3,
+		"sources":            1,
+	}
+	for tbl, expected := range counts {
+		var count int64
+		if err := duckDB.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM sqlite_db."%s"`, tbl)).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", tbl, err)
+		}
+		if count != expected {
+			t.Errorf("sqlite_db.%s: expected %d rows, got %d", tbl, expected, count)
+		}
+	}
+
+	// 6. Verify the full buildCache pipeline works via CSV views
+	// Run the same COPY query that buildCache uses for messages
+	analyticsDir := filepath.Join(tmpDir, "analytics")
+	messagesDir := filepath.Join(analyticsDir, "messages")
+	if err := os.MkdirAll(messagesDir, 0755); err != nil {
+		t.Fatalf("create analytics dir: %v", err)
+	}
+	escapedDir := strings.ReplaceAll(messagesDir, "\\", "/")
+	escapedDir = strings.ReplaceAll(escapedDir, "'", "''")
+
+	copySQL := fmt.Sprintf(`
+		COPY (
+			SELECT
+				m.id,
+				m.source_id,
+				m.source_message_id,
+				m.conversation_id,
+				m.subject,
+				m.snippet,
+				m.sent_at,
+				m.size_estimate,
+				m.has_attachments,
+				m.deleted_from_source_at,
+				CAST(EXTRACT(YEAR FROM m.sent_at) AS INTEGER) as year,
+				CAST(EXTRACT(MONTH FROM m.sent_at) AS INTEGER) as month
+			FROM sqlite_db.messages m
+			WHERE m.sent_at IS NOT NULL
+		) TO '%s' (
+			FORMAT PARQUET,
+			PARTITION_BY (year),
+			OVERWRITE_OR_IGNORE,
+			COMPRESSION 'zstd'
+		)
+	`, escapedDir)
+
+	if _, err := duckDB.Exec(copySQL); err != nil {
+		t.Fatalf("COPY messages to Parquet via CSV views failed: %v", err)
+	}
+
+	// Verify Parquet files were created with correct year partitions
+	for _, y := range []string{"2024"} {
+		pattern := filepath.Join(messagesDir, "year="+y, "*.parquet")
+		matches, _ := filepath.Glob(pattern)
+		if len(matches) == 0 {
+			t.Errorf("expected Parquet partition for year=%s", y)
+		}
 	}
 }
 

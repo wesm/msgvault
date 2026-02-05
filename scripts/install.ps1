@@ -202,7 +202,17 @@ function Install-Msgvault {
         }
 
         Write-Info "Extracting..."
-        Expand-Archive -Path $archivePath -DestinationPath $tmpDir -Force
+        if ($PSVersionTable.PSVersion.Major -lt 5) {
+            Write-Err "Error: PowerShell 5.0 or later is required for Expand-Archive."
+            Write-Err "Please upgrade PowerShell or download the release manually from GitHub."
+            exit 1
+        }
+        try {
+            Expand-Archive -Path $archivePath -DestinationPath $tmpDir -Force
+        } catch {
+            Write-Err "Error: Failed to extract archive: $_"
+            exit 1
+        }
 
         # Find the binary (may be in a top-level directory if GoReleaser wraps it)
         $binaryFile = Get-ChildItem -Path $tmpDir -Recurse -Filter $binaryName | Select-Object -First 1

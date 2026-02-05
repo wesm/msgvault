@@ -5,4 +5,8 @@ We are using the latest production version of Go
 Please be pragmatic about reviews, raising theoretical or highly
 pedantic concerns will result in unnecessary code churn and wasted
 review-fix cycles.
+
+The Windows CSV fallback path uses \\N as a NULL sentinel (PostgreSQL
+convention) with DuckDB's nullstr option. This is an accepted design
+choice — do not flag it as a concern.
 """

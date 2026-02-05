@@ -517,16 +517,18 @@ func setupSQLiteSource(duckDB *sql.DB, dbPath string) (cleanup func(), err error
 	// Tables and the SELECT queries to export them.
 	// Column lists match what the COPY-to-Parquet queries expect.
 	tables := []struct {
-		name  string
-		query string
+		name          string
+		query         string
+		typeOverrides string // DuckDB types parameter for read_csv_auto (empty = infer all)
 	}{
-		{"messages", "SELECT id, source_id, source_message_id, conversation_id, subject, snippet, sent_at, size_estimate, has_attachments, deleted_from_source_at FROM messages WHERE sent_at IS NOT NULL"},
-		{"message_recipients", "SELECT message_id, participant_id, recipient_type, display_name FROM message_recipients"},
-		{"message_labels", "SELECT message_id, label_id FROM message_labels"},
-		{"attachments", "SELECT message_id, size, filename FROM attachments"},
-		{"participants", "SELECT id, email_address, domain, display_name FROM participants"},
-		{"labels", "SELECT id, name FROM labels"},
-		{"sources", "SELECT id, identifier FROM sources"},
+		{"messages", "SELECT id, source_id, source_message_id, conversation_id, subject, snippet, sent_at, size_estimate, has_attachments, deleted_from_source_at FROM messages WHERE sent_at IS NOT NULL",
+			"types={'sent_at': 'TIMESTAMP', 'deleted_from_source_at': 'TIMESTAMP'}"},
+		{"message_recipients", "SELECT message_id, participant_id, recipient_type, display_name FROM message_recipients", ""},
+		{"message_labels", "SELECT message_id, label_id FROM message_labels", ""},
+		{"attachments", "SELECT message_id, size, filename FROM attachments", ""},
+		{"participants", "SELECT id, email_address, domain, display_name FROM participants", ""},
+		{"labels", "SELECT id, name FROM labels", ""},
+		{"sources", "SELECT id, identifier FROM sources", ""},
 	}
 
 	for _, t := range tables {
@@ -550,9 +552,13 @@ func setupSQLiteSource(duckDB *sql.DB, dbPath string) (cleanup func(), err error
 		// DuckDB handles both forward and backslash paths, but normalize to forward.
 		escaped := strings.ReplaceAll(csvPath, "\\", "/")
 		escaped = strings.ReplaceAll(escaped, "'", "''")
+		csvOpts := "header=true, nullstr='\\N'"
+		if t.typeOverrides != "" {
+			csvOpts += ", " + t.typeOverrides
+		}
 		viewSQL := fmt.Sprintf(
-			`CREATE VIEW sqlite_db."%s" AS SELECT * FROM read_csv_auto('%s', header=true, nullstr='\N')`,
-			t.name, escaped,
+			`CREATE VIEW sqlite_db."%s" AS SELECT * FROM read_csv_auto('%s', %s)`,
+			t.name, escaped, csvOpts,
 		)
 		if _, err := duckDB.Exec(viewSQL); err != nil {
 			os.RemoveAll(tmpDir)

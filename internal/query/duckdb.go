@@ -1091,7 +1091,8 @@ func (e *DuckDBEngine) fetchLabelsForMessages(ctx context.Context, messages []Me
 	}
 
 	if !e.hasSQLite() {
-		return nil // No label source available
+		log.Printf("[warn] fetchLabelsForMessages: no label source available (sqliteEngine=nil, hasSQLiteScanner=false); labels will be empty")
+		return nil
 	}
 
 	// Build message ID list
