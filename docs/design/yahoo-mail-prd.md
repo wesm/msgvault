@@ -8,7 +8,7 @@ Add Yahoo Mail archival support to msgvault via IMAP, enabling users to sync, se
 
 - **Sync Yahoo Mail messages** into the same SQLite database used by Gmail, with full MIME parsing (subject, body, recipients, attachments).
 - **Map IMAP folders to labels** so Yahoo folders (Inbox, Sent, Drafts, Trash, custom) appear alongside Gmail labels in the TUI and analytics.
-- **App Password authentication (v1)** — users generate a Yahoo App Password and configure it via environment variable or config file. No Yahoo Developer registration required.
+- **App Password authentication (v1)** — users generate a Yahoo App Password and enter it via interactive terminal prompt during account setup. No Yahoo Developer registration required.
 - **OAuth2 authentication (future)** — design the auth layer so Yahoo OAuth2 can be added later without restructuring.
 - **Deletion staging** — allow users to stage Yahoo messages for deletion via IMAP, matching the existing Gmail deletion workflow.
 - **CLI parity** — provide `add-account`, `sync-full`, and `sync` (incremental) commands that work identically for Yahoo accounts.
@@ -30,19 +30,27 @@ Add Yahoo Mail archival support to msgvault via IMAP, enabling users to sync, se
 
 **Alternative considered:** Direct `net` + `textproto` IMAP. Rejected — reimplementing IMAP is error-prone and unnecessary.
 
-### 2. Authentication: App Password via Config/Env
+### 2. Authentication: App Password via Interactive Prompt
 
 **How it works:**
 1. User generates an App Password in Yahoo Account Settings → Security → App Passwords.
-2. User provides the App Password to msgvault via:
-   - Config file: `~/.msgvault/config.toml` under `[yahoo]` section
-   - Environment variable: `MSGVAULT_YAHOO_APP_PASSWORD`
-   - CLI flag: `--app-password` on `add-account`
-3. The password is stored encrypted (or at minimum with restrictive file permissions) in `~/.msgvault/tokens/{email}.json`, matching the Gmail token storage pattern.
+2. User provides the App Password to msgvault via **interactive terminal prompt** during `add-account`. The prompt uses `term.ReadPassword()` (from `golang.org/x/term`) to suppress echo, so the password is never visible on screen or in shell history.
+3. The password is stored in `~/.msgvault/tokens/{email}.json` with enforced 0600 permissions, matching the Gmail token storage pattern.
 
 **Credential storage:** Store Yahoo credentials in the same `tokens/` directory as Gmail OAuth tokens, using the same JSON format but with different fields. The `tokenFile` struct gains an optional `AppPassword` field and a `Provider` field (`"gmail"` or `"yahoo"`).
 
-**Security:** App Passwords are equivalent to OAuth tokens in risk. Same file permissions (0600), same atomic write pattern.
+**Security considerations:**
+- App Passwords are equivalent to OAuth tokens in risk. Same file permissions (0600), same atomic write pattern.
+- The password is **never stored in `config.toml`** — only IMAP host/port settings go there.
+- The password is **never accepted via CLI flag** — CLI flags are visible in shell history (`~/.bash_history`, `~/.zsh_history`) and in process listings (`ps aux`), exposing credentials to other users on the same machine.
+- For automation/CI scenarios, the `MSGVAULT_YAHOO_APP_PASSWORD` environment variable is supported as a fallback, but `add-account` prints a security warning when this path is used, recommending the interactive prompt for human users.
+
+**⚠️ Open issue — Credential storage at rest:** The App Password is currently stored as plaintext in the token file (protected only by file permissions). This is the same security posture as Gmail OAuth refresh tokens, but it is not ideal. Before implementation, the following should be evaluated:
+- **System keyring integration** (macOS Keychain, GNOME Keyring / libsecret, Windows Credential Manager) — best security, but adds platform-specific complexity and a dependency on `github.com/zalando/go-keyring` or similar.
+- **Encrypted token file** — encrypt the token file with a user-supplied passphrase or a machine-derived key. Adds UX friction (passphrase prompt on every sync) unless a key agent is used.
+- **Status quo** (0600 file permissions) — acceptable for single-user machines, insufficient for shared systems.
+
+This is a pre-existing concern that also applies to Gmail OAuth refresh tokens, but adding a second credential type makes it more pressing to resolve.
 
 ### 3. Source Type: `"yahoo"` in `sources` Table
 
@@ -144,17 +152,12 @@ The only addition is a new `source_type` value. No migrations needed.
 **Adding a Yahoo account:**
 ```bash
 # Step 1: Generate App Password at https://login.yahoo.com/account/security/app-passwords
-# Step 2: Add account to msgvault
-msgvault add-account you@yahoo.com --provider yahoo --app-password "abcd efgh ijkl mnop"
-
-# Or via environment variable
-export MSGVAULT_YAHOO_APP_PASSWORD="abcd efgh ijkl mnop"
+# Step 2: Add account to msgvault (interactive prompt for password)
 msgvault add-account you@yahoo.com --provider yahoo
+# Enter Yahoo App Password: ▊  (input hidden, not echoed)
 
-# Or via config file
-# In ~/.msgvault/config.toml:
-# [yahoo]
-# app_password = "abcd efgh ijkl mnop"
+# For automation/CI only (prints security warning):
+MSGVAULT_YAHOO_APP_PASSWORD="abcd efgh ijkl mnop" msgvault add-account you@yahoo.com --provider yahoo
 ```
 
 **Syncing:**
@@ -185,7 +188,7 @@ msgvault search "invoice" --account you@yahoo.com
 sync-full you@yahoo.com
   │
   ├─ Resolve provider: source_type="yahoo" (from --provider or stored source)
-  ├─ Load credentials: App Password from token file / env / config
+  ├─ Load credentials: App Password from token file / env var (never config file)
   ├─ Connect IMAP: imap.mail.yahoo.com:993 (TLS)
   ├─ Authenticate: LOGIN user password
   ├─ LIST folders → Sync to labels table

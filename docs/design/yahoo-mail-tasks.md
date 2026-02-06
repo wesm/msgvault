@@ -2,7 +2,7 @@
 
 ## Stage 1: IMAP Client and Authentication
 
-**Deliverable:** `msgvault add-account you@yahoo.com --provider yahoo --app-password "..."` connects to Yahoo IMAP, authenticates, lists folders, and stores the credential.
+**Deliverable:** `msgvault add-account you@yahoo.com --provider yahoo` prompts for the App Password interactively, connects to Yahoo IMAP, authenticates, lists folders, and stores the credential securely.
 
 ### 1.1 Add go-imap dependency
 
@@ -64,21 +64,19 @@
   - Add `YahooConfig` struct:
     ```go
     type YahooConfig struct {
-        AppPassword string `toml:"app_password"`
-        IMAPHost    string `toml:"imap_host"`
-        IMAPPort    int    `toml:"imap_port"`
+        IMAPHost string `toml:"imap_host"`
+        IMAPPort int    `toml:"imap_port"`
     }
     ```
   - Add `Yahoo YahooConfig` field to `Config` struct
   - Add defaults in `Load()`: host = `"imap.mail.yahoo.com"`, port = `993`
-- **Environment variable:** `MSGVAULT_YAHOO_APP_PASSWORD` — checked in `Load()`, overrides config file value
+- **Security:** The App Password is **never stored in config.toml**. Only IMAP host/port settings belong here. Credentials are stored in `~/.msgvault/tokens/` with 0600 permissions.
 
 ### 1.5 Add config tests for Yahoo section
 
 - **File:** `internal/config/config_test.go` (modify)
 - **Tests:**
-  - `TestLoadYahooConfig` — verify TOML parsing of `[yahoo]` section
-  - `TestYahooAppPasswordEnvOverride` — verify env var takes precedence
+  - `TestLoadYahooConfig` — verify TOML parsing of `[yahoo]` section (host/port only, no credentials)
   - `TestYahooDefaults` — verify default host/port when section is empty
 
 ### 1.6 Extend credential storage for App Passwords
@@ -99,18 +97,19 @@
   }
   ```
 
-### 1.7 Add `--provider` and `--app-password` flags to `add-account`
+### 1.7 Add `--provider` flag and interactive password prompt to `add-account`
 
 - **File:** `cmd/msgvault/cmd/addaccount.go` (modify)
+- **Dependencies:** `golang.org/x/term` (for `term.ReadPassword()` to suppress echo)
 - **Changes:**
   - Add `--provider` flag (string, default `"gmail"`, choices: `"gmail"`, `"yahoo"`)
-  - Add `--app-password` flag (string, hidden from help output for security)
+  - **No `--app-password` CLI flag** — CLI flags are visible in shell history and process listings, exposing credentials to other users. This is a deliberate omission.
   - When `provider == "yahoo"`:
-    1. Resolve App Password: CLI flag → env var → config file (in priority order)
-    2. If no password found, print instructions and prompt user to enter it
+    1. Check for `MSGVAULT_YAHOO_APP_PASSWORD` environment variable. If set, use it but **print a security warning**: `"Warning: Using app password from environment variable. For interactive use, omit the variable and enter the password at the prompt instead."`
+    2. If no env var, prompt interactively: `"Enter Yahoo App Password: "` using `term.ReadPassword(int(os.Stdin.Fd()))` to suppress echo
     3. Create IMAP client, call `Connect()` to verify credentials
     4. Call `ListFolders()` to verify access
-    5. Save credentials via `SaveAppPassword()`
+    5. Save credentials via `SaveAppPassword()` to `~/.msgvault/tokens/{email}.json` with 0600 permissions
     6. Call `store.GetOrCreateSource("yahoo", email)` to register account
     7. Print success message with folder count
   - Existing Gmail flow unchanged when `provider == "gmail"` (default)
@@ -119,8 +118,9 @@
 
 - **File:** `cmd/msgvault/cmd/addaccount_test.go` (new or modify existing)
 - **Tests:**
-  - `TestAddAccountYahooMissingPassword` — verify error when no password provided
+  - `TestAddAccountYahooMissingPassword` — verify error when no password in env and stdin is not a terminal
   - `TestAddAccountYahooProviderFlag` — verify `--provider yahoo` sets source_type correctly
+  - `TestAddAccountYahooEnvVarWarning` — verify security warning is printed when env var is used
 
 ---
 
@@ -251,7 +251,7 @@
 - **Changes:**
   - After resolving the account email, query `store.GetSourceByIdentifier(email)` to get `source_type`
   - If `source_type == "yahoo"`:
-    1. Load App Password via `oauth.LoadAppPassword(email)` (fall back to env/config)
+    1. Load App Password via `oauth.LoadAppPassword(email)` (fall back to `MSGVAULT_YAHOO_APP_PASSWORD` env var; never from config file)
     2. Create `imap.Client` with config
     3. Create `sync.YahooSyncer`
     4. Call `syncer.Full(ctx, email)` instead of Gmail sync
@@ -410,6 +410,10 @@
     - "Folder not found" (deleted between list and select)
   - Add connection health check: `client.Noop()` before operations to detect stale connections
   - Reconnect logic: if connection drops mid-sync, reconnect and resume from checkpoint
+  - **Log sanitization:** Ensure the App Password and `MSGVAULT_YAHOO_APP_PASSWORD` environment variable value are never included in log output, error messages, or panic traces. Specifically:
+    - Never log the `Config.Password` field
+    - Redact environment variable values in any debug/error dumps
+    - Use `[REDACTED]` placeholder if credential context must appear in error messages
 
 ### 5.4 Update CLAUDE.md with Yahoo commands
 
@@ -425,7 +429,7 @@
 - **File:** `README.md` or CLI help text (modify)
 - **Changes:**
   - Document Yahoo Mail setup process (App Password generation link + steps)
-  - Document Yahoo-specific flags (`--provider`, `--app-password`, `--folders`)
+  - Document Yahoo-specific flags (`--provider`, `--folders`)
   - Document environment variable `MSGVAULT_YAHOO_APP_PASSWORD`
   - Note limitations: no incremental sync in v1, IMAP date filtering is date-only
 
@@ -441,17 +445,17 @@
 
 ## Environment Variables Summary
 
-| Variable | Purpose | Default |
-|----------|---------|---------|
-| `MSGVAULT_YAHOO_APP_PASSWORD` | Yahoo App Password for IMAP auth | (none) |
-| `MSGVAULT_TEST_YAHOO_EMAIL` | Test account for integration tests | (none) |
-| `MSGVAULT_TEST_YAHOO_APP_PASSWORD` | Test account password for integration tests | (none) |
+| Variable | Purpose | Default | Security |
+|----------|---------|---------|----------|
+| `MSGVAULT_YAHOO_APP_PASSWORD` | Yahoo App Password for IMAP auth (automation/CI only) | (none) | Prints warning; prefer interactive prompt. Must never be logged. |
+| `MSGVAULT_TEST_YAHOO_EMAIL` | Test account for integration tests | (none) | — |
+| `MSGVAULT_TEST_YAHOO_APP_PASSWORD` | Test account password for integration tests | (none) | — |
 
 ## CLI Changes Summary
 
 | Command | Change |
 |---------|--------|
-| `add-account` | New flags: `--provider yahoo`, `--app-password` |
+| `add-account` | New flag: `--provider yahoo`. Interactive password prompt (no `--app-password` flag — see Security). |
 | `sync-full` | New flag: `--folders`. Auto-detects Yahoo via source_type |
 | `sync` | Prints "not yet supported" for Yahoo accounts |
 | `list-accounts` | Shows provider type (gmail/yahoo) |
@@ -479,7 +483,7 @@
 | `internal/config/config.go` | Add `YahooConfig` struct and fields |
 | `internal/config/config_test.go` | Add Yahoo config tests |
 | `internal/oauth/oauth.go` | Add App Password storage methods |
-| `cmd/msgvault/cmd/addaccount.go` | Add --provider, --app-password flags |
+| `cmd/msgvault/cmd/addaccount.go` | Add --provider flag, interactive password prompt |
 | `cmd/msgvault/cmd/syncfull.go` | Add provider detection, --folders flag |
 | `cmd/msgvault/cmd/sync.go` | Add Yahoo "not supported" message |
 | `cmd/msgvault/cmd/listaccounts.go` | Show provider in output |
