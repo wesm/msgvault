@@ -550,16 +550,16 @@ func (s *Store) BackfillFTS(progress func(done, total int64)) (int64, error) {
 
 	const batchSize = 5000
 
-	// Get total message count and ID range for progress reporting
-	var total int64
+	// Use MIN/MAX (instant B-tree lookups) instead of COUNT(*) (full scan)
 	var minID, maxID int64
-	err := s.db.QueryRow("SELECT COUNT(*), COALESCE(MIN(id),0), COALESCE(MAX(id),0) FROM messages").Scan(&total, &minID, &maxID)
+	err := s.db.QueryRow("SELECT COALESCE(MIN(id),0), COALESCE(MAX(id),0) FROM messages").Scan(&minID, &maxID)
 	if err != nil {
-		return 0, fmt.Errorf("count messages: %w", err)
+		return 0, fmt.Errorf("get message ID range: %w", err)
 	}
-	if total == 0 {
+	if maxID == 0 {
 		return 0, nil
 	}
+	idRange := maxID - minID + 1
 
 	// Clear existing FTS data
 	if _, err := s.db.Exec("DELETE FROM messages_fts"); err != nil {
@@ -579,7 +579,7 @@ func (s *Store) BackfillFTS(progress func(done, total int64)) (int64, error) {
 		cursor = batchEnd
 
 		if progress != nil {
-			progress(indexed, total)
+			progress(cursor-minID, idRange)
 		}
 	}
 

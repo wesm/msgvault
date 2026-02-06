@@ -214,29 +214,23 @@ func (s *Store) InitSchema() error {
 }
 
 // NeedsFTSBackfill reports whether the FTS table needs to be populated.
-// Returns true if FTS5 is available and the FTS row count is significantly
-// less than the message count (empty or interrupted partial backfill).
+// Uses MAX(id) comparisons (instant B-tree lookups) instead of COUNT(*)
+// to avoid full table scans on large databases.
 func (s *Store) NeedsFTSBackfill() bool {
 	if !s.fts5Available {
 		return false
 	}
-	var ftsCount, msgCount int64
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM messages_fts").Scan(&ftsCount); err != nil {
+	var msgMax int64
+	if err := s.db.QueryRow("SELECT COALESCE(MAX(id), 0) FROM messages").Scan(&msgMax); err != nil || msgMax == 0 {
 		return false
 	}
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM messages").Scan(&msgCount); err != nil {
+	var ftsMax int64
+	if err := s.db.QueryRow("SELECT COALESCE(MAX(rowid), 0) FROM messages_fts").Scan(&ftsMax); err != nil {
 		return false
 	}
-	if msgCount == 0 {
-		return false
-	}
-	// Trigger backfill if fewer than 90% of messages are indexed
-	// (handles both empty and partially-interrupted backfills)
-	threshold := msgCount * 9 / 10
-	if threshold == 0 {
-		threshold = msgCount // for small counts, require all indexed
-	}
-	return ftsCount < threshold
+	// Backfill needed if FTS hasn't reached near the end of the messages table.
+	// The -1 handles small ID values where integer division would truncate to 0.
+	return ftsMax < msgMax-msgMax/10
 }
 
 // Stats holds database statistics.
