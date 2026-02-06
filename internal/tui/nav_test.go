@@ -3,6 +3,7 @@ package tui
 import (
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wesm/msgvault/internal/query"
 )
 
@@ -346,6 +347,170 @@ func TestNavigateListPageUp(t *testing.T) {
 			}
 			if m.scrollOffset != tt.wantScrollOffset {
 				t.Errorf("scrollOffset = %d, want %d", m.scrollOffset, tt.wantScrollOffset)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Thread View Page Up/Down Tests
+// =============================================================================
+
+func TestThreadViewPageDown(t *testing.T) {
+	tests := []struct {
+		name             string
+		pageSize         int
+		threadMsgCount   int
+		initCursor       int
+		initScrollOffset int
+		wantCursor       int
+		wantScrollOffset int
+	}{
+		{
+			name:             "moves by visibleRows not pageSize",
+			pageSize:         24,
+			threadMsgCount:   100,
+			initCursor:       0,
+			initScrollOffset: 0,
+			wantCursor:       23,
+			wantScrollOffset: 23,
+		},
+		{
+			name:             "preserves relative cursor position",
+			pageSize:         24,
+			threadMsgCount:   100,
+			initCursor:       5,
+			initScrollOffset: 0,
+			wantCursor:       28,
+			wantScrollOffset: 23,
+		},
+		{
+			name:             "clamps at end of thread",
+			pageSize:         24,
+			threadMsgCount:   30,
+			initCursor:       20,
+			initScrollOffset: 10,
+			wantCursor:       29,
+			wantScrollOffset: 7,
+		},
+		{
+			name:             "small thread fewer items than visibleRows",
+			pageSize:         24,
+			threadMsgCount:   5,
+			initCursor:       1,
+			initScrollOffset: 0,
+			wantCursor:       4,
+			wantScrollOffset: 0,
+		},
+		{
+			name:             "empty thread",
+			pageSize:         24,
+			threadMsgCount:   0,
+			initCursor:       0,
+			initScrollOffset: 0,
+			wantCursor:       0,
+			wantScrollOffset: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewBuilder().
+				WithLevel(levelThreadView).
+				WithPageSizeRaw(tt.pageSize).
+				WithLoading(false).
+				Build()
+			m.threadMessages = makeMessages(tt.threadMsgCount)
+			m.threadCursor = tt.initCursor
+			m.threadScrollOffset = tt.initScrollOffset
+
+			m, _ = sendKey(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
+
+			if m.threadCursor != tt.wantCursor {
+				t.Errorf("threadCursor = %d, want %d", m.threadCursor, tt.wantCursor)
+			}
+			if m.threadScrollOffset != tt.wantScrollOffset {
+				t.Errorf("threadScrollOffset = %d, want %d", m.threadScrollOffset, tt.wantScrollOffset)
+			}
+		})
+	}
+}
+
+func TestThreadViewPageUp(t *testing.T) {
+	tests := []struct {
+		name             string
+		pageSize         int
+		threadMsgCount   int
+		initCursor       int
+		initScrollOffset int
+		wantCursor       int
+		wantScrollOffset int
+	}{
+		{
+			name:             "moves by visibleRows not pageSize",
+			pageSize:         24,
+			threadMsgCount:   100,
+			initCursor:       50,
+			initScrollOffset: 30,
+			wantCursor:       27,
+			wantScrollOffset: 7,
+		},
+		{
+			name:             "preserves relative cursor position",
+			pageSize:         24,
+			threadMsgCount:   100,
+			initCursor:       30,
+			initScrollOffset: 25,
+			wantCursor:       7,
+			wantScrollOffset: 2,
+		},
+		{
+			name:             "clamps at top",
+			pageSize:         24,
+			threadMsgCount:   100,
+			initCursor:       10,
+			initScrollOffset: 5,
+			wantCursor:       0,
+			wantScrollOffset: 0,
+		},
+		{
+			name:             "small thread",
+			pageSize:         24,
+			threadMsgCount:   5,
+			initCursor:       4,
+			initScrollOffset: 0,
+			wantCursor:       0,
+			wantScrollOffset: 0,
+		},
+		{
+			name:             "empty thread",
+			pageSize:         24,
+			threadMsgCount:   0,
+			initCursor:       0,
+			initScrollOffset: 0,
+			wantCursor:       0,
+			wantScrollOffset: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewBuilder().
+				WithLevel(levelThreadView).
+				WithPageSizeRaw(tt.pageSize).
+				WithLoading(false).
+				Build()
+			m.threadMessages = makeMessages(tt.threadMsgCount)
+			m.threadCursor = tt.initCursor
+			m.threadScrollOffset = tt.initScrollOffset
+
+			m, _ = sendKey(t, m, tea.KeyMsg{Type: tea.KeyPgUp})
+
+			if m.threadCursor != tt.wantCursor {
+				t.Errorf("threadCursor = %d, want %d", m.threadCursor, tt.wantCursor)
+			}
+			if m.threadScrollOffset != tt.wantScrollOffset {
+				t.Errorf("threadScrollOffset = %d, want %d", m.threadScrollOffset, tt.wantScrollOffset)
 			}
 		})
 	}
