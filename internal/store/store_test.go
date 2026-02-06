@@ -873,6 +873,153 @@ func TestStore_ReplaceMessageRecipients_LargeBatch(t *testing.T) {
 	f.AssertRecipientCount(msgID, "to", 150)
 }
 
+func TestStore_UpsertFTS(t *testing.T) {
+	f := storetest.New(t)
+
+	if !f.Store.FTS5Available() {
+		t.Skip("FTS5 not available")
+	}
+
+	msgID := f.CreateMessage("msg-fts-1")
+
+	// Store body for the message
+	err := f.Store.UpsertMessageBody(msgID,
+		sql.NullString{String: "hello world body text", Valid: true},
+		sql.NullString{String: "<p>hello</p>", Valid: true},
+	)
+	testutil.MustNoErr(t, err, "UpsertMessageBody")
+
+	// Upsert FTS
+	err = f.Store.UpsertFTS(msgID, "Test Subject", "hello world body text", "alice@example.com", "bob@example.com", "carol@example.com")
+	testutil.MustNoErr(t, err, "UpsertFTS")
+
+	// Verify FTS row exists and is searchable
+	var count int
+	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'hello'").Scan(&count)
+	testutil.MustNoErr(t, err, "FTS MATCH query")
+	if count != 1 {
+		t.Errorf("FTS match count = %d, want 1", count)
+	}
+
+	// Search by subject
+	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'subject'").Scan(&count)
+	testutil.MustNoErr(t, err, "FTS MATCH subject")
+	if count != 1 {
+		t.Errorf("FTS match subject count = %d, want 1", count)
+	}
+
+	// Search by from address
+	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'alice'").Scan(&count)
+	testutil.MustNoErr(t, err, "FTS MATCH from_addr")
+	if count != 1 {
+		t.Errorf("FTS match from_addr count = %d, want 1", count)
+	}
+
+	// Replace (upsert) FTS with updated content
+	err = f.Store.UpsertFTS(msgID, "Updated Subject", "updated body", "alice@example.com", "bob@example.com", "")
+	testutil.MustNoErr(t, err, "UpsertFTS update")
+
+	// Old content should no longer match
+	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'hello'").Scan(&count)
+	testutil.MustNoErr(t, err, "FTS MATCH after update")
+	if count != 0 {
+		t.Errorf("FTS match 'hello' after update = %d, want 0", count)
+	}
+
+	// New content should match
+	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'updated'").Scan(&count)
+	testutil.MustNoErr(t, err, "FTS MATCH 'updated'")
+	if count != 1 {
+		t.Errorf("FTS match 'updated' = %d, want 1", count)
+	}
+}
+
+func TestStore_BackfillFTS(t *testing.T) {
+	f := storetest.New(t)
+
+	if !f.Store.FTS5Available() {
+		t.Skip("FTS5 not available")
+	}
+
+	// Create messages with bodies and recipients
+	msgID1 := f.CreateMessage("msg-backfill-1")
+	err := f.Store.UpsertMessageBody(msgID1,
+		sql.NullString{String: "first message body", Valid: true},
+		sql.NullString{},
+	)
+	testutil.MustNoErr(t, err, "UpsertMessageBody 1")
+
+	pid1 := f.EnsureParticipant("sender@example.com", "Sender", "example.com")
+	err = f.Store.ReplaceMessageRecipients(msgID1, "from", []int64{pid1}, []string{"Sender"})
+	testutil.MustNoErr(t, err, "ReplaceMessageRecipients from")
+
+	pid2 := f.EnsureParticipant("recipient@example.com", "Recipient", "example.com")
+	err = f.Store.ReplaceMessageRecipients(msgID1, "to", []int64{pid2}, []string{"Recipient"})
+	testutil.MustNoErr(t, err, "ReplaceMessageRecipients to")
+
+	msgID2 := f.CreateMessage("msg-backfill-2")
+	err = f.Store.UpsertMessageBody(msgID2,
+		sql.NullString{String: "second message unique content", Valid: true},
+		sql.NullString{},
+	)
+	testutil.MustNoErr(t, err, "UpsertMessageBody 2")
+
+	// FTS should already have been auto-populated by InitSchema, so clear it first
+	_, err = f.Store.DB().Exec("DELETE FROM messages_fts")
+	testutil.MustNoErr(t, err, "clear FTS")
+
+	// Verify FTS is empty
+	var count int
+	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages_fts").Scan(&count)
+	testutil.MustNoErr(t, err, "count FTS")
+	if count != 0 {
+		t.Fatalf("FTS count = %d, want 0 after clear", count)
+	}
+
+	// Run backfill
+	rowsInserted, err := f.Store.BackfillFTS()
+	testutil.MustNoErr(t, err, "BackfillFTS")
+	if rowsInserted != 2 {
+		t.Errorf("BackfillFTS rows = %d, want 2", rowsInserted)
+	}
+
+	// Verify FTS is populated
+	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages_fts").Scan(&count)
+	testutil.MustNoErr(t, err, "count FTS after backfill")
+	if count != 2 {
+		t.Errorf("FTS count after backfill = %d, want 2", count)
+	}
+
+	// Search for first message body
+	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'first'").Scan(&count)
+	testutil.MustNoErr(t, err, "FTS MATCH first")
+	if count != 1 {
+		t.Errorf("FTS match 'first' = %d, want 1", count)
+	}
+
+	// Search for sender email (populated via backfill from participants)
+	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'sender'").Scan(&count)
+	testutil.MustNoErr(t, err, "FTS MATCH sender")
+	if count != 1 {
+		t.Errorf("FTS match 'sender' = %d, want 1", count)
+	}
+
+	// Search for second message unique content
+	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'unique'").Scan(&count)
+	testutil.MustNoErr(t, err, "FTS MATCH unique")
+	if count != 1 {
+		t.Errorf("FTS match 'unique' = %d, want 1", count)
+	}
+}
+
+func TestStore_FTS5Available(t *testing.T) {
+	f := storetest.New(t)
+
+	// FTS5Available should return a boolean (true on most builds)
+	available := f.Store.FTS5Available()
+	t.Logf("FTS5Available = %v", available)
+}
+
 func TestStore_ReplaceMessageLabels_LargeBatch(t *testing.T) {
 	f := storetest.New(t)
 

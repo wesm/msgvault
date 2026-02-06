@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/wesm/msgvault/internal/fileutil"
@@ -558,6 +559,20 @@ func (s *Syncer) persistMessage(data *messageData, labelMap map[string]int64) er
 		}
 	}
 
+	// Populate FTS index
+	if s.store.FTS5Available() {
+		subject := ""
+		if data.message.Subject.Valid {
+			subject = data.message.Subject.String
+		}
+		fromAddr := joinEmails(data.from)
+		toAddrs := joinEmails(data.to)
+		ccAddrs := joinEmails(data.cc)
+		if err := s.store.UpsertFTS(messageID, subject, data.bodyText, fromAddr, toAddrs, ccAddrs); err != nil {
+			s.logger.Warn("failed to upsert FTS", "message", messageID, "error", err)
+		}
+	}
+
 	return nil
 }
 
@@ -633,6 +648,20 @@ func (s *Syncer) storeAttachment(messageID int64, att *mime.Attachment) error {
 
 	// Record in database
 	return s.store.UpsertAttachment(messageID, att.Filename, att.ContentType, storagePath, att.ContentHash, att.Size)
+}
+
+// joinEmails concatenates email addresses from a slice of mime.Address with spaces.
+func joinEmails(addrs []mime.Address) string {
+	if len(addrs) == 0 {
+		return ""
+	}
+	emails := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		if a.Email != "" {
+			emails = append(emails, a.Email)
+		}
+	}
+	return strings.Join(emails, " ")
 }
 
 // extractSubjectFromSnippet attempts to extract a subject from the message snippet.

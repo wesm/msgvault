@@ -175,6 +175,11 @@ func (s *Store) Rebind(query string) string {
 	return query
 }
 
+// FTS5Available returns whether FTS5 full-text search is available.
+func (s *Store) FTS5Available() bool {
+	return s.fts5Available
+}
+
 // InitSchema initializes the database schema.
 // This creates all tables if they don't exist.
 func (s *Store) InitSchema() error {
@@ -203,6 +208,21 @@ func (s *Store) InitSchema() error {
 		}
 	} else {
 		s.fts5Available = true
+	}
+
+	// Auto-backfill FTS if the table exists but is empty while messages exist.
+	// This handles existing databases that synced before FTS population was added.
+	if s.fts5Available {
+		var ftsCount, msgCount int64
+		if err := s.db.QueryRow("SELECT COUNT(*) FROM messages_fts").Scan(&ftsCount); err == nil {
+			if ftsCount == 0 {
+				if err := s.db.QueryRow("SELECT COUNT(*) FROM messages").Scan(&msgCount); err == nil && msgCount > 0 {
+					if _, err := s.BackfillFTS(); err != nil {
+						return fmt.Errorf("auto-backfill FTS: %w", err)
+					}
+				}
+			}
+		}
 	}
 
 	return nil
