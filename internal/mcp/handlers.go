@@ -3,16 +3,17 @@ package mcp
 import (
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/wesm/msgvault/internal/export"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/search"
 )
@@ -24,6 +25,64 @@ type handlers struct {
 	attachmentsDir string
 }
 
+// getIDArg extracts a required positive integer ID from the arguments map.
+func getIDArg(args map[string]any, key string) (int64, error) {
+	v, ok := args[key].(float64)
+	if !ok {
+		return 0, fmt.Errorf("%s parameter is required", key)
+	}
+	if v != math.Trunc(v) || v < 1 || v > math.MaxInt64 {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return int64(v), nil
+}
+
+// getDateArg extracts an optional date (YYYY-MM-DD) from the arguments map.
+func getDateArg(args map[string]any, key string) (*time.Time, error) {
+	v, ok := args[key].(string)
+	if !ok || v == "" {
+		return nil, nil
+	}
+	t, err := time.Parse("2006-01-02", v)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s date %q: expected YYYY-MM-DD", key, v)
+	}
+	return &t, nil
+}
+
+// readAttachmentFile reads the content-addressed attachment file after
+// validating the hash and checking size limits.
+func (h *handlers) readAttachmentFile(contentHash string) ([]byte, error) {
+	filePath, err := export.StoragePath(h.attachmentsDir, contentHash)
+	if err != nil {
+		return nil, fmt.Errorf("attachment has invalid content hash")
+	}
+
+	f, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("attachment file not available: %v", err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("attachment file not available: %v", err)
+	}
+	if info.Size() > maxAttachmentSize {
+		return nil, fmt.Errorf("attachment too large: %d bytes (max %d)", info.Size(), maxAttachmentSize)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(f, maxAttachmentSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("attachment file not available: %v", err)
+	}
+	if int64(len(data)) > maxAttachmentSize {
+		return nil, fmt.Errorf("attachment too large: %d bytes (max %d)", len(data), maxAttachmentSize)
+	}
+
+	return data, nil
+}
+
 func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 
@@ -32,8 +91,8 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 		return mcp.NewToolResultError("query parameter is required"), nil
 	}
 
-	limit := intArg(args, "limit", 20)
-	offset := intArg(args, "offset", 0)
+	limit := limitArg(args, "limit", 20)
+	offset := limitArg(args, "offset", 0)
 
 	q := search.Parse(queryStr)
 
@@ -57,15 +116,12 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 func (h *handlers) getMessage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 
-	idFloat, ok := args["id"].(float64)
-	if !ok {
-		return mcp.NewToolResultError("id parameter is required"), nil
-	}
-	if idFloat != math.Trunc(idFloat) || idFloat < 1 || idFloat > math.MaxInt64 {
-		return mcp.NewToolResultError("id must be a positive integer"), nil
+	id, err := getIDArg(args, "id")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	msg, err := h.engine.GetMessage(ctx, int64(idFloat))
+	msg, err := h.engine.GetMessage(ctx, id)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("message not found: %v", err)), nil
 	}
@@ -78,15 +134,12 @@ const maxAttachmentSize = 50 * 1024 * 1024 // 50MB
 func (h *handlers) getAttachment(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 
-	idFloat, ok := args["attachment_id"].(float64)
-	if !ok {
-		return mcp.NewToolResultError("attachment_id parameter is required"), nil
-	}
-	if idFloat != math.Trunc(idFloat) || idFloat < 1 || idFloat > math.MaxInt64 {
-		return mcp.NewToolResultError("attachment_id must be a positive integer"), nil
+	id, err := getIDArg(args, "attachment_id")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	att, err := h.engine.GetAttachment(ctx, int64(idFloat))
+	att, err := h.engine.GetAttachment(ctx, id)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("get attachment failed: %v", err)), nil
 	}
@@ -98,52 +151,125 @@ func (h *handlers) getAttachment(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError("attachments directory not configured"), nil
 	}
 
-	if att.ContentHash == "" || len(att.ContentHash) < 2 {
-		return mcp.NewToolResultError("attachment has no stored content"), nil
+	if att.Size > maxAttachmentSize {
+		return mcp.NewToolResultError(fmt.Sprintf("attachment too large: %d bytes (max %d)", att.Size, maxAttachmentSize)), nil
 	}
 
-	// Validate content_hash is strictly hex to prevent path traversal.
-	if _, err := hex.DecodeString(att.ContentHash); err != nil {
-		return mcp.NewToolResultError("attachment has invalid content hash"), nil
-	}
-
-	filePath := filepath.Join(h.attachmentsDir, att.ContentHash[:2], att.ContentHash)
-
-	// Open file and check size on the open fd to avoid TOCTOU races.
-	f, err := os.Open(filePath)
+	data, err := h.readAttachmentFile(att.ContentHash)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("attachment file not available: %v", err)), nil
-	}
-	defer f.Close()
-
-	info, err := f.Stat()
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("attachment file not available: %v", err)), nil
-	}
-	if info.Size() > maxAttachmentSize {
-		return mcp.NewToolResultError(fmt.Sprintf("attachment too large: %d bytes (max %d)", info.Size(), maxAttachmentSize)), nil
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	data, err := io.ReadAll(io.LimitReader(f, maxAttachmentSize+1))
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("attachment file not available: %v", err)), nil
+	mimeType := att.MimeType
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
 	}
-	if int64(len(data)) > maxAttachmentSize {
-		return mcp.NewToolResultError(fmt.Sprintf("attachment too large: %d bytes (max %d)", len(data), maxAttachmentSize)), nil
+
+	metaObj := struct {
+		Filename string `json:"filename"`
+		MimeType string `json:"mime_type"`
+		Size     int64  `json:"size"`
+	}{
+		Filename: att.Filename,
+		MimeType: mimeType,
+		Size:     att.Size,
+	}
+	metaJSON, err := json.Marshal(metaObj)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("marshal metadata: %v", err)), nil
+	}
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			mcp.TextContent{
+				Type: "text",
+				Text: string(metaJSON),
+			},
+			mcp.EmbeddedResource{
+				Type: "resource",
+				Resource: mcp.BlobResourceContents{
+					URI:      fmt.Sprintf("attachment:///%d/%s", att.ID, url.PathEscape(att.Filename)),
+					MIMEType: mimeType,
+					Blob:     base64.StdEncoding.EncodeToString(data),
+				},
+			},
+		},
+	}, nil
+}
+
+func (h *handlers) exportAttachment(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+
+	id, err := getIDArg(args, "attachment_id")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	att, err := h.engine.GetAttachment(ctx, id)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("get attachment failed: %v", err)), nil
+	}
+	if att == nil {
+		return mcp.NewToolResultError("attachment not found"), nil
+	}
+
+	if h.attachmentsDir == "" {
+		return mcp.NewToolResultError("attachments directory not configured"), nil
+	}
+
+	if att.Size > maxAttachmentSize {
+		return mcp.NewToolResultError(fmt.Sprintf("attachment too large: %d bytes (max %d)", att.Size, maxAttachmentSize)), nil
+	}
+
+	data, err := h.readAttachmentFile(att.ContentHash)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	// Determine destination directory.
+	destDir, _ := args["destination"].(string)
+	if destDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("cannot determine home directory: %v", err)), nil
+		}
+		destDir = filepath.Join(home, "Downloads")
+	}
+
+	info, err := os.Stat(destDir)
+	if err != nil || !info.IsDir() {
+		return mcp.NewToolResultError(fmt.Sprintf("destination directory does not exist: %s", destDir)), nil
+	}
+
+	// Sanitize and deduplicate filename.
+	filename := export.SanitizeFilename(filepath.Base(att.Filename))
+	if filename == "" || filename == "." {
+		filename = att.ContentHash
+	}
+	f, outPath, err := export.CreateExclusiveFile(filepath.Join(destDir, filename), 0600)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("write failed: %v", err)), nil
+	}
+	_, writeErr := f.Write(data)
+	closeErr := f.Close()
+	if writeErr != nil {
+		os.Remove(outPath)
+		return mcp.NewToolResultError(fmt.Sprintf("write failed: %v", writeErr)), nil
+	}
+	if closeErr != nil {
+		os.Remove(outPath)
+		return mcp.NewToolResultError(fmt.Sprintf("write failed: %v", closeErr)), nil
 	}
 
 	resp := struct {
-		Filename      string `json:"filename"`
-		MimeType      string `json:"mime_type"`
-		Size          int64  `json:"size"`
-		ContentBase64 string `json:"content_base64"`
+		Path     string `json:"path"`
+		Filename string `json:"filename"`
+		Size     int64  `json:"size"`
 	}{
-		Filename:      att.Filename,
-		MimeType:      att.MimeType,
-		Size:          att.Size,
-		ContentBase64: base64.StdEncoding.EncodeToString(data),
+		Path:     outPath,
+		Filename: filepath.Base(outPath),
+		Size:     int64(len(data)),
 	}
-
 	return jsonResult(resp)
 }
 
@@ -151,8 +277,10 @@ func (h *handlers) listMessages(ctx context.Context, req mcp.CallToolRequest) (*
 	args := req.GetArguments()
 
 	filter := query.MessageFilter{
-		Limit:  intArg(args, "limit", 20),
-		Offset: intArg(args, "offset", 0),
+		Pagination: query.Pagination{
+			Limit:  limitArg(args, "limit", 20),
+			Offset: limitArg(args, "offset", 0),
+		},
 	}
 
 	if v, ok := args["from"].(string); ok && v != "" {
@@ -167,19 +295,12 @@ func (h *handlers) listMessages(ctx context.Context, req mcp.CallToolRequest) (*
 	if v, ok := args["has_attachment"].(bool); ok && v {
 		filter.WithAttachmentsOnly = true
 	}
-	if v, ok := args["after"].(string); ok && v != "" {
-		t, err := time.Parse("2006-01-02", v)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid after date %q: expected YYYY-MM-DD", v)), nil
-		}
-		filter.After = &t
+	var err error
+	if filter.After, err = getDateArg(args, "after"); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
-	if v, ok := args["before"].(string); ok && v != "" {
-		t, err := time.Parse("2006-01-02", v)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid before date %q: expected YYYY-MM-DD", v)), nil
-		}
-		filter.Before = &t
+	if filter.Before, err = getDateArg(args, "before"); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
 	results, err := h.engine.ListMessages(ctx, filter)
@@ -202,7 +323,7 @@ func (h *handlers) getStats(ctx context.Context, _ mcp.CallToolRequest) (*mcp.Ca
 	}
 
 	resp := struct {
-		Stats    *query.TotalStats  `json:"stats"`
+		Stats    *query.TotalStats   `json:"stats"`
 		Accounts []query.AccountInfo `json:"accounts"`
 	}{
 		Stats:    stats,
@@ -221,44 +342,31 @@ func (h *handlers) aggregate(ctx context.Context, req mcp.CallToolRequest) (*mcp
 	}
 
 	opts := query.AggregateOptions{
-		Limit: intArg(args, "limit", 50),
+		Limit: limitArg(args, "limit", 50),
 	}
 
-	if v, ok := args["after"].(string); ok && v != "" {
-		t, err := time.Parse("2006-01-02", v)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid after date %q: expected YYYY-MM-DD", v)), nil
-		}
-		opts.After = &t
+	var err error
+	if opts.After, err = getDateArg(args, "after"); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
-	if v, ok := args["before"].(string); ok && v != "" {
-		t, err := time.Parse("2006-01-02", v)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid before date %q: expected YYYY-MM-DD", v)), nil
-		}
-		opts.Before = &t
+	if opts.Before, err = getDateArg(args, "before"); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	var (
-		rows []query.AggregateRow
-		err  error
-	)
+	viewTypeMap := map[string]query.ViewType{
+		"sender":    query.ViewSenders,
+		"recipient": query.ViewRecipients,
+		"domain":    query.ViewDomains,
+		"label":     query.ViewLabels,
+		"time":      query.ViewTime,
+	}
 
-	switch groupBy {
-	case "sender":
-		rows, err = h.engine.AggregateBySender(ctx, opts)
-	case "recipient":
-		rows, err = h.engine.AggregateByRecipient(ctx, opts)
-	case "domain":
-		rows, err = h.engine.AggregateByDomain(ctx, opts)
-	case "label":
-		rows, err = h.engine.AggregateByLabel(ctx, opts)
-	case "time":
-		rows, err = h.engine.AggregateByTime(ctx, opts)
-	default:
+	viewType, ok := viewTypeMap[groupBy]
+	if !ok {
 		return mcp.NewToolResultError(fmt.Sprintf("invalid group_by: %s", groupBy)), nil
 	}
 
+	rows, err := h.engine.Aggregate(ctx, viewType, opts)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("aggregate failed: %v", err)), nil
 	}
@@ -266,10 +374,10 @@ func (h *handlers) aggregate(ctx context.Context, req mcp.CallToolRequest) (*mcp
 	return jsonResult(rows)
 }
 
-// intArg extracts a non-negative integer from a map, with a default value.
-// JSON numbers arrive as float64. Clamps on the float64 value before
-// converting to int to avoid overflow on very large or special values.
-func intArg(args map[string]any, key string, def int) int {
+// limitArg extracts a non-negative integer limit from a map, with a default.
+// JSON numbers arrive as float64. Clamps to maxLimit to prevent excessive
+// result sets.
+func limitArg(args map[string]any, key string, def int) int {
 	v, ok := args[key].(float64)
 	if !ok {
 		return def

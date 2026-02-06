@@ -41,6 +41,80 @@ func (q *Query) IsEmpty() bool {
 		q.SmallerThan == nil
 }
 
+// operatorFn handles a parsed operator:value pair by applying it to the query.
+type operatorFn func(q *Query, value string, now time.Time)
+
+// operators maps operator names to their handler functions.
+var operators = map[string]operatorFn{
+	"from": func(q *Query, v string, _ time.Time) {
+		q.FromAddrs = append(q.FromAddrs, strings.ToLower(v))
+	},
+	"to": func(q *Query, v string, _ time.Time) {
+		q.ToAddrs = append(q.ToAddrs, strings.ToLower(v))
+	},
+	"cc": func(q *Query, v string, _ time.Time) {
+		q.CcAddrs = append(q.CcAddrs, strings.ToLower(v))
+	},
+	"bcc": func(q *Query, v string, _ time.Time) {
+		q.BccAddrs = append(q.BccAddrs, strings.ToLower(v))
+	},
+	"subject": func(q *Query, v string, _ time.Time) {
+		q.SubjectTerms = append(q.SubjectTerms, v)
+	},
+	"label": func(q *Query, v string, _ time.Time) {
+		q.Labels = append(q.Labels, v)
+	},
+	"l": func(q *Query, v string, _ time.Time) {
+		q.Labels = append(q.Labels, v)
+	},
+	"has": func(q *Query, v string, _ time.Time) {
+		if low := strings.ToLower(v); low == "attachment" || low == "attachments" {
+			b := true
+			q.HasAttachment = &b
+		}
+	},
+	"before": func(q *Query, v string, _ time.Time) {
+		if t := parseDate(v); t != nil {
+			q.BeforeDate = t
+		}
+	},
+	"after": func(q *Query, v string, _ time.Time) {
+		if t := parseDate(v); t != nil {
+			q.AfterDate = t
+		}
+	},
+	"older_than": func(q *Query, v string, now time.Time) {
+		if t := parseRelativeDate(v, now); t != nil {
+			q.BeforeDate = t
+		}
+	},
+	"newer_than": func(q *Query, v string, now time.Time) {
+		if t := parseRelativeDate(v, now); t != nil {
+			q.AfterDate = t
+		}
+	},
+	"larger": func(q *Query, v string, _ time.Time) {
+		if size := parseSize(v); size != nil {
+			q.LargerThan = size
+		}
+	},
+	"smaller": func(q *Query, v string, _ time.Time) {
+		if size := parseSize(v); size != nil {
+			q.SmallerThan = size
+		}
+	},
+}
+
+// Parser holds configuration for query parsing.
+type Parser struct {
+	Now func() time.Time // Time source (mockable for testing)
+}
+
+// NewParser creates a Parser with default settings.
+func NewParser() *Parser {
+	return &Parser{Now: func() time.Time { return time.Now().UTC() }}
+}
+
 // Parse parses a Gmail-like search query string into a Query object.
 //
 // Supported operators:
@@ -52,81 +126,54 @@ func (q *Query) IsEmpty() bool {
 //   - older_than:, newer_than: - relative date filters (e.g., 7d, 2w, 1m, 1y)
 //   - larger:, smaller: - size filters (e.g., 5M, 100K)
 //   - Bare words and "quoted phrases" - full-text search
-func Parse(queryStr string) *Query {
+func (p *Parser) Parse(queryStr string) *Query {
 	q := &Query{}
+	now := time.Now().UTC()
+	if p.Now != nil {
+		now = p.Now()
+	}
 	tokens := tokenize(queryStr)
 
 	for _, token := range tokens {
-		// Check if it's a quoted phrase
-		if strings.HasPrefix(token, "\"") && strings.HasSuffix(token, "\"") && len(token) > 2 {
-			q.TextTerms = append(q.TextTerms, token[1:len(token)-1])
+		if isQuotedPhrase(token) {
+			q.TextTerms = append(q.TextTerms, unquote(token))
 			continue
 		}
 
-		// Check for operator:value pattern
 		if idx := strings.Index(token, ":"); idx != -1 {
 			op := strings.ToLower(token[:idx])
-			value := token[idx+1:]
+			value := unquote(token[idx+1:])
 
-			// Strip quotes from value
-			if strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") {
-				value = value[1 : len(value)-1]
-			}
-
-			switch op {
-			case "from":
-				q.FromAddrs = append(q.FromAddrs, strings.ToLower(value))
-			case "to":
-				q.ToAddrs = append(q.ToAddrs, strings.ToLower(value))
-			case "cc":
-				q.CcAddrs = append(q.CcAddrs, strings.ToLower(value))
-			case "bcc":
-				q.BccAddrs = append(q.BccAddrs, strings.ToLower(value))
-			case "subject":
-				q.SubjectTerms = append(q.SubjectTerms, value)
-			case "label", "l":
-				q.Labels = append(q.Labels, value)
-			case "has":
-				if strings.ToLower(value) == "attachment" || strings.ToLower(value) == "attachments" {
-					b := true
-					q.HasAttachment = &b
-				}
-			case "before":
-				if t := parseDate(value); t != nil {
-					q.BeforeDate = t
-				}
-			case "after":
-				if t := parseDate(value); t != nil {
-					q.AfterDate = t
-				}
-			case "older_than":
-				if t := parseRelativeDate(value); t != nil {
-					q.BeforeDate = t
-				}
-			case "newer_than":
-				if t := parseRelativeDate(value); t != nil {
-					q.AfterDate = t
-				}
-			case "larger":
-				if size := parseSize(value); size != nil {
-					q.LargerThan = size
-				}
-			case "smaller":
-				if size := parseSize(value); size != nil {
-					q.SmallerThan = size
-				}
-			default:
-				// Unknown operator - treat as text
+			if handler, ok := operators[op]; ok {
+				handler(q, value, now)
+			} else {
 				q.TextTerms = append(q.TextTerms, token)
 			}
 			continue
 		}
 
-		// Not an operator - treat as text search term
 		q.TextTerms = append(q.TextTerms, token)
 	}
 
 	return q
+}
+
+// Parse is a convenience function that parses using default settings.
+func Parse(queryStr string) *Query {
+	return NewParser().Parse(queryStr)
+}
+
+// unquote removes surrounding double quotes from a string if present.
+func unquote(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+// isQuotedPhrase returns true if the token is a double-quoted phrase.
+func isQuotedPhrase(token string) bool {
+	return len(token) > 2 && token[0] == '"' && token[len(token)-1] == '"'
 }
 
 // tokenize splits a query string, preserving quoted phrases and operator:value pairs.
@@ -212,8 +259,8 @@ func parseDate(value string) *time.Time {
 	return nil
 }
 
-// parseRelativeDate parses relative dates like 7d, 2w, 1m, 1y.
-func parseRelativeDate(value string) *time.Time {
+// parseRelativeDate parses relative dates like 7d, 2w, 1m, 1y relative to now.
+func parseRelativeDate(value string, now time.Time) *time.Time {
 	value = strings.TrimSpace(strings.ToLower(value))
 	re := regexp.MustCompile(`^(\d+)([dwmy])$`)
 	match := re.FindStringSubmatch(value)
@@ -223,7 +270,6 @@ func parseRelativeDate(value string) *time.Time {
 
 	amount, _ := strconv.Atoi(match[1])
 	unit := match[2]
-	now := time.Now().UTC()
 
 	var result time.Time
 	switch unit {

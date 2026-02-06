@@ -4,10 +4,14 @@ package deletion
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
+
+	"github.com/wesm/msgvault/internal/fileutil"
 )
 
 // Status represents the state of a deletion batch.
@@ -31,13 +35,13 @@ const (
 
 // Filters specifies criteria for selecting messages.
 type Filters struct {
-	Senders      []string `json:"senders,omitempty"`
+	Senders       []string `json:"senders,omitempty"`
 	SenderDomains []string `json:"sender_domains,omitempty"`
-	Recipients   []string `json:"recipients,omitempty"`
-	Labels       []string `json:"labels,omitempty"`
-	After        string   `json:"after,omitempty"`  // ISO date
-	Before       string   `json:"before,omitempty"` // ISO date
-	Account      string   `json:"account,omitempty"`
+	Recipients    []string `json:"recipients,omitempty"`
+	Labels        []string `json:"labels,omitempty"`
+	After         string   `json:"after,omitempty"`  // ISO date
+	Before        string   `json:"before,omitempty"` // ISO date
+	Account       string   `json:"account,omitempty"`
 }
 
 // Summary contains statistics about messages to be deleted.
@@ -109,17 +113,17 @@ func generateID(description string) string {
 
 // sanitizeForFilename removes characters unsafe for filenames.
 func sanitizeForFilename(s string) string {
-	result := make([]byte, 0, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '-' || c == '_' {
-			result = append(result, c)
-		} else if c == ' ' || c == '.' {
-			result = append(result, '-')
+	return strings.Map(func(r rune) rune {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '_':
+			return r
+		case r == ' ' || r == '.':
+			return '-'
+		default:
+			return -1
 		}
-	}
-	return string(result)
+	}, s)
 }
 
 // LoadManifest reads a manifest from a JSON file.
@@ -149,46 +153,61 @@ func (m *Manifest) Save(path string) error {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0644)
+	return fileutil.SecureWriteFile(path, data, 0600)
 }
 
 // FormatSummary returns a human-readable summary of the deletion.
 func (m *Manifest) FormatSummary() string {
-	var result string
+	var sb strings.Builder
 
-	result += fmt.Sprintf("Deletion Batch: %s\n", m.ID)
-	result += fmt.Sprintf("Status: %s\n", m.Status)
-	result += fmt.Sprintf("Created: %s\n", m.CreatedAt.Format(time.RFC3339))
-	result += fmt.Sprintf("Description: %s\n", m.Description)
-	result += fmt.Sprintf("Messages: %d\n", len(m.GmailIDs))
+	fmt.Fprintf(&sb, "Deletion Batch: %s\n", m.ID)
+	fmt.Fprintf(&sb, "Status: %s\n", m.Status)
+	fmt.Fprintf(&sb, "Created: %s\n", m.CreatedAt.Format(time.RFC3339))
+	fmt.Fprintf(&sb, "Description: %s\n", m.Description)
+	fmt.Fprintf(&sb, "Messages: %d\n", len(m.GmailIDs))
 
 	if m.Summary != nil {
-		result += fmt.Sprintf("Total Size: %.2f MB\n", float64(m.Summary.TotalSizeBytes)/(1024*1024))
+		fmt.Fprintf(&sb, "Total Size: %.2f MB\n", float64(m.Summary.TotalSizeBytes)/(1024*1024))
 		if len(m.Summary.DateRange) == 2 && m.Summary.DateRange[0] != "" {
-			result += fmt.Sprintf("Date Range: %s to %s\n", m.Summary.DateRange[0], m.Summary.DateRange[1])
+			fmt.Fprintf(&sb, "Date Range: %s to %s\n", m.Summary.DateRange[0], m.Summary.DateRange[1])
 		}
 		if len(m.Summary.TopSenders) > 0 {
-			result += "\nTop Senders:\n"
+			fmt.Fprintf(&sb, "\nTop Senders:\n")
 			for i, s := range m.Summary.TopSenders {
 				if i >= 10 {
 					break
 				}
-				result += fmt.Sprintf("  %s: %d messages\n", s.Sender, s.Count)
+				fmt.Fprintf(&sb, "  %s: %d messages\n", s.Sender, s.Count)
 			}
 		}
 	}
 
 	if m.Execution != nil {
-		result += "\nExecution:\n"
-		result += fmt.Sprintf("  Method: %s\n", m.Execution.Method)
-		result += fmt.Sprintf("  Succeeded: %d\n", m.Execution.Succeeded)
-		result += fmt.Sprintf("  Failed: %d\n", m.Execution.Failed)
+		fmt.Fprintf(&sb, "\nExecution:\n")
+		fmt.Fprintf(&sb, "  Method: %s\n", m.Execution.Method)
+		fmt.Fprintf(&sb, "  Succeeded: %d\n", m.Execution.Succeeded)
+		fmt.Fprintf(&sb, "  Failed: %d\n", m.Execution.Failed)
 		if m.Execution.CompletedAt != nil {
-			result += fmt.Sprintf("  Completed: %s\n", m.Execution.CompletedAt.Format(time.RFC3339))
+			fmt.Fprintf(&sb, "  Completed: %s\n", m.Execution.CompletedAt.Format(time.RFC3339))
 		}
 	}
 
-	return result
+	return sb.String()
+}
+
+// statusDirMap provides an explicit mapping from Status to on-disk directory name.
+// This decouples the Status constant values (which may be used for display or JSON)
+// from the filesystem directory names.
+var statusDirMap = map[Status]string{
+	StatusPending:    "pending",
+	StatusInProgress: "in_progress",
+	StatusCompleted:  "completed",
+	StatusFailed:     "failed",
+}
+
+// persistedStatuses lists all statuses that have on-disk directories.
+var persistedStatuses = []Status{
+	StatusPending, StatusInProgress, StatusCompleted, StatusFailed,
 }
 
 // Manager handles deletion manifest files.
@@ -200,60 +219,58 @@ type Manager struct {
 func NewManager(baseDir string) (*Manager, error) {
 	m := &Manager{baseDir: baseDir}
 
-	// Create directory structure
-	dirs := []string{
-		filepath.Join(baseDir, "pending"),
-		filepath.Join(baseDir, "in_progress"),
-		filepath.Join(baseDir, "completed"),
-		filepath.Join(baseDir, "failed"),
-	}
-	for _, d := range dirs {
-		if err := os.MkdirAll(d, 0755); err != nil {
-			return nil, fmt.Errorf("create %s: %w", d, err)
+	for _, status := range persistedStatuses {
+		if err := os.MkdirAll(m.dirForStatus(status), 0755); err != nil {
+			return nil, fmt.Errorf("create dir for %s: %w", status, err)
 		}
 	}
 
 	return m, nil
 }
 
-// PendingDir returns the path to the pending directory.
-func (m *Manager) PendingDir() string {
-	return filepath.Join(m.baseDir, "pending")
+// dirForStatus returns the directory path for a given status.
+// Uses explicit mapping to decouple Status values from directory names.
+func (m *Manager) dirForStatus(s Status) string {
+	dirName, ok := statusDirMap[s]
+	if !ok {
+		// Fallback for unknown status; log warning and use status string.
+		// This should not happen in normal operation.
+		log.Printf("WARNING: unknown status %q has no directory mapping, using status value as directory name", s)
+		dirName = string(s)
+	}
+	return filepath.Join(m.baseDir, dirName)
 }
+
+// PendingDir returns the path to the pending directory.
+func (m *Manager) PendingDir() string { return m.dirForStatus(StatusPending) }
 
 // InProgressDir returns the path to the in_progress directory.
-func (m *Manager) InProgressDir() string {
-	return filepath.Join(m.baseDir, "in_progress")
-}
+func (m *Manager) InProgressDir() string { return m.dirForStatus(StatusInProgress) }
 
 // CompletedDir returns the path to the completed directory.
-func (m *Manager) CompletedDir() string {
-	return filepath.Join(m.baseDir, "completed")
-}
+func (m *Manager) CompletedDir() string { return m.dirForStatus(StatusCompleted) }
 
 // FailedDir returns the path to the failed directory.
-func (m *Manager) FailedDir() string {
-	return filepath.Join(m.baseDir, "failed")
-}
+func (m *Manager) FailedDir() string { return m.dirForStatus(StatusFailed) }
 
 // ListPending returns all pending deletion manifests.
 func (m *Manager) ListPending() ([]*Manifest, error) {
-	return m.listManifests(m.PendingDir())
+	return m.listManifests(m.dirForStatus(StatusPending))
 }
 
 // ListInProgress returns all in-progress deletion manifests.
 func (m *Manager) ListInProgress() ([]*Manifest, error) {
-	return m.listManifests(m.InProgressDir())
+	return m.listManifests(m.dirForStatus(StatusInProgress))
 }
 
 // ListCompleted returns all completed deletion manifests.
 func (m *Manager) ListCompleted() ([]*Manifest, error) {
-	return m.listManifests(m.CompletedDir())
+	return m.listManifests(m.dirForStatus(StatusCompleted))
 }
 
 // ListFailed returns all failed deletion manifests.
 func (m *Manager) ListFailed() ([]*Manifest, error) {
-	return m.listManifests(m.FailedDir())
+	return m.listManifests(m.dirForStatus(StatusFailed))
 }
 
 func (m *Manager) listManifests(dir string) ([]*Manifest, error) {
@@ -274,7 +291,8 @@ func (m *Manager) listManifests(dir string) ([]*Manifest, error) {
 		path := filepath.Join(dir, e.Name())
 		manifest, err := LoadManifest(path)
 		if err != nil {
-			continue // Skip invalid manifests
+			log.Printf("WARNING: skipping invalid manifest %s: %v", path, err)
+			continue
 		}
 		manifests = append(manifests, manifest)
 	}
@@ -289,15 +307,9 @@ func (m *Manager) listManifests(dir string) ([]*Manifest, error) {
 
 // GetManifest loads a manifest by ID from any status directory.
 func (m *Manager) GetManifest(id string) (*Manifest, string, error) {
-	dirs := []string{
-		m.PendingDir(),
-		m.InProgressDir(),
-		m.CompletedDir(),
-		m.FailedDir(),
-	}
-
 	filename := id + ".json"
-	for _, dir := range dirs {
+	for _, status := range persistedStatuses {
+		dir := m.dirForStatus(status)
 		path := filepath.Join(dir, filename)
 		if manifest, err := LoadManifest(path); err == nil {
 			return manifest, path, nil
@@ -309,58 +321,60 @@ func (m *Manager) GetManifest(id string) (*Manifest, string, error) {
 
 // SaveManifest saves a manifest to the appropriate directory based on status.
 func (m *Manager) SaveManifest(manifest *Manifest) error {
-	var dir string
-	switch manifest.Status {
-	case StatusPending:
-		dir = m.PendingDir()
-	case StatusInProgress:
-		dir = m.InProgressDir()
-	case StatusCompleted:
-		dir = m.CompletedDir()
-	case StatusFailed:
-		dir = m.FailedDir()
-	default:
-		dir = m.PendingDir()
+	status := manifest.Status
+	if !isPersistedStatus(status) {
+		status = StatusPending
 	}
-
+	dir := m.dirForStatus(status)
 	path := filepath.Join(dir, manifest.ID+".json")
 	return manifest.Save(path)
 }
 
+// isPersistedStatus returns true if the status has a known on-disk directory.
+func isPersistedStatus(s Status) bool {
+	for _, ps := range persistedStatuses {
+		if s == ps {
+			return true
+		}
+	}
+	return false
+}
+
 // MoveManifest moves a manifest from one status directory to another.
 func (m *Manager) MoveManifest(id string, fromStatus, toStatus Status) error {
-	var fromDir, toDir string
-
 	switch fromStatus {
-	case StatusPending:
-		fromDir = m.PendingDir()
-	case StatusInProgress:
-		fromDir = m.InProgressDir()
+	case StatusPending, StatusInProgress:
+		// allowed
 	default:
 		return fmt.Errorf("cannot move from status %s", fromStatus)
 	}
 
 	switch toStatus {
-	case StatusInProgress:
-		toDir = m.InProgressDir()
-	case StatusCompleted:
-		toDir = m.CompletedDir()
-	case StatusFailed:
-		toDir = m.FailedDir()
+	case StatusInProgress, StatusCompleted, StatusFailed:
+		// allowed
 	default:
 		return fmt.Errorf("cannot move to status %s", toStatus)
 	}
 
-	fromPath := filepath.Join(fromDir, id+".json")
-	toPath := filepath.Join(toDir, id+".json")
-
+	fromPath := filepath.Join(m.dirForStatus(fromStatus), id+".json")
+	toPath := filepath.Join(m.dirForStatus(toStatus), id+".json")
 	return os.Rename(fromPath, toPath)
 }
 
-// CancelManifest removes a pending manifest.
+// CancelManifest removes a pending or in-progress manifest.
 func (m *Manager) CancelManifest(id string) error {
-	path := filepath.Join(m.PendingDir(), id+".json")
-	return os.Remove(path)
+	// Try pending first, then in_progress
+	for _, dir := range []string{m.PendingDir(), m.InProgressDir()} {
+		path := filepath.Join(dir, id+".json")
+		err := os.Remove(path)
+		if err == nil {
+			return nil
+		}
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", path, err)
+		}
+	}
+	return fmt.Errorf("manifest %s not found in pending or in_progress", id)
 }
 
 // CreateManifest creates and saves a new manifest.

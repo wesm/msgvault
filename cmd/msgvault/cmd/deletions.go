@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -92,12 +93,21 @@ var showDeletionCmd = &cobra.Command{
 	},
 }
 
+var cancelAll bool
+
 var cancelDeletionCmd = &cobra.Command{
-	Use:   "cancel-deletion <batch-id>",
-	Short: "Cancel a pending deletion batch",
-	Args:  cobra.ExactArgs(1),
+	Use:   "cancel-deletion [batch-id]",
+	Short: "Cancel pending or in-progress deletion batches",
+	Long: `Cancel deletion batches by ID, or use --all to cancel all pending and in-progress batches.
+
+Examples:
+  msgvault cancel-deletion 20260202-195132-Senders-wingide-user
+  msgvault cancel-deletion --all`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		batchID := args[0]
+		if cancelAll && len(args) > 0 {
+			return fmt.Errorf("cannot use --all with a batch ID argument")
+		}
 
 		deletionsDir := filepath.Join(cfg.Data.DataDir, "deletions")
 		manager, err := deletion.NewManager(deletionsDir)
@@ -105,6 +115,71 @@ var cancelDeletionCmd = &cobra.Command{
 			return fmt.Errorf("create manager: %w", err)
 		}
 
+		if cancelAll {
+			count := 0
+			var listErrors []error
+			for _, listFn := range []func() ([]*deletion.Manifest, error){
+				manager.ListPending, manager.ListInProgress,
+			} {
+				manifests, err := listFn()
+				if err != nil {
+					listErrors = append(listErrors, err)
+					continue
+				}
+				for _, m := range manifests {
+					if err := manager.CancelManifest(m.ID); err != nil {
+						fmt.Printf("  Failed to cancel %s: %v\n", m.ID, err)
+					} else {
+						fmt.Printf("  Cancelled: %s\n", m.ID)
+						count++
+					}
+				}
+			}
+			if len(listErrors) > 0 {
+				for _, e := range listErrors {
+					fmt.Fprintf(os.Stderr, "Warning: failed to list batches: %v\n", e)
+				}
+			}
+			if count == 0 {
+				if len(listErrors) > 0 {
+					return fmt.Errorf("could not list batches to cancel")
+				}
+				fmt.Println("No pending or in-progress batches to cancel.")
+			} else {
+				fmt.Printf("Cancelled %d batch(es).\n", count)
+			}
+			return nil
+		}
+
+		if len(args) == 0 {
+			// List available batches to help the user
+			fmt.Println("No batch ID specified. Available batches:")
+			fmt.Println()
+			found := false
+			for _, item := range []struct {
+				label  string
+				listFn func() ([]*deletion.Manifest, error)
+			}{
+				{"Pending", manager.ListPending},
+				{"In Progress", manager.ListInProgress},
+			} {
+				manifests, err := item.listFn()
+				if err != nil || len(manifests) == 0 {
+					continue
+				}
+				for _, m := range manifests {
+					fmt.Printf("  [%s] %s (%d messages)\n", item.label, m.ID, len(m.GmailIDs))
+					found = true
+				}
+			}
+			if !found {
+				fmt.Println("  (none)")
+			}
+			fmt.Println()
+			return fmt.Errorf("provide a batch ID or use --all")
+		}
+
+		batchID := args[0]
 		if err := manager.CancelManifest(batchID); err != nil {
 			return fmt.Errorf("cancel manifest: %w", err)
 		}
@@ -118,6 +193,7 @@ var (
 	deleteTrash   bool // Use trash instead of permanent delete
 	deleteYes     bool
 	deleteDryRun  bool
+	deleteList    bool
 	deleteAccount string
 )
 
@@ -132,6 +208,7 @@ Use --trash to move messages to Gmail trash instead (recoverable for 30 days, sl
 Examples:
   msgvault delete-staged                # Permanent delete all pending (fast)
   msgvault delete-staged batch-123      # Delete specific batch
+  msgvault delete-staged --list         # Show staged batches without executing
   msgvault delete-staged --trash        # Move to trash instead (slower)
   msgvault delete-staged --yes          # Skip confirmation`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -166,7 +243,27 @@ Examples:
 		}
 
 		if len(manifests) == 0 {
-			fmt.Println("No pending deletions to execute.")
+			fmt.Println("No staged deletions.")
+			return nil
+		}
+
+		// --list: show staged batches (pending + in-progress) and exit
+		if deleteList {
+			fmt.Printf("Staged deletions: %d batch(es)\n\n", len(manifests))
+			fmt.Printf("  %-25s  %-12s  %10s  %s\n", "ID", "Status", "Messages", "Description")
+			fmt.Printf("  %-25s  %-12s  %10s  %s\n", "---", "------", "--------", "-----------")
+			totalMessages := 0
+			for _, m := range manifests {
+				fmt.Printf("  %-25s  %-12s  %10d  %s\n",
+					truncate(m.ID, 25),
+					m.Status,
+					len(m.GmailIDs),
+					truncate(m.Description, 40),
+				)
+				totalMessages += len(m.GmailIDs)
+			}
+			fmt.Printf("\nTotal: %d messages across %d batch(es)\n", totalMessages, len(manifests))
+			fmt.Println("\nUse 'msgvault delete-staged' to execute, or 'msgvault show-deletion <id>' for details.")
 			return nil
 		}
 
@@ -248,7 +345,7 @@ Examples:
 		}
 
 		// Open database
-		dbPath := cfg.DatabasePath()
+		dbPath := cfg.DatabaseDSN()
 		s, err := store.Open(dbPath)
 		if err != nil {
 			return fmt.Errorf("open database: %w", err)
@@ -270,17 +367,42 @@ Examples:
 
 		// Determine which scopes we need
 		needsBatchDelete := !deleteTrash
-		var scopes []string
+		var requiredScopes []string
 		if needsBatchDelete {
-			scopes = oauth.ScopesDeletion
+			requiredScopes = oauth.ScopesDeletion
 		} else {
-			scopes = oauth.Scopes
+			requiredScopes = oauth.Scopes
 		}
 
 		// Create OAuth manager with appropriate scopes
-		oauthMgr, err := oauth.NewManagerWithScopes(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger, scopes)
+		oauthMgr, err := oauth.NewManagerWithScopes(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger, requiredScopes)
 		if err != nil {
 			return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
+		}
+
+		// Proactively check if we need scope escalation before making API calls.
+		// Legacy tokens (saved before scope tracking) won't have scope metadata,
+		// so we only trigger proactive escalation when we positively know the
+		// token lacks the required scope.
+		if needsBatchDelete && !oauthMgr.HasScope(account, "https://mail.google.com/") {
+			// Only trigger proactive escalation when we have scope metadata.
+			// Legacy tokens (saved before scope tracking) fall through to
+			// reactive detection on the first API call.
+			if oauthMgr.HasScopeMetadata(account) {
+				// Token has scope metadata but lacks deletion scope — escalate now
+				if err := promptScopeEscalation(ctx, oauthMgr, account, needsBatchDelete); err != nil {
+					if errors.Is(err, errUserCanceled) {
+						return nil
+					}
+					return err
+				}
+				// Re-create OAuth manager with new token
+				oauthMgr, err = oauth.NewManagerWithScopes(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger, requiredScopes)
+				if err != nil {
+					return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
+				}
+			}
+			// If no scope metadata at all (legacy token), fall through to reactive detection
 		}
 
 		tokenSource, err := oauthMgr.TokenSource(ctx, account)
@@ -302,8 +424,11 @@ Examples:
 			WithProgress(&CLIDeletionProgress{})
 
 		// Execute each manifest
-		for _, m := range manifests {
-			fmt.Printf("\nExecuting: %s (%d messages)\n", m.ID, len(m.GmailIDs))
+		for i, m := range manifests {
+			if i > 0 {
+				fmt.Println()
+			}
+			fmt.Printf("  [%d/%d] %s (%d messages)\n", i+1, len(manifests), m.Description, len(m.GmailIDs))
 
 			var execErr error
 			// For in-progress manifests, honor the stored method to avoid
@@ -331,67 +456,13 @@ Examples:
 
 				// Check if this is a scope error - offer to re-authorize
 				if isInsufficientScopeError(execErr) {
-					fmt.Println("\n" + strings.Repeat("=", 70))
-					fmt.Println("PERMISSION UPGRADE REQUIRED")
-					fmt.Println(strings.Repeat("=", 70))
-					fmt.Println()
-
-					// Use appropriate scopes and messaging based on deletion method
-					var requiredScopes []string
-					if useTrash {
-						fmt.Println("Trash deletion requires Gmail modify permissions.")
-						fmt.Println()
-						fmt.Println("Your current OAuth token doesn't include the gmail.modify scope.")
-						fmt.Println("To proceed, msgvault needs to re-authorize with modify access.")
-						requiredScopes = oauth.Scopes
-					} else {
-						fmt.Println("Batch deletion requires elevated Gmail permissions.")
-						fmt.Println()
-						fmt.Println("Your current OAuth token was granted with limited permissions that")
-						fmt.Println("don't include batch delete. To proceed, msgvault needs to:")
-						fmt.Println()
-						fmt.Println("  1. Delete your existing OAuth token")
-						fmt.Println("  2. Re-authorize with full Gmail access (mail.google.com scope)")
-						fmt.Println()
-						fmt.Println("This elevated permission allows msgvault to permanently delete")
-						fmt.Println("messages in bulk. You can revoke access anytime at:")
-						fmt.Println("  https://myaccount.google.com/permissions")
-						requiredScopes = oauth.ScopesDeletion
-					}
-					fmt.Println()
-
-					fmt.Print("Upgrade permissions now? [y/N]: ")
-					var response string
-					_, _ = fmt.Scanln(&response)
-					if response != "y" && response != "Y" {
-						if !useTrash {
-							fmt.Println("Cancelled. Use --trash for slower deletion without elevated permissions.")
-						} else {
-							fmt.Println("Cancelled.")
+					if err := promptScopeEscalation(ctx, oauthMgr, account, !useTrash); err != nil {
+						if errors.Is(err, errUserCanceled) {
+							return nil
 						}
-						return nil
+						return err
 					}
-
-					// Delete old token and re-authorize
-					fmt.Println("\nDeleting old token...")
-					if err := oauthMgr.DeleteToken(account); err != nil {
-						return fmt.Errorf("delete token: %w", err)
-					}
-
-					fmt.Println("Starting OAuth flow...")
-					fmt.Println()
-
-					// Create new manager with appropriate scopes and authorize
-					newMgr, err := oauth.NewManagerWithScopes(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger, requiredScopes)
-					if err != nil {
-						return fmt.Errorf("create oauth manager: %w", err)
-					}
-
-					if err := newMgr.Authorize(ctx, account, false); err != nil {
-						return fmt.Errorf("authorize: %w", err)
-					}
-
-					fmt.Println("\nAuthorization successful! Run delete-staged again to continue.")
+					fmt.Println("Run delete-staged again to continue.")
 					return nil
 				}
 
@@ -401,8 +472,30 @@ Examples:
 		}
 
 		fmt.Println("\nDeletion complete!")
+
+		// Refresh analytics cache to reflect deleted messages
+		analyticsDir := cfg.AnalyticsDir()
+		if _, err := os.Stat(analyticsDir); err == nil {
+			fmt.Println("\nRefreshing analytics cache...")
+			if result, err := buildCache(dbPath, analyticsDir, true); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to refresh cache: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Run 'msgvault build-cache --full-rebuild' manually to update.\n")
+			} else if !result.Skipped {
+				fmt.Printf("Cache refreshed (%d messages).\n", result.ExportedCount)
+			}
+		}
+
 		return nil
 	},
+}
+
+// isTTY reports whether stdout is connected to a terminal.
+func isTTY() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 // CLIDeletionProgress reports deletion progress to the terminal.
@@ -410,28 +503,88 @@ type CLIDeletionProgress struct {
 	total     int
 	startTime time.Time
 	lastPrint time.Time
+	tty       bool
 }
 
 func (p *CLIDeletionProgress) OnStart(total int) {
 	p.total = total
 	p.startTime = time.Now()
-	p.lastPrint = time.Now()
+	p.lastPrint = time.Time{} // Force first print
+	p.tty = isTTY()
+	// Show initial progress immediately so it doesn't look like it's hanging
+	p.OnProgress(0, 0, 0)
+}
+
+func (p *CLIDeletionProgress) formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
 }
 
 func (p *CLIDeletionProgress) OnProgress(processed, succeeded, failed int) {
-	if time.Since(p.lastPrint) < time.Second {
+	if p.total <= 0 {
+		return
+	}
+	if time.Since(p.lastPrint) < 500*time.Millisecond {
 		return
 	}
 	p.lastPrint = time.Now()
 
 	pct := float64(processed) / float64(p.total) * 100
-	fmt.Printf("\r  Progress: %d/%d (%.1f%%) | Succeeded: %d | Failed: %d    ",
-		processed, p.total, pct, succeeded, failed)
+	elapsed := time.Since(p.startTime)
+
+	bar := p.progressBar(pct, 30)
+
+	var eta string
+	if processed > 0 && processed < p.total {
+		remaining := time.Duration(float64(elapsed) / float64(processed) * float64(p.total-processed))
+		eta = p.formatDuration(remaining) + " remaining"
+	} else if processed >= p.total {
+		eta = p.formatDuration(elapsed) + " elapsed"
+	} else {
+		eta = "calculating..."
+	}
+
+	status := fmt.Sprintf("  %s %.1f%%  %d/%d", bar, pct, processed, p.total)
+	if failed > 0 {
+		status += fmt.Sprintf("  (%d failed)", failed)
+	}
+	status += fmt.Sprintf("  %s", eta)
+	if p.tty {
+		fmt.Printf("\r\033[K%s", status)
+	} else {
+		fmt.Println(status)
+	}
+}
+
+func (p *CLIDeletionProgress) progressBar(pct float64, width int) string {
+	filled := int(pct / 100 * float64(width))
+	if filled > width {
+		filled = width
+	}
+	bar := make([]byte, width)
+	for i := range bar {
+		if i < filled {
+			bar[i] = '#'
+		} else {
+			bar[i] = '-'
+		}
+	}
+	return "[" + string(bar) + "]"
 }
 
 func (p *CLIDeletionProgress) OnComplete(succeeded, failed int) {
-	fmt.Println()
-	fmt.Printf("  Completed: %d succeeded, %d failed\n", succeeded, failed)
+	elapsed := time.Since(p.startTime)
+	// Clear the progress line
+	if p.tty {
+		fmt.Print("\r\033[K")
+	}
+	if failed == 0 {
+		fmt.Printf("  Done: %d deleted in %s\n", succeeded, p.formatDuration(elapsed))
+	} else {
+		fmt.Printf("  Done: %d deleted, %d failed in %s\n", succeeded, failed, p.formatDuration(elapsed))
+	}
 }
 
 // Helper functions
@@ -449,6 +602,75 @@ func limitManifests(manifests []*deletion.Manifest, max int) []*deletion.Manifes
 	return manifests[:max]
 }
 
+// errUserCanceled is returned when the user declines scope escalation.
+var errUserCanceled = errors.New("user canceled scope escalation")
+
+// promptScopeEscalation prompts the user to re-authorize with elevated scopes.
+// It deletes the old token, runs the OAuth browser flow, and returns nil on
+// success. The caller should re-create the OAuth manager after this returns.
+func promptScopeEscalation(ctx context.Context, oauthMgr *oauth.Manager, account string, batchDelete bool) error {
+	fmt.Println("\n" + strings.Repeat("=", 70))
+	fmt.Println("PERMISSION UPGRADE REQUIRED")
+	fmt.Println(strings.Repeat("=", 70))
+	fmt.Println()
+
+	var requiredScopes []string
+	if !batchDelete {
+		fmt.Println("Trash deletion requires Gmail modify permissions.")
+		fmt.Println()
+		fmt.Println("Your current OAuth token doesn't include the gmail.modify scope.")
+		fmt.Println("To proceed, msgvault needs to re-authorize with modify access.")
+		requiredScopes = oauth.Scopes
+	} else {
+		fmt.Println("Batch deletion requires elevated Gmail permissions.")
+		fmt.Println()
+		fmt.Println("Your current OAuth token was granted with limited permissions that")
+		fmt.Println("don't include batch delete. To proceed, msgvault needs to:")
+		fmt.Println()
+		fmt.Println("  1. Delete your existing OAuth token")
+		fmt.Println("  2. Re-authorize with full Gmail access (mail.google.com scope)")
+		fmt.Println()
+		fmt.Println("This elevated permission allows msgvault to permanently delete")
+		fmt.Println("messages in bulk. You can revoke access anytime at:")
+		fmt.Println("  https://myaccount.google.com/permissions")
+		requiredScopes = oauth.ScopesDeletion
+	}
+	fmt.Println()
+
+	fmt.Print("Upgrade permissions now? [y/N]: ")
+	var response string
+	_, _ = fmt.Scanln(&response)
+	if response != "y" && response != "Y" {
+		if batchDelete {
+			fmt.Println("Cancelled. Use --trash for slower deletion without elevated permissions.")
+		} else {
+			fmt.Println("Cancelled.")
+		}
+		return errUserCanceled
+	}
+
+	// Delete old token and re-authorize
+	fmt.Println("\nDeleting old token...")
+	if err := oauthMgr.DeleteToken(account); err != nil {
+		return fmt.Errorf("delete token: %w", err)
+	}
+
+	fmt.Println("Starting OAuth flow...")
+	fmt.Println()
+
+	newMgr, err := oauth.NewManagerWithScopes(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger, requiredScopes)
+	if err != nil {
+		return fmt.Errorf("create oauth manager: %w", err)
+	}
+
+	if err := newMgr.Authorize(ctx, account); err != nil {
+		return fmt.Errorf("authorize: %w", err)
+	}
+
+	fmt.Println("\nAuthorization successful!")
+	return nil
+}
+
 // isInsufficientScopeError checks if an error is due to missing OAuth scopes.
 func isInsufficientScopeError(err error) bool {
 	if err == nil {
@@ -464,10 +686,12 @@ func init() {
 	deleteStagedCmd.Flags().BoolVar(&deleteTrash, "trash", false, "Move to trash instead of permanent delete (slower)")
 	deleteStagedCmd.Flags().BoolVarP(&deleteYes, "yes", "y", false, "Skip confirmation")
 	deleteStagedCmd.Flags().BoolVar(&deleteDryRun, "dry-run", false, "Show what would be deleted")
+	deleteStagedCmd.Flags().BoolVarP(&deleteList, "list", "l", false, "List staged batches without executing")
 	deleteStagedCmd.Flags().StringVar(&deleteAccount, "account", "", "Gmail account to use")
 
 	rootCmd.AddCommand(listDeletionsCmd)
 	rootCmd.AddCommand(showDeletionCmd)
+	cancelDeletionCmd.Flags().BoolVar(&cancelAll, "all", false, "Cancel all pending and in-progress batches")
 	rootCmd.AddCommand(cancelDeletionCmd)
 	rootCmd.AddCommand(deleteStagedCmd)
 }

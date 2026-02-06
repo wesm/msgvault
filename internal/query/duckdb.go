@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/marcboeker/go-duckdb"
@@ -22,19 +24,42 @@ import (
 // DuckDBEngine implements Engine using DuckDB for fast Parquet queries.
 // It uses a hybrid approach:
 //   - DuckDB with Parquet for fast aggregate queries
-//   - DuckDB's sqlite_scan for list queries (ListMessages, ListAccounts)
+//   - DuckDB's sqlite_scan for list queries (ListMessages, ListAccounts) — non-Windows only
 //   - Direct SQLite for FTS search and message body retrieval (sqlite_scan can't use FTS5)
+//
+// On Windows, the sqlite_scanner extension is not available (DuckDB's extension
+// repository does not publish MinGW builds). All SQLite queries route through
+// sqliteEngine instead.
 //
 // Deletion handling: The Python ETL excludes deleted messages (deleted_from_source_at IS NOT NULL)
 // when building Parquet files. However, messages deleted AFTER the Parquet build will still
 // appear in aggregates until the next `build-parquet --full-rebuild`. For the full deletion
 // index solution, see beads issue msgvault-ozj.
 type DuckDBEngine struct {
-	db           *sql.DB
-	analyticsDir string
-	sqlitePath   string        // Path to SQLite database for sqlite_scan queries
-	sqliteDB     *sql.DB       // Direct SQLite connection for FTS and body retrieval
-	sqliteEngine *SQLiteEngine // Reusable engine for FTS cache, created once if sqliteDB is set
+	db               *sql.DB
+	analyticsDir     string
+	sqlitePath       string        // Path to SQLite database for sqlite_scan queries
+	sqliteDB         *sql.DB       // Direct SQLite connection for FTS and body retrieval
+	sqliteEngine     *SQLiteEngine // Reusable engine for FTS cache, created once if sqliteDB is set
+	hasSQLiteScanner bool          // true if DuckDB's sqlite extension is loaded
+	tempTableSeq     atomic.Uint64 // Unique suffix for temp tables to avoid concurrent collisions
+
+	// Search result cache: keeps the materialized temp table alive across
+	// pagination calls for the same search query, avoiding repeated Parquet scans.
+	searchCacheMu    sync.Mutex  // protects cache fields from concurrent goroutines
+	searchCacheKey   string      // deterministic key from conditions+args
+	searchCacheTable string      // temp table name (e.g. "_search_matches_42")
+	searchCacheCount int64       // cached COUNT(*) from materialization
+	searchCacheStats *TotalStats // cached stats from Phase 4
+}
+
+// DuckDBOptions configures optional DuckDB engine behavior.
+type DuckDBOptions struct {
+	// DisableSQLiteScanner prevents loading the sqlite_scanner extension even
+	// on platforms where it would normally be available. This forces all SQLite
+	// queries to route through sqliteEngine, matching the Windows code path.
+	// Useful for testing the non-scanner code path on Linux/macOS.
+	DisableSQLiteScanner bool
 }
 
 // NewDuckDBEngine creates a new DuckDB-backed query engine.
@@ -49,7 +74,11 @@ type DuckDBEngine struct {
 // If sqlitePath is empty, only aggregate queries and GetTotalStats will work.
 // If sqliteDB is nil, Search will fall back to LIKE queries and body extraction
 // from raw MIME may be slower.
-func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB) (*DuckDBEngine, error) {
+func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB, opts ...DuckDBOptions) (*DuckDBEngine, error) {
+	var opt DuckDBOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 	// Open in-memory DuckDB
 	db, err := sql.Open("duckdb", "")
 	if err != nil {
@@ -69,20 +98,24 @@ func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB) (
 		return nil, fmt.Errorf("set threads: %w", err)
 	}
 
-	// Install and load SQLite extension if we have a SQLite path
-	if sqlitePath != "" {
+	// Install and load SQLite extension if we have a SQLite path.
+	// On Windows, the sqlite_scanner extension is not available for MinGW
+	// builds — all detail queries route through sqliteEngine instead.
+	// DisableSQLiteScanner forces the same fallback on any platform (for testing).
+	// On other platforms, try to load but fall back gracefully (e.g. no internet).
+	var hasSQLiteScanner bool
+	if sqlitePath != "" && runtime.GOOS != "windows" && !opt.DisableSQLiteScanner {
 		if _, err := db.Exec("INSTALL sqlite; LOAD sqlite;"); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("load sqlite extension: %w", err)
-		}
-
-		// Attach SQLite database as read-only
-		// Escape single quotes in path to prevent SQL injection
-		escapedPath := strings.ReplaceAll(sqlitePath, "'", "''")
-		attachSQL := fmt.Sprintf("ATTACH '%s' AS sqlite_db (TYPE sqlite, READ_ONLY)", escapedPath)
-		if _, err := db.Exec(attachSQL); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("attach sqlite database: %w", err)
+			log.Printf("[warn] sqlite_scanner extension unavailable, falling back to direct SQLite: %v", err)
+		} else {
+			// Attach SQLite database as read-only
+			escapedPath := strings.ReplaceAll(sqlitePath, "'", "''")
+			attachSQL := fmt.Sprintf("ATTACH '%s' AS sqlite_db (TYPE sqlite, READ_ONLY)", escapedPath)
+			if _, err := db.Exec(attachSQL); err != nil {
+				log.Printf("[warn] failed to attach SQLite via sqlite_scanner, falling back to direct SQLite: %v", err)
+			} else {
+				hasSQLiteScanner = true
+			}
 		}
 	}
 
@@ -94,22 +127,27 @@ func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB) (
 	}
 
 	return &DuckDBEngine{
-		db:           db,
-		analyticsDir: analyticsDir,
-		sqlitePath:   sqlitePath,
-		sqliteDB:     sqliteDB,
-		sqliteEngine: sqliteEngine,
+		db:               db,
+		analyticsDir:     analyticsDir,
+		sqlitePath:       sqlitePath,
+		sqliteDB:         sqliteDB,
+		sqliteEngine:     sqliteEngine,
+		hasSQLiteScanner: hasSQLiteScanner,
 	}, nil
 }
 
-// Close releases DuckDB resources.
+// Close releases DuckDB resources, including any cached search temp table.
 func (e *DuckDBEngine) Close() error {
+	e.searchCacheMu.Lock()
+	e.dropSearchCache()
+	e.searchCacheMu.Unlock()
 	return e.db.Close()
 }
 
-// hasSQLite returns true if SQLite is available for detail queries.
+// hasSQLite returns true if DuckDB's sqlite_scanner extension is loaded,
+// allowing sqlite_db.* queries. On Windows this is always false.
 func (e *DuckDBEngine) hasSQLite() bool {
-	return e.sqlitePath != ""
+	return e.hasSQLiteScanner
 }
 
 // parquetGlob returns the glob pattern for reading message Parquet files.
@@ -124,30 +162,64 @@ func (e *DuckDBEngine) parquetPath(table string) string {
 
 // parquetCTEs returns common CTEs for reading all Parquet tables.
 // This is used by aggregate queries that need to join across tables.
+// parquetCTEs returns the WITH clause body that defines CTEs for all Parquet
+// tables. Columns are explicitly cast to their expected types using DuckDB's
+// REPLACE syntax, because Parquet schema inference from SQLite can store
+// integer/boolean columns as VARCHAR, causing type mismatch errors in JOINs
+// and COALESCE expressions.
 func (e *DuckDBEngine) parquetCTEs() string {
 	return fmt.Sprintf(`
 		msg AS (
-			SELECT * FROM read_parquet('%s', hive_partitioning=true)
+			SELECT * REPLACE (
+				CAST(id AS BIGINT) AS id,
+				CAST(source_id AS BIGINT) AS source_id,
+				CAST(source_message_id AS VARCHAR) AS source_message_id,
+				CAST(conversation_id AS BIGINT) AS conversation_id,
+				CAST(subject AS VARCHAR) AS subject,
+				CAST(snippet AS VARCHAR) AS snippet,
+				CAST(size_estimate AS BIGINT) AS size_estimate,
+				COALESCE(TRY_CAST(has_attachments AS BOOLEAN), false) AS has_attachments
+			) FROM read_parquet('%s', hive_partitioning=true)
 		),
 		mr AS (
-			SELECT * FROM read_parquet('%s')
+			SELECT * REPLACE (
+				CAST(message_id AS BIGINT) AS message_id,
+				CAST(participant_id AS BIGINT) AS participant_id,
+				CAST(recipient_type AS VARCHAR) AS recipient_type,
+				CAST(display_name AS VARCHAR) AS display_name
+			) FROM read_parquet('%s')
 		),
 		p AS (
-			SELECT * FROM read_parquet('%s')
+			SELECT * REPLACE (
+				CAST(id AS BIGINT) AS id,
+				CAST(email_address AS VARCHAR) AS email_address,
+				CAST(domain AS VARCHAR) AS domain,
+				CAST(display_name AS VARCHAR) AS display_name
+			) FROM read_parquet('%s')
 		),
 		lbl AS (
-			SELECT * FROM read_parquet('%s')
+			SELECT * REPLACE (
+				CAST(id AS BIGINT) AS id,
+				CAST(name AS VARCHAR) AS name
+			) FROM read_parquet('%s')
 		),
 		ml AS (
-			SELECT * FROM read_parquet('%s')
+			SELECT * REPLACE (
+				CAST(message_id AS BIGINT) AS message_id,
+				CAST(label_id AS BIGINT) AS label_id
+			) FROM read_parquet('%s')
 		),
 		att AS (
-			SELECT message_id, SUM(size) as attachment_size, COUNT(*) as attachment_count
+			SELECT CAST(message_id AS BIGINT) AS message_id,
+				SUM(COALESCE(TRY_CAST(size AS BIGINT), 0)) as attachment_size,
+				COUNT(*) as attachment_count
 			FROM read_parquet('%s')
-			GROUP BY message_id
+			GROUP BY 1
 		),
 		src AS (
-			SELECT * FROM read_parquet('%s')
+			SELECT * REPLACE (
+				CAST(id AS BIGINT) AS id
+			) FROM read_parquet('%s')
 		)
 	`, e.parquetGlob(),
 		e.parquetPath("message_recipients"),
@@ -232,7 +304,7 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyCol
 			SELECT 1 FROM mr mr_to
 			JOIN p p_to ON p_to.id = mr_to.participant_id
 			WHERE mr_to.message_id = msg.id
-			  AND mr_to.recipient_type IN ('to', 'cc')
+			  AND mr_to.recipient_type IN ('to', 'cc', 'bcc')
 			  AND p_to.email_address ILIKE ? ESCAPE '\'
 		)`)
 		args = append(args, toPattern)
@@ -309,7 +381,7 @@ func (e *DuckDBEngine) buildStatsSearchConditions(searchQuery string, groupBy Vi
 				SELECT 1 FROM mr mr_rs
 				JOIN p p_rs ON p_rs.id = mr_rs.participant_id
 				WHERE mr_rs.message_id = msg.id
-				  AND mr_rs.recipient_type IN ('to', 'cc')
+				  AND mr_rs.recipient_type IN ('to', 'cc', 'bcc')
 				  AND (p_rs.email_address ILIKE ? ESCAPE '\' OR p_rs.display_name ILIKE ? ESCAPE '\')
 			)`)
 			args = append(args, termPattern, termPattern)
@@ -395,6 +467,133 @@ func (e *DuckDBEngine) buildWhereClause(opts AggregateOptions, keyColumns ...str
 	return strings.Join(conditions, " AND "), args
 }
 
+// timeExpr returns the SQL expression for time grouping based on granularity.
+func timeExpr(g TimeGranularity) string {
+	switch g {
+	case TimeYear:
+		return "CAST(msg.year AS VARCHAR)"
+	case TimeDay:
+		return "strftime(msg.sent_at, '%Y-%m-%d')"
+	default: // TimeMonth
+		return "CAST(msg.year AS VARCHAR) || '-' || LPAD(CAST(msg.month AS VARCHAR), 2, '0')"
+	}
+}
+
+// aggViewDef defines the varying parts of an aggregate query for each view type.
+type aggViewDef struct {
+	keyExpr    string // SQL expression for the grouping key (e.g. "p.email_address")
+	joinClause string // JOIN clause specific to this view
+	nullGuard  string // WHERE condition to exclude NULL keys
+	// keyColumns for buildWhereClause search filtering (passed through to buildAggregateSearchConditions)
+	keyColumns []string
+}
+
+// getViewDef returns the aggregate query definition for a given view type.
+// The tablePrefix is used to alias tables in SubAggregate to avoid conflicts
+// with CTE names used in filter conditions. Pass "" for top-level aggregates.
+func getViewDef(view ViewType, granularity TimeGranularity, tablePrefix string) (aggViewDef, error) {
+	// Use prefix for table aliases in SubAggregate (e.g. "mr_agg", "p_agg")
+	// to avoid ambiguity with CTE names used in WHERE clause EXISTS subqueries.
+	mrAlias := "mr"
+	pAlias := "p"
+	mlAlias := "ml"
+	lblAlias := "lbl"
+	if tablePrefix != "" {
+		mrAlias = "mr_" + tablePrefix
+		pAlias = "p_" + tablePrefix
+		mlAlias = "ml_" + tablePrefix
+		lblAlias = "lbl_" + tablePrefix
+	}
+
+	switch view {
+	case ViewSenders:
+		return aggViewDef{
+			keyExpr:    pAlias + ".email_address",
+			joinClause: fmt.Sprintf("JOIN mr %s ON %s.message_id = msg.id AND %s.recipient_type = 'from'\n\t\t\t\tJOIN p %s ON %s.id = %s.participant_id", mrAlias, mrAlias, mrAlias, pAlias, pAlias, mrAlias),
+			nullGuard:  pAlias + ".email_address IS NOT NULL",
+		}, nil
+	case ViewSenderNames:
+		nameExpr := fmt.Sprintf("COALESCE(NULLIF(TRIM(%s.display_name), ''), %s.email_address)", pAlias, pAlias)
+		return aggViewDef{
+			keyExpr:    nameExpr,
+			joinClause: fmt.Sprintf("JOIN mr %s ON %s.message_id = msg.id AND %s.recipient_type = 'from'\n\t\t\t\tJOIN p %s ON %s.id = %s.participant_id", mrAlias, mrAlias, mrAlias, pAlias, pAlias, mrAlias),
+			nullGuard:  nameExpr + " IS NOT NULL",
+		}, nil
+	case ViewRecipients:
+		return aggViewDef{
+			keyExpr:    pAlias + ".email_address",
+			joinClause: fmt.Sprintf("JOIN mr %s ON %s.message_id = msg.id AND %s.recipient_type IN ('to', 'cc', 'bcc')\n\t\t\t\tJOIN p %s ON %s.id = %s.participant_id", mrAlias, mrAlias, mrAlias, pAlias, pAlias, mrAlias),
+			nullGuard:  pAlias + ".email_address IS NOT NULL",
+			keyColumns: []string{pAlias + ".email_address", pAlias + ".display_name"},
+		}, nil
+	case ViewRecipientNames:
+		nameExpr := fmt.Sprintf("COALESCE(NULLIF(TRIM(%s.display_name), ''), %s.email_address)", pAlias, pAlias)
+		return aggViewDef{
+			keyExpr:    nameExpr,
+			joinClause: fmt.Sprintf("JOIN mr %s ON %s.message_id = msg.id AND %s.recipient_type IN ('to', 'cc', 'bcc')\n\t\t\t\tJOIN p %s ON %s.id = %s.participant_id", mrAlias, mrAlias, mrAlias, pAlias, pAlias, mrAlias),
+			nullGuard:  nameExpr + " IS NOT NULL",
+			keyColumns: []string{pAlias + ".email_address", pAlias + ".display_name"},
+		}, nil
+	case ViewDomains:
+		return aggViewDef{
+			keyExpr:    pAlias + ".domain",
+			joinClause: fmt.Sprintf("JOIN mr %s ON %s.message_id = msg.id AND %s.recipient_type = 'from'\n\t\t\t\tJOIN p %s ON %s.id = %s.participant_id", mrAlias, mrAlias, mrAlias, pAlias, pAlias, mrAlias),
+			nullGuard:  pAlias + ".domain IS NOT NULL AND " + pAlias + ".domain != ''",
+		}, nil
+	case ViewLabels:
+		return aggViewDef{
+			keyExpr:    lblAlias + ".name",
+			joinClause: fmt.Sprintf("JOIN ml %s ON %s.message_id = msg.id\n\t\t\t\tJOIN lbl %s ON %s.id = %s.label_id", mlAlias, mlAlias, lblAlias, lblAlias, mlAlias),
+			nullGuard:  lblAlias + ".name IS NOT NULL",
+			keyColumns: []string{lblAlias + ".name"},
+		}, nil
+	case ViewTime:
+		return aggViewDef{
+			keyExpr:   timeExpr(granularity),
+			nullGuard: "msg.sent_at IS NOT NULL",
+		}, nil
+	default:
+		return aggViewDef{}, fmt.Errorf("unsupported view type: %v", view)
+	}
+}
+
+// runAggregation executes a generic aggregation query using the view definition.
+func (e *DuckDBEngine) runAggregation(ctx context.Context, def aggViewDef, whereClause string, args []interface{}, opts AggregateOptions) ([]AggregateRow, error) {
+	limit := opts.Limit
+	if limit == 0 {
+		limit = 100
+	}
+
+	fullWhere := whereClause
+	if def.nullGuard != "" {
+		fullWhere += " AND " + def.nullGuard
+	}
+
+	query := fmt.Sprintf(`
+		WITH %s
+		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
+		FROM (
+			SELECT
+				%s as key,
+				COUNT(*) as count,
+				COALESCE(SUM(CAST(msg.size_estimate AS BIGINT)), 0) as total_size,
+				CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
+				CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
+				COUNT(*) OVER() as total_unique
+			FROM msg
+			%s
+			LEFT JOIN att ON att.message_id = msg.id
+			WHERE %s
+			GROUP BY %s
+		)
+		%s
+		LIMIT ?
+	`, e.parquetCTEs(), def.keyExpr, def.joinClause, fullWhere, def.keyExpr, e.sortClause(opts))
+
+	args = append(args, limit)
+	return e.executeAggregateQuery(ctx, query, args)
+}
+
 // sortClause returns ORDER BY clause for aggregates.
 func (e *DuckDBEngine) sortClause(opts AggregateOptions) string {
 	field := "count"
@@ -415,270 +614,19 @@ func (e *DuckDBEngine) sortClause(opts AggregateOptions) string {
 	return fmt.Sprintf("ORDER BY %s %s", field, dir)
 }
 
-// AggregateBySender groups messages by sender email.
-func (e *DuckDBEngine) AggregateBySender(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := e.buildWhereClause(opts)
-
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 100
+// aggregateByView is the generic implementation for all AggregateBy* methods.
+func (e *DuckDBEngine) aggregateByView(ctx context.Context, view ViewType, opts AggregateOptions) ([]AggregateRow, error) {
+	def, err := getViewDef(view, opts.TimeGranularity, "")
+	if err != nil {
+		return nil, err
 	}
-
-	// Join messages -> message_recipients (from) -> participants for sender email
-	query := fmt.Sprintf(`
-		WITH %s
-		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-		FROM (
-			SELECT
-				p.email_address as key,
-				COUNT(*) as count,
-				COALESCE(SUM(msg.size_estimate), 0) as total_size,
-				CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
-				CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
-				COUNT(*) OVER() as total_unique
-			FROM msg
-			JOIN mr ON mr.message_id = msg.id AND mr.recipient_type = 'from'
-			JOIN p ON p.id = mr.participant_id
-			LEFT JOIN att ON att.message_id = msg.id
-			WHERE %s AND p.email_address IS NOT NULL
-			GROUP BY p.email_address
-		)
-		%s
-		LIMIT ?
-	`, e.parquetCTEs(), where, e.sortClause(opts))
-
-	args = append(args, limit)
-	return e.executeAggregateQuery(ctx, query, args)
+	where, args := e.buildWhereClause(opts, def.keyColumns...)
+	return e.runAggregation(ctx, def, where, args, opts)
 }
 
-// AggregateBySenderName groups messages by sender display name.
-// Uses COALESCE(display_name, email_address) so senders without a display name
-// fall back to their email address.
-func (e *DuckDBEngine) AggregateBySenderName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := e.buildWhereClause(opts)
-
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 100
-	}
-
-	query := fmt.Sprintf(`
-		WITH %s
-		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-		FROM (
-			SELECT
-				COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) as key,
-				COUNT(*) as count,
-				COALESCE(SUM(msg.size_estimate), 0) as total_size,
-				CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
-				CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
-				COUNT(*) OVER() as total_unique
-			FROM msg
-			JOIN mr ON mr.message_id = msg.id AND mr.recipient_type = 'from'
-			JOIN p ON p.id = mr.participant_id
-			LEFT JOIN att ON att.message_id = msg.id
-			WHERE %s AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) IS NOT NULL
-			GROUP BY COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address)
-		)
-		%s
-		LIMIT ?
-	`, e.parquetCTEs(), where, e.sortClause(opts))
-
-	args = append(args, limit)
-	return e.executeAggregateQuery(ctx, query, args)
-}
-
-// AggregateByRecipient groups messages by recipient email.
-// Includes to, cc recipients (bcc not exported to Parquet for privacy).
-func (e *DuckDBEngine) AggregateByRecipient(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := e.buildWhereClause(opts, "p.email_address", "p.display_name")
-
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 100
-	}
-
-	// Join messages -> message_recipients (to/cc) -> participants for recipient email
-	query := fmt.Sprintf(`
-		WITH %s
-		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-		FROM (
-			SELECT
-				p.email_address as key,
-				COUNT(*) as count,
-				COALESCE(SUM(msg.size_estimate), 0) as total_size,
-				CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
-				CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
-				COUNT(*) OVER() as total_unique
-			FROM msg
-			JOIN mr ON mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc')
-			JOIN p ON p.id = mr.participant_id
-			LEFT JOIN att ON att.message_id = msg.id
-			WHERE %s AND p.email_address IS NOT NULL
-			GROUP BY p.email_address
-		)
-		%s
-		LIMIT ?
-	`, e.parquetCTEs(), where, e.sortClause(opts))
-
-	args = append(args, limit)
-	return e.executeAggregateQuery(ctx, query, args)
-}
-
-// AggregateByRecipientName groups messages by recipient display name.
-// Uses COALESCE(display_name, email_address) so recipients without a display name
-// fall back to their email address.
-func (e *DuckDBEngine) AggregateByRecipientName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := e.buildWhereClause(opts, "p.email_address", "p.display_name")
-
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 100
-	}
-
-	query := fmt.Sprintf(`
-		WITH %s
-		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-		FROM (
-			SELECT
-				COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) as key,
-				COUNT(*) as count,
-				COALESCE(SUM(msg.size_estimate), 0) as total_size,
-				CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
-				CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
-				COUNT(*) OVER() as total_unique
-			FROM msg
-			JOIN mr ON mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc')
-			JOIN p ON p.id = mr.participant_id
-			LEFT JOIN att ON att.message_id = msg.id
-			WHERE %s AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) IS NOT NULL
-			GROUP BY COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address)
-		)
-		%s
-		LIMIT ?
-	`, e.parquetCTEs(), where, e.sortClause(opts))
-
-	args = append(args, limit)
-	return e.executeAggregateQuery(ctx, query, args)
-}
-
-// AggregateByDomain groups messages by sender domain.
-func (e *DuckDBEngine) AggregateByDomain(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := e.buildWhereClause(opts)
-
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 100
-	}
-
-	// Join messages -> message_recipients (from) -> participants for sender domain
-	query := fmt.Sprintf(`
-		WITH %s
-		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-		FROM (
-			SELECT
-				p.domain as key,
-				COUNT(*) as count,
-				COALESCE(SUM(msg.size_estimate), 0) as total_size,
-				CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
-				CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
-				COUNT(*) OVER() as total_unique
-			FROM msg
-			JOIN mr ON mr.message_id = msg.id AND mr.recipient_type = 'from'
-			JOIN p ON p.id = mr.participant_id
-			LEFT JOIN att ON att.message_id = msg.id
-			WHERE %s AND p.domain IS NOT NULL AND p.domain != ''
-			GROUP BY p.domain
-		)
-		%s
-		LIMIT ?
-	`, e.parquetCTEs(), where, e.sortClause(opts))
-
-	args = append(args, limit)
-	return e.executeAggregateQuery(ctx, query, args)
-}
-
-// AggregateByLabel groups messages by label.
-func (e *DuckDBEngine) AggregateByLabel(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := e.buildWhereClause(opts, "lbl.name")
-
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 100
-	}
-
-	// Join messages -> message_labels -> labels for label name
-	query := fmt.Sprintf(`
-		WITH %s
-		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-		FROM (
-			SELECT
-				lbl.name as key,
-				COUNT(*) as count,
-				COALESCE(SUM(msg.size_estimate), 0) as total_size,
-				CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
-				CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
-				COUNT(*) OVER() as total_unique
-			FROM msg
-			JOIN ml ON ml.message_id = msg.id
-			JOIN lbl ON lbl.id = ml.label_id
-			LEFT JOIN att ON att.message_id = msg.id
-			WHERE %s AND lbl.name IS NOT NULL
-			GROUP BY lbl.name
-		)
-		%s
-		LIMIT ?
-	`, e.parquetCTEs(), where, e.sortClause(opts))
-
-	args = append(args, limit)
-	return e.executeAggregateQuery(ctx, query, args)
-}
-
-// AggregateByTime groups messages by time period.
-func (e *DuckDBEngine) AggregateByTime(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := e.buildWhereClause(opts)
-
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 100
-	}
-
-	// Build time grouping expression based on granularity
-	var timeExpr string
-	switch opts.TimeGranularity {
-	case TimeYear:
-		timeExpr = "CAST(msg.year AS VARCHAR)"
-	case TimeMonth:
-		timeExpr = "CAST(msg.year AS VARCHAR) || '-' || LPAD(CAST(msg.month AS VARCHAR), 2, '0')"
-	case TimeDay:
-		timeExpr = "strftime(msg.sent_at, '%Y-%m-%d')"
-	default:
-		timeExpr = "CAST(msg.year AS VARCHAR) || '-' || LPAD(CAST(msg.month AS VARCHAR), 2, '0')"
-	}
-
-	// Time aggregation with attachment stats from separate table
-	query := fmt.Sprintf(`
-		WITH %s
-		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-		FROM (
-			SELECT
-				%s as key,
-				COUNT(*) as count,
-				COALESCE(SUM(msg.size_estimate), 0) as total_size,
-				CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
-				CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
-				COUNT(*) OVER() as total_unique
-			FROM msg
-			LEFT JOIN att ON att.message_id = msg.id
-			WHERE %s AND msg.sent_at IS NOT NULL
-			GROUP BY key
-		)
-		%s
-		LIMIT ?
-	`, e.parquetCTEs(), timeExpr, where, e.sortClause(opts))
-
-	args = append(args, limit)
-	return e.executeAggregateQuery(ctx, query, args)
+// Aggregate performs grouping based on the provided ViewType.
+func (e *DuckDBEngine) Aggregate(ctx context.Context, groupBy ViewType, opts AggregateOptions) ([]AggregateRow, error) {
+	return e.aggregateByView(ctx, groupBy, opts)
 }
 
 // buildFilterConditions builds WHERE conditions from a MessageFilter.
@@ -722,7 +670,7 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 			  AND p.email_address = ?
 		)`)
 		args = append(args, filter.Sender)
-	} else if filter.MatchEmptySender {
+	} else if filter.MatchesEmpty(ViewSenders) {
 		conditions = append(conditions, `NOT EXISTS (
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
@@ -743,7 +691,7 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) = ?
 		)`)
 		args = append(args, filter.SenderName)
-	} else if filter.MatchEmptySenderName {
+	} else if filter.MatchesEmpty(ViewSenderNames) {
 		conditions = append(conditions, `NOT EXISTS (
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
@@ -759,12 +707,12 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.message_id = msg.id
-			  AND mr.recipient_type IN ('to', 'cc')
+			  AND mr.recipient_type IN ('to', 'cc', 'bcc')
 			  AND p.email_address = ?
 		)`)
 		args = append(args, filter.Recipient)
-	} else if filter.MatchEmptyRecipient {
-		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM mr WHERE mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc'))")
+	} else if filter.MatchesEmpty(ViewRecipients) {
+		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM mr WHERE mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc', 'bcc'))")
 	}
 
 	// Recipient name filter - use EXISTS subquery (becomes semi-join)
@@ -773,16 +721,16 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.message_id = msg.id
-			  AND mr.recipient_type IN ('to', 'cc')
+			  AND mr.recipient_type IN ('to', 'cc', 'bcc')
 			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) = ?
 		)`)
 		args = append(args, filter.RecipientName)
-	} else if filter.MatchEmptyRecipientName {
+	} else if filter.MatchesEmpty(ViewRecipientNames) {
 		conditions = append(conditions, `NOT EXISTS (
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.message_id = msg.id
-			  AND mr.recipient_type IN ('to', 'cc')
+			  AND mr.recipient_type IN ('to', 'cc', 'bcc')
 			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) IS NOT NULL
 		)`)
 	}
@@ -797,7 +745,7 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 			  AND p.domain = ?
 		)`)
 		args = append(args, filter.Domain)
-	} else if filter.MatchEmptyDomain {
+	} else if filter.MatchesEmpty(ViewDomains) {
 		conditions = append(conditions, `NOT EXISTS (
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
@@ -817,35 +765,15 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 			  AND lbl.name = ?
 		)`)
 		args = append(args, filter.Label)
-	} else if filter.MatchEmptyLabel {
+	} else if filter.MatchesEmpty(ViewLabels) {
 		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM ml WHERE ml.message_id = msg.id)")
 	}
 
 	// Time period filter
-	if filter.TimePeriod != "" {
-		granularity := filter.TimeGranularity
-		if granularity == TimeYear && len(filter.TimePeriod) > 4 {
-			switch len(filter.TimePeriod) {
-			case 7:
-				granularity = TimeMonth
-			case 10:
-				granularity = TimeDay
-			}
-		}
-
-		var timeExpr string
-		switch granularity {
-		case TimeYear:
-			timeExpr = "CAST(msg.year AS VARCHAR)"
-		case TimeMonth:
-			timeExpr = "CAST(msg.year AS VARCHAR) || '-' || LPAD(CAST(msg.month AS VARCHAR), 2, '0')"
-		case TimeDay:
-			timeExpr = "strftime(msg.sent_at, '%Y-%m-%d')"
-		default:
-			timeExpr = "CAST(msg.year AS VARCHAR) || '-' || LPAD(CAST(msg.month AS VARCHAR), 2, '0')"
-		}
-		conditions = append(conditions, fmt.Sprintf("%s = ?", timeExpr))
-		args = append(args, filter.TimePeriod)
+	if filter.TimeRange.Period != "" {
+		granularity := inferTimeGranularity(filter.TimeRange.Granularity, filter.TimeRange.Period)
+		conditions = append(conditions, fmt.Sprintf("%s = ?", timeExpr(granularity)))
+		args = append(args, filter.TimeRange.Period)
 	}
 
 	if len(conditions) == 0 {
@@ -854,9 +782,27 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 	return strings.Join(conditions, " AND "), args
 }
 
+// inferTimeGranularity adjusts the granularity based on the time period string length.
+func inferTimeGranularity(base TimeGranularity, period string) TimeGranularity {
+	if base == TimeYear && len(period) > 4 {
+		switch len(period) {
+		case 7:
+			return TimeMonth
+		case 10:
+			return TimeDay
+		}
+	}
+	return base
+}
+
 // SubAggregate performs aggregation on a filtered subset of messages.
 // This is used for sub-grouping after drill-down.
 func (e *DuckDBEngine) SubAggregate(ctx context.Context, filter MessageFilter, groupBy ViewType, opts AggregateOptions) ([]AggregateRow, error) {
+	def, err := getViewDef(groupBy, opts.TimeGranularity, "agg")
+	if err != nil {
+		return nil, err
+	}
+
 	where, args := e.buildFilterConditions(filter)
 
 	// Add opts-based conditions (source_id, date range, attachment filter)
@@ -876,208 +822,14 @@ func (e *DuckDBEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 		where += " AND msg.has_attachments = true"
 	}
 
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 100
-	}
-
-	// For 1:N views (Recipients, RecipientNames, Labels), search must filter
-	// on the grouping key column to avoid inflated counts from summing across groups.
-	// For 1:1 views (Senders, SenderNames, Domains, Time), the default
-	// subject+sender search is correct and more useful.
-	var searchKeyColumns []string
-	switch groupBy {
-	case ViewRecipients, ViewRecipientNames:
-		searchKeyColumns = []string{"p_agg.email_address", "p_agg.display_name"}
-	case ViewLabels:
-		searchKeyColumns = []string{"lbl_agg.name"}
-	}
-
-	// Add search query conditions (for filtered drill-down)
-	searchConds, searchArgs := e.buildAggregateSearchConditions(opts.SearchQuery, searchKeyColumns...)
+	// Add search query conditions using the view's key columns
+	searchConds, searchArgs := e.buildAggregateSearchConditions(opts.SearchQuery, def.keyColumns...)
 	for _, cond := range searchConds {
 		where += " AND " + cond
 	}
 	args = append(args, searchArgs...)
 
-	var query string
-	switch groupBy {
-	case ViewSenders:
-		query = fmt.Sprintf(`
-			WITH %s
-			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-			FROM (
-				SELECT
-					p_agg.email_address as key,
-					COUNT(*) as count,
-					COALESCE(SUM(msg.size_estimate), 0) as total_size,
-					CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
-					CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
-					COUNT(*) OVER() as total_unique
-				FROM msg
-				JOIN mr mr_agg ON mr_agg.message_id = msg.id AND mr_agg.recipient_type = 'from'
-				JOIN p p_agg ON p_agg.id = mr_agg.participant_id
-				LEFT JOIN att ON att.message_id = msg.id
-				WHERE %s AND p_agg.email_address IS NOT NULL
-				GROUP BY p_agg.email_address
-			)
-			%s
-			LIMIT ?
-		`, e.parquetCTEs(), where, e.sortClause(opts))
-
-	case ViewSenderNames:
-		query = fmt.Sprintf(`
-			WITH %s
-			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-			FROM (
-				SELECT
-					COALESCE(NULLIF(TRIM(p_agg.display_name), ''), p_agg.email_address) as key,
-					COUNT(*) as count,
-					COALESCE(SUM(msg.size_estimate), 0) as total_size,
-					CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
-					CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
-					COUNT(*) OVER() as total_unique
-				FROM msg
-				JOIN mr mr_agg ON mr_agg.message_id = msg.id AND mr_agg.recipient_type = 'from'
-				JOIN p p_agg ON p_agg.id = mr_agg.participant_id
-				LEFT JOIN att ON att.message_id = msg.id
-				WHERE %s AND COALESCE(NULLIF(TRIM(p_agg.display_name), ''), p_agg.email_address) IS NOT NULL
-				GROUP BY COALESCE(NULLIF(TRIM(p_agg.display_name), ''), p_agg.email_address)
-			)
-			%s
-			LIMIT ?
-		`, e.parquetCTEs(), where, e.sortClause(opts))
-
-	case ViewRecipients:
-		query = fmt.Sprintf(`
-			WITH %s
-			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-			FROM (
-				SELECT
-					p_agg.email_address as key,
-					COUNT(*) as count,
-					COALESCE(SUM(msg.size_estimate), 0) as total_size,
-					CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
-					CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
-					COUNT(*) OVER() as total_unique
-				FROM msg
-				JOIN mr mr_agg ON mr_agg.message_id = msg.id AND mr_agg.recipient_type IN ('to', 'cc')
-				JOIN p p_agg ON p_agg.id = mr_agg.participant_id
-				LEFT JOIN att ON att.message_id = msg.id
-				WHERE %s AND p_agg.email_address IS NOT NULL
-				GROUP BY p_agg.email_address
-			)
-			%s
-			LIMIT ?
-		`, e.parquetCTEs(), where, e.sortClause(opts))
-
-	case ViewRecipientNames:
-		query = fmt.Sprintf(`
-			WITH %s
-			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-			FROM (
-				SELECT
-					COALESCE(NULLIF(TRIM(p_agg.display_name), ''), p_agg.email_address) as key,
-					COUNT(*) as count,
-					COALESCE(SUM(msg.size_estimate), 0) as total_size,
-					CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
-					CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
-					COUNT(*) OVER() as total_unique
-				FROM msg
-				JOIN mr mr_agg ON mr_agg.message_id = msg.id AND mr_agg.recipient_type IN ('to', 'cc')
-				JOIN p p_agg ON p_agg.id = mr_agg.participant_id
-				LEFT JOIN att ON att.message_id = msg.id
-				WHERE %s AND COALESCE(NULLIF(TRIM(p_agg.display_name), ''), p_agg.email_address) IS NOT NULL
-				GROUP BY COALESCE(NULLIF(TRIM(p_agg.display_name), ''), p_agg.email_address)
-			)
-			%s
-			LIMIT ?
-		`, e.parquetCTEs(), where, e.sortClause(opts))
-
-	case ViewDomains:
-		query = fmt.Sprintf(`
-			WITH %s
-			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-			FROM (
-				SELECT
-					p_agg.domain as key,
-					COUNT(*) as count,
-					COALESCE(SUM(msg.size_estimate), 0) as total_size,
-					CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
-					CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
-					COUNT(*) OVER() as total_unique
-				FROM msg
-				JOIN mr mr_agg ON mr_agg.message_id = msg.id AND mr_agg.recipient_type = 'from'
-				JOIN p p_agg ON p_agg.id = mr_agg.participant_id
-				LEFT JOIN att ON att.message_id = msg.id
-				WHERE %s AND p_agg.domain IS NOT NULL
-				GROUP BY p_agg.domain
-			)
-			%s
-			LIMIT ?
-		`, e.parquetCTEs(), where, e.sortClause(opts))
-
-	case ViewLabels:
-		query = fmt.Sprintf(`
-			WITH %s
-			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-			FROM (
-				SELECT
-					lbl_agg.name as key,
-					COUNT(*) as count,
-					COALESCE(SUM(msg.size_estimate), 0) as total_size,
-					CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
-					CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
-					COUNT(*) OVER() as total_unique
-				FROM msg
-				JOIN ml ml_agg ON ml_agg.message_id = msg.id
-				JOIN lbl lbl_agg ON lbl_agg.id = ml_agg.label_id
-				LEFT JOIN att ON att.message_id = msg.id
-				WHERE %s AND lbl_agg.name IS NOT NULL
-				GROUP BY lbl_agg.name
-			)
-			%s
-			LIMIT ?
-		`, e.parquetCTEs(), where, e.sortClause(opts))
-
-	case ViewTime:
-		var timeExpr string
-		switch opts.TimeGranularity {
-		case TimeYear:
-			timeExpr = "CAST(msg.year AS VARCHAR)"
-		case TimeMonth:
-			timeExpr = "CAST(msg.year AS VARCHAR) || '-' || LPAD(CAST(msg.month AS VARCHAR), 2, '0')"
-		case TimeDay:
-			timeExpr = "strftime(msg.sent_at, '%Y-%m-%d')"
-		default:
-			timeExpr = "CAST(msg.year AS VARCHAR) || '-' || LPAD(CAST(msg.month AS VARCHAR), 2, '0')"
-		}
-		query = fmt.Sprintf(`
-			WITH %s
-			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-			FROM (
-				SELECT
-					%s as key,
-					COUNT(*) as count,
-					COALESCE(SUM(msg.size_estimate), 0) as total_size,
-					CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
-					CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
-					COUNT(*) OVER() as total_unique
-				FROM msg
-				LEFT JOIN att ON att.message_id = msg.id
-				WHERE %s AND msg.sent_at IS NOT NULL
-				GROUP BY key
-			)
-			%s
-			LIMIT ?
-		`, e.parquetCTEs(), timeExpr, where, e.sortClause(opts))
-
-	default:
-		return nil, fmt.Errorf("unsupported groupBy view type: %v", groupBy)
-	}
-
-	args = append(args, limit)
-	return e.executeAggregateQuery(ctx, query, args)
+	return e.runAggregation(ctx, def, where, args, opts)
 }
 
 // executeAggregateQuery runs an aggregate query and returns the results.
@@ -1149,7 +901,7 @@ func (e *DuckDBEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 		WITH %s
 		SELECT
 			COUNT(*) as message_count,
-			COALESCE(SUM(msg.size_estimate), 0) as total_size,
+			COALESCE(SUM(CAST(msg.size_estimate AS BIGINT)), 0) as total_size,
 			CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
 			CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
 			COUNT(DISTINCT msg.source_id) as account_count
@@ -1193,8 +945,12 @@ func (e *DuckDBEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 	return stats, nil
 }
 
-// ListAccounts returns accounts from SQLite via DuckDB's sqlite_scan.
+// ListAccounts returns accounts from SQLite via DuckDB's sqlite_scan,
+// or via direct SQLite connection on platforms without sqlite_scanner.
 func (e *DuckDBEngine) ListAccounts(ctx context.Context) ([]AccountInfo, error) {
+	if e.sqliteEngine != nil {
+		return e.sqliteEngine.ListAccounts(ctx)
+	}
 	if !e.hasSQLite() {
 		return nil, fmt.Errorf("ListAccounts requires SQLite: pass sqlitePath to NewDuckDBEngine")
 	}
@@ -1228,7 +984,7 @@ func (e *DuckDBEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 
 	// Build ORDER BY
 	var orderBy string
-	switch filter.SortField {
+	switch filter.Sorting.Field {
 	case MessageSortByDate:
 		orderBy = "msg.sent_at"
 	case MessageSortBySize:
@@ -1238,13 +994,13 @@ func (e *DuckDBEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 	default:
 		orderBy = "msg.sent_at"
 	}
-	if filter.SortDirection == SortDesc {
+	if filter.Sorting.Direction == SortDesc {
 		orderBy += " DESC"
 	} else {
 		orderBy += " ASC"
 	}
 
-	limit := filter.Limit
+	limit := filter.Pagination.Limit
 	if limit == 0 {
 		limit = 500
 	}
@@ -1290,7 +1046,7 @@ func (e *DuckDBEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		ORDER BY %s
 	`, e.parquetCTEs(), where, orderBy, orderBy)
 
-	args = append(args, limit, filter.Offset)
+	args = append(args, limit, filter.Pagination.Offset)
 
 	rows, err := e.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1350,8 +1106,19 @@ func parseLabelsJSON(s string) []string {
 }
 
 // fetchLabelsForMessages adds labels to message summaries.
+// Uses DuckDB's sqlite_scanner when available, otherwise direct SQLite.
 func (e *DuckDBEngine) fetchLabelsForMessages(ctx context.Context, messages []MessageSummary) error {
 	if len(messages) == 0 {
+		return nil
+	}
+
+	// Prefer direct SQLite (works on all platforms including Windows)
+	if e.sqliteEngine != nil {
+		return e.sqliteEngine.fetchLabelsForMessages(ctx, messages)
+	}
+
+	if !e.hasSQLite() {
+		log.Printf("[warn] fetchLabelsForMessages: no label source available (sqliteEngine=nil, hasSQLiteScanner=false); labels will be empty")
 		return nil
 	}
 
@@ -1822,11 +1589,20 @@ func (e *DuckDBEngine) Search(ctx context.Context, q *search.Query, limit, offse
 	return results, nil
 }
 
-// GetGmailIDsByFilter returns Gmail IDs matching a filter from Parquet files.
-// Uses EXISTS subqueries for efficient semi-join filtering.
+// GetGmailIDsByFilter returns Gmail IDs matching a filter.
+// This method delegates to SQLite for authoritative deletion status.
+// The Parquet cache may be stale if messages were deleted after the last cache build,
+// so we use SQLite directly to ensure deleted messages are properly excluded.
 func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFilter) ([]string, error) {
+	// Delegate to SQLite for authoritative deletion status.
+	// Parquet cache may be stale if deletions occurred after the last build.
+	if e.sqliteEngine != nil {
+		return e.sqliteEngine.GetGmailIDsByFilter(ctx, filter)
+	}
+
+	// Fall back to Parquet if no SQLite engine available (shouldn't happen in practice)
 	if e.analyticsDir == "" {
-		return nil, fmt.Errorf("GetGmailIDsByFilter requires Parquet data: pass analyticsDir to NewDuckDBEngine")
+		return nil, fmt.Errorf("GetGmailIDsByFilter requires SQLite or Parquet data")
 	}
 
 	var conditions []string
@@ -1879,7 +1655,7 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.message_id = msg.id
-			  AND mr.recipient_type IN ('to', 'cc')
+			  AND mr.recipient_type IN ('to', 'cc', 'bcc')
 			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) = ?
 		)`)
 		args = append(args, filter.RecipientName)
@@ -1906,30 +1682,20 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 		args = append(args, filter.Label)
 	}
 
-	if filter.TimePeriod != "" {
-		granularity := filter.TimeGranularity
-		if granularity == TimeYear && len(filter.TimePeriod) > 4 {
-			switch len(filter.TimePeriod) {
-			case 7:
-				granularity = TimeMonth
-			case 10:
-				granularity = TimeDay
-			}
-		}
-
-		var timeExpr string
+	if filter.TimeRange.Period != "" {
+		granularity := inferTimeGranularity(filter.TimeRange.Granularity, filter.TimeRange.Period)
+		// GetGmailIDsByFilter uses strftime for time filtering (no year/month columns)
+		var te string
 		switch granularity {
 		case TimeYear:
-			timeExpr = "strftime(msg.sent_at, '%Y')"
-		case TimeMonth:
-			timeExpr = "strftime(msg.sent_at, '%Y-%m')"
+			te = "strftime(msg.sent_at, '%Y')"
 		case TimeDay:
-			timeExpr = "strftime(msg.sent_at, '%Y-%m-%d')"
+			te = "strftime(msg.sent_at, '%Y-%m-%d')"
 		default:
-			timeExpr = "strftime(msg.sent_at, '%Y-%m')"
+			te = "strftime(msg.sent_at, '%Y-%m')"
 		}
-		conditions = append(conditions, fmt.Sprintf("%s = ?", timeExpr))
-		args = append(args, filter.TimePeriod)
+		conditions = append(conditions, fmt.Sprintf("%s = ?", te))
+		args = append(args, filter.TimeRange.Period)
 	}
 
 	// Build query
@@ -1941,9 +1707,9 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	`, e.parquetCTEs(), strings.Join(conditions, " AND "))
 
 	// Only add LIMIT if explicitly set (0 means no limit)
-	if filter.Limit > 0 {
+	if filter.Pagination.Limit > 0 {
 		query += " LIMIT ?"
-		args = append(args, filter.Limit)
+		args = append(args, filter.Pagination.Limit)
 	}
 
 	rows, err := e.db.QueryContext(ctx, query, args...)
@@ -2113,6 +1879,278 @@ func (e *DuckDBEngine) SearchFastCount(ctx context.Context, q *search.Query, fil
 	return count, nil
 }
 
+// searchCacheKeyFor builds a deterministic cache key from search conditions and args.
+// Same query+filter always produces the same key. Uses JSON encoding to avoid
+// ambiguity from delimiter collisions (e.g. args containing commas or pipes).
+func searchCacheKeyFor(conditions []string, args []interface{}) string {
+	// JSON marshaling is unambiguous: each element is quoted/escaped independently.
+	// Errors are impossible for string/int/float/bool args, but fall back to fmt.
+	key := struct {
+		C []string      `json:"c"`
+		A []interface{} `json:"a"`
+	}{conditions, args}
+	b, err := json.Marshal(key)
+	if err != nil {
+		// Fallback: should never happen with the types buildSearchConditions produces.
+		return fmt.Sprintf("%v#%v", conditions, args)
+	}
+	return string(b)
+}
+
+// dropSearchCache drops the cached temp table and clears all cache fields.
+// Uses context.Background() so cleanup succeeds even if the caller's context
+// is canceled (avoiding leaked temp tables on the single DuckDB connection).
+// Caller must hold e.searchCacheMu.
+func (e *DuckDBEngine) dropSearchCache() {
+	if e.searchCacheTable != "" {
+		_, _ = e.db.ExecContext(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s", e.searchCacheTable))
+	}
+	e.searchCacheKey = ""
+	e.searchCacheTable = ""
+	e.searchCacheCount = 0
+	e.searchCacheStats = nil
+}
+
+// searchPageFromCache executes Phase 3 (paginated results) from the cached temp table.
+// Returns a SearchFastResult with cached count and stats.
+func (e *DuckDBEngine) searchPageFromCache(ctx context.Context, limit, offset int) (*SearchFastResult, error) {
+	pageQuery := fmt.Sprintf(`
+		WITH %s,
+		page AS (
+			SELECT sm.id FROM %s sm
+			ORDER BY sm.sent_at DESC
+			LIMIT ? OFFSET ?
+		),
+		msg_labels AS (
+			SELECT ml.message_id, LIST(lbl.name ORDER BY lbl.name) as labels
+			FROM ml
+			JOIN lbl ON lbl.id = ml.label_id
+			WHERE ml.message_id IN (SELECT id FROM page)
+			GROUP BY ml.message_id
+		)
+		SELECT
+			sm.id,
+			sm.source_message_id,
+			sm.conversation_id,
+			sm.subject,
+			sm.snippet,
+			sm.from_email,
+			sm.from_name,
+			sm.sent_at,
+			sm.size_estimate,
+			sm.has_attachments,
+			COALESCE(att.attachment_count, 0) as attachment_count,
+			CAST(COALESCE(to_json(mlbl.labels), '[]') AS VARCHAR) as labels,
+			sm.deleted_from_source_at
+		FROM %s sm
+		JOIN page p ON p.id = sm.id
+		LEFT JOIN att ON att.message_id = sm.id
+		LEFT JOIN msg_labels mlbl ON mlbl.message_id = sm.id
+		ORDER BY sm.sent_at DESC
+	`, e.parquetCTEs(), e.searchCacheTable, e.searchCacheTable)
+
+	rows, err := e.db.QueryContext(ctx, pageQuery, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("search fast page: %w", err)
+	}
+	defer rows.Close()
+
+	// Return a copy of cached stats to prevent callers from mutating the cache
+	var statsCopy *TotalStats
+	if e.searchCacheStats != nil {
+		tmp := *e.searchCacheStats
+		statsCopy = &tmp
+	}
+
+	result := &SearchFastResult{
+		TotalCount: e.searchCacheCount,
+		Stats:      statsCopy,
+	}
+
+	for rows.Next() {
+		var msg MessageSummary
+		var sentAt sql.NullTime
+		var deletedAt sql.NullTime
+		var labelsJSON string
+		if err := rows.Scan(
+			&msg.ID,
+			&msg.SourceMessageID,
+			&msg.ConversationID,
+			&msg.Subject,
+			&msg.Snippet,
+			&msg.FromEmail,
+			&msg.FromName,
+			&sentAt,
+			&msg.SizeEstimate,
+			&msg.HasAttachments,
+			&msg.AttachmentCount,
+			&labelsJSON,
+			&deletedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan message: %w", err)
+		}
+		if sentAt.Valid {
+			msg.SentAt = sentAt.Time
+		}
+		if deletedAt.Valid {
+			msg.DeletedAt = &deletedAt.Time
+		}
+		msg.Labels = parseLabelsJSON(labelsJSON)
+		result.Messages = append(result.Messages, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate messages: %w", err)
+	}
+
+	return result, nil
+}
+
+// computeSearchStats computes stats (Phase 4) from the cached temp table.
+// Returns nil stats on failure (best-effort).
+func (e *DuckDBEngine) computeSearchStats(ctx context.Context) *TotalStats {
+	msgStatsQuery := fmt.Sprintf(`
+		WITH %s
+		SELECT
+			COUNT(*) as message_count,
+			COALESCE(SUM(sm.size_estimate), 0) as total_size,
+			CAST(COALESCE(SUM(att.attachment_count), 0) AS BIGINT) as attachment_count,
+			CAST(COALESCE(SUM(att.attachment_size), 0) AS BIGINT) as attachment_size,
+			COUNT(DISTINCT sm.source_id) as account_count
+		FROM %s sm
+		LEFT JOIN att ON att.message_id = sm.id
+	`, e.parquetCTEs(), e.searchCacheTable)
+
+	stats := &TotalStats{}
+	var attachmentSize sql.NullFloat64
+	if err := e.db.QueryRowContext(ctx, msgStatsQuery).Scan(
+		&stats.MessageCount,
+		&stats.TotalSize,
+		&stats.AttachmentCount,
+		&attachmentSize,
+		&stats.AccountCount,
+	); err != nil {
+		log.Printf("warning: search stats query failed (stats will be nil): %v", err)
+		return nil
+	}
+	if attachmentSize.Valid {
+		stats.AttachmentSize = int64(attachmentSize.Float64)
+	}
+
+	// Label count — only ml/lbl Parquet tables needed.
+	labelStatsQuery := fmt.Sprintf(`
+		WITH %s
+		SELECT COUNT(DISTINCT lbl.name)
+		FROM %s sm
+		JOIN ml ON ml.message_id = sm.id
+		JOIN lbl ON lbl.id = ml.label_id
+	`, e.parquetCTEs(), e.searchCacheTable)
+
+	if err := e.db.QueryRowContext(ctx, labelStatsQuery).Scan(&stats.LabelCount); err != nil {
+		log.Printf("warning: search label count query failed (using 0): %v", err)
+		stats.LabelCount = 0
+	}
+
+	return stats
+}
+
+// SearchFastWithStats performs a single-scan fast search with temp table materialization.
+// It denormalizes matching messages (with sender info) into a temp table using one
+// Parquet scan, then reuses the in-memory temp table for count, pagination, and stats
+// — eliminating all subsequent msg Parquet reads. Only small page-scoped lookups
+// into label/attachment Parquet tables remain.
+//
+// The temp table is cached internally: if the same search conditions+args are
+// requested again (e.g. pagination), the Parquet scan is skipped and the page
+// is served directly from the cached temp table. A new search invalidates the
+// old cache.
+func (e *DuckDBEngine) SearchFastWithStats(ctx context.Context, q *search.Query, queryStr string,
+	filter MessageFilter, statsGroupBy ViewType, limit, offset int) (*SearchFastResult, error) {
+
+	conditions, args := e.buildSearchConditions(q, filter)
+
+	if limit == 0 {
+		limit = 100
+	}
+
+	e.searchCacheMu.Lock()
+	defer e.searchCacheMu.Unlock()
+
+	// Check cache: same conditions+args means same search, serve from cached table.
+	cacheKey := searchCacheKeyFor(conditions, args)
+	if cacheKey == e.searchCacheKey && e.searchCacheTable != "" {
+		// Retry stats if a previous attempt failed (transient error).
+		if e.searchCacheStats == nil {
+			e.searchCacheStats = e.computeSearchStats(ctx)
+		}
+		return e.searchPageFromCache(ctx, limit, offset)
+	}
+
+	// Cache miss — drop old cache and materialize fresh.
+	e.dropSearchCache()
+
+	// Unique temp table name to avoid concurrent collisions.
+	seq := e.tempTableSeq.Add(1)
+	tempTable := fmt.Sprintf("_search_matches_%d", seq)
+
+	// Phase 1: Materialize matching messages into temp table (single Parquet scan).
+	// Stores all columns needed by later phases so they never re-read msg Parquet.
+	// The msg_sender CTE is required because buildSearchConditions references ms.from_email.
+	materializeQuery := fmt.Sprintf(`
+		CREATE TEMP TABLE %s AS
+		WITH %s,
+		msg_sender AS (
+			SELECT mr.message_id,
+				   FIRST(p.email_address) as from_email,
+				   FIRST(COALESCE(mr.display_name, p.display_name, '')) as from_name
+			FROM mr
+			JOIN p ON p.id = mr.participant_id
+			WHERE mr.recipient_type = 'from'
+			GROUP BY mr.message_id
+		)
+		SELECT
+			msg.id,
+			COALESCE(msg.source_message_id, '') as source_message_id,
+			COALESCE(msg.conversation_id, 0) as conversation_id,
+			COALESCE(msg.subject, '') as subject,
+			COALESCE(msg.snippet, '') as snippet,
+			COALESCE(ms.from_email, '') as from_email,
+			COALESCE(ms.from_name, '') as from_name,
+			msg.sent_at,
+			COALESCE(CAST(msg.size_estimate AS BIGINT), 0) as size_estimate,
+			COALESCE(msg.has_attachments, false) as has_attachments,
+			msg.deleted_from_source_at,
+			CAST(msg.source_id AS BIGINT) as source_id
+		FROM msg
+		LEFT JOIN msg_sender ms ON ms.message_id = msg.id
+		WHERE %s
+	`, tempTable, e.parquetCTEs(), strings.Join(conditions, " AND "))
+
+	if _, err := e.db.ExecContext(ctx, materializeQuery, args...); err != nil {
+		return nil, fmt.Errorf("materialize search matches: %w", err)
+	}
+
+	// Store temp table name so we can clean up on error.
+	e.searchCacheTable = tempTable
+
+	// Phase 2: Count (trivial — reads in-memory temp table only).
+	// Best-effort: if count fails, use -1 (unknown total) and continue.
+	var count int64
+	if err := e.db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", tempTable)).Scan(&count); err != nil {
+		log.Printf("warning: search count query failed (using -1): %v", err)
+		count = -1
+	}
+	e.searchCacheCount = count
+
+	// Phase 4: Stats from temp table (compute before page so cache is fully populated).
+	e.searchCacheStats = e.computeSearchStats(ctx)
+
+	// Store cache key — cache is now valid.
+	e.searchCacheKey = cacheKey
+
+	// Phase 3: Paginated results from cached temp table.
+	return e.searchPageFromCache(ctx, limit, offset)
+}
+
 // buildSearchConditions builds WHERE conditions for search queries.
 // Shared by SearchFast and SearchFastCount.
 // Note: These conditions reference msg and ms (msg_sender) CTEs.
@@ -2165,29 +2203,10 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 		)`)
 		args = append(args, filter.Label)
 	}
-	if filter.TimePeriod != "" {
-		granularity := filter.TimeGranularity
-		if granularity == TimeYear && len(filter.TimePeriod) > 4 {
-			switch len(filter.TimePeriod) {
-			case 7:
-				granularity = TimeMonth
-			case 10:
-				granularity = TimeDay
-			}
-		}
-		var timeExpr string
-		switch granularity {
-		case TimeYear:
-			timeExpr = "CAST(msg.year AS VARCHAR)"
-		case TimeMonth:
-			timeExpr = "CAST(msg.year AS VARCHAR) || '-' || LPAD(CAST(msg.month AS VARCHAR), 2, '0')"
-		case TimeDay:
-			timeExpr = "strftime(msg.sent_at, '%Y-%m-%d')"
-		default:
-			timeExpr = "CAST(msg.year AS VARCHAR) || '-' || LPAD(CAST(msg.month AS VARCHAR), 2, '0')"
-		}
-		conditions = append(conditions, fmt.Sprintf("%s = ?", timeExpr))
-		args = append(args, filter.TimePeriod)
+	if filter.TimeRange.Period != "" {
+		granularity := inferTimeGranularity(filter.TimeRange.Granularity, filter.TimeRange.Period)
+		conditions = append(conditions, fmt.Sprintf("%s = ?", timeExpr(granularity)))
+		args = append(args, filter.TimeRange.Period)
 	}
 
 	// Text search terms - search subject and from fields only (fast path)
@@ -2217,7 +2236,7 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 			conditions = append(conditions, `EXISTS (
 				SELECT 1 FROM mr
 				JOIN p ON p.id = mr.participant_id
-				WHERE mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc')
+				WHERE mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc', 'bcc')
 				AND p.email_address ILIKE ? ESCAPE '\'
 			)`)
 			args = append(args, "%"+escapeILIKE(addr)+"%")

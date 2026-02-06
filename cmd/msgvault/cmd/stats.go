@@ -11,7 +11,7 @@ var statsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Show database statistics",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		dbPath := cfg.DatabasePath()
+		dbPath := cfg.DatabaseDSN()
 
 		s, err := store.Open(dbPath)
 		if err != nil {

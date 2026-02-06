@@ -176,12 +176,14 @@ func (m *MockAPI) GetMessageRaw(ctx context.Context, messageID string) (*RawMess
 }
 
 // GetMessagesRawBatch fetches multiple messages.
+// Mirrors the real Client behavior: individual fetch errors leave a nil entry
+// in the results slice rather than failing the entire batch. Callers must
+// handle nil entries (see sync.go).
 func (m *MockAPI) GetMessagesRawBatch(ctx context.Context, messageIDs []string) ([]*RawMessage, error) {
 	results := make([]*RawMessage, len(messageIDs))
 	for i, id := range messageIDs {
 		msg, err := m.GetMessageRaw(ctx, id)
 		if err != nil {
-			// Don't fail batch on individual errors
 			continue
 		}
 		results[i] = msg
@@ -251,6 +253,22 @@ func (m *MockAPI) getListThreadID(id string) string {
 	}
 	// Default
 	return "thread_" + id
+}
+
+// SetupMessages adds multiple pre-built RawMessage values to the mock store
+// in a thread-safe manner. Nil entries in the input slice are silently skipped.
+func (m *MockAPI) SetupMessages(msgs ...*RawMessage) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Messages == nil {
+		m.Messages = make(map[string]*RawMessage)
+	}
+	for _, msg := range msgs {
+		if msg == nil {
+			continue
+		}
+		m.Messages[msg.ID] = msg
+	}
 }
 
 // AddMessage adds a message to the mock store.

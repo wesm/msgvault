@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,61 +14,6 @@ import (
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/testutil"
 )
-
-// mockAPIWithErrors extends gmail.MockAPI with error injection for trash/delete
-type mockAPIWithErrors struct {
-	*gmail.MockAPI
-	mu           sync.Mutex
-	trashErrors  map[string]error
-	deleteErrors map[string]error
-	batchError   error
-}
-
-func newMockAPI() *mockAPIWithErrors {
-	return &mockAPIWithErrors{
-		MockAPI:      gmail.NewMockAPI(),
-		trashErrors:  make(map[string]error),
-		deleteErrors: make(map[string]error),
-	}
-}
-
-func (m *mockAPIWithErrors) TrashMessage(ctx context.Context, messageID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Record the call
-	m.TrashCalls = append(m.TrashCalls, messageID)
-
-	if err, ok := m.trashErrors[messageID]; ok {
-		return err
-	}
-	return nil
-}
-
-func (m *mockAPIWithErrors) DeleteMessage(ctx context.Context, messageID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Record the call
-	m.DeleteCalls = append(m.DeleteCalls, messageID)
-
-	if err, ok := m.deleteErrors[messageID]; ok {
-		return err
-	}
-	return nil
-}
-
-func (m *mockAPIWithErrors) BatchDeleteMessages(ctx context.Context, messageIDs []string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.BatchDeleteCalls = append(m.BatchDeleteCalls, messageIDs)
-
-	if m.batchError != nil {
-		return m.batchError
-	}
-	return nil
-}
 
 // trackingProgress records progress events for testing
 type trackingProgress struct {
@@ -99,18 +45,8 @@ func (p *trackingProgress) OnComplete(succeeded, failed int) {
 	p.finalFail = failed
 }
 
-// ExecutorTestContext encapsulates common test dependencies for executor tests.
-type ExecutorTestContext struct {
-	Mgr      *Manager
-	MockAPI  *mockAPIWithErrors
-	Exec     *Executor
-	Progress *trackingProgress
-	Dir      string
-	t        *testing.T
-}
-
-// DeletionMockTestContext encapsulates test dependencies using gmail.DeletionMockAPI.
-type DeletionMockTestContext struct {
+// TestContext encapsulates common test dependencies for executor tests.
+type TestContext struct {
 	Mgr      *Manager
 	MockAPI  *gmail.DeletionMockAPI
 	Exec     *Executor
@@ -119,33 +55,8 @@ type DeletionMockTestContext struct {
 	t        *testing.T
 }
 
-// NewExecutorTestContext creates a new test context with all dependencies initialized.
-func NewExecutorTestContext(t *testing.T) *ExecutorTestContext {
-	t.Helper()
-	tmpDir := t.TempDir()
-	mgr, err := NewManager(tmpDir)
-	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
-	}
-
-	store := testutil.NewTestStore(t)
-	mockAPI := newMockAPI()
-	progress := &trackingProgress{}
-
-	exec := NewExecutor(mgr, store, mockAPI).WithProgress(progress)
-
-	return &ExecutorTestContext{
-		Mgr:      mgr,
-		MockAPI:  mockAPI,
-		Exec:     exec,
-		Progress: progress,
-		Dir:      tmpDir,
-		t:        t,
-	}
-}
-
-// NewDeletionMockTestContext creates a test context using gmail.DeletionMockAPI.
-func NewDeletionMockTestContext(t *testing.T) *DeletionMockTestContext {
+// NewTestContext creates a new test context with all dependencies initialized.
+func NewTestContext(t *testing.T) *TestContext {
 	t.Helper()
 	tmpDir := t.TempDir()
 	mgr, err := NewManager(tmpDir)
@@ -159,7 +70,7 @@ func NewDeletionMockTestContext(t *testing.T) *DeletionMockTestContext {
 
 	exec := NewExecutor(mgr, store, mockAPI).WithProgress(progress)
 
-	return &DeletionMockTestContext{
+	return &TestContext{
 		Mgr:      mgr,
 		MockAPI:  mockAPI,
 		Exec:     exec,
@@ -170,7 +81,7 @@ func NewDeletionMockTestContext(t *testing.T) *DeletionMockTestContext {
 }
 
 // CreateManifest creates a manifest with the given name and Gmail IDs.
-func (c *DeletionMockTestContext) CreateManifest(name string, ids []string) *Manifest {
+func (c *TestContext) CreateManifest(name string, ids []string) *Manifest {
 	c.t.Helper()
 	manifest, err := c.Mgr.CreateManifest(name, ids, Filters{})
 	if err != nil {
@@ -180,23 +91,154 @@ func (c *DeletionMockTestContext) CreateManifest(name string, ids []string) *Man
 }
 
 // Execute runs the executor with default options.
-func (c *DeletionMockTestContext) Execute(manifestID string) error {
+func (c *TestContext) Execute(manifestID string) error {
 	return c.Exec.Execute(context.Background(), manifestID, nil)
 }
 
+// ExecuteWithOpts runs the executor with custom options.
+func (c *TestContext) ExecuteWithOpts(manifestID string, opts *ExecuteOptions) error {
+	return c.Exec.Execute(context.Background(), manifestID, opts)
+}
+
 // ExecuteBatch runs the batch executor.
-func (c *DeletionMockTestContext) ExecuteBatch(manifestID string) error {
+func (c *TestContext) ExecuteBatch(manifestID string) error {
 	return c.Exec.ExecuteBatch(context.Background(), manifestID)
 }
 
 // AssertResult verifies the final success and failure counts.
-func (c *DeletionMockTestContext) AssertResult(wantSucc, wantFail int) {
+func (c *TestContext) AssertResult(wantSucc, wantFail int) {
 	c.t.Helper()
 	if c.Progress.finalSucc != wantSucc {
 		c.t.Errorf("finalSucc = %d, want %d", c.Progress.finalSucc, wantSucc)
 	}
 	if c.Progress.finalFail != wantFail {
 		c.t.Errorf("finalFail = %d, want %d", c.Progress.finalFail, wantFail)
+	}
+}
+
+// AssertCompleted verifies that OnComplete was called.
+func (c *TestContext) AssertCompleted() {
+	c.t.Helper()
+	if !c.Progress.completed {
+		c.t.Error("OnComplete was not called")
+	}
+}
+
+// AssertNotCompleted verifies that OnComplete was not called.
+func (c *TestContext) AssertNotCompleted() {
+	c.t.Helper()
+	if c.Progress.completed {
+		c.t.Error("OnComplete was called unexpectedly")
+	}
+}
+
+// AssertTrashCalls verifies the number of TrashMessage calls.
+func (c *TestContext) AssertTrashCalls(want int) {
+	c.t.Helper()
+	if len(c.MockAPI.TrashCalls) != want {
+		c.t.Errorf("TrashCalls = %d, want %d", len(c.MockAPI.TrashCalls), want)
+	}
+}
+
+// AssertDeleteCalls verifies the number of DeleteMessage calls.
+func (c *TestContext) AssertDeleteCalls(want int) {
+	c.t.Helper()
+	if len(c.MockAPI.DeleteCalls) != want {
+		c.t.Errorf("DeleteCalls = %d, want %d", len(c.MockAPI.DeleteCalls), want)
+	}
+}
+
+// AssertCompletedCount verifies the number of completed manifests.
+func (c *TestContext) AssertCompletedCount(want int) {
+	c.t.Helper()
+	completed, err := c.Mgr.ListCompleted()
+	if err != nil {
+		c.t.Fatalf("ListCompleted() error = %v", err)
+	}
+	if len(completed) != want {
+		c.t.Errorf("ListCompleted() = %d, want %d", len(completed), want)
+	}
+}
+
+// AssertFailedCount verifies the number of failed manifests.
+func (c *TestContext) AssertFailedCount(want int) {
+	c.t.Helper()
+	failed, err := c.Mgr.ListFailed()
+	if err != nil {
+		c.t.Fatalf("ListFailed() error = %v", err)
+	}
+	if len(failed) != want {
+		c.t.Errorf("ListFailed() = %d, want %d", len(failed), want)
+	}
+}
+
+// AssertManifestExecution verifies the persisted execution state of a manifest.
+func (c *TestContext) AssertManifestExecution(id string, wantSucc, wantFail int, wantFailedIDs ...string) {
+	c.t.Helper()
+	m, _, err := c.Mgr.GetManifest(id)
+	if err != nil {
+		c.t.Fatalf("GetManifest(%q) failed: %v", id, err)
+	}
+	if m.Execution.Succeeded != wantSucc {
+		c.t.Errorf("Persisted Succeeded = %d, want %d", m.Execution.Succeeded, wantSucc)
+	}
+	if m.Execution.Failed != wantFail {
+		c.t.Errorf("Persisted Failed = %d, want %d", m.Execution.Failed, wantFail)
+	}
+	if len(m.Execution.FailedIDs) != len(wantFailedIDs) {
+		c.t.Errorf("FailedIDs count = %d, want %d", len(m.Execution.FailedIDs), len(wantFailedIDs))
+	} else {
+		for i, id := range wantFailedIDs {
+			if m.Execution.FailedIDs[i] != id {
+				c.t.Errorf("FailedIDs[%d] = %q, want %q", i, m.Execution.FailedIDs[i], id)
+			}
+		}
+	}
+}
+
+// SimulateTrashError injects a trash error for a specific message ID.
+func (c *TestContext) SimulateTrashError(msgID string) {
+	c.MockAPI.TrashErrors[msgID] = errors.New("simulated trash error")
+}
+
+// SimulateDeleteError injects a delete error for a specific message ID.
+func (c *TestContext) SimulateDeleteError(msgID string) {
+	c.MockAPI.DeleteErrors[msgID] = errors.New("simulated delete error")
+}
+
+// SimulateNotFound injects a 404 not-found error for a specific message ID.
+func (c *TestContext) SimulateNotFound(msgID string) {
+	c.MockAPI.SetNotFoundError(msgID)
+}
+
+// SimulateBatchDeleteError sets the batch delete operation to fail.
+func (c *TestContext) SimulateBatchDeleteError() {
+	c.MockAPI.BatchDeleteError = errors.New("simulated batch error")
+}
+
+// AssertBatchDeleteCalls verifies the number of BatchDeleteMessages calls.
+func (c *TestContext) AssertBatchDeleteCalls(want int) {
+	c.t.Helper()
+	if len(c.MockAPI.BatchDeleteCalls) != want {
+		c.t.Errorf("BatchDeleteCalls = %d, want %d", len(c.MockAPI.BatchDeleteCalls), want)
+	}
+}
+
+// GetBatchDeleteCall safely retrieves a batch delete call by index.
+func (c *TestContext) GetBatchDeleteCall(index int) []string {
+	c.t.Helper()
+	if index >= len(c.MockAPI.BatchDeleteCalls) {
+		c.t.Fatalf("BatchDeleteCalls index %d out of range (len=%d)", index, len(c.MockAPI.BatchDeleteCalls))
+		return nil
+	}
+	return c.MockAPI.BatchDeleteCalls[index]
+}
+
+// AssertIsScopeError verifies that the error is an insufficient scope error.
+func (c *TestContext) AssertIsScopeError(err error) {
+	c.t.Helper()
+	if err == nil || !strings.Contains(err.Error(), "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+		c.t.Errorf("error = %v, want scope insufficient error", err)
 	}
 }
 
@@ -227,103 +269,42 @@ func trashOpts(batchSize int) *ExecuteOptions {
 	}
 }
 
-// CreateManifest creates a manifest with the given name and Gmail IDs.
-func (c *ExecutorTestContext) CreateManifest(name string, ids []string) *Manifest {
+// SimulateScopeError injects an insufficient scope error for a specific message ID.
+func (c *TestContext) SimulateScopeError(msgID string) {
+	scopeErr := fmt.Errorf("googleapi: Error 403: Insufficient Permission: ACCESS_TOKEN_SCOPE_INSUFFICIENT")
+	c.MockAPI.TrashErrors[msgID] = scopeErr
+	c.MockAPI.DeleteErrors[msgID] = scopeErr
+}
+
+// SimulateBatchScopeError sets the batch delete operation to fail with a scope error.
+func (c *TestContext) SimulateBatchScopeError() {
+	c.MockAPI.BatchDeleteError = fmt.Errorf("googleapi: Error 403: Insufficient Permission: ACCESS_TOKEN_SCOPE_INSUFFICIENT")
+}
+
+// AssertInProgressCount verifies the number of in-progress manifests.
+func (c *TestContext) AssertInProgressCount(want int) {
 	c.t.Helper()
-	manifest, err := c.Mgr.CreateManifest(name, ids, Filters{})
+	inProgress, err := c.Mgr.ListInProgress()
 	if err != nil {
-		c.t.Fatalf("CreateManifest(%q) error = %v", name, err)
+		c.t.Fatalf("ListInProgress() error = %v", err)
 	}
-	return manifest
-}
-
-// AssertResult verifies the final success and failure counts.
-func (c *ExecutorTestContext) AssertResult(wantSucc, wantFail int) {
-	c.t.Helper()
-	if c.Progress.finalSucc != wantSucc {
-		c.t.Errorf("finalSucc = %d, want %d", c.Progress.finalSucc, wantSucc)
-	}
-	if c.Progress.finalFail != wantFail {
-		c.t.Errorf("finalFail = %d, want %d", c.Progress.finalFail, wantFail)
+	if len(inProgress) != want {
+		c.t.Errorf("ListInProgress() = %d, want %d", len(inProgress), want)
 	}
 }
 
-// AssertCompleted verifies that OnComplete was called.
-func (c *ExecutorTestContext) AssertCompleted() {
+// AssertManifestLastProcessedIndex verifies the persisted LastProcessedIndex.
+func (c *TestContext) AssertManifestLastProcessedIndex(id string, want int) {
 	c.t.Helper()
-	if !c.Progress.completed {
-		c.t.Error("OnComplete was not called")
-	}
-}
-
-// AssertNotCompleted verifies that OnComplete was not called.
-func (c *ExecutorTestContext) AssertNotCompleted() {
-	c.t.Helper()
-	if c.Progress.completed {
-		c.t.Error("OnComplete was called unexpectedly")
-	}
-}
-
-// AssertTrashCalls verifies the number of TrashMessage calls.
-func (c *ExecutorTestContext) AssertTrashCalls(want int) {
-	c.t.Helper()
-	if len(c.MockAPI.TrashCalls) != want {
-		c.t.Errorf("TrashCalls = %d, want %d", len(c.MockAPI.TrashCalls), want)
-	}
-}
-
-// AssertDeleteCalls verifies the number of DeleteMessage calls.
-func (c *ExecutorTestContext) AssertDeleteCalls(want int) {
-	c.t.Helper()
-	if len(c.MockAPI.DeleteCalls) != want {
-		c.t.Errorf("DeleteCalls = %d, want %d", len(c.MockAPI.DeleteCalls), want)
-	}
-}
-
-// AssertCompletedCount verifies the number of completed manifests.
-func (c *ExecutorTestContext) AssertCompletedCount(want int) {
-	c.t.Helper()
-	completed, err := c.Mgr.ListCompleted()
+	m, _, err := c.Mgr.GetManifest(id)
 	if err != nil {
-		c.t.Fatalf("ListCompleted() error = %v", err)
+		c.t.Fatalf("GetManifest(%q) failed: %v", id, err)
 	}
-	if len(completed) != want {
-		c.t.Errorf("ListCompleted() = %d, want %d", len(completed), want)
+	if m.Execution == nil {
+		c.t.Fatalf("manifest %q has nil Execution", id)
 	}
-}
-
-// AssertFailedCount verifies the number of failed manifests.
-func (c *ExecutorTestContext) AssertFailedCount(want int) {
-	c.t.Helper()
-	failed, err := c.Mgr.ListFailed()
-	if err != nil {
-		c.t.Fatalf("ListFailed() error = %v", err)
-	}
-	if len(failed) != want {
-		c.t.Errorf("ListFailed() = %d, want %d", len(failed), want)
-	}
-}
-
-// Execute runs the executor with default options.
-func (c *ExecutorTestContext) Execute(manifestID string) error {
-	return c.Exec.Execute(context.Background(), manifestID, nil)
-}
-
-// ExecuteWithOpts runs the executor with custom options.
-func (c *ExecutorTestContext) ExecuteWithOpts(manifestID string, opts *ExecuteOptions) error {
-	return c.Exec.Execute(context.Background(), manifestID, opts)
-}
-
-// ExecuteBatch runs the batch executor.
-func (c *ExecutorTestContext) ExecuteBatch(manifestID string) error {
-	return c.Exec.ExecuteBatch(context.Background(), manifestID)
-}
-
-// AssertBatchDeleteCalls verifies the number of BatchDeleteMessages calls.
-func (c *ExecutorTestContext) AssertBatchDeleteCalls(want int) {
-	c.t.Helper()
-	if len(c.MockAPI.BatchDeleteCalls) != want {
-		c.t.Errorf("BatchDeleteCalls = %d, want %d", len(c.MockAPI.BatchDeleteCalls), want)
+	if m.Execution.LastProcessedIndex != want {
+		c.t.Errorf("LastProcessedIndex = %d, want %d", m.Execution.LastProcessedIndex, want)
 	}
 }
 
@@ -357,7 +338,7 @@ func TestNewExecutor(t *testing.T) {
 	}
 
 	store := testutil.NewTestStore(t)
-	mockAPI := newMockAPI()
+	mockAPI := gmail.NewDeletionMockAPI()
 
 	exec := NewExecutor(mgr, store, mockAPI)
 	if exec == nil {
@@ -374,7 +355,7 @@ func TestExecutor_WithLogger(t *testing.T) {
 	store := testutil.NewTestStore(t)
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	exec := NewExecutor(mgr, store, newMockAPI()).WithLogger(logger)
+	exec := NewExecutor(mgr, store, gmail.NewDeletionMockAPI()).WithLogger(logger)
 
 	if exec.logger != logger {
 		t.Error("WithLogger did not set logger")
@@ -390,81 +371,155 @@ func TestExecutor_WithProgress(t *testing.T) {
 	store := testutil.NewTestStore(t)
 
 	progress := &trackingProgress{}
-	exec := NewExecutor(mgr, store, newMockAPI()).WithProgress(progress)
+	exec := NewExecutor(mgr, store, gmail.NewDeletionMockAPI()).WithProgress(progress)
 
 	if exec.progress != progress {
 		t.Error("WithProgress did not set progress")
 	}
 }
 
-func TestExecutor_Execute_Success(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
-	manifest := ctx.CreateManifest("test deletion", []string{"msg1", "msg2", "msg3"})
-
-	if err := ctx.Execute(manifest.ID); err != nil {
-		t.Fatalf("Execute() error = %v", err)
+func TestExecutor_Execute_Scenarios(t *testing.T) {
+	tests := []struct {
+		name       string
+		ids        []string
+		setup      func(*TestContext)
+		opts       *ExecuteOptions
+		wantSucc   int
+		wantFail   int
+		wantErr    bool
+		scopeError bool
+		assertions func(*testing.T, *TestContext, *Manifest)
+	}{
+		{
+			name:     "Success",
+			ids:      msgIDs(3),
+			wantSucc: 3, wantFail: 0,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertTrashCalls(3)
+				ctx.AssertCompleted()
+				ctx.AssertCompletedCount(1)
+			},
+		},
+		{
+			name:     "WithDeleteMethod",
+			ids:      msgIDs(2),
+			opts:     deleteOpts(100),
+			wantSucc: 2, wantFail: 0,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertDeleteCalls(2)
+				ctx.AssertTrashCalls(0)
+			},
+		},
+		{
+			name:     "WithFailures",
+			ids:      msgIDs(3),
+			setup:    func(c *TestContext) { c.SimulateTrashError("msg1") },
+			wantSucc: 2, wantFail: 1,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertCompletedCount(1)
+				ctx.AssertManifestExecution(m.ID, 2, 1, "msg1")
+			},
+		},
+		{
+			name: "AllFail",
+			ids:  msgIDs(2),
+			setup: func(c *TestContext) {
+				c.SimulateTrashError("msg0")
+				c.SimulateTrashError("msg1")
+			},
+			wantSucc: 0, wantFail: 2,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertFailedCount(1)
+			},
+		},
+		{
+			name:     "SmallBatchSize",
+			ids:      msgIDs(5),
+			opts:     trashOpts(2),
+			wantSucc: 5, wantFail: 0,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertTrashCalls(5)
+			},
+		},
+		{
+			name:     "NotFoundTreatedAsSuccess",
+			ids:      msgIDs(3),
+			setup:    func(c *TestContext) { c.SimulateNotFound("msg1") },
+			wantSucc: 3, wantFail: 0,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertCompletedCount(1)
+				ctx.AssertManifestExecution(m.ID, 3, 0)
+			},
+		},
+		{
+			name: "MixedErrors",
+			ids:  msgIDs(5),
+			setup: func(c *TestContext) {
+				c.SimulateNotFound("msg2")
+				c.SimulateTrashError("msg4")
+			},
+			wantSucc: 4, wantFail: 1,
+		},
+		{
+			name:     "WithDeleteMethod404",
+			ids:      msgIDs(3),
+			opts:     deleteOpts(100),
+			setup:    func(c *TestContext) { c.SimulateNotFound("msg1") },
+			wantSucc: 3, wantFail: 0,
+		},
+		{
+			name:       "ScopeError",
+			ids:        []string{"msg0", "msg1", "msg2"},
+			setup:      func(c *TestContext) { c.SimulateScopeError("msg1") },
+			wantErr:    true,
+			scopeError: true,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertNotCompleted()
+				ctx.AssertInProgressCount(1)
+				ctx.AssertManifestLastProcessedIndex(m.ID, 1)
+				ctx.AssertManifestExecution(m.ID, 1, 0)
+			},
+		},
 	}
 
-	ctx.AssertTrashCalls(3)
-	ctx.AssertCompleted()
-	ctx.AssertResult(3, 0)
-	ctx.AssertCompletedCount(1)
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := NewTestContext(t)
+			if tt.setup != nil {
+				tt.setup(ctx)
+			}
+			manifest := ctx.CreateManifest(tt.name, tt.ids)
 
-func TestExecutor_Execute_WithDeleteMethod(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
-	manifest := ctx.CreateManifest("permanent delete", []string{"msg1", "msg2"})
+			var err error
+			if tt.opts != nil {
+				err = ctx.ExecuteWithOpts(manifest.ID, tt.opts)
+			} else {
+				err = ctx.Execute(manifest.ID)
+			}
 
-	if err := ctx.ExecuteWithOpts(manifest.ID, deleteOpts(100)); err != nil {
-		t.Fatalf("Execute() error = %v", err)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.scopeError {
+					ctx.AssertIsScopeError(err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				ctx.AssertResult(tt.wantSucc, tt.wantFail)
+			}
+
+			if tt.assertions != nil {
+				tt.assertions(t, ctx, manifest)
+			}
+		})
 	}
-
-	ctx.AssertDeleteCalls(2)
-	ctx.AssertTrashCalls(0)
-}
-
-func TestExecutor_Execute_WithFailures(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
-	ctx.MockAPI.trashErrors["msg2"] = errors.New("trash failed")
-
-	manifest := ctx.CreateManifest("partial failure", []string{"msg1", "msg2", "msg3"})
-
-	if err := ctx.Execute(manifest.ID); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	ctx.AssertResult(2, 1)
-	ctx.AssertCompletedCount(1)
-
-	// Check failed IDs are recorded
-	loaded, _, err := ctx.Mgr.GetManifest(manifest.ID)
-	if err != nil {
-		t.Fatalf("GetManifest() error = %v", err)
-	}
-	if len(loaded.Execution.FailedIDs) != 1 {
-		t.Errorf("FailedIDs = %v, want 1 entry", loaded.Execution.FailedIDs)
-	}
-	if loaded.Execution.FailedIDs[0] != "msg2" {
-		t.Errorf("FailedIDs[0] = %q, want %q", loaded.Execution.FailedIDs[0], "msg2")
-	}
-}
-
-func TestExecutor_Execute_AllFail(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
-	ctx.MockAPI.trashErrors["msg1"] = errors.New("fail 1")
-	ctx.MockAPI.trashErrors["msg2"] = errors.New("fail 2")
-
-	manifest := ctx.CreateManifest("total failure", []string{"msg1", "msg2"})
-
-	if err := ctx.Execute(manifest.ID); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	ctx.AssertFailedCount(1)
 }
 
 func TestExecutor_Execute_ContextCancelled(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
+	ctx := NewTestContext(t)
 
 	manifest := ctx.CreateManifest("interrupt test", msgIDs(100))
 
@@ -480,28 +535,11 @@ func TestExecutor_Execute_ContextCancelled(t *testing.T) {
 	ctx.AssertNotCompleted()
 
 	// Manifest should remain in in_progress (for resume)
-	inProgress, err := ctx.Mgr.ListInProgress()
-	if err != nil {
-		t.Fatalf("ListInProgress() error = %v", err)
-	}
-	if len(inProgress) != 1 {
-		t.Errorf("ListInProgress() = %d, want 1", len(inProgress))
-	}
-}
-
-func TestExecutor_Execute_SmallBatchSize(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
-	manifest := ctx.CreateManifest("small batch test", []string{"msg1", "msg2", "msg3", "msg4", "msg5"})
-
-	if err := ctx.ExecuteWithOpts(manifest.ID, trashOpts(2)); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	ctx.AssertTrashCalls(5)
+	ctx.AssertInProgressCount(1)
 }
 
 func TestExecutor_Execute_ManifestNotFound(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
+	ctx := NewTestContext(t)
 
 	err := ctx.Execute("nonexistent-id")
 	if err == nil {
@@ -510,8 +548,8 @@ func TestExecutor_Execute_ManifestNotFound(t *testing.T) {
 }
 
 func TestExecutor_Execute_InvalidStatus(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
-	manifest := ctx.CreateManifest("completed test", []string{"msg1"})
+	ctx := NewTestContext(t)
+	manifest := ctx.CreateManifest("completed test", msgIDs(1))
 
 	// Execute to completion
 	if err := ctx.Execute(manifest.ID); err != nil {
@@ -526,7 +564,7 @@ func TestExecutor_Execute_InvalidStatus(t *testing.T) {
 }
 
 func TestExecutor_Execute_ResumeFromInProgress(t *testing.T) {
-	tc := NewExecutorTestContext(t)
+	tc := NewTestContext(t)
 
 	// Create a manifest that's already in_progress with some progress
 	gmailIDs := msgIDs(5)
@@ -551,70 +589,162 @@ func TestExecutor_Execute_ResumeFromInProgress(t *testing.T) {
 	tc.AssertTrashCalls(3)
 
 	// Verify final counts include all 5
-	loaded, _, err := tc.Mgr.GetManifest(manifest.ID)
-	if err != nil {
-		t.Fatalf("GetManifest() error = %v", err)
-	}
-	if loaded.Execution.Succeeded != 5 {
-		t.Errorf("Succeeded = %d, want 5", loaded.Execution.Succeeded)
-	}
+	tc.AssertManifestExecution(manifest.ID, 5, 0)
 }
 
-func TestExecutor_ExecuteBatch_Success(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
-	manifest := ctx.CreateManifest("batch delete", []string{"msg1", "msg2", "msg3"})
-
-	if err := ctx.ExecuteBatch(manifest.ID); err != nil {
-		t.Fatalf("ExecuteBatch() error = %v", err)
+func TestExecutor_ExecuteBatch_Scenarios(t *testing.T) {
+	tests := []struct {
+		name       string
+		ids        []string
+		setup      func(*TestContext)
+		wantSucc   int
+		wantFail   int
+		wantErr    bool
+		scopeError bool
+		assertions func(*testing.T, *TestContext, *Manifest)
+	}{
+		{
+			name:     "Success",
+			ids:      msgIDs(3),
+			wantSucc: 3, wantFail: 0,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertBatchDeleteCalls(1)
+				if len(ctx.GetBatchDeleteCall(0)) != 3 {
+					t.Errorf("BatchDeleteCalls[0] length = %d, want 3", len(ctx.GetBatchDeleteCall(0)))
+				}
+				ctx.AssertCompleted()
+				ctx.AssertCompletedCount(1)
+			},
+		},
+		{
+			name:     "LargeBatch",
+			ids:      msgIDs(1500),
+			wantSucc: 1500, wantFail: 0,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertBatchDeleteCalls(2)
+				if len(ctx.GetBatchDeleteCall(0)) != 1000 {
+					t.Errorf("BatchDeleteCalls[0] length = %d, want 1000", len(ctx.GetBatchDeleteCall(0)))
+				}
+				if len(ctx.GetBatchDeleteCall(1)) != 500 {
+					t.Errorf("BatchDeleteCalls[1] length = %d, want 500", len(ctx.GetBatchDeleteCall(1)))
+				}
+			},
+		},
+		{
+			name:     "WithBatchError",
+			ids:      msgIDs(3),
+			setup:    func(c *TestContext) { c.SimulateBatchDeleteError() },
+			wantSucc: 3, wantFail: 0,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertBatchDeleteCalls(1)
+				ctx.AssertDeleteCalls(3)
+			},
+		},
+		{
+			name:     "FallbackNotFoundTreatedAsSuccess",
+			ids:      msgIDs(3),
+			setup:    func(c *TestContext) { c.SimulateBatchDeleteError(); c.SimulateNotFound("msg1") },
+			wantSucc: 3, wantFail: 0,
+		},
+		{
+			name:     "FallbackWithNon404Failures",
+			ids:      msgIDs(3),
+			setup:    func(c *TestContext) { c.SimulateBatchDeleteError(); c.SimulateDeleteError("msg1") },
+			wantSucc: 2, wantFail: 1,
+		},
+		{
+			name: "FallbackMixed",
+			ids:  msgIDs(4),
+			setup: func(c *TestContext) {
+				c.SimulateBatchDeleteError()
+				c.SimulateNotFound("msg2")
+				c.SimulateDeleteError("msg3")
+			},
+			wantSucc: 3, wantFail: 1,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertBatchDeleteCalls(1)
+				ctx.AssertDeleteCalls(4)
+			},
+		},
+		{
+			name: "AllFail",
+			ids:  msgIDs(2),
+			setup: func(c *TestContext) {
+				c.SimulateBatchDeleteError()
+				c.SimulateDeleteError("msg0")
+				c.SimulateDeleteError("msg1")
+			},
+			wantSucc: 0, wantFail: 2,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				// Batch mode always marks as Completed even when all fail
+				ctx.AssertCompletedCount(1)
+				ctx.AssertFailedCount(0)
+			},
+		},
+		{
+			name:       "ScopeError",
+			ids:        msgIDs(3),
+			setup:      func(c *TestContext) { c.SimulateBatchScopeError() },
+			wantErr:    true,
+			scopeError: true,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertNotCompleted()
+				ctx.AssertInProgressCount(1)
+				ctx.AssertManifestLastProcessedIndex(m.ID, 0)
+			},
+		},
+		{
+			name: "FallbackScopeError",
+			ids:  []string{"msg0", "msg1", "msg2", "msg3"},
+			setup: func(c *TestContext) {
+				c.SimulateBatchDeleteError()
+				c.SimulateScopeError("msg2")
+			},
+			wantErr:    true,
+			scopeError: true,
+			assertions: func(t *testing.T, ctx *TestContext, m *Manifest) {
+				ctx.AssertNotCompleted()
+				ctx.AssertInProgressCount(1)
+				ctx.AssertManifestLastProcessedIndex(m.ID, 2)
+				ctx.AssertManifestExecution(m.ID, 2, 0)
+			},
+		},
 	}
 
-	ctx.AssertBatchDeleteCalls(1)
-	if len(ctx.MockAPI.BatchDeleteCalls[0]) != 3 {
-		t.Errorf("BatchDeleteCalls[0] length = %d, want 3", len(ctx.MockAPI.BatchDeleteCalls[0]))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := NewTestContext(t)
+			if tt.setup != nil {
+				tt.setup(ctx)
+			}
+			manifest := ctx.CreateManifest(tt.name, tt.ids)
+
+			err := ctx.ExecuteBatch(manifest.ID)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.scopeError {
+					ctx.AssertIsScopeError(err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				ctx.AssertResult(tt.wantSucc, tt.wantFail)
+			}
+
+			if tt.assertions != nil {
+				tt.assertions(t, ctx, manifest)
+			}
+		})
 	}
-	ctx.AssertCompleted()
-	ctx.AssertResult(3, 0)
-	ctx.AssertCompletedCount(1)
-}
-
-func TestExecutor_ExecuteBatch_LargeBatch(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
-
-	// Create manifest with >1000 messages (Gmail batch limit)
-	manifest := ctx.CreateManifest("large batch", msgIDs(1500))
-
-	if err := ctx.ExecuteBatch(manifest.ID); err != nil {
-		t.Fatalf("ExecuteBatch() error = %v", err)
-	}
-
-	// Should be split into 2 batches (1000 + 500)
-	ctx.AssertBatchDeleteCalls(2)
-	if len(ctx.MockAPI.BatchDeleteCalls[0]) != 1000 {
-		t.Errorf("BatchDeleteCalls[0] length = %d, want 1000", len(ctx.MockAPI.BatchDeleteCalls[0]))
-	}
-	if len(ctx.MockAPI.BatchDeleteCalls[1]) != 500 {
-		t.Errorf("BatchDeleteCalls[1] length = %d, want 500", len(ctx.MockAPI.BatchDeleteCalls[1]))
-	}
-}
-
-func TestExecutor_ExecuteBatch_WithBatchError(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
-	ctx.MockAPI.batchError = errors.New("batch failed")
-
-	manifest := ctx.CreateManifest("batch fallback", []string{"msg1", "msg2", "msg3"})
-
-	if err := ctx.ExecuteBatch(manifest.ID); err != nil {
-		t.Fatalf("ExecuteBatch() error = %v", err)
-	}
-
-	// Should have attempted batch, then fallen back to individual
-	ctx.AssertBatchDeleteCalls(1)
-	ctx.AssertDeleteCalls(3)
 }
 
 func TestExecutor_ExecuteBatch_InvalidStatus(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
-	manifest := ctx.CreateManifest("wrong status", []string{"msg1"})
+	ctx := NewTestContext(t)
+	manifest := ctx.CreateManifest("wrong status", msgIDs(1))
 
 	// Move to in_progress
 	if err := ctx.Mgr.MoveManifest(manifest.ID, StatusPending, StatusInProgress); err != nil {
@@ -628,7 +758,7 @@ func TestExecutor_ExecuteBatch_InvalidStatus(t *testing.T) {
 }
 
 func TestExecutor_ExecuteBatch_ContextCancelled(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
+	ctx := NewTestContext(t)
 
 	manifest := ctx.CreateManifest("cancel batch", msgIDs(2500))
 
@@ -645,7 +775,7 @@ func TestExecutor_ExecuteBatch_ContextCancelled(t *testing.T) {
 }
 
 func TestExecutor_ExecuteBatch_ManifestNotFound(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
+	ctx := NewTestContext(t)
 
 	err := ctx.ExecuteBatch("nonexistent-id")
 	if err == nil {
@@ -653,333 +783,114 @@ func TestExecutor_ExecuteBatch_ManifestNotFound(t *testing.T) {
 	}
 }
 
-// TestExecutor_Execute_NotFoundTreatedAsSuccess verifies that 404 (already deleted)
-// is treated as success, making deletion idempotent.
-func TestExecutor_Execute_NotFoundTreatedAsSuccess(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
-	ctx.MockAPI.trashErrors["msg2"] = &gmail.NotFoundError{Path: "/users/me/messages/msg2/trash"}
+// TestExecutor_ExecuteBatch_RetriesFailedIDs verifies that resuming a batch
+// execution retries previously failed message IDs.
+func TestExecutor_ExecuteBatch_RetriesFailedIDs(t *testing.T) {
+	tc := NewTestContext(t)
 
-	manifest := ctx.CreateManifest("idempotent test", []string{"msg1", "msg2", "msg3"})
-
-	if err := ctx.Execute(manifest.ID); err != nil {
-		t.Fatalf("Execute() error = %v", err)
+	// Create a manifest that's already in_progress with failed IDs
+	gmailIDs := msgIDs(5)
+	manifest := NewManifest("retry test", gmailIDs)
+	manifest.Status = StatusInProgress
+	manifest.Execution = &Execution{
+		StartedAt:          time.Now().Add(-time.Hour),
+		Method:             MethodDelete,
+		Succeeded:          2,
+		Failed:             3,
+		FailedIDs:          []string{"msg2", "msg3", "msg4"},
+		LastProcessedIndex: 5, // All processed, but 3 failed
+	}
+	if err := tc.Mgr.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest() error = %v", err)
 	}
 
-	ctx.AssertResult(3, 0)
-	ctx.AssertCompletedCount(1)
+	if err := tc.ExecuteBatch(manifest.ID); err != nil {
+		t.Fatalf("ExecuteBatch() error = %v", err)
+	}
 
-	// Verify no failed IDs recorded
-	loaded, _, err := ctx.Mgr.GetManifest(manifest.ID)
+	// The 3 previously failed IDs should be retried via individual delete
+	tc.AssertDeleteCalls(3)
+	// All should succeed now (no errors injected)
+	tc.AssertResult(5, 0)
+	tc.AssertCompletedCount(1)
+}
+
+// TestExecutor_ExecuteBatch_RetryPartialSuccess verifies that retried IDs that
+// still fail are tracked correctly.
+func TestExecutor_ExecuteBatch_RetryPartialSuccess(t *testing.T) {
+	tc := NewTestContext(t)
+	tc.SimulateDeleteError("msg3") // msg3 still fails on retry
+
+	gmailIDs := msgIDs(5)
+	manifest := NewManifest("retry partial", gmailIDs)
+	manifest.Status = StatusInProgress
+	manifest.Execution = &Execution{
+		StartedAt:          time.Now().Add(-time.Hour),
+		Method:             MethodDelete,
+		Succeeded:          2,
+		Failed:             3,
+		FailedIDs:          []string{"msg2", "msg3", "msg4"},
+		LastProcessedIndex: 5,
+	}
+	if err := tc.Mgr.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest() error = %v", err)
+	}
+
+	if err := tc.ExecuteBatch(manifest.ID); err != nil {
+		t.Fatalf("ExecuteBatch() error = %v", err)
+	}
+
+	// msg2, msg4 succeed on retry; msg3 still fails
+	tc.AssertResult(4, 1)
+	tc.AssertCompletedCount(1)
+}
+
+// TestExecutor_ExecuteBatch_RetryScopeErrorAfterPartialSuccess verifies that
+// a scope error during retry only preserves unattempted+failed IDs, not
+// already-succeeded ones.
+func TestExecutor_ExecuteBatch_RetryScopeErrorAfterPartialSuccess(t *testing.T) {
+	tc := NewTestContext(t)
+	// msg3 hits scope error; msg2 succeeds before it, msg4 is unattempted
+	tc.SimulateScopeError("msg3")
+
+	gmailIDs := msgIDs(5)
+	manifest := NewManifest("retry scope partial", gmailIDs)
+	manifest.Status = StatusInProgress
+	manifest.Execution = &Execution{
+		StartedAt:          time.Now().Add(-time.Hour),
+		Method:             MethodDelete,
+		Succeeded:          2,
+		Failed:             3,
+		FailedIDs:          []string{"msg2", "msg3", "msg4"},
+		LastProcessedIndex: 5,
+	}
+	if err := tc.Mgr.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest() error = %v", err)
+	}
+
+	err := tc.ExecuteBatch(manifest.ID)
+	if err == nil {
+		t.Fatal("ExecuteBatch() should return error for scope error during retry")
+	}
+	tc.AssertIsScopeError(err)
+
+	// msg2 succeeded before the scope error on msg3
+	// Checkpoint should have: FailedIDs = [msg3, msg4] (current + unattempted)
+	m, _, err := tc.Mgr.GetManifest(manifest.ID)
 	if err != nil {
 		t.Fatalf("GetManifest() error = %v", err)
 	}
-	if len(loaded.Execution.FailedIDs) != 0 {
-		t.Errorf("FailedIDs = %v, want empty", loaded.Execution.FailedIDs)
+	if m.Execution.Succeeded != 3 { // original 2 + msg2 retry
+		t.Errorf("Succeeded = %d, want 3", m.Execution.Succeeded)
 	}
-}
-
-// TestExecutor_ExecuteBatch_FallbackNotFoundTreatedAsSuccess verifies that
-// when batch delete fails and falls back to individual deletes,
-// 404 errors are still treated as success.
-func TestExecutor_ExecuteBatch_FallbackNotFoundTreatedAsSuccess(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
-	ctx.MockAPI.batchError = errors.New("batch failed")
-	ctx.MockAPI.deleteErrors["msg2"] = &gmail.NotFoundError{Path: "/users/me/messages/msg2"}
-
-	manifest := ctx.CreateManifest("batch fallback 404", []string{"msg1", "msg2", "msg3"})
-
-	if err := ctx.ExecuteBatch(manifest.ID); err != nil {
-		t.Fatalf("ExecuteBatch() error = %v", err)
+	if m.Execution.Failed != 2 { // msg3 + msg4
+		t.Errorf("Failed = %d, want 2", m.Execution.Failed)
 	}
-
-	ctx.AssertResult(3, 0)
-}
-
-// TestExecutor_ExecuteBatch_FallbackWithNon404Failures verifies that
-// non-404 failures during fallback are properly counted as failures.
-func TestExecutor_ExecuteBatch_FallbackWithNon404Failures(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
-	ctx.MockAPI.batchError = errors.New("batch failed")
-	ctx.MockAPI.deleteErrors["msg2"] = errors.New("permission denied")
-
-	manifest := ctx.CreateManifest("batch fallback failures", []string{"msg1", "msg2", "msg3"})
-
-	if err := ctx.ExecuteBatch(manifest.ID); err != nil {
-		t.Fatalf("ExecuteBatch() error = %v", err)
+	if len(m.Execution.FailedIDs) != 2 {
+		t.Fatalf("FailedIDs count = %d, want 2", len(m.Execution.FailedIDs))
 	}
-
-	ctx.AssertResult(2, 1)
-}
-
-// TestExecutor_Execute_WithDeleteMethod_404 tests 404 handling with permanent delete method.
-func TestExecutor_Execute_WithDeleteMethod_404(t *testing.T) {
-	ctx := NewExecutorTestContext(t)
-	ctx.MockAPI.deleteErrors["msg2"] = &gmail.NotFoundError{Path: "/users/me/messages/msg2"}
-
-	manifest := ctx.CreateManifest("delete method 404", []string{"msg1", "msg2", "msg3"})
-
-	if err := ctx.ExecuteWithOpts(manifest.ID, deleteOpts(100)); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	ctx.AssertResult(3, 0)
-}
-
-// Tests using DeletionMockAPI for more sophisticated scenarios
-
-// TestExecutor_Execute_UsingDeletionMockAPI tests with the comprehensive mock.
-func TestExecutor_Execute_UsingDeletionMockAPI(t *testing.T) {
-	ctx := NewDeletionMockTestContext(t)
-	manifest := ctx.CreateManifest("deletion mock test", msgIDs(5))
-
-	if err := ctx.Execute(manifest.ID); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	ctx.AssertResult(5, 0)
-	if len(ctx.MockAPI.TrashCalls) != 5 {
-		t.Errorf("TrashCalls = %d, want 5", len(ctx.MockAPI.TrashCalls))
-	}
-}
-
-// TestExecutor_Execute_DeletionMock_MixedErrors tests mixed success/404/error.
-func TestExecutor_Execute_DeletionMock_MixedErrors(t *testing.T) {
-	ctx := NewDeletionMockTestContext(t)
-	ctx.MockAPI.SetNotFoundError("msg2")
-	ctx.MockAPI.TrashErrors["msg4"] = errors.New("server error")
-
-	manifest := ctx.CreateManifest("mixed errors test", msgIDs(5))
-
-	if err := ctx.Execute(manifest.ID); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	ctx.AssertResult(4, 1)
-}
-
-// TestExecutor_ExecuteBatch_DeletionMock tests batch with DeletionMockAPI.
-func TestExecutor_ExecuteBatch_DeletionMock(t *testing.T) {
-	ctx := NewDeletionMockTestContext(t)
-	manifest := ctx.CreateManifest("batch mock test", msgIDs(3))
-
-	if err := ctx.ExecuteBatch(manifest.ID); err != nil {
-		t.Fatalf("ExecuteBatch() error = %v", err)
-	}
-
-	ctx.AssertResult(3, 0)
-	if len(ctx.MockAPI.BatchDeleteCalls) != 1 {
-		t.Errorf("BatchDeleteCalls = %d, want 1", len(ctx.MockAPI.BatchDeleteCalls))
-	}
-}
-
-// TestExecutor_ExecuteBatch_DeletionMock_FallbackMixed tests batch fallback with mixed results.
-func TestExecutor_ExecuteBatch_DeletionMock_FallbackMixed(t *testing.T) {
-	ctx := NewDeletionMockTestContext(t)
-	ctx.MockAPI.BatchDeleteError = errors.New("batch not supported")
-	ctx.MockAPI.SetNotFoundError("msg2")
-	ctx.MockAPI.DeleteErrors["msg3"] = errors.New("permission denied")
-
-	manifest := ctx.CreateManifest("batch fallback mixed", msgIDs(4))
-
-	if err := ctx.ExecuteBatch(manifest.ID); err != nil {
-		t.Fatalf("ExecuteBatch() error = %v", err)
-	}
-
-	ctx.AssertResult(3, 1)
-	if len(ctx.MockAPI.BatchDeleteCalls) != 1 {
-		t.Errorf("BatchDeleteCalls = %d, want 1", len(ctx.MockAPI.BatchDeleteCalls))
-	}
-	if len(ctx.MockAPI.DeleteCalls) != 4 {
-		t.Errorf("DeleteCalls = %d, want 4 (fallback)", len(ctx.MockAPI.DeleteCalls))
-	}
-}
-
-// TestDeletionMockAPI_CallSequence verifies call sequence tracking.
-func TestDeletionMockAPI_CallSequence(t *testing.T) {
-	mockAPI := gmail.NewDeletionMockAPI()
-
-	ctx := context.Background()
-	_ = mockAPI.TrashMessage(ctx, "msg1")
-	_ = mockAPI.DeleteMessage(ctx, "msg2")
-	_ = mockAPI.BatchDeleteMessages(ctx, []string{"msg3", "msg4"})
-
-	if len(mockAPI.CallSequence) != 3 {
-		t.Fatalf("CallSequence length = %d, want 3", len(mockAPI.CallSequence))
-	}
-
-	if mockAPI.CallSequence[0].Operation != "trash" {
-		t.Errorf("CallSequence[0].Operation = %q, want %q", mockAPI.CallSequence[0].Operation, "trash")
-	}
-	if mockAPI.CallSequence[1].Operation != "delete" {
-		t.Errorf("CallSequence[1].Operation = %q, want %q", mockAPI.CallSequence[1].Operation, "delete")
-	}
-	if mockAPI.CallSequence[2].Operation != "batch_delete" {
-		t.Errorf("CallSequence[2].Operation = %q, want %q", mockAPI.CallSequence[2].Operation, "batch_delete")
-	}
-}
-
-// TestDeletionMockAPI_Reset verifies state reset.
-func TestDeletionMockAPI_Reset(t *testing.T) {
-	mockAPI := gmail.NewDeletionMockAPI()
-	mockAPI.TrashErrors["msg1"] = errors.New("error")
-	mockAPI.TrashCalls = []string{"msg1"}
-
-	mockAPI.Reset()
-
-	if len(mockAPI.TrashErrors) != 0 {
-		t.Errorf("TrashErrors not cleared")
-	}
-	if len(mockAPI.TrashCalls) != 0 {
-		t.Errorf("TrashCalls not cleared")
-	}
-}
-
-// TestDeletionMockAPI_GetCallCount verifies call count helpers.
-func TestDeletionMockAPI_GetCallCount(t *testing.T) {
-	mockAPI := gmail.NewDeletionMockAPI()
-	ctx := context.Background()
-
-	_ = mockAPI.TrashMessage(ctx, "msg1")
-	_ = mockAPI.TrashMessage(ctx, "msg1")
-	_ = mockAPI.TrashMessage(ctx, "msg2")
-
-	if mockAPI.GetTrashCallCount("msg1") != 2 {
-		t.Errorf("GetTrashCallCount(msg1) = %d, want 2", mockAPI.GetTrashCallCount("msg1"))
-	}
-	if mockAPI.GetTrashCallCount("msg2") != 1 {
-		t.Errorf("GetTrashCallCount(msg2) = %d, want 1", mockAPI.GetTrashCallCount("msg2"))
-	}
-	if mockAPI.GetTrashCallCount("msg3") != 0 {
-		t.Errorf("GetTrashCallCount(msg3) = %d, want 0", mockAPI.GetTrashCallCount("msg3"))
-	}
-}
-
-// TestDeletionMockAPI_Close verifies Close is a no-op.
-func TestDeletionMockAPI_Close(t *testing.T) {
-	mockAPI := gmail.NewDeletionMockAPI()
-	if err := mockAPI.Close(); err != nil {
-		t.Errorf("Close() error = %v, want nil", err)
-	}
-}
-
-// TestDeletionMockAPI_SetTransientFailure tests transient failure simulation.
-func TestDeletionMockAPI_SetTransientFailure(t *testing.T) {
-	mockAPI := gmail.NewDeletionMockAPI()
-	ctx := context.Background()
-
-	// Set msg1 to fail 2 times then succeed
-	mockAPI.SetTransientFailure("msg1", 2, true)
-
-	// First call: fails
-	err := mockAPI.TrashMessage(ctx, "msg1")
-	if err == nil {
-		t.Error("First call should fail")
-	}
-
-	// Second call: fails
-	err = mockAPI.TrashMessage(ctx, "msg1")
-	if err == nil {
-		t.Error("Second call should fail")
-	}
-
-	// Third call: succeeds
-	err = mockAPI.TrashMessage(ctx, "msg1")
-	if err != nil {
-		t.Errorf("Third call should succeed, got error: %v", err)
-	}
-}
-
-// TestDeletionMockAPI_Hooks tests before hooks.
-func TestDeletionMockAPI_Hooks(t *testing.T) {
-	mockAPI := gmail.NewDeletionMockAPI()
-	ctx := context.Background()
-
-	hookCalled := false
-	mockAPI.BeforeTrash = func(messageID string) error {
-		hookCalled = true
-		if messageID == "blocked" {
-			return errors.New("blocked by hook")
-		}
-		return nil
-	}
-
-	// Normal call - hook allows it
-	err := mockAPI.TrashMessage(ctx, "msg1")
-	if err != nil {
-		t.Errorf("TrashMessage(msg1) error = %v", err)
-	}
-	if !hookCalled {
-		t.Error("BeforeTrash hook was not called")
-	}
-
-	// Blocked call
-	err = mockAPI.TrashMessage(ctx, "blocked")
-	if err == nil {
-		t.Error("TrashMessage(blocked) should error")
-	}
-}
-
-// TestDeletionMockAPI_BeforeDeleteHook tests delete hook.
-func TestDeletionMockAPI_BeforeDeleteHook(t *testing.T) {
-	mockAPI := gmail.NewDeletionMockAPI()
-	ctx := context.Background()
-
-	mockAPI.BeforeDelete = func(messageID string) error {
-		return errors.New("delete hook error")
-	}
-
-	err := mockAPI.DeleteMessage(ctx, "msg1")
-	if err == nil {
-		t.Error("DeleteMessage should fail with hook error")
-	}
-}
-
-// TestDeletionMockAPI_BeforeBatchDeleteHook tests batch delete hook.
-func TestDeletionMockAPI_BeforeBatchDeleteHook(t *testing.T) {
-	mockAPI := gmail.NewDeletionMockAPI()
-	ctx := context.Background()
-
-	mockAPI.BeforeBatchDelete = func(ids []string) error {
-		return errors.New("batch hook error")
-	}
-
-	err := mockAPI.BatchDeleteMessages(ctx, []string{"msg1", "msg2"})
-	if err == nil {
-		t.Error("BatchDeleteMessages should fail with hook error")
-	}
-}
-
-// TestDeletionMockAPI_GetDeleteCallCount tests delete call counting.
-func TestDeletionMockAPI_GetDeleteCallCount(t *testing.T) {
-	mockAPI := gmail.NewDeletionMockAPI()
-	ctx := context.Background()
-
-	_ = mockAPI.DeleteMessage(ctx, "msg1")
-	_ = mockAPI.DeleteMessage(ctx, "msg1")
-
-	if mockAPI.GetDeleteCallCount("msg1") != 2 {
-		t.Errorf("GetDeleteCallCount(msg1) = %d, want 2", mockAPI.GetDeleteCallCount("msg1"))
-	}
-}
-
-// TestDeletionMockAPI_SetTransientDeleteFailure tests transient delete failures.
-func TestDeletionMockAPI_SetTransientDeleteFailure(t *testing.T) {
-	mockAPI := gmail.NewDeletionMockAPI()
-	ctx := context.Background()
-
-	// Set msg1 to fail 1 time then succeed (for delete, not trash)
-	mockAPI.SetTransientFailure("msg1", 1, false)
-
-	// First call: fails
-	err := mockAPI.DeleteMessage(ctx, "msg1")
-	if err == nil {
-		t.Error("First delete call should fail")
-	}
-
-	// Second call: succeeds
-	err = mockAPI.DeleteMessage(ctx, "msg1")
-	if err != nil {
-		t.Errorf("Second delete call should succeed, got error: %v", err)
+	if m.Execution.FailedIDs[0] != "msg3" || m.Execution.FailedIDs[1] != "msg4" {
+		t.Errorf("FailedIDs = %v, want [msg3, msg4]", m.Execution.FailedIDs)
 	}
 }
 

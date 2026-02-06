@@ -259,26 +259,6 @@ func (s *Store) searchMessagesLike(query string, offset, limit int) ([]APIMessag
 	return messages, total, rows.Err()
 }
 
-// ListSources returns all configured sources.
-func (s *Store) ListSources() ([]Source, error) {
-	query := `SELECT id, source_type, identifier, COALESCE(display_name, '') as display_name FROM sources`
-	rows, err := s.db.Query(query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var sources []Source
-	for rows.Next() {
-		var src Source
-		if err := rows.Scan(&src.ID, &src.SourceType, &src.Identifier, &src.DisplayName); err != nil {
-			return nil, err
-		}
-		sources = append(sources, src)
-	}
-	return sources, rows.Err()
-}
-
 // Helper functions
 
 func (s *Store) getRecipients(messageID int64, recipientType string) []string {

@@ -16,7 +16,7 @@ This command creates all necessary tables for storing emails, attachments,
 labels, and sync state. It is safe to run multiple times - tables are only
 created if they don't already exist.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		dbPath := cfg.DatabasePath()
+		dbPath := cfg.DatabaseDSN()
 		logger.Info("initializing database", "path", dbPath)
 
 		s, err := store.Open(dbPath)

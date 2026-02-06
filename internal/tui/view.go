@@ -5,10 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
-	"github.com/mattn/go-runewidth"
 	"github.com/wesm/msgvault/internal/query"
-	"github.com/wesm/msgvault/internal/search"
 )
 
 // Monochrome theme - adaptive for light and dark terminals
@@ -96,106 +93,6 @@ var (
 			Bold(true)
 )
 
-// highlightTerms applies highlight styling to all occurrences of search terms in text.
-// Terms are extracted from a search query string using search.Parse().
-// Highlighting is case-insensitive. Returns the original text with ANSI highlight codes.
-func highlightTerms(text, searchQuery string) string {
-	if searchQuery == "" || text == "" {
-		return text
-	}
-	terms := extractSearchTerms(searchQuery)
-	if len(terms) == 0 {
-		return text
-	}
-	return applyHighlight(text, terms)
-}
-
-// extractSearchTerms extracts displayable search terms from a query string.
-func extractSearchTerms(queryStr string) []string {
-	q := search.Parse(queryStr)
-	var terms []string
-	terms = append(terms, q.TextTerms...)
-	terms = append(terms, q.FromAddrs...)
-	terms = append(terms, q.ToAddrs...)
-	terms = append(terms, q.SubjectTerms...)
-	// Deduplicate and filter empty
-	seen := make(map[string]bool, len(terms))
-	filtered := terms[:0]
-	for _, t := range terms {
-		lower := strings.ToLower(t)
-		if t != "" && !seen[lower] {
-			seen[lower] = true
-			filtered = append(filtered, t)
-		}
-	}
-	return filtered
-}
-
-// applyHighlight wraps all case-insensitive occurrences of any term in text with highlightStyle.
-// It operates on runes to avoid byte-offset mismatches when strings.ToLower changes byte length
-// (e.g., certain Unicode characters like İ).
-func applyHighlight(text string, terms []string) string {
-	if len(terms) == 0 {
-		return text
-	}
-	textRunes := []rune(text)
-	lowerRunes := []rune(strings.ToLower(text))
-	// Build list of highlight intervals [start, end) in rune indices
-	type interval struct{ start, end int }
-	var intervals []interval
-	for _, term := range terms {
-		termLowerRunes := []rune(strings.ToLower(term))
-		tLen := len(termLowerRunes)
-		if tLen == 0 {
-			continue
-		}
-		for i := 0; i <= len(lowerRunes)-tLen; i++ {
-			match := true
-			for j := 0; j < tLen; j++ {
-				if lowerRunes[i+j] != termLowerRunes[j] {
-					match = false
-					break
-				}
-			}
-			if match {
-				intervals = append(intervals, interval{i, i + tLen})
-				i += tLen - 1 // skip past this match
-			}
-		}
-	}
-	if len(intervals) == 0 {
-		return text
-	}
-	// Sort and merge overlapping intervals
-	// Simple insertion sort since we expect few intervals
-	for i := 1; i < len(intervals); i++ {
-		for j := i; j > 0 && intervals[j].start < intervals[j-1].start; j-- {
-			intervals[j], intervals[j-1] = intervals[j-1], intervals[j]
-		}
-	}
-	merged := []interval{intervals[0]}
-	for _, iv := range intervals[1:] {
-		last := &merged[len(merged)-1]
-		if iv.start <= last.end {
-			if iv.end > last.end {
-				last.end = iv.end
-			}
-		} else {
-			merged = append(merged, iv)
-		}
-	}
-	// Build result using rune slicing
-	var sb strings.Builder
-	prev := 0
-	for _, iv := range merged {
-		sb.WriteString(string(textRunes[prev:iv.start]))
-		sb.WriteString(highlightStyle.Render(string(textRunes[iv.start:iv.end])))
-		prev = iv.end
-	}
-	sb.WriteString(string(textRunes[prev:]))
-	return sb.String()
-}
-
 // viewTypeAbbrev returns view type name for column headers and top-level breadcrumb.
 func viewTypeAbbrev(vt query.ViewType) string {
 	switch vt {
@@ -244,11 +141,9 @@ func viewTypePrefix(vt query.ViewType) string {
 	}
 }
 
-// headerView renders a two-level header:
-// Line 1: msgvault [version] - account
-// Line 2: breadcrumb | stats
-func (m Model) headerView() string {
-	// === LINE 1: Title bar ===
+// buildTitleBar builds the title bar line (line 1 of the header).
+// Format: "msgvault [version] - Account          update: vX.Y.Z"
+func (m Model) buildTitleBar() string {
 	// Build title with version
 	titleText := "msgvault"
 	if m.version != "" && m.version != "dev" && m.version != "unknown" {
@@ -283,7 +178,7 @@ func (m Model) headerView() string {
 		}
 	}
 
-	// Build line 1: "msgvault [hash] - Account          update: vX.Y.Z"
+	// Build line content: "msgvault [hash] - Account          update: vX.Y.Z"
 	line1Content := fmt.Sprintf("%s - %s", titleText, accountStr)
 	if updateNotice != "" {
 		gap := m.width - 2 - lipgloss.Width(line1Content) - lipgloss.Width(updateNotice)
@@ -291,84 +186,99 @@ func (m Model) headerView() string {
 			line1Content += strings.Repeat(" ", gap) + updateNotice
 		}
 	}
-	line1 := titleBarStyle.Render(padRight(line1Content, m.width-2)) // -2 for padding
+	return titleBarStyle.Render(padRight(line1Content, m.width-2)) // -2 for padding
+}
 
-	// === LINE 2: Breadcrumb and Stats ===
-	var breadcrumb string
+// buildBreadcrumb builds the breadcrumb text based on the current navigation level.
+func (m Model) buildBreadcrumb() string {
 	switch m.level {
 	case levelAggregates:
-		breadcrumb = viewTypeAbbrev(m.viewType)
+		breadcrumb := viewTypeAbbrev(m.viewType)
 		if m.viewType == query.ViewTime {
 			breadcrumb += " (" + m.timeGranularity.String() + ")"
 		}
+		return breadcrumb
 	case levelDrillDown:
 		// Show drill context: "S: foo@example.com (by To)"
 		drillKey := m.drillFilterKey()
-		breadcrumb = fmt.Sprintf("%s: %s (by %s)", viewTypePrefix(m.drillViewType), truncateRunes(drillKey, 30), viewTypeAbbrev(m.viewType))
+		breadcrumb := fmt.Sprintf("%s: %s (by %s)", viewTypePrefix(m.drillViewType), truncateRunes(drillKey, 30), viewTypeAbbrev(m.viewType))
 		if m.viewType == query.ViewTime {
 			breadcrumb += " " + m.timeGranularity.String()
 		}
+		return breadcrumb
 	case levelMessageList:
 		if m.searchQuery != "" {
-			// Search context shown in info bar, keep breadcrumb simple
-			breadcrumb = "Search Results"
-		} else if m.allMessages {
-			breadcrumb = "All Messages"
-		} else if m.hasDrillFilter() {
-			// Show drill path: "S: foo@example.com"
+			return "Search Results"
+		}
+		if m.allMessages {
+			return "All Messages"
+		}
+		if m.hasDrillFilter() {
 			drillKey := m.drillFilterKey()
 			if m.filterKey != "" && m.filterKey != drillKey {
-				breadcrumb = fmt.Sprintf("%s: %s > %s: %s", viewTypePrefix(m.drillViewType), truncateRunes(drillKey, 20), viewTypePrefix(m.viewType), truncateRunes(m.filterKey, 20))
-			} else {
-				breadcrumb = fmt.Sprintf("%s: %s", viewTypePrefix(m.drillViewType), truncateRunes(drillKey, 40))
+				return fmt.Sprintf("%s: %s > %s: %s", viewTypePrefix(m.drillViewType), truncateRunes(drillKey, 20), viewTypePrefix(m.viewType), truncateRunes(m.filterKey, 20))
 			}
-		} else {
-			breadcrumb = fmt.Sprintf("%s: %s", viewTypePrefix(m.viewType), truncateRunes(m.filterKey, 40))
+			return fmt.Sprintf("%s: %s", viewTypePrefix(m.drillViewType), truncateRunes(drillKey, 40))
 		}
+		return fmt.Sprintf("%s: %s", viewTypePrefix(m.viewType), truncateRunes(m.filterKey, 40))
 	case levelMessageDetail:
 		subject := m.pendingDetailSubject
 		if m.messageDetail != nil {
 			subject = m.messageDetail.Subject
 		}
-		breadcrumb = fmt.Sprintf("Message: %s", truncateRunes(subject, 50))
+		return fmt.Sprintf("Message: %s", truncateRunes(subject, 50))
 	case levelThreadView:
 		if m.threadTruncated {
-			breadcrumb = fmt.Sprintf("Thread (showing %d of %d+ messages)", len(m.threadMessages), len(m.threadMessages))
-		} else {
-			breadcrumb = fmt.Sprintf("Thread (%d messages)", len(m.threadMessages))
+			return fmt.Sprintf("Thread (showing %d of %d+ messages)", len(m.threadMessages), len(m.threadMessages))
 		}
+		return fmt.Sprintf("Thread (%d messages)", len(m.threadMessages))
+	default:
+		return ""
 	}
+}
 
-	// Stats - show contextual when drilled down or search filter is active
-	var statsStr string
+// buildStatsString builds the stats summary string for the header.
+func (m Model) buildStatsString() string {
 	if m.contextStats != nil && (m.level == levelMessageList || m.level == levelDrillDown || m.searchQuery != "") {
 		// Show "+" suffix when search has more results than loaded
 		msgsSuffix := ""
 		if m.searchTotalCount == -1 {
 			msgsSuffix = "+"
 		}
-		statsStr = fmt.Sprintf("%d%s msgs | %s | %d attchs",
+		return fmt.Sprintf("%d%s msgs | %s | %d attchs",
 			m.contextStats.MessageCount,
 			msgsSuffix,
 			formatBytes(m.contextStats.TotalSize),
 			m.contextStats.AttachmentCount,
 		)
-	} else if m.stats != nil {
-		statsStr = fmt.Sprintf("%d msgs | %s | %d attchs",
+	}
+	if m.stats != nil {
+		return fmt.Sprintf("%d msgs | %s | %d attchs",
 			m.stats.MessageCount,
 			formatBytes(m.stats.TotalSize),
 			m.stats.AttachmentCount,
 		)
 	}
+	return ""
+}
 
-	// Build line 2
+// headerView renders a two-level header:
+// Line 1: msgvault [version] - account
+// Line 2: breadcrumb | stats
+func (m Model) headerView() string {
+	line1 := m.buildTitleBar()
+
+	// Build line 2: breadcrumb and stats
+	breadcrumb := m.buildBreadcrumb()
+	statsStr := m.buildStatsString()
+
 	breadcrumbStyled := statsStyle.Render(" " + breadcrumb + " ")
 	statsStyled := statsStyle.Render(statsStr + " ")
-	gap2 := m.width - lipgloss.Width(breadcrumbStyled) - lipgloss.Width(statsStyled)
-	if gap2 < 0 {
-		gap2 = 0
+	gap := m.width - lipgloss.Width(breadcrumbStyled) - lipgloss.Width(statsStyled)
+	if gap < 0 {
+		gap = 0
 	}
-	line2 := breadcrumbStyled + strings.Repeat(" ", gap2) + statsStyled
+	line2 := breadcrumbStyled + strings.Repeat(" ", gap) + statsStyled
 
 	return line1 + "\n" + line2
 }
@@ -522,7 +432,10 @@ func (m Model) messageListView() string {
 		return m.fillScreen(errorStyle.Render(padRight(fmt.Sprintf("Error: %v", m.err), m.width)), 1)
 	}
 
-	if len(m.messages) == 0 && !m.loading {
+	// Non-search empty state: show simple "No messages" without header/info line.
+	// When a search is active (or search bar is open), fall through to full
+	// rendering so the search bar stays visible and the user can edit their query.
+	if len(m.messages) == 0 && !m.loading && !m.inlineSearchActive && m.searchQuery == "" {
 		return m.fillScreen(normalRowStyle.Render(padRight("No messages", m.width)), 1)
 	}
 
@@ -578,6 +491,12 @@ func (m Model) messageListView() string {
 	endRow := m.scrollOffset + m.pageSize - 1
 	if endRow > len(m.messages) {
 		endRow = len(m.messages)
+	}
+
+	// Show "No results" indicator when search returned zero matches
+	if len(m.messages) == 0 && !m.loading {
+		sb.WriteString(normalRowStyle.Render(padRight("   No results found", m.width)))
+		sb.WriteString("\n")
 	}
 
 	for i := m.scrollOffset; i < endRow; i++ {
@@ -649,8 +568,13 @@ func (m Model) messageListView() string {
 		sb.WriteString("\n")
 	}
 
-	// Fill remaining space (minus 1 for info line)
-	for i := endRow - m.scrollOffset; i < m.pageSize-1; i++ {
+	// Fill remaining space (minus 1 for info line).
+	// Account for the "No results found" line when messages is empty.
+	dataRows := endRow - m.scrollOffset
+	if len(m.messages) == 0 && !m.loading {
+		dataRows = 1 // the "No results found" row
+	}
+	for i := dataRows; i < m.pageSize-1; i++ {
 		sb.WriteString(normalRowStyle.Render(strings.Repeat(" ", m.width)))
 		sb.WriteString("\n")
 	}
@@ -668,6 +592,8 @@ func (m Model) messageListView() string {
 		infoContent = fmt.Sprintf(" Search: %q", m.searchQuery)
 		if m.searchTotalCount > 0 {
 			infoContent += fmt.Sprintf(" (%d results)", m.searchTotalCount)
+		} else if m.searchTotalCount == 0 {
+			infoContent += " (0 results)"
 		} else if m.searchTotalCount == -1 {
 			infoContent += fmt.Sprintf(" (%d+ results, PgDn for more)", len(m.messages))
 		}
@@ -719,6 +645,12 @@ func (m Model) buildDetailLines() []string {
 		lines = append(lines, fmt.Sprintf("Cc: %s", cc))
 	}
 
+	// Bcc
+	if len(msg.Bcc) > 0 {
+		bcc := formatAddresses(msg.Bcc)
+		lines = append(lines, fmt.Sprintf("Bcc: %s", bcc))
+	}
+
 	// Labels
 	if len(msg.Labels) > 0 {
 		lines = append(lines, fmt.Sprintf("Labels: %s", strings.Join(msg.Labels, ", ")))
@@ -756,9 +688,9 @@ func (m Model) buildDetailLines() []string {
 	return lines
 }
 
-// fillScreen fills the remaining screen space with blank lines.
-// Used for loading/error/empty states in table views.
-func (m Model) fillScreen(content string, usedLines int) string {
+// fillScreenWithPageSize fills the remaining screen space with blank lines up to the given page size.
+// Used for loading/error/empty states in all views.
+func (m Model) fillScreenWithPageSize(content string, usedLines, pageSize int) string {
 	// Guard against zero/negative width (can happen before first resize)
 	if m.width <= 0 {
 		return content + "\n"
@@ -768,7 +700,7 @@ func (m Model) fillScreen(content string, usedLines int) string {
 	sb.WriteString(content)
 	sb.WriteString("\n")
 	// Fill remaining space (minus 1 for notification line)
-	for i := usedLines; i < m.pageSize-1; i++ {
+	for i := usedLines; i < pageSize-1; i++ {
 		sb.WriteString(normalRowStyle.Render(strings.Repeat(" ", m.width)))
 		sb.WriteString("\n")
 	}
@@ -777,22 +709,14 @@ func (m Model) fillScreen(content string, usedLines int) string {
 	return sb.String()
 }
 
-// fillScreenDetail fills remaining space for detail view (has 2 extra lines).
-func (m Model) fillScreenDetail(content string, usedLines int) string {
-	if m.width <= 0 {
-		return content + "\n"
-	}
+// fillScreen fills the remaining screen space with blank lines for table views.
+func (m Model) fillScreen(content string, usedLines int) string {
+	return m.fillScreenWithPageSize(content, usedLines, m.pageSize)
+}
 
-	detailPageSize := m.detailPageSize()
-	var sb strings.Builder
-	sb.WriteString(content)
-	sb.WriteString("\n")
-	for i := usedLines; i < detailPageSize-1; i++ {
-		sb.WriteString(normalRowStyle.Render(strings.Repeat(" ", m.width)))
-		sb.WriteString("\n")
-	}
-	sb.WriteString(normalRowStyle.Render(strings.Repeat(" ", m.width)))
-	return sb.String()
+// fillScreenDetail fills remaining space for detail view (uses detailPageSize).
+func (m Model) fillScreenDetail(content string, usedLines int) string {
+	return m.fillScreenWithPageSize(content, usedLines, m.detailPageSize())
 }
 
 // messageDetailView renders the full message.
@@ -1203,138 +1127,6 @@ func (m Model) renderNotificationLine() string {
 	return normalRowStyle.Render(strings.Repeat(" ", m.width))
 }
 
-// Helper functions
-
-func formatBytes(bytes int64) string {
-	if bytes == 0 {
-		return "-"
-	}
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
-}
-
-func formatCount(n int64) string {
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
-	}
-	if n < 1000000 {
-		return fmt.Sprintf("%.1fK", float64(n)/1000)
-	}
-	return fmt.Sprintf("%.1fM", float64(n)/1000000)
-}
-
-// padRight pads a string with spaces to fill width terminal cells.
-// Uses lipgloss.Width to correctly handle ANSI codes and full-width characters.
-func padRight(s string, width int) string {
-	sw := lipgloss.Width(s)
-	if sw >= width {
-		// Use ANSI-aware truncation
-		return ansi.Truncate(s, width, "")
-	}
-	return s + strings.Repeat(" ", width-sw)
-}
-
-// truncateRunes truncates a string to fit within maxWidth terminal cells.
-// Uses runewidth to correctly handle full-width characters (CJK, emoji, etc.)
-// that occupy 2 terminal cells but count as 1 rune.
-// Also sanitizes the string by removing newlines and other control characters
-// that could break the display layout.
-func truncateRunes(s string, maxWidth int) string {
-	// Remove newlines and carriage returns that could break layout
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\r", "")
-	s = strings.ReplaceAll(s, "\t", " ")
-
-	width := runewidth.StringWidth(s)
-	if width <= maxWidth {
-		return s
-	}
-	if maxWidth <= 3 {
-		return runewidth.Truncate(s, maxWidth, "")
-	}
-	return runewidth.Truncate(s, maxWidth, "...")
-}
-
-func formatAddresses(addrs []query.Address) string {
-	parts := make([]string, 0, len(addrs))
-	for _, addr := range addrs {
-		if addr.Name != "" {
-			parts = append(parts, fmt.Sprintf("%s <%s>", addr.Name, addr.Email))
-		} else {
-			parts = append(parts, addr.Email)
-		}
-	}
-	return strings.Join(parts, ", ")
-}
-
-// wrapText wraps text to fit within width terminal cells.
-// Uses runewidth to correctly handle full-width characters (CJK, emoji, etc.)
-func wrapText(text string, width int) []string {
-	if width <= 0 {
-		width = 80
-	}
-
-	var result []string
-	lines := strings.Split(text, "\n")
-
-	for _, line := range lines {
-		lineWidth := runewidth.StringWidth(line)
-		if lineWidth <= width {
-			result = append(result, line)
-			continue
-		}
-
-		// Wrap long lines using terminal cell width
-		runes := []rune(line)
-		for len(runes) > 0 {
-			// Find how many runes fit within width
-			currentWidth := 0
-			breakAt := 0
-			lastSpace := -1
-
-			for i, r := range runes {
-				rw := runewidth.RuneWidth(r)
-				if currentWidth+rw > width {
-					break
-				}
-				currentWidth += rw
-				breakAt = i + 1
-				if r == ' ' {
-					lastSpace = i
-				}
-			}
-
-			// Prefer breaking at a space if we found one in the latter half
-			if lastSpace > breakAt/2 && breakAt < len(runes) {
-				breakAt = lastSpace
-			}
-
-			if breakAt == 0 {
-				// Single character too wide, take it anyway
-				breakAt = 1
-			}
-
-			result = append(result, string(runes[:breakAt]))
-			runes = runes[breakAt:]
-
-			// Skip leading spaces on continuation lines
-			for len(runes) > 0 && runes[0] == ' ' {
-				runes = runes[1:]
-			}
-		}
-	}
-
-	return result
-}
-
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -1392,121 +1184,170 @@ func (m Model) helpMaxVisible() int {
 	return v
 }
 
+// renderDeleteConfirmModal renders the deletion confirmation modal content.
+func (m Model) renderDeleteConfirmModal() string {
+	if m.pendingManifest == nil {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString(modalTitleStyle.Render("Confirm Deletion"))
+	sb.WriteString("\n\n")
+	sb.WriteString(fmt.Sprintf("Stage %d messages for deletion?\n\n", len(m.pendingManifest.GmailIDs)))
+	sb.WriteString("This creates a deletion batch. Messages will NOT be\n")
+	sb.WriteString("deleted until you run 'msgvault delete-staged'.\n\n")
+	if m.pendingManifest.Filters.Account == "" {
+		sb.WriteString("! Account not set. Use --account when executing.\n\n")
+	}
+	sb.WriteString("[Y] Yes, stage for deletion    [N] Cancel")
+	return sb.String()
+}
+
+// renderDeleteResultModal renders the deletion result modal content.
+func (m Model) renderDeleteResultModal() string {
+	return modalTitleStyle.Render("Result") + "\n\n" +
+		m.modalResult + "\n\n" +
+		"Press any key to continue"
+}
+
+// renderQuitConfirmModal renders the quit confirmation modal content.
+func (m Model) renderQuitConfirmModal() string {
+	return modalTitleStyle.Render("Quit?") + "\n\n" +
+		"Are you sure you want to quit?\n\n" +
+		"[Y] Yes    [N] No"
+}
+
+// renderAccountSelectorModal renders the account selector modal content.
+func (m Model) renderAccountSelectorModal() string {
+	var sb strings.Builder
+	sb.WriteString(modalTitleStyle.Render("Select Account"))
+	sb.WriteString("\n\n")
+	// All Accounts option
+	indicator := "○"
+	if m.modalCursor == 0 {
+		indicator = "●"
+	}
+	sb.WriteString(fmt.Sprintf(" %s All Accounts\n", indicator))
+	// Individual accounts
+	for i, acc := range m.accounts {
+		indicator = "○"
+		if m.modalCursor == i+1 {
+			indicator = "●"
+		}
+		sb.WriteString(fmt.Sprintf(" %s %s\n", indicator, acc.Identifier))
+	}
+	sb.WriteString("\n[↑/↓] Navigate  [Enter] Select  [Esc] Cancel")
+	return sb.String()
+}
+
+// renderAttachmentFilterModal renders the attachment filter modal content.
+func (m Model) renderAttachmentFilterModal() string {
+	var sb strings.Builder
+	sb.WriteString(modalTitleStyle.Render("Filter Messages"))
+	sb.WriteString("\n\n")
+	// All Messages option
+	indicator := "○"
+	if m.modalCursor == 0 {
+		indicator = "●"
+	}
+	sb.WriteString(fmt.Sprintf(" %s All Messages\n", indicator))
+	// With Attachments option
+	indicator = "○"
+	if m.modalCursor == 1 {
+		indicator = "●"
+	}
+	sb.WriteString(fmt.Sprintf(" %s With Attachments\n", indicator))
+	sb.WriteString("\n[↑/↓] Navigate  [Enter] Select  [Esc] Cancel")
+	return sb.String()
+}
+
+// renderHelpModal renders the help modal content with scrolling support.
+func (m Model) renderHelpModal() string {
+	maxVisible := m.helpMaxVisible()
+
+	// Clamp scroll offset
+	maxScroll := len(rawHelpLines) - maxVisible
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.helpScroll > maxScroll {
+		m.helpScroll = maxScroll
+	}
+
+	// Build visible slice, rendering the title line with style
+	visible := rawHelpLines[m.helpScroll : m.helpScroll+maxVisible]
+	rendered := make([]string, len(visible))
+	for i, line := range visible {
+		if m.helpScroll+i == 0 {
+			rendered[i] = modalTitleStyle.Render(line)
+		} else {
+			rendered[i] = line
+		}
+	}
+	return strings.Join(rendered, "\n")
+}
+
+// renderExportAttachmentsModal renders the export attachments modal content.
+func (m Model) renderExportAttachmentsModal() string {
+	if m.messageDetail == nil || len(m.messageDetail.Attachments) == 0 {
+		return modalTitleStyle.Render("Export Attachments") + "\n\n" +
+			"No attachments to export.\n\n" +
+			"[Esc] Close"
+	}
+	var sb strings.Builder
+	sb.WriteString(modalTitleStyle.Render("Export Attachments"))
+	sb.WriteString("\n\n")
+	sb.WriteString("Select attachments to export:\n\n")
+	for i, att := range m.messageDetail.Attachments {
+		cursor := " "
+		if i == m.exportCursor {
+			cursor = "▶"
+		}
+		checkbox := "☐"
+		if m.exportSelection[i] {
+			checkbox = "☑"
+		}
+		sb.WriteString(fmt.Sprintf("%s %s %s (%s)\n", cursor, checkbox, att.Filename, formatBytes(att.Size)))
+	}
+	// Count selected
+	selectedCount := 0
+	for _, selected := range m.exportSelection {
+		if selected {
+			selectedCount++
+		}
+	}
+	sb.WriteString(fmt.Sprintf("\n%d of %d selected\n", selectedCount, len(m.messageDetail.Attachments)))
+	sb.WriteString("\n[↑/↓] Navigate  [Space] Toggle  [a] All  [n] None\n")
+	sb.WriteString("[Enter] Export  [Esc] Cancel")
+	return sb.String()
+}
+
+// renderExportResultModal renders the export result modal content.
+func (m Model) renderExportResultModal() string {
+	return modalTitleStyle.Render("Export Complete") + "\n\n" +
+		m.modalResult + "\n\n" +
+		"Press any key to close"
+}
+
 func (m Model) overlayModal(background string) string {
 	var modalContent string
 
 	switch m.modal {
 	case modalDeleteConfirm:
-		if m.pendingManifest != nil {
-			modalContent = modalTitleStyle.Render("Confirm Deletion") + "\n\n"
-			modalContent += fmt.Sprintf("Stage %d messages for deletion?\n\n", len(m.pendingManifest.GmailIDs))
-			modalContent += "This creates a deletion batch. Messages will NOT be\n"
-			modalContent += "deleted until you run 'msgvault delete-staged'.\n\n"
-			if m.pendingManifest.Filters.Account == "" {
-				modalContent += "! Account not set. Use --account when executing.\n\n"
-			}
-			modalContent += "[Y] Yes, stage for deletion    [N] Cancel"
-		}
-
+		modalContent = m.renderDeleteConfirmModal()
 	case modalDeleteResult:
-		modalContent = modalTitleStyle.Render("Result") + "\n\n"
-		modalContent += m.modalResult + "\n\n"
-		modalContent += "Press any key to continue"
-
+		modalContent = m.renderDeleteResultModal()
 	case modalQuitConfirm:
-		modalContent = modalTitleStyle.Render("Quit?") + "\n\n"
-		modalContent += "Are you sure you want to quit?\n\n"
-		modalContent += "[Y] Yes    [N] No"
-
+		modalContent = m.renderQuitConfirmModal()
 	case modalAccountSelector:
-		modalContent = modalTitleStyle.Render("Select Account") + "\n\n"
-		// All Accounts option
-		indicator := "○"
-		if m.modalCursor == 0 {
-			indicator = "●"
-		}
-		modalContent += fmt.Sprintf(" %s All Accounts\n", indicator)
-		// Individual accounts
-		for i, acc := range m.accounts {
-			indicator = "○"
-			if m.modalCursor == i+1 {
-				indicator = "●"
-			}
-			modalContent += fmt.Sprintf(" %s %s\n", indicator, acc.Identifier)
-		}
-		modalContent += "\n[↑/↓] Navigate  [Enter] Select  [Esc] Cancel"
-
+		modalContent = m.renderAccountSelectorModal()
 	case modalAttachmentFilter:
-		modalContent = modalTitleStyle.Render("Filter Messages") + "\n\n"
-		// All Messages option
-		indicator := "○"
-		if m.modalCursor == 0 {
-			indicator = "●"
-		}
-		modalContent += fmt.Sprintf(" %s All Messages\n", indicator)
-		// With Attachments option
-		indicator = "○"
-		if m.modalCursor == 1 {
-			indicator = "●"
-		}
-		modalContent += fmt.Sprintf(" %s With Attachments\n", indicator)
-		modalContent += "\n[↑/↓] Navigate  [Enter] Select  [Esc] Cancel"
-
+		modalContent = m.renderAttachmentFilterModal()
 	case modalHelp:
-		maxVisible := m.helpMaxVisible()
-
-		// Clamp scroll offset
-		maxScroll := len(rawHelpLines) - maxVisible
-		if maxScroll < 0 {
-			maxScroll = 0
-		}
-		if m.helpScroll > maxScroll {
-			m.helpScroll = maxScroll
-		}
-
-		// Build visible slice, rendering the title line with style
-		visible := rawHelpLines[m.helpScroll : m.helpScroll+maxVisible]
-		rendered := make([]string, len(visible))
-		for i, line := range visible {
-			if m.helpScroll+i == 0 {
-				rendered[i] = modalTitleStyle.Render(line)
-			} else {
-				rendered[i] = line
-			}
-		}
-		modalContent = strings.Join(rendered, "\n")
-
+		modalContent = m.renderHelpModal()
 	case modalExportAttachments:
-		modalContent = modalTitleStyle.Render("Export Attachments") + "\n\n"
-		if m.messageDetail != nil && len(m.messageDetail.Attachments) > 0 {
-			modalContent += "Select attachments to export:\n\n"
-			for i, att := range m.messageDetail.Attachments {
-				cursor := " "
-				if i == m.exportCursor {
-					cursor = "▶"
-				}
-				checkbox := "☐"
-				if m.exportSelection[i] {
-					checkbox = "☑"
-				}
-				modalContent += fmt.Sprintf("%s %s %s (%s)\n", cursor, checkbox, att.Filename, formatBytes(att.Size))
-			}
-			// Count selected
-			selectedCount := 0
-			for _, selected := range m.exportSelection {
-				if selected {
-					selectedCount++
-				}
-			}
-			modalContent += fmt.Sprintf("\n%d of %d selected\n", selectedCount, len(m.messageDetail.Attachments))
-			modalContent += "\n[↑/↓] Navigate  [Space] Toggle  [a] All  [n] None\n"
-			modalContent += "[Enter] Export  [Esc] Cancel"
-		}
-
+		modalContent = m.renderExportAttachmentsModal()
 	case modalExportResult:
-		modalContent = modalTitleStyle.Render("Export Complete") + "\n\n"
-		modalContent += m.modalResult + "\n\n"
-		modalContent += "Press any key to close"
+		modalContent = m.renderExportResultModal()
 	}
 
 	if modalContent == "" {
@@ -1571,17 +1412,4 @@ func (m Model) overlayModal(background string) string {
 	}
 
 	return strings.Join(bgLines, "\n")
-}
-
-// truncateToWidth returns the prefix of s that fits within maxWidth visual columns.
-// Uses ANSI-aware truncation to preserve escape sequences.
-func truncateToWidth(s string, maxWidth int) string {
-	return ansi.Truncate(s, maxWidth, "")
-}
-
-// skipToWidth returns the suffix of s starting after skipWidth visual columns.
-// Uses ANSI-aware cutting to preserve escape sequences.
-func skipToWidth(s string, skipWidth int) string {
-	// Cut from skipWidth to a large number (beyond any reasonable line width)
-	return ansi.Cut(s, skipWidth, 10000)
 }

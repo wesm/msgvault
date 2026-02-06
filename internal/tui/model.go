@@ -21,6 +21,20 @@ import (
 // affects how many rows are available for scrolling in the UI.
 const defaultAggregateLimit = 50000
 
+// safeCmdWithPanic wraps an async operation with panic recovery.
+// The errMsg function converts a panic value into the appropriate message type.
+// This eliminates boilerplate panic recovery code in all async data loading commands.
+func safeCmdWithPanic(fn func() tea.Msg, errMsg func(any) tea.Msg) tea.Cmd {
+	return func() (msg tea.Msg) {
+		defer func() {
+			if r := recover(); r != nil {
+				msg = errMsg(r)
+			}
+		}()
+		return fn()
+	}
+}
+
 // defaultThreadMessageLimit is the maximum number of messages to load in a thread view.
 const defaultThreadMessageLimit = 1000
 
@@ -96,8 +110,8 @@ type Model struct {
 	breadcrumbs []navigationSnapshot
 
 	// Global Stats (not view specific)
-	stats        *query.TotalStats // Global stats
-	accounts     []query.AccountInfo
+	stats    *query.TotalStats // Global stats
+	accounts []query.AccountInfo
 
 	// Account filter (nil = all accounts)
 	accountFilter *int64
@@ -106,7 +120,7 @@ type Model struct {
 	attachmentFilter bool
 
 	// Pagination config
-	pageSize     int // Rows visible per page
+	pageSize int // Rows visible per page
 
 	// Selection state
 	selection selectionState
@@ -126,23 +140,23 @@ type Model struct {
 	height int
 
 	// Loading state
-	loading      bool
-	err          error
-	spinnerFrame int  // Current frame index into spinnerFrames
+	loading       bool
+	err           error
+	spinnerFrame  int  // Current frame index into spinnerFrames
 	spinnerActive bool // True when spinner tick is running
 
 	// Request tracking to ignore stale async results
-	aggregateRequestID   uint64 // Current request ID for aggregate data
-	loadRequestID        uint64 // Current request ID for message list
-	detailRequestID      uint64 // Current request ID for message detail
-	searchRequestID      uint64 // Current request ID for search results
-	
+	aggregateRequestID uint64 // Current request ID for aggregate data
+	loadRequestID      uint64 // Current request ID for message list
+	detailRequestID    uint64 // Current request ID for message detail
+	searchRequestID    uint64 // Current request ID for search results
+
 	// Search state
-	searchMode        searchModeKind      // Fast (Parquet) or Deep (FTS5)
-	searchInput       textinput.Model     // Text input for search query
-	searchTotalCount  int64               // Total matching messages (for pagination display)
-	searchOffset      int                 // Current offset for pagination
-	searchLoadingMore bool                // True when loading additional results
+	searchMode        searchModeKind  // Fast (Parquet) or Deep (FTS5)
+	searchInput       textinput.Model // Text input for search query
+	searchTotalCount  int64           // Total matching messages (for pagination display)
+	searchOffset      int             // Current offset for pagination
+	searchLoadingMore bool            // True when loading additional results
 
 	// Navigation restoration state
 	restorePosition bool // When true, don't reset cursor/scroll on data load (used by goBack)
@@ -207,7 +221,7 @@ func New(engine query.Engine, opts Options) Model {
 			msgSortField:     query.MessageSortByDate,
 			msgSortDirection: query.SortDesc,
 		},
-		pageSize:         20,
+		pageSize:      20,
 		loading:       true,
 		spinnerActive: true,
 		selection: selectionState{
@@ -272,98 +286,79 @@ type updateCheckMsg struct {
 // loadData fetches aggregate data based on current view settings.
 func (m Model) loadData() tea.Cmd {
 	requestID := m.aggregateRequestID
-	return func() (msg tea.Msg) {
-		// Recover from panics to prevent TUI from becoming unresponsive
-		defer func() {
-			if r := recover(); r != nil {
-				msg = dataLoadedMsg{err: fmt.Errorf("query panic: %v", r), requestID: requestID}
-			}
-		}()
-
-		opts := query.AggregateOptions{
-			SourceID:            m.accountFilter,
-			SortField:           m.sortField,
-			SortDirection:       m.sortDirection,
-			Limit:               m.aggregateLimit,
-			TimeGranularity:     m.timeGranularity,
-			WithAttachmentsOnly: m.attachmentFilter,
-			SearchQuery:         m.searchQuery,
-		}
-
-		ctx := context.Background()
-		var rows []query.AggregateRow
-		var err error
-
-		// Use SubAggregate for sub-grouping, regular aggregate for top-level
-		if m.level == levelDrillDown {
-			rows, err = m.engine.SubAggregate(ctx, m.drillFilter, m.viewType, opts)
-		} else {
-			switch m.viewType {
-			case query.ViewSenders:
-				rows, err = m.engine.AggregateBySender(ctx, opts)
-			case query.ViewSenderNames:
-				rows, err = m.engine.AggregateBySenderName(ctx, opts)
-			case query.ViewRecipients:
-				rows, err = m.engine.AggregateByRecipient(ctx, opts)
-			case query.ViewRecipientNames:
-				rows, err = m.engine.AggregateByRecipientName(ctx, opts)
-			case query.ViewDomains:
-				rows, err = m.engine.AggregateByDomain(ctx, opts)
-			case query.ViewLabels:
-				rows, err = m.engine.AggregateByLabel(ctx, opts)
-			case query.ViewTime:
-				rows, err = m.engine.AggregateByTime(ctx, opts)
-			}
-		}
-
-		// When search is active, compute distinct message stats separately.
-		// Summing row.Count across groups overcounts for 1:N views (Recipients, Labels)
-		// where a message appears in multiple groups.
-		var filteredStats *query.TotalStats
-		if err == nil && opts.SearchQuery != "" {
-			statsOpts := query.StatsOptions{
+	return safeCmdWithPanic(
+		func() tea.Msg {
+			opts := query.AggregateOptions{
 				SourceID:            m.accountFilter,
+				SortField:           m.sortField,
+				SortDirection:       m.sortDirection,
+				Limit:               m.aggregateLimit,
+				TimeGranularity:     m.timeGranularity,
 				WithAttachmentsOnly: m.attachmentFilter,
-				SearchQuery:         opts.SearchQuery,
-				GroupBy:             m.viewType,
+				SearchQuery:         m.searchQuery,
 			}
-			filteredStats, _ = m.engine.GetTotalStats(ctx, statsOpts)
-		}
 
-		return dataLoadedMsg{rows: rows, filteredStats: filteredStats, err: err, requestID: requestID}
-	}
+			ctx := context.Background()
+			var rows []query.AggregateRow
+			var err error
+
+			// Use SubAggregate for sub-grouping, regular aggregate for top-level
+			if m.level == levelDrillDown {
+				rows, err = m.engine.SubAggregate(ctx, m.drillFilter, m.viewType, opts)
+			} else {
+				rows, err = m.engine.Aggregate(ctx, m.viewType, opts)
+			}
+
+			// When search is active, compute distinct message stats separately.
+			// Summing row.Count across groups overcounts for 1:N views (Recipients, Labels)
+			// where a message appears in multiple groups.
+			var filteredStats *query.TotalStats
+			if err == nil && opts.SearchQuery != "" {
+				statsOpts := query.StatsOptions{
+					SourceID:            m.accountFilter,
+					WithAttachmentsOnly: m.attachmentFilter,
+					SearchQuery:         opts.SearchQuery,
+					GroupBy:             m.viewType,
+				}
+				filteredStats, _ = m.engine.GetTotalStats(ctx, statsOpts)
+			}
+
+			return dataLoadedMsg{rows: rows, filteredStats: filteredStats, err: err, requestID: requestID}
+		},
+		func(r any) tea.Msg {
+			return dataLoadedMsg{err: fmt.Errorf("query panic: %v", r), requestID: requestID}
+		},
+	)
 }
 
 // loadStats fetches total statistics.
 func (m Model) loadStats() tea.Cmd {
-	return func() (msg tea.Msg) {
-		defer func() {
-			if r := recover(); r != nil {
-				msg = statsLoadedMsg{err: fmt.Errorf("stats panic: %v", r)}
+	return safeCmdWithPanic(
+		func() tea.Msg {
+			opts := query.StatsOptions{
+				SourceID:            m.accountFilter,
+				WithAttachmentsOnly: m.attachmentFilter,
 			}
-		}()
-
-		opts := query.StatsOptions{
-			SourceID:            m.accountFilter,
-			WithAttachmentsOnly: m.attachmentFilter,
-		}
-		stats, err := m.engine.GetTotalStats(context.Background(), opts)
-		return statsLoadedMsg{stats: stats, err: err}
-	}
+			stats, err := m.engine.GetTotalStats(context.Background(), opts)
+			return statsLoadedMsg{stats: stats, err: err}
+		},
+		func(r any) tea.Msg {
+			return statsLoadedMsg{err: fmt.Errorf("stats panic: %v", r)}
+		},
+	)
 }
 
 // loadAccounts fetches the list of accounts.
 func (m Model) loadAccounts() tea.Cmd {
-	return func() (msg tea.Msg) {
-		defer func() {
-			if r := recover(); r != nil {
-				msg = accountsLoadedMsg{err: fmt.Errorf("accounts panic: %v", r)}
-			}
-		}()
-
-		accounts, err := m.engine.ListAccounts(context.Background())
-		return accountsLoadedMsg{accounts: accounts, err: err}
-	}
+	return safeCmdWithPanic(
+		func() tea.Msg {
+			accounts, err := m.engine.ListAccounts(context.Background())
+			return accountsLoadedMsg{accounts: accounts, err: err}
+		},
+		func(r any) tea.Msg {
+			return accountsLoadedMsg{err: fmt.Errorf("accounts panic: %v", r)}
+		},
+	)
 }
 
 // messagesLoadedMsg is sent when message list is loaded.
@@ -371,6 +366,7 @@ type messagesLoadedMsg struct {
 	messages  []query.MessageSummary
 	err       error
 	requestID uint64 // To detect stale responses
+	append    bool   // True when appending paginated results to existing list
 }
 
 // messageDetailLoadedMsg is sent when message detail is loaded.
@@ -383,7 +379,8 @@ type messageDetailLoadedMsg struct {
 // searchResultsMsg is sent when search results are loaded.
 type searchResultsMsg struct {
 	messages   []query.MessageSummary
-	totalCount int64 // Total matching messages (for "N of M" display)
+	totalCount int64             // Total matching messages (for "N of M" display)
+	stats      *query.TotalStats // Aggregate stats for the search results (size, attachments, etc.)
 	err        error
 	requestID  uint64 // To detect stale responses
 	append     bool   // True if these results should be appended (pagination)
@@ -434,6 +431,9 @@ const flashDuration = 4 * time.Second
 // searchPageSize is the number of results per page for search pagination.
 const searchPageSize = 100
 
+// messageListPageSize is the number of results per page for message list pagination.
+const messageListPageSize = 500
+
 // headerFooterLines is the number of fixed lines reserved for the UI chrome:
 // title bar (1) + breadcrumb (1) + table header (1) + separator (1) + footer (1).
 const headerFooterLines = 5
@@ -446,100 +446,139 @@ func (m Model) loadSearch(queryStr string) tea.Cmd {
 // loadSearchWithOffset executes the search query with pagination.
 func (m Model) loadSearchWithOffset(queryStr string, offset int, appendResults bool) tea.Cmd {
 	requestID := m.searchRequestID
-	return func() (msg tea.Msg) {
-		defer func() {
-			if r := recover(); r != nil {
-				msg = searchResultsMsg{
-					err:       fmt.Errorf("search panic: %v", r),
-					requestID: requestID,
+	return safeCmdWithPanic(
+		func() tea.Msg {
+			ctx := context.Background()
+			q := search.Parse(queryStr)
+
+			var results []query.MessageSummary
+			var totalCount int64
+			var stats *query.TotalStats
+			var err error
+
+			if m.searchMode == searchModeFast {
+				// Fast search: single-scan with temp table materialization
+				result, fastErr := m.engine.SearchFastWithStats(ctx, q, queryStr, m.searchFilter, m.viewType, searchPageSize, offset)
+				if fastErr == nil {
+					results = result.Messages
+					totalCount = result.TotalCount
+					if !appendResults {
+						stats = result.Stats
+					}
+				}
+				err = fastErr
+			} else {
+				// Deep search: FTS5 body search
+				// Merge context filter into query to honor drill-down context
+				mergedQuery := query.MergeFilterIntoQuery(q, m.searchFilter)
+				results, err = m.engine.Search(ctx, mergedQuery, searchPageSize, offset)
+				// For deep search, estimate total from result count (no separate count query)
+				if err == nil && offset == 0 {
+					totalCount = int64(len(results))
+					if len(results) == searchPageSize {
+						totalCount = -1 // Indicate more results available
+					}
+				}
+
+				// Fetch aggregate stats (size, attachments) for the search results
+				// on the initial page load so the header metrics are accurate.
+				if err == nil && !appendResults {
+					statsOpts := query.StatsOptions{
+						SourceID:            m.searchFilter.SourceID,
+						WithAttachmentsOnly: m.searchFilter.WithAttachmentsOnly,
+						SearchQuery:         queryStr,
+						GroupBy:             m.viewType,
+					}
+					stats, _ = m.engine.GetTotalStats(ctx, statsOpts)
 				}
 			}
-		}()
 
-		ctx := context.Background()
-		q := search.Parse(queryStr)
-
-		var results []query.MessageSummary
-		var totalCount int64
-		var err error
-
-		if m.searchMode == searchModeFast {
-			// Fast search: Parquet metadata only
-			results, err = m.engine.SearchFast(ctx, q, m.searchFilter, searchPageSize, offset)
-			if err == nil {
-				totalCount, _ = m.engine.SearchFastCount(ctx, q, m.searchFilter)
+			return searchResultsMsg{
+				messages:   results,
+				totalCount: totalCount,
+				stats:      stats,
+				err:        err,
+				requestID:  requestID,
+				append:     appendResults,
 			}
-		} else {
-			// Deep search: FTS5 body search
-			// Merge context filter into query to honor drill-down context
-			mergedQuery := query.MergeFilterIntoQuery(q, m.searchFilter)
-			results, err = m.engine.Search(ctx, mergedQuery, searchPageSize, offset)
-			// For deep search, estimate total from result count (no separate count query)
-			if err == nil && offset == 0 {
-				totalCount = int64(len(results))
-				if len(results) == searchPageSize {
-					totalCount = -1 // Indicate more results available
-				}
+		},
+		func(r any) tea.Msg {
+			return searchResultsMsg{
+				err:       fmt.Errorf("search panic: %v", r),
+				requestID: requestID,
 			}
-		}
-
-		return searchResultsMsg{
-			messages:   results,
-			totalCount: totalCount,
-			err:        err,
-			requestID:  requestID,
-			append:     appendResults,
-		}
-	}
+		},
+	)
 }
 
-// loadMessages fetches messages based on current filter.
-func (m Model) loadMessages() tea.Cmd {
-	requestID := m.loadRequestID
-	return func() (msg tea.Msg) {
-		defer func() {
-			if r := recover(); r != nil {
-				msg = messagesLoadedMsg{err: fmt.Errorf("messages panic: %v", r), requestID: requestID}
-			}
-		}()
-
-		// Start with drillFilter if set, otherwise build fresh filter
-		var filter query.MessageFilter
-		if m.hasDrillFilter() {
-			filter = m.drillFilter
-		}
-
-		// Override sorting and pagination
-		filter.SourceID = m.accountFilter
-		filter.SortField = m.msgSortField
-		filter.SortDirection = m.msgSortDirection
-		filter.Limit = 500
-		filter.WithAttachmentsOnly = m.attachmentFilter
-
-		// If not showing all messages and no drill filter, apply simple filter
-		if !m.allMessages && !m.hasDrillFilter() {
-			switch m.viewType {
-			case query.ViewSenders:
-				filter.Sender = m.filterKey
-				filter.MatchEmptySender = (m.filterKey == "")
-			case query.ViewRecipients:
-				filter.Recipient = m.filterKey
-				filter.MatchEmptyRecipient = (m.filterKey == "")
-			case query.ViewDomains:
-				filter.Domain = m.filterKey
-				filter.MatchEmptyDomain = (m.filterKey == "")
-			case query.ViewLabels:
-				filter.Label = m.filterKey
-				filter.MatchEmptyLabel = (m.filterKey == "")
-			case query.ViewTime:
-				filter.TimePeriod = m.filterKey
-				filter.TimeGranularity = m.timeGranularity
-			}
-		}
-
-		messages, err := m.engine.ListMessages(context.Background(), filter)
-		return messagesLoadedMsg{messages: messages, err: err, requestID: requestID}
+// buildMessageFilter constructs a MessageFilter from the current model state.
+func (m Model) buildMessageFilter() query.MessageFilter {
+	// Start with drillFilter if set, otherwise build fresh filter
+	var filter query.MessageFilter
+	if m.hasDrillFilter() {
+		filter = m.drillFilter
 	}
+
+	// Override sorting and pagination
+	filter.SourceID = m.accountFilter
+	filter.Sorting.Field = m.msgSortField
+	filter.Sorting.Direction = m.msgSortDirection
+	filter.WithAttachmentsOnly = m.attachmentFilter
+
+	// If not showing all messages and no drill filter, apply simple filter
+	if !m.allMessages && !m.hasDrillFilter() {
+		switch m.viewType {
+		case query.ViewSenders:
+			filter.Sender = m.filterKey
+			if m.filterKey == "" {
+				filter.SetEmptyTarget(query.ViewSenders)
+			}
+		case query.ViewRecipients:
+			filter.Recipient = m.filterKey
+			if m.filterKey == "" {
+				filter.SetEmptyTarget(query.ViewRecipients)
+			}
+		case query.ViewDomains:
+			filter.Domain = m.filterKey
+			if m.filterKey == "" {
+				filter.SetEmptyTarget(query.ViewDomains)
+			}
+		case query.ViewLabels:
+			filter.Label = m.filterKey
+			if m.filterKey == "" {
+				filter.SetEmptyTarget(query.ViewLabels)
+			}
+		case query.ViewTime:
+			filter.TimeRange.Period = m.filterKey
+			filter.TimeRange.Granularity = m.timeGranularity
+		}
+	}
+
+	return filter
+}
+
+// loadMessages fetches messages based on current filter (first page).
+func (m Model) loadMessages() tea.Cmd {
+	return m.loadMessagesWithOffset(0, false)
+}
+
+// loadMessagesWithOffset fetches messages at the given offset. When appendMode
+// is true, the results are appended to the existing message list.
+func (m Model) loadMessagesWithOffset(offset int, appendMode bool) tea.Cmd {
+	requestID := m.loadRequestID
+	return safeCmdWithPanic(
+		func() tea.Msg {
+			filter := m.buildMessageFilter()
+			filter.Pagination.Limit = messageListPageSize
+			filter.Pagination.Offset = offset
+
+			messages, err := m.engine.ListMessages(context.Background(), filter)
+			return messagesLoadedMsg{messages: messages, err: err, requestID: requestID, append: appendMode}
+		},
+		func(r any) tea.Msg {
+			return messagesLoadedMsg{err: fmt.Errorf("messages panic: %v", r), requestID: requestID}
+		},
+	)
 }
 
 // hasDrillFilter returns true if drillFilter has any filter criteria set.
@@ -550,50 +589,30 @@ func (m Model) hasDrillFilter() bool {
 		m.drillFilter.RecipientName != "" ||
 		m.drillFilter.Domain != "" ||
 		m.drillFilter.Label != "" ||
-		m.drillFilter.TimePeriod != "" ||
-		m.drillFilter.MatchEmptySender ||
-		m.drillFilter.MatchEmptySenderName ||
-		m.drillFilter.MatchEmptyRecipient ||
-		m.drillFilter.MatchEmptyRecipientName ||
-		m.drillFilter.MatchEmptyDomain ||
-		m.drillFilter.MatchEmptyLabel
+		m.drillFilter.TimeRange.Period != "" ||
+		m.drillFilter.HasEmptyTargets()
 }
 
 // drillFilterKey returns the key value from the drillFilter based on drillViewType.
 func (m Model) drillFilterKey() string {
+	if m.drillFilter.MatchesEmpty(m.drillViewType) {
+		return "(empty)"
+	}
 	switch m.drillViewType {
 	case query.ViewSenders:
-		if m.drillFilter.MatchEmptySender {
-			return "(empty)"
-		}
 		return m.drillFilter.Sender
 	case query.ViewSenderNames:
-		if m.drillFilter.MatchEmptySenderName {
-			return "(empty)"
-		}
 		return m.drillFilter.SenderName
 	case query.ViewRecipients:
-		if m.drillFilter.MatchEmptyRecipient {
-			return "(empty)"
-		}
 		return m.drillFilter.Recipient
 	case query.ViewRecipientNames:
-		if m.drillFilter.MatchEmptyRecipientName {
-			return "(empty)"
-		}
 		return m.drillFilter.RecipientName
 	case query.ViewDomains:
-		if m.drillFilter.MatchEmptyDomain {
-			return "(empty)"
-		}
 		return m.drillFilter.Domain
 	case query.ViewLabels:
-		if m.drillFilter.MatchEmptyLabel {
-			return "(empty)"
-		}
 		return m.drillFilter.Label
 	case query.ViewTime:
-		return m.drillFilter.TimePeriod
+		return m.drillFilter.TimeRange.Period
 	}
 	return ""
 }
@@ -601,54 +620,52 @@ func (m Model) drillFilterKey() string {
 // loadThreadMessages fetches all messages in a conversation/thread.
 func (m Model) loadThreadMessages(conversationID int64) tea.Cmd {
 	requestID := m.loadRequestID
-	return func() (msg tea.Msg) {
-		defer func() {
-			if r := recover(); r != nil {
-				msg = threadMessagesLoadedMsg{
-					err:       fmt.Errorf("thread messages panic: %v", r),
-					requestID: requestID,
-				}
+	threadLimit := m.threadMessageLimit
+	return safeCmdWithPanic(
+		func() tea.Msg {
+			filter := query.MessageFilter{
+				ConversationID: &conversationID,
+				Sorting:        query.MessageSorting{Field: query.MessageSortByDate, Direction: query.SortAsc},
+				Pagination:     query.Pagination{Limit: threadLimit + 1}, // Request one extra to detect truncation
 			}
-		}()
+			messages, err := m.engine.ListMessages(context.Background(), filter)
 
-		filter := query.MessageFilter{
-			ConversationID: &conversationID,
-			SortField:      query.MessageSortByDate,
-			SortDirection:  query.SortAsc,          // Chronological order for threads
-			Limit:          m.threadMessageLimit + 1, // Request one extra to detect truncation
-		}
-		messages, err := m.engine.ListMessages(context.Background(), filter)
+			// Check if truncated (more messages than limit)
+			truncated := false
+			if len(messages) > threadLimit {
+				messages = messages[:threadLimit]
+				truncated = true
+			}
 
-		// Check if truncated (more messages than limit)
-		truncated := false
-		if len(messages) > m.threadMessageLimit {
-			messages = messages[:m.threadMessageLimit]
-			truncated = true
-		}
-
-		return threadMessagesLoadedMsg{
-			messages:       messages,
-			conversationID: conversationID,
-			truncated:      truncated,
-			err:            err,
-			requestID:      requestID,
-		}
-	}
+			return threadMessagesLoadedMsg{
+				messages:       messages,
+				conversationID: conversationID,
+				truncated:      truncated,
+				err:            err,
+				requestID:      requestID,
+			}
+		},
+		func(r any) tea.Msg {
+			return threadMessagesLoadedMsg{
+				err:       fmt.Errorf("thread messages panic: %v", r),
+				requestID: requestID,
+			}
+		},
+	)
 }
 
 // loadMessageDetail fetches a single message's full details.
 func (m Model) loadMessageDetail(id int64) tea.Cmd {
 	requestID := m.detailRequestID
-	return func() (msg tea.Msg) {
-		defer func() {
-			if r := recover(); r != nil {
-				msg = messageDetailLoadedMsg{err: fmt.Errorf("message detail panic: %v", r), requestID: requestID}
-			}
-		}()
-
-		detail, err := m.engine.GetMessage(context.Background(), id)
-		return messageDetailLoadedMsg{detail: detail, err: err, requestID: requestID}
-	}
+	return safeCmdWithPanic(
+		func() tea.Msg {
+			detail, err := m.engine.GetMessage(context.Background(), id)
+			return messageDetailLoadedMsg{detail: detail, err: err, requestID: requestID}
+		},
+		func(r any) tea.Msg {
+			return messageDetailLoadedMsg{err: fmt.Errorf("message detail panic: %v", r), requestID: requestID}
+		},
+	)
 }
 
 // spinnerTick returns a command that fires a spinnerTickMsg after the spinner interval.
@@ -674,289 +691,370 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		return m.handleKeyPress(msg)
-
 	case tea.WindowSizeMsg:
-		m.transitionBuffer = "" // Clear frozen view on resize to re-render with new dimensions
-		m.width = msg.Width
-		m.height = msg.Height
-		// Clamp dimensions to prevent panics from strings.Repeat with negative count
-		if m.width < 0 {
-			m.width = 0
-		}
-		if m.height < 0 {
-			m.height = 0
-		}
-		m.pageSize = m.height - headerFooterLines
-		if m.pageSize < 1 {
-			m.pageSize = 1
-		}
-		// Recalculate detail line count if in detail view (width affects wrapping)
-		if m.level == levelMessageDetail && m.messageDetail != nil {
-			m.updateDetailLineCount()
-			// Recompute detail search matches since line indices depend on text wrapping
-			if m.detailSearchQuery != "" {
-				m.findDetailMatches()
-				// Clamp match index to new match count
-				if m.detailSearchMatchIndex >= len(m.detailSearchMatches) {
-					if len(m.detailSearchMatches) > 0 {
-						m.detailSearchMatchIndex = len(m.detailSearchMatches) - 1
-					} else {
-						m.detailSearchMatchIndex = 0
-					}
-				}
-			}
-			m.clampDetailScroll()
-		}
-		return m, nil
-
+		return m.handleWindowSize(msg)
 	case dataLoadedMsg:
-		// Ignore stale responses from previous loads
-		if msg.requestID != m.aggregateRequestID {
-			return m, nil
-		}
-		m.transitionBuffer = "" // Unfreeze view now that data is ready
-		m.loading = false
-		m.inlineSearchLoading = false
-		if msg.err != nil {
-			m.err = msg.err
-			m.restorePosition = false // Clear flag on error to prevent stale state
-		} else {
-			m.err = nil // Clear any previous error
-			m.rows = msg.rows
-			// Only reset position on fresh loads, not when restoring from breadcrumb
-			if !m.restorePosition {
-				m.cursor = 0
-				m.scrollOffset = 0
-			}
-			m.restorePosition = false // Clear flag after use
-
-			// When search filter is active, use distinct message stats from the
-			// filtered stats query. This avoids inflated totals from 1:N views
-			// (Recipients, Labels) where summing row.Count overcounts.
-			if m.searchQuery != "" && msg.filteredStats != nil {
-				m.contextStats = msg.filteredStats
-			} else if m.searchQuery != "" {
-				// Fallback if stats query failed: sum row counts
-				var totalCount, totalSize, totalAttachments int64
-				for _, row := range msg.rows {
-					totalCount += row.Count
-					totalSize += row.TotalSize
-					totalAttachments += row.AttachmentCount
-				}
-				m.contextStats = &query.TotalStats{
-					MessageCount:    totalCount,
-					TotalSize:       totalSize,
-					AttachmentCount: totalAttachments,
-				}
-			} else if m.level == levelAggregates {
-				// Clear contextStats when no search filter at top level
-				m.contextStats = nil
-			}
-		}
-		return m, nil
-
+		return m.handleDataLoaded(msg)
 	case statsLoadedMsg:
-		if msg.err == nil {
-			m.stats = msg.stats
-		}
-		return m, nil
-
+		return m.handleStatsLoaded(msg)
 	case accountsLoadedMsg:
-		if msg.err == nil {
-			m.accounts = msg.accounts
-		}
-		return m, nil
-
+		return m.handleAccountsLoaded(msg)
 	case updateCheckMsg:
-		m.updateAvailable = msg.version
-		m.updateIsDevBuild = msg.isDevBuild
-		return m, nil
-
+		return m.handleUpdateCheck(msg)
 	case messagesLoadedMsg:
-		// Ignore stale responses from previous loads
-		if msg.requestID != m.loadRequestID {
-			return m, nil
-		}
-		m.transitionBuffer = "" // Unfreeze view now that data is ready
-		m.loading = false
-		m.inlineSearchLoading = false
-		if msg.err != nil {
-			m.err = msg.err
-			m.restorePosition = false // Clear flag on error to prevent stale state
-		} else {
-			m.err = nil // Clear any previous error
-			m.messages = msg.messages
-			// Only reset position on fresh loads, not when restoring from breadcrumb
-			if !m.restorePosition {
-				m.cursor = 0
-				m.scrollOffset = 0
-			}
-			m.restorePosition = false // Clear flag after use
-		}
-		return m, nil
-
+		return m.handleMessagesLoaded(msg)
 	case messageDetailLoadedMsg:
-		// Ignore stale responses from previous loads
-		if msg.requestID != m.detailRequestID {
-			return m, nil
-		}
-		m.transitionBuffer = "" // Unfreeze view now that data is ready
-		m.loading = false
-		if msg.err != nil {
-			m.err = msg.err
-		} else {
-			m.err = nil // Clear any previous error
-			m.messageDetail = msg.detail
-			m.detailScroll = 0
-			m.pendingDetailSubject = "" // Clear pending subject
-			m.updateDetailLineCount()   // Calculate line count for scroll bounds
-		}
-		return m, nil
-
+		return m.handleMessageDetailLoaded(msg)
 	case threadMessagesLoadedMsg:
-		// Ignore stale responses from previous loads
-		if msg.requestID != m.loadRequestID {
-			return m, nil
-		}
-		m.transitionBuffer = "" // Unfreeze view now that data is ready
-		m.loading = false
-		if msg.err != nil {
-			m.err = msg.err
-		} else {
-			m.err = nil
-			m.threadMessages = msg.messages
-			m.threadConversationID = msg.conversationID
-			m.threadTruncated = msg.truncated
-			// Reset cursor/scroll for thread view
-			m.threadCursor = 0
-			m.threadScrollOffset = 0
-		}
-		return m, nil
-
+		return m.handleThreadMessagesLoaded(msg)
 	case searchResultsMsg:
-		// Ignore stale responses from previous searches
-		if msg.requestID != m.searchRequestID {
-			return m, nil
-		}
-		m.transitionBuffer = "" // Unfreeze view now that data is ready
-		m.loading = false
-		m.inlineSearchLoading = false
-		m.searchLoadingMore = false
-		if msg.err != nil {
-			m.err = msg.err
-		} else {
-			m.err = nil // Clear any previous error
-			if msg.append {
-				// Pagination: append new results to existing
-				m.messages = append(m.messages, msg.messages...)
-				m.searchOffset += len(msg.messages)
-				// Update contextStats when total is unknown so header reflects loaded count
-				if m.searchTotalCount == -1 && m.contextStats != nil {
-					m.contextStats.MessageCount = int64(len(m.messages))
-				}
-			} else {
-				// New search: replace results
-				m.messages = msg.messages
-				m.searchOffset = len(msg.messages)
-				m.searchTotalCount = msg.totalCount
-				m.cursor = 0
-				m.scrollOffset = 0
-					// Set contextStats for search results to update header metrics
-				// Preserve TotalSize/AttachmentCount if already set from drill-down
-				// (drill-down sets these from the aggregate row before loading search results)
-				hasDrillDownStats := m.contextStats != nil &&
-					(m.contextStats.TotalSize > 0 || m.contextStats.AttachmentCount > 0)
-				if msg.totalCount > 0 {
-					if hasDrillDownStats {
-						// Preserve drill-down stats, only update MessageCount
-						m.contextStats.MessageCount = msg.totalCount
-					} else {
-						m.contextStats = &query.TotalStats{
-							MessageCount: msg.totalCount,
-						}
-					}
-				} else if msg.totalCount == -1 {
-					// Unknown total, use loaded count
-					if hasDrillDownStats {
-						m.contextStats.MessageCount = int64(len(msg.messages))
-					} else {
-						m.contextStats = &query.TotalStats{
-							MessageCount: int64(len(msg.messages)),
-						}
-					}
-				} else {
-					// Zero results: clear stale contextStats from previous view
-					m.contextStats = &query.TotalStats{
-						MessageCount: 0,
-					}
-				}
-				// Transition to message list view showing search results
-				m.level = levelMessageList
-			}
-		}
-		return m, nil
-
+		return m.handleSearchResults(msg)
 	case flashClearMsg:
-		// Clear flash message if it hasn't been updated since the timer started
-		if time.Now().After(m.flashExpiresAt) || m.flashExpiresAt.IsZero() {
-			m.flashMessage = ""
-		}
-		return m, nil
-
+		return m.handleFlashClear()
 	case exportResultMsg:
-		// Export completed - show result modal
-		m.loading = false
-		m.modal = modalExportResult
-		if msg.err != nil {
-			m.modalResult = fmt.Sprintf("Export failed: %v", msg.err)
-		} else {
-			m.modalResult = msg.result
-		}
-		return m, nil
-
+		return m.handleExportResult(msg)
 	case searchDebounceMsg:
-		// Ignore stale debounce timers (user typed more since timer started)
-		if msg.debounceID != m.inlineSearchDebounce {
-			return m, nil
-		}
-		// Execute inline search for live updates
-		if m.inlineSearchActive {
-			m.searchQuery = msg.query
-			if m.searchQuery == "" {
-				m.contextStats = nil
-			}
-			m.inlineSearchLoading = true
-			spinCmd := m.startSpinner()
-
-			if m.level == levelMessageList {
-				// Message list: use search engine for live results
-				m.searchFilter = m.drillFilter
-				m.searchFilter.SourceID = m.accountFilter
-				m.searchFilter.WithAttachmentsOnly = m.attachmentFilter
-				m.searchRequestID++
-				if msg.query == "" {
-					// Empty query: reload unfiltered messages
-					m.loadRequestID++
-					return m, tea.Batch(spinCmd, m.loadMessages())
-				}
-				return m, tea.Batch(spinCmd, m.loadSearch(msg.query))
-			}
-			// Aggregate views: reload aggregates with search filter
-			m.aggregateRequestID++
-			return m, tea.Batch(spinCmd, m.loadData())
-		}
-		return m, nil
-
+		return m.handleSearchDebounce(msg)
 	case spinnerTickMsg:
-		// Only advance if still loading (any loading state)
-		if m.loading || m.inlineSearchLoading || m.searchLoadingMore {
-			m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
-			return m, spinnerTick()
+		return m.handleSpinnerTick()
+	}
+	return m, nil
+}
+
+// handleWindowSize processes window resize events.
+func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	m.transitionBuffer = "" // Clear frozen view on resize to re-render with new dimensions
+	m.width = msg.Width
+	m.height = msg.Height
+	// Clamp dimensions to prevent panics from strings.Repeat with negative count
+	if m.width < 0 {
+		m.width = 0
+	}
+	if m.height < 0 {
+		m.height = 0
+	}
+	m.pageSize = m.height - headerFooterLines
+	if m.pageSize < 1 {
+		m.pageSize = 1
+	}
+	// Recalculate detail line count if in detail view (width affects wrapping)
+	if m.level == levelMessageDetail && m.messageDetail != nil {
+		m.updateDetailLineCount()
+		// Recompute detail search matches since line indices depend on text wrapping
+		if m.detailSearchQuery != "" {
+			m.findDetailMatches()
+			// Clamp match index to new match count
+			if m.detailSearchMatchIndex >= len(m.detailSearchMatches) {
+				if len(m.detailSearchMatches) > 0 {
+					m.detailSearchMatchIndex = len(m.detailSearchMatches) - 1
+				} else {
+					m.detailSearchMatchIndex = 0
+				}
+			}
 		}
-		m.spinnerActive = false
+		m.clampDetailScroll()
+	}
+	return m, nil
+}
+
+// handleDataLoaded processes aggregate data load completion.
+func (m Model) handleDataLoaded(msg dataLoadedMsg) (tea.Model, tea.Cmd) {
+	// Ignore stale responses from previous loads
+	if msg.requestID != m.aggregateRequestID {
+		return m, nil
+	}
+	m.transitionBuffer = "" // Unfreeze view now that data is ready
+	m.loading = false
+	m.inlineSearchLoading = false
+	if msg.err != nil {
+		m.err = msg.err
+		m.restorePosition = false // Clear flag on error to prevent stale state
 		return m, nil
 	}
 
+	m.err = nil // Clear any previous error
+	m.rows = msg.rows
+	// Only reset position on fresh loads, not when restoring from breadcrumb
+	if !m.restorePosition {
+		m.cursor = 0
+		m.scrollOffset = 0
+	}
+	m.restorePosition = false // Clear flag after use
+
+	// When search filter is active, use distinct message stats from the
+	// filtered stats query. This avoids inflated totals from 1:N views
+	// (Recipients, Labels) where summing row.Count overcounts.
+	if m.searchQuery != "" && msg.filteredStats != nil {
+		m.contextStats = msg.filteredStats
+	} else if m.searchQuery != "" {
+		// Fallback if stats query failed: sum row counts
+		m.contextStats = m.sumRowStats(msg.rows)
+	} else if m.level == levelAggregates {
+		// Clear contextStats when no search filter at top level
+		m.contextStats = nil
+	}
+	return m, nil
+}
+
+// sumRowStats computes total stats by summing aggregate row counts.
+func (m Model) sumRowStats(rows []query.AggregateRow) *query.TotalStats {
+	var totalCount, totalSize, totalAttachments int64
+	for _, row := range rows {
+		totalCount += row.Count
+		totalSize += row.TotalSize
+		totalAttachments += row.AttachmentCount
+	}
+	return &query.TotalStats{
+		MessageCount:    totalCount,
+		TotalSize:       totalSize,
+		AttachmentCount: totalAttachments,
+	}
+}
+
+// handleStatsLoaded processes stats load completion.
+func (m Model) handleStatsLoaded(msg statsLoadedMsg) (tea.Model, tea.Cmd) {
+	if msg.err == nil {
+		m.stats = msg.stats
+	}
+	return m, nil
+}
+
+// handleAccountsLoaded processes accounts load completion.
+func (m Model) handleAccountsLoaded(msg accountsLoadedMsg) (tea.Model, tea.Cmd) {
+	if msg.err == nil {
+		m.accounts = msg.accounts
+	}
+	return m, nil
+}
+
+// handleUpdateCheck processes update check completion.
+func (m Model) handleUpdateCheck(msg updateCheckMsg) (tea.Model, tea.Cmd) {
+	m.updateAvailable = msg.version
+	m.updateIsDevBuild = msg.isDevBuild
+	return m, nil
+}
+
+// handleMessagesLoaded processes message list load completion.
+func (m Model) handleMessagesLoaded(msg messagesLoadedMsg) (tea.Model, tea.Cmd) {
+	// Ignore stale responses from previous loads
+	if msg.requestID != m.loadRequestID {
+		return m, nil
+	}
+	m.transitionBuffer = "" // Unfreeze view now that data is ready
+	m.loading = false
+	m.inlineSearchLoading = false
+	m.msgListLoadingMore = false
+	if msg.err != nil {
+		m.err = msg.err
+		m.restorePosition = false // Clear flag on error to prevent stale state
+	} else {
+		m.err = nil // Clear any previous error
+		if msg.append {
+			// Append paginated results to existing list
+			m.messages = append(m.messages, msg.messages...)
+			// Mark complete if append returned no new messages (end of data)
+			if len(msg.messages) == 0 {
+				m.msgListComplete = true
+			}
+		} else {
+			m.messages = msg.messages
+			m.msgListComplete = false // Reset on fresh load
+			// Only reset position on fresh loads, not when restoring from breadcrumb
+			if !m.restorePosition {
+				m.cursor = 0
+				m.scrollOffset = 0
+			}
+		}
+		m.restorePosition = false // Clear flag after use
+		// Update pagination offset
+		m.msgListOffset = len(m.messages)
+	}
+	return m, nil
+}
+
+// handleMessageDetailLoaded processes message detail load completion.
+func (m Model) handleMessageDetailLoaded(msg messageDetailLoadedMsg) (tea.Model, tea.Cmd) {
+	// Ignore stale responses from previous loads
+	if msg.requestID != m.detailRequestID {
+		return m, nil
+	}
+	m.transitionBuffer = "" // Unfreeze view now that data is ready
+	m.loading = false
+	if msg.err != nil {
+		m.err = msg.err
+	} else {
+		m.err = nil // Clear any previous error
+		m.messageDetail = msg.detail
+		m.detailScroll = 0
+		m.pendingDetailSubject = "" // Clear pending subject
+		m.updateDetailLineCount()   // Calculate line count for scroll bounds
+	}
+	return m, nil
+}
+
+// handleThreadMessagesLoaded processes thread messages load completion.
+func (m Model) handleThreadMessagesLoaded(msg threadMessagesLoadedMsg) (tea.Model, tea.Cmd) {
+	// Ignore stale responses from previous loads
+	if msg.requestID != m.loadRequestID {
+		return m, nil
+	}
+	m.transitionBuffer = "" // Unfreeze view now that data is ready
+	m.loading = false
+	if msg.err != nil {
+		m.err = msg.err
+	} else {
+		m.err = nil
+		m.threadMessages = msg.messages
+		m.threadConversationID = msg.conversationID
+		m.threadTruncated = msg.truncated
+		// Reset cursor/scroll for thread view
+		m.threadCursor = 0
+		m.threadScrollOffset = 0
+	}
+	return m, nil
+}
+
+// handleSearchResults processes search results load completion.
+func (m Model) handleSearchResults(msg searchResultsMsg) (tea.Model, tea.Cmd) {
+	// Ignore stale responses from previous searches
+	if msg.requestID != m.searchRequestID {
+		return m, nil
+	}
+	m.transitionBuffer = "" // Unfreeze view now that data is ready
+	m.loading = false
+	m.inlineSearchLoading = false
+	m.searchLoadingMore = false
+	if msg.err != nil {
+		m.err = msg.err
+		return m, nil
+	}
+
+	m.err = nil // Clear any previous error
+	if msg.append {
+		m.appendSearchResults(msg)
+	} else {
+		m.replaceSearchResults(msg)
+	}
+	return m, nil
+}
+
+// appendSearchResults appends paginated search results to existing results.
+func (m *Model) appendSearchResults(msg searchResultsMsg) {
+	m.messages = append(m.messages, msg.messages...)
+	m.searchOffset += len(msg.messages)
+	// Update contextStats when total is unknown so header reflects loaded count
+	if m.searchTotalCount == -1 && m.contextStats != nil {
+		m.contextStats.MessageCount = int64(len(m.messages))
+	}
+}
+
+// replaceSearchResults replaces the current results with new search results.
+func (m *Model) replaceSearchResults(msg searchResultsMsg) {
+	m.messages = msg.messages
+	m.searchOffset = len(msg.messages)
+	m.searchTotalCount = msg.totalCount
+	m.cursor = 0
+	m.scrollOffset = 0
+
+	// Set contextStats for search results to update header metrics.
+	// When fresh stats are provided (msg.stats != nil), always use them —
+	// they reflect the current search accurately. Only fall back to
+	// preserving existing drill-down stats when no fresh stats are available
+	// (e.g. deep/FTS search which doesn't compute aggregate stats).
+	switch {
+	case msg.totalCount > 0:
+		if msg.stats != nil {
+			// Use fresh aggregate stats from SearchFastWithStats
+			m.contextStats = msg.stats
+		} else if m.contextStats != nil && (m.contextStats.TotalSize > 0 || m.contextStats.AttachmentCount > 0) {
+			// No fresh stats — preserve drill-down stats, only update MessageCount
+			m.contextStats.MessageCount = msg.totalCount
+		} else {
+			m.contextStats = &query.TotalStats{MessageCount: msg.totalCount}
+		}
+	case msg.totalCount == -1:
+		// Unknown total, use loaded count
+		if msg.stats != nil {
+			m.contextStats = msg.stats
+			m.contextStats.MessageCount = int64(len(msg.messages))
+		} else if m.contextStats != nil && (m.contextStats.TotalSize > 0 || m.contextStats.AttachmentCount > 0) {
+			m.contextStats.MessageCount = int64(len(msg.messages))
+		} else {
+			m.contextStats = &query.TotalStats{MessageCount: int64(len(msg.messages))}
+		}
+	default:
+		// Zero results: clear stale contextStats from previous view
+		m.contextStats = &query.TotalStats{MessageCount: 0}
+	}
+	// Transition to message list view showing search results
+	m.level = levelMessageList
+}
+
+// handleFlashClear processes flash message clear timeout.
+func (m Model) handleFlashClear() (tea.Model, tea.Cmd) {
+	// Clear flash message if it hasn't been updated since the timer started
+	if time.Now().After(m.flashExpiresAt) || m.flashExpiresAt.IsZero() {
+		m.flashMessage = ""
+	}
+	return m, nil
+}
+
+// handleExportResult processes attachment export completion.
+func (m Model) handleExportResult(msg exportResultMsg) (tea.Model, tea.Cmd) {
+	m.loading = false
+	m.modal = modalExportResult
+	if msg.err != nil {
+		m.modalResult = fmt.Sprintf("Export failed: %v", msg.err)
+	} else {
+		m.modalResult = msg.result
+	}
+	return m, nil
+}
+
+// handleSearchDebounce processes debounced inline search triggers.
+func (m Model) handleSearchDebounce(msg searchDebounceMsg) (tea.Model, tea.Cmd) {
+	// Ignore stale debounce timers (user typed more since timer started)
+	if msg.debounceID != m.inlineSearchDebounce {
+		return m, nil
+	}
+	// Execute inline search for live updates
+	if !m.inlineSearchActive {
+		return m, nil
+	}
+
+	m.searchQuery = msg.query
+	if m.searchQuery == "" {
+		m.contextStats = nil
+	}
+	m.inlineSearchLoading = true
+	spinCmd := m.startSpinner()
+
+	if m.level == levelMessageList {
+		// Message list: use search engine for live results
+		m.searchFilter = m.drillFilter
+		m.searchFilter.SourceID = m.accountFilter
+		m.searchFilter.WithAttachmentsOnly = m.attachmentFilter
+		m.searchRequestID++
+		if msg.query == "" {
+			// Empty query: reload unfiltered messages
+			m.loadRequestID++
+			return m, tea.Batch(spinCmd, m.loadMessages())
+		}
+		return m, tea.Batch(spinCmd, m.loadSearch(msg.query))
+	}
+	// Aggregate views: reload aggregates with search filter
+	m.aggregateRequestID++
+	return m, tea.Batch(spinCmd, m.loadData())
+}
+
+// handleSpinnerTick processes spinner animation ticks.
+func (m Model) handleSpinnerTick() (tea.Model, tea.Cmd) {
+	// Only advance if still loading (any loading state)
+	if m.loading || m.inlineSearchLoading || m.searchLoadingMore {
+		m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
+		return m, spinnerTick()
+	}
+	m.spinnerActive = false
 	return m, nil
 }
 
@@ -1066,11 +1164,21 @@ func (m *Model) updateDetailLineCount() {
 
 // stageForDeletion prepares messages for deletion via the ActionController.
 func (m Model) stageForDeletion() (tea.Model, tea.Cmd) {
-	manifest, err := m.actions.StageForDeletion(
-		m.selection.aggregateKeys, m.selection.messageIDs,
-		m.selection.aggregateViewType, m.accountFilter, m.accounts,
-		m.viewType, m.filterKey, m.timeGranularity, m.messages,
-	)
+	var drillFilter *query.MessageFilter
+	if m.hasDrillFilter() {
+		f := m.drillFilter
+		drillFilter = &f
+	}
+	manifest, err := m.actions.StageForDeletion(DeletionContext{
+		AggregateSelection: m.selection.aggregateKeys,
+		MessageSelection:   m.selection.messageIDs,
+		AggregateViewType:  m.selection.aggregateViewType,
+		AccountFilter:      m.accountFilter,
+		Accounts:           m.accounts,
+		TimeGranularity:    m.timeGranularity,
+		Messages:           m.messages,
+		DrillFilter:        drillFilter,
+	})
 	if err != nil {
 		m.modal = modalDeleteResult
 		m.modalResult = err.Error()
@@ -1208,4 +1316,3 @@ func (m Model) exportAttachments() (tea.Model, tea.Cmd) {
 	m.exportSelection = nil
 	return m, cmd
 }
-

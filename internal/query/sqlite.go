@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"sync"
 
@@ -65,54 +66,158 @@ func (e *SQLiteEngine) Close() error {
 	return nil
 }
 
-// buildWhereClause constructs WHERE conditions from AggregateOptions.
-func buildWhereClause(opts AggregateOptions, tableAlias string) (string, []interface{}) {
-	var conditions []string
-	var args []interface{}
+// aggDimension describes the variable parts of an aggregate query for a given ViewType.
+type aggDimension struct {
+	keyExpr   string // SQL expression for the grouping key
+	joins     string // JOIN clauses for the dimension table(s)
+	whereExpr string // additional WHERE condition (e.g., key IS NOT NULL)
+}
 
-	prefix := ""
-	if tableAlias != "" {
-		prefix = tableAlias + "."
+// aggDimensionForView returns the SQL dimension definition for a given ViewType.
+func aggDimensionForView(view ViewType, timeGranularity TimeGranularity) (aggDimension, error) {
+	switch view {
+	case ViewSenders:
+		return aggDimension{
+			keyExpr: "p.email_address",
+			joins: `JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
+				JOIN participants p ON p.id = mr.participant_id`,
+			whereExpr: "p.email_address IS NOT NULL",
+		}, nil
+	case ViewSenderNames:
+		return aggDimension{
+			keyExpr: "COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address)",
+			joins: `JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
+				JOIN participants p ON p.id = mr.participant_id`,
+			whereExpr: "COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) IS NOT NULL",
+		}, nil
+	case ViewRecipients:
+		return aggDimension{
+			keyExpr: "p.email_address",
+			joins: `JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type IN ('to', 'cc', 'bcc')
+				JOIN participants p ON p.id = mr.participant_id`,
+			whereExpr: "p.email_address IS NOT NULL",
+		}, nil
+	case ViewRecipientNames:
+		return aggDimension{
+			keyExpr: "COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address)",
+			joins: `JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type IN ('to', 'cc', 'bcc')
+				JOIN participants p ON p.id = mr.participant_id`,
+			whereExpr: "COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) IS NOT NULL",
+		}, nil
+	case ViewDomains:
+		return aggDimension{
+			keyExpr: "p.domain",
+			joins: `JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
+				JOIN participants p ON p.id = mr.participant_id`,
+			whereExpr: "p.domain IS NOT NULL AND p.domain != ''",
+		}, nil
+	case ViewLabels:
+		return aggDimension{
+			keyExpr: "l.name",
+			joins: `JOIN message_labels ml ON ml.message_id = m.id
+				JOIN labels l ON l.id = ml.label_id`,
+			whereExpr: "",
+		}, nil
+	case ViewTime:
+		var timeExpr string
+		switch timeGranularity {
+		case TimeYear:
+			timeExpr = "strftime('%Y', m.sent_at)"
+		case TimeMonth:
+			timeExpr = "strftime('%Y-%m', m.sent_at)"
+		case TimeDay:
+			timeExpr = "strftime('%Y-%m-%d', m.sent_at)"
+		default:
+			return aggDimension{}, fmt.Errorf("unsupported time granularity: %d", timeGranularity)
+		}
+		return aggDimension{
+			keyExpr:   timeExpr,
+			joins:     "",
+			whereExpr: "m.sent_at IS NOT NULL",
+		}, nil
+	default:
+		return aggDimension{}, fmt.Errorf("unsupported view type: %v", view)
+	}
+}
+
+// buildAggregateSQL builds a complete aggregate query from a dimension and filter parts.
+func buildAggregateSQL(dim aggDimension, filterJoins string, filterWhere string, sort string) string {
+	allJoins := dim.joins
+	if filterJoins != "" {
+		allJoins += "\n" + filterJoins
 	}
 
-	// Include all messages (deleted messages shown with indicator in TUI)
+	allWhere := filterWhere
+	if dim.whereExpr != "" {
+		allWhere += " AND " + dim.whereExpr
+	}
+
+	return fmt.Sprintf(`
+		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
+		FROM (
+			SELECT
+				%s as key,
+				COUNT(*) as count,
+				COALESCE(SUM(m.size_estimate), 0) as total_size,
+				COALESCE(SUM(att.att_size), 0) as attachment_size,
+				COALESCE(SUM(att.att_count), 0) as attachment_count,
+				COUNT(*) OVER() as total_unique
+			FROM messages m
+			%s
+			LEFT JOIN (
+				SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
+				FROM attachments
+				GROUP BY message_id
+			) att ON att.message_id = m.id
+			WHERE %s
+			GROUP BY key
+		)
+		%s
+		LIMIT ?
+	`, dim.keyExpr, allJoins, allWhere, sort)
+}
+
+// optsToFilterConditions converts AggregateOptions into WHERE conditions and args.
+func optsToFilterConditions(opts AggregateOptions, prefix string) ([]string, []interface{}) {
+	var conditions []string
+	var args []interface{}
 
 	if opts.SourceID != nil {
 		conditions = append(conditions, prefix+"source_id = ?")
 		args = append(args, *opts.SourceID)
 	}
-
 	if opts.After != nil {
 		conditions = append(conditions, prefix+"sent_at >= ?")
 		args = append(args, opts.After.Format("2006-01-02 15:04:05"))
 	}
-
 	if opts.Before != nil {
 		conditions = append(conditions, prefix+"sent_at < ?")
 		args = append(args, opts.Before.Format("2006-01-02 15:04:05"))
 	}
-
 	if opts.WithAttachmentsOnly {
 		conditions = append(conditions, prefix+"has_attachments = 1")
 	}
 
-	whereClause := "1=1"
-	if len(conditions) > 0 {
-		whereClause = strings.Join(conditions, " AND ")
-	}
-	return whereClause, args
+	return conditions, args
 }
 
 // sortClause returns ORDER BY clause for aggregates.
-func sortClause(opts AggregateOptions) string {
-	field := "count"
+// Always includes a secondary sort by key to ensure deterministic ordering when
+// primary sort values are equal (e.g., two labels with the same count).
+// Returns an error if the SortField is not a valid enum value.
+func sortClause(opts AggregateOptions) (string, error) {
+	var field string
 	switch opts.SortField {
+	case SortByCount:
+		field = "count"
 	case SortBySize:
 		field = "total_size"
 	case SortByAttachmentSize:
 		field = "attachment_size"
 	case SortByName:
 		field = "key"
+	default:
+		return "", fmt.Errorf("unsupported sort field: %d", opts.SortField)
 	}
 
 	dir := "DESC"
@@ -120,7 +225,11 @@ func sortClause(opts AggregateOptions) string {
 		dir = "ASC"
 	}
 
-	return fmt.Sprintf("ORDER BY %s %s", field, dir)
+	// Secondary sort by key ensures deterministic ordering for ties
+	if field == "key" {
+		return fmt.Sprintf("ORDER BY %s %s", field, dir), nil
+	}
+	return fmt.Sprintf("ORDER BY %s %s, key ASC", field, dir), nil
 }
 
 // buildFilterJoinsAndConditions builds JOIN and WHERE clauses from a MessageFilter.
@@ -170,7 +279,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		`)
 		conditions = append(conditions, "p_filter_from.email_address = ?")
 		args = append(args, filter.Sender)
-	} else if filter.MatchEmptySender {
+	} else if filter.MatchesEmpty(ViewSenders) {
 		joins = append(joins, `
 			LEFT JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
 			LEFT JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
@@ -180,7 +289,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 
 	// Sender name filter
 	if filter.SenderName != "" {
-		if filter.Sender == "" && !filter.MatchEmptySender {
+		if filter.Sender == "" && !filter.MatchesEmpty(ViewSenders) {
 			joins = append(joins, `
 				JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
 				JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
@@ -188,7 +297,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		}
 		conditions = append(conditions, "COALESCE(NULLIF(TRIM(p_filter_from.display_name), ''), p_filter_from.email_address) = ?")
 		args = append(args, filter.SenderName)
-	} else if filter.MatchEmptySenderName {
+	} else if filter.MatchesEmpty(ViewSenderNames) {
 		conditions = append(conditions, `NOT EXISTS (
 			SELECT 1 FROM message_recipients mr_sn
 			JOIN participants p_sn ON p_sn.id = mr_sn.participant_id
@@ -206,7 +315,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		`)
 		conditions = append(conditions, "p_filter_to.email_address = ?")
 		args = append(args, filter.Recipient)
-	} else if filter.MatchEmptyRecipient {
+	} else if filter.MatchesEmpty(ViewRecipients) {
 		joins = append(joins, `
 			LEFT JOIN message_recipients mr_filter_to ON mr_filter_to.message_id = m.id AND mr_filter_to.recipient_type IN ('to', 'cc', 'bcc')
 		`)
@@ -216,27 +325,27 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 	// Recipient name filter — reuses the Recipient filter's join when present,
 	// ensuring both predicates apply to the same participant row.
 	if filter.RecipientName != "" {
-		if filter.Recipient == "" && filter.MatchEmptyRecipient {
+		if filter.Recipient == "" && filter.MatchesEmpty(ViewRecipients) {
 			// MatchEmptyRecipient LEFT JOINs mr without participants — add
 			// the participants join so the p_filter_to alias is available.
 			// (This combination is contradictory and will return 0 rows.)
 			joins = append(joins, `
 				JOIN participants p_filter_to ON p_filter_to.id = mr_filter_to.participant_id
 			`)
-		} else if filter.Recipient == "" && !filter.MatchEmptyRecipient {
+		} else if filter.Recipient == "" && !filter.MatchesEmpty(ViewRecipients) {
 			joins = append(joins, `
-				JOIN message_recipients mr_filter_to ON mr_filter_to.message_id = m.id AND mr_filter_to.recipient_type IN ('to', 'cc')
+				JOIN message_recipients mr_filter_to ON mr_filter_to.message_id = m.id AND mr_filter_to.recipient_type IN ('to', 'cc', 'bcc')
 				JOIN participants p_filter_to ON p_filter_to.id = mr_filter_to.participant_id
 			`)
 		}
 		conditions = append(conditions, "COALESCE(NULLIF(TRIM(p_filter_to.display_name), ''), p_filter_to.email_address) = ?")
 		args = append(args, filter.RecipientName)
-	} else if filter.MatchEmptyRecipientName {
+	} else if filter.MatchesEmpty(ViewRecipientNames) {
 		conditions = append(conditions, `NOT EXISTS (
 			SELECT 1 FROM message_recipients mr_rn
 			JOIN participants p_rn ON p_rn.id = mr_rn.participant_id
 			WHERE mr_rn.message_id = m.id
-			  AND mr_rn.recipient_type IN ('to', 'cc')
+			  AND mr_rn.recipient_type IN ('to', 'cc', 'bcc')
 			  AND COALESCE(NULLIF(TRIM(p_rn.display_name), ''), p_rn.email_address) IS NOT NULL
 		)`)
 	}
@@ -244,7 +353,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 	// Domain filter
 	// Note: MatchEmptySenderName uses NOT EXISTS (no join), so it doesn't provide p_filter_from.
 	if filter.Domain != "" {
-		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" {
+		if filter.Sender == "" && !filter.MatchesEmpty(ViewSenders) && filter.SenderName == "" {
 			joins = append(joins, `
 				JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
 				JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
@@ -252,8 +361,8 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		}
 		conditions = append(conditions, "p_filter_from.domain = ?")
 		args = append(args, filter.Domain)
-	} else if filter.MatchEmptyDomain {
-		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" {
+	} else if filter.MatchesEmpty(ViewDomains) {
+		if filter.Sender == "" && !filter.MatchesEmpty(ViewSenders) && filter.SenderName == "" {
 			joins = append(joins, `
 				LEFT JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
 				LEFT JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
@@ -270,15 +379,15 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		`)
 		conditions = append(conditions, "l_filter.name = ?")
 		args = append(args, filter.Label)
-	} else if filter.MatchEmptyLabel {
+	} else if filter.MatchesEmpty(ViewLabels) {
 		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM message_labels ml WHERE ml.message_id = m.id)")
 	}
 
 	// Time period filter
-	if filter.TimePeriod != "" {
-		granularity := filter.TimeGranularity
-		if granularity == TimeYear && len(filter.TimePeriod) > 4 {
-			switch len(filter.TimePeriod) {
+	if filter.TimeRange.Period != "" {
+		granularity := filter.TimeRange.Granularity
+		if granularity == TimeYear && len(filter.TimeRange.Period) > 4 {
+			switch len(filter.TimeRange.Period) {
 			case 7:
 				granularity = TimeMonth
 			case 10:
@@ -298,7 +407,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 			timeExpr = "strftime('%Y-%m', " + prefix + "sent_at)"
 		}
 		conditions = append(conditions, fmt.Sprintf("%s = ?", timeExpr))
-		args = append(args, filter.TimePeriod)
+		args = append(args, filter.TimeRange.Period)
 	}
 
 	return strings.Join(joins, "\n"), conditions, args
@@ -310,524 +419,42 @@ func (e *SQLiteEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 	filterJoins, filterConditions, args := buildFilterJoinsAndConditions(filter, "m")
 
 	// Add opts-based conditions
-	if opts.SourceID != nil {
-		filterConditions = append(filterConditions, "m.source_id = ?")
-		args = append(args, *opts.SourceID)
-	}
-	if opts.After != nil {
-		filterConditions = append(filterConditions, "m.sent_at >= ?")
-		args = append(args, opts.After.Format("2006-01-02 15:04:05"))
-	}
-	if opts.Before != nil {
-		filterConditions = append(filterConditions, "m.sent_at < ?")
-		args = append(args, opts.Before.Format("2006-01-02 15:04:05"))
-	}
-	if opts.WithAttachmentsOnly {
-		filterConditions = append(filterConditions, "m.has_attachments = 1")
-	}
+	optsConds, optsArgs := optsToFilterConditions(opts, "m.")
+	filterConditions = append(filterConditions, optsConds...)
+	args = append(args, optsArgs...)
 
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 100
-	}
-
-	where := strings.Join(filterConditions, " AND ")
-
-	var query string
-	switch groupBy {
-	case ViewSenders:
-		// Use window function COUNT(*) OVER() to get total unique count in single scan
-		query = fmt.Sprintf(`
-			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-			FROM (
-				SELECT
-					p.email_address as key,
-					COUNT(*) as count,
-					COALESCE(SUM(m.size_estimate), 0) as total_size,
-					COALESCE(SUM(att.att_size), 0) as attachment_size,
-					COALESCE(SUM(att.att_count), 0) as attachment_count,
-					COUNT(*) OVER() as total_unique
-				FROM messages m
-				JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
-				JOIN participants p ON p.id = mr.participant_id
-				LEFT JOIN (
-					SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
-					FROM attachments
-					GROUP BY message_id
-				) att ON att.message_id = m.id
-				%s
-				WHERE %s AND p.email_address IS NOT NULL
-				GROUP BY p.email_address
-			)
-			%s
-			LIMIT ?
-		`, filterJoins, where, sortClause(opts))
-
-	case ViewSenderNames:
-		query = fmt.Sprintf(`
-			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-			FROM (
-				SELECT
-					COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) as key,
-					COUNT(*) as count,
-					COALESCE(SUM(m.size_estimate), 0) as total_size,
-					COALESCE(SUM(att.att_size), 0) as attachment_size,
-					COALESCE(SUM(att.att_count), 0) as attachment_count,
-					COUNT(*) OVER() as total_unique
-				FROM messages m
-				JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
-				JOIN participants p ON p.id = mr.participant_id
-				LEFT JOIN (
-					SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
-					FROM attachments
-					GROUP BY message_id
-				) att ON att.message_id = m.id
-				%s
-				WHERE %s AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) IS NOT NULL
-				GROUP BY COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address)
-			)
-			%s
-			LIMIT ?
-		`, filterJoins, where, sortClause(opts))
-
-	case ViewRecipients:
-		// Use window function COUNT(*) OVER() to get total unique count in single scan
-		query = fmt.Sprintf(`
-			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-			FROM (
-				SELECT
-					p.email_address as key,
-					COUNT(*) as count,
-					COALESCE(SUM(m.size_estimate), 0) as total_size,
-					COALESCE(SUM(att.att_size), 0) as attachment_size,
-					COALESCE(SUM(att.att_count), 0) as attachment_count,
-					COUNT(*) OVER() as total_unique
-				FROM messages m
-				JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type IN ('to', 'cc', 'bcc')
-				JOIN participants p ON p.id = mr.participant_id
-				LEFT JOIN (
-					SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
-					FROM attachments
-					GROUP BY message_id
-				) att ON att.message_id = m.id
-				%s
-				WHERE %s AND p.email_address IS NOT NULL
-				GROUP BY p.email_address
-			)
-			%s
-			LIMIT ?
-		`, filterJoins, where, sortClause(opts))
-
-	case ViewRecipientNames:
-		query = fmt.Sprintf(`
-			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-			FROM (
-				SELECT
-					COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) as key,
-					COUNT(*) as count,
-					COALESCE(SUM(m.size_estimate), 0) as total_size,
-					COALESCE(SUM(att.att_size), 0) as attachment_size,
-					COALESCE(SUM(att.att_count), 0) as attachment_count,
-					COUNT(*) OVER() as total_unique
-				FROM messages m
-				JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type IN ('to', 'cc')
-				JOIN participants p ON p.id = mr.participant_id
-				LEFT JOIN (
-					SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
-					FROM attachments
-					GROUP BY message_id
-				) att ON att.message_id = m.id
-				%s
-				WHERE %s AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) IS NOT NULL
-				GROUP BY COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address)
-			)
-			%s
-			LIMIT ?
-		`, filterJoins, where, sortClause(opts))
-
-	case ViewDomains:
-		// Use window function COUNT(*) OVER() to get total unique count in single scan
-		query = fmt.Sprintf(`
-			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-			FROM (
-				SELECT
-					p.domain as key,
-					COUNT(*) as count,
-					COALESCE(SUM(m.size_estimate), 0) as total_size,
-					COALESCE(SUM(att.att_size), 0) as attachment_size,
-					COALESCE(SUM(att.att_count), 0) as attachment_count,
-					COUNT(*) OVER() as total_unique
-				FROM messages m
-				JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
-				JOIN participants p ON p.id = mr.participant_id
-				LEFT JOIN (
-					SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
-					FROM attachments
-					GROUP BY message_id
-				) att ON att.message_id = m.id
-				%s
-				WHERE %s AND p.domain IS NOT NULL AND p.domain != ''
-				GROUP BY p.domain
-			)
-			%s
-			LIMIT ?
-		`, filterJoins, where, sortClause(opts))
-
-	case ViewLabels:
-		// Use window function COUNT(*) OVER() to get total unique count in single scan
-		query = fmt.Sprintf(`
-			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-			FROM (
-				SELECT
-					l.name as key,
-					COUNT(*) as count,
-					COALESCE(SUM(m.size_estimate), 0) as total_size,
-					COALESCE(SUM(att.att_size), 0) as attachment_size,
-					COALESCE(SUM(att.att_count), 0) as attachment_count,
-					COUNT(*) OVER() as total_unique
-				FROM messages m
-				JOIN message_labels ml ON ml.message_id = m.id
-				JOIN labels l ON l.id = ml.label_id
-				LEFT JOIN (
-					SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
-					FROM attachments
-					GROUP BY message_id
-				) att ON att.message_id = m.id
-				%s
-				WHERE %s
-				GROUP BY l.name
-			)
-			%s
-			LIMIT ?
-		`, filterJoins, where, sortClause(opts))
-
-	case ViewTime:
-		var timeExpr string
-		switch opts.TimeGranularity {
-		case TimeYear:
-			timeExpr = "strftime('%Y', m.sent_at)"
-		case TimeMonth:
-			timeExpr = "strftime('%Y-%m', m.sent_at)"
-		case TimeDay:
-			timeExpr = "strftime('%Y-%m-%d', m.sent_at)"
-		default:
-			timeExpr = "strftime('%Y-%m', m.sent_at)"
-		}
-		// Use window function COUNT(*) OVER() to get total unique count in single scan
-		query = fmt.Sprintf(`
-			SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-			FROM (
-				SELECT
-					%s as key,
-					COUNT(*) as count,
-					COALESCE(SUM(m.size_estimate), 0) as total_size,
-					COALESCE(SUM(att.att_size), 0) as attachment_size,
-					COALESCE(SUM(att.att_count), 0) as attachment_count,
-					COUNT(*) OVER() as total_unique
-				FROM messages m
-				LEFT JOIN (
-					SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
-					FROM attachments
-					GROUP BY message_id
-				) att ON att.message_id = m.id
-				%s
-				WHERE %s AND m.sent_at IS NOT NULL
-				GROUP BY key
-			)
-			%s
-			LIMIT ?
-		`, timeExpr, filterJoins, where, sortClause(opts))
-
-	default:
-		return nil, fmt.Errorf("unsupported groupBy view type: %v", groupBy)
-	}
-
-	args = append(args, limit)
-	return e.executeAggregateQuery(ctx, query, args)
+	return e.executeAggregate(ctx, groupBy, opts, filterJoins, filterConditions, args)
 }
 
-// AggregateBySender groups messages by sender email.
-func (e *SQLiteEngine) AggregateBySender(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := buildWhereClause(opts, "m")
-
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 100
-	}
-
-	// Use window function COUNT(*) OVER() to get total unique count in single scan
-	query := fmt.Sprintf(`
-		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-		FROM (
-			SELECT
-				p.email_address as key,
-				COUNT(*) as count,
-				COALESCE(SUM(m.size_estimate), 0) as total_size,
-				COALESCE(SUM(att.att_size), 0) as attachment_size,
-				COALESCE(SUM(att.att_count), 0) as attachment_count,
-				COUNT(*) OVER() as total_unique
-			FROM messages m
-			JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
-			JOIN participants p ON p.id = mr.participant_id
-			LEFT JOIN (
-				SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
-				FROM attachments
-				GROUP BY message_id
-			) att ON att.message_id = m.id
-			WHERE %s AND p.email_address IS NOT NULL
-			GROUP BY p.email_address
-		)
-		%s
-		LIMIT ?
-	`, where, sortClause(opts))
-
-	args = append(args, limit)
-	return e.executeAggregateQuery(ctx, query, args)
+// Aggregate performs grouping based on the provided ViewType.
+func (e *SQLiteEngine) Aggregate(ctx context.Context, groupBy ViewType, opts AggregateOptions) ([]AggregateRow, error) {
+	conditions, args := optsToFilterConditions(opts, "m.")
+	return e.executeAggregate(ctx, groupBy, opts, "", conditions, args)
 }
 
-// AggregateBySenderName groups messages by sender display name.
-// Uses COALESCE(display_name, email_address) so senders without a display name
-// fall back to their email address.
-func (e *SQLiteEngine) AggregateBySenderName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := buildWhereClause(opts, "m")
+// executeAggregate is the shared implementation for Aggregate and SubAggregate.
+func (e *SQLiteEngine) executeAggregate(ctx context.Context, groupBy ViewType, opts AggregateOptions, filterJoins string, filterConditions []string, args []interface{}) ([]AggregateRow, error) {
+	dim, err := aggDimensionForView(groupBy, opts.TimeGranularity)
+	if err != nil {
+		return nil, err
+	}
+
+	sort, err := sortClause(opts)
+	if err != nil {
+		return nil, err
+	}
 
 	limit := opts.Limit
 	if limit == 0 {
 		limit = 100
 	}
 
-	query := fmt.Sprintf(`
-		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-		FROM (
-			SELECT
-				COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) as key,
-				COUNT(*) as count,
-				COALESCE(SUM(m.size_estimate), 0) as total_size,
-				COALESCE(SUM(att.att_size), 0) as attachment_size,
-				COALESCE(SUM(att.att_count), 0) as attachment_count,
-				COUNT(*) OVER() as total_unique
-			FROM messages m
-			JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
-			JOIN participants p ON p.id = mr.participant_id
-			LEFT JOIN (
-				SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
-				FROM attachments
-				GROUP BY message_id
-			) att ON att.message_id = m.id
-			WHERE %s AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) IS NOT NULL
-			GROUP BY COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address)
-		)
-		%s
-		LIMIT ?
-	`, where, sortClause(opts))
-
-	args = append(args, limit)
-	return e.executeAggregateQuery(ctx, query, args)
-}
-
-// AggregateByRecipient groups messages by recipient email (to/cc/bcc).
-func (e *SQLiteEngine) AggregateByRecipient(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := buildWhereClause(opts, "m")
-
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 100
+	filterWhere := "1=1"
+	if len(filterConditions) > 0 {
+		filterWhere = strings.Join(filterConditions, " AND ")
 	}
 
-	// Use window function COUNT(*) OVER() to get total unique count in single scan
-	query := fmt.Sprintf(`
-		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-		FROM (
-			SELECT
-				p.email_address as key,
-				COUNT(*) as count,
-				COALESCE(SUM(m.size_estimate), 0) as total_size,
-				COALESCE(SUM(att.att_size), 0) as attachment_size,
-				COALESCE(SUM(att.att_count), 0) as attachment_count,
-				COUNT(*) OVER() as total_unique
-			FROM messages m
-			JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type IN ('to', 'cc', 'bcc')
-			JOIN participants p ON p.id = mr.participant_id
-			LEFT JOIN (
-				SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
-				FROM attachments
-				GROUP BY message_id
-			) att ON att.message_id = m.id
-			WHERE %s AND p.email_address IS NOT NULL
-			GROUP BY p.email_address
-		)
-		%s
-		LIMIT ?
-	`, where, sortClause(opts))
-
-	args = append(args, limit)
-	return e.executeAggregateQuery(ctx, query, args)
-}
-
-// AggregateByRecipientName groups messages by recipient display name.
-// Uses COALESCE(display_name, email_address) so recipients without a display name
-// fall back to their email address.
-func (e *SQLiteEngine) AggregateByRecipientName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := buildWhereClause(opts, "m")
-
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 100
-	}
-
-	query := fmt.Sprintf(`
-		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-		FROM (
-			SELECT
-				COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) as key,
-				COUNT(*) as count,
-				COALESCE(SUM(m.size_estimate), 0) as total_size,
-				COALESCE(SUM(att.att_size), 0) as attachment_size,
-				COALESCE(SUM(att.att_count), 0) as attachment_count,
-				COUNT(*) OVER() as total_unique
-			FROM messages m
-			JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type IN ('to', 'cc')
-			JOIN participants p ON p.id = mr.participant_id
-			LEFT JOIN (
-				SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
-				FROM attachments
-				GROUP BY message_id
-			) att ON att.message_id = m.id
-			WHERE %s AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) IS NOT NULL
-			GROUP BY COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address)
-		)
-		%s
-		LIMIT ?
-	`, where, sortClause(opts))
-
-	args = append(args, limit)
-	return e.executeAggregateQuery(ctx, query, args)
-}
-
-// AggregateByDomain groups messages by sender domain.
-func (e *SQLiteEngine) AggregateByDomain(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := buildWhereClause(opts, "m")
-
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 100
-	}
-
-	// Use window function COUNT(*) OVER() to get total unique count in single scan
-	query := fmt.Sprintf(`
-		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-		FROM (
-			SELECT
-				p.domain as key,
-				COUNT(*) as count,
-				COALESCE(SUM(m.size_estimate), 0) as total_size,
-				COALESCE(SUM(att.att_size), 0) as attachment_size,
-				COALESCE(SUM(att.att_count), 0) as attachment_count,
-				COUNT(*) OVER() as total_unique
-			FROM messages m
-			JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
-			JOIN participants p ON p.id = mr.participant_id
-			LEFT JOIN (
-				SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
-				FROM attachments
-				GROUP BY message_id
-			) att ON att.message_id = m.id
-			WHERE %s AND p.domain IS NOT NULL AND p.domain != ''
-			GROUP BY p.domain
-		)
-		%s
-		LIMIT ?
-	`, where, sortClause(opts))
-
-	args = append(args, limit)
-	return e.executeAggregateQuery(ctx, query, args)
-}
-
-// AggregateByLabel groups messages by label.
-func (e *SQLiteEngine) AggregateByLabel(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := buildWhereClause(opts, "m")
-
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 100
-	}
-
-	// Use window function COUNT(*) OVER() to get total unique count in single scan
-	query := fmt.Sprintf(`
-		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-		FROM (
-			SELECT
-				l.name as key,
-				COUNT(*) as count,
-				COALESCE(SUM(m.size_estimate), 0) as total_size,
-				COALESCE(SUM(att.att_size), 0) as attachment_size,
-				COALESCE(SUM(att.att_count), 0) as attachment_count,
-				COUNT(*) OVER() as total_unique
-			FROM messages m
-			JOIN message_labels ml ON ml.message_id = m.id
-			JOIN labels l ON l.id = ml.label_id
-			LEFT JOIN (
-				SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
-				FROM attachments
-				GROUP BY message_id
-			) att ON att.message_id = m.id
-			WHERE %s
-			GROUP BY l.name
-		)
-		%s
-		LIMIT ?
-	`, where, sortClause(opts))
-
-	args = append(args, limit)
-	return e.executeAggregateQuery(ctx, query, args)
-}
-
-// AggregateByTime groups messages by time period.
-func (e *SQLiteEngine) AggregateByTime(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error) {
-	where, args := buildWhereClause(opts, "m")
-
-	limit := opts.Limit
-	if limit == 0 {
-		limit = 100
-	}
-
-	// Build time grouping expression based on granularity
-	var timeExpr string
-	switch opts.TimeGranularity {
-	case TimeYear:
-		timeExpr = "strftime('%Y', m.sent_at)"
-	case TimeMonth:
-		timeExpr = "strftime('%Y-%m', m.sent_at)"
-	case TimeDay:
-		timeExpr = "strftime('%Y-%m-%d', m.sent_at)"
-	default:
-		timeExpr = "strftime('%Y-%m', m.sent_at)"
-	}
-
-	// Use window function COUNT(*) OVER() to get total unique count in single scan
-	query := fmt.Sprintf(`
-		SELECT key, count, total_size, attachment_size, attachment_count, total_unique
-		FROM (
-			SELECT
-				%s as key,
-				COUNT(*) as count,
-				COALESCE(SUM(m.size_estimate), 0) as total_size,
-				COALESCE(SUM(att.att_size), 0) as attachment_size,
-				COALESCE(SUM(att.att_count), 0) as attachment_count,
-				COUNT(*) OVER() as total_unique
-			FROM messages m
-			LEFT JOIN (
-				SELECT message_id, SUM(size) as att_size, COUNT(*) as att_count
-				FROM attachments
-				GROUP BY message_id
-			) att ON att.message_id = m.id
-			WHERE %s AND m.sent_at IS NOT NULL
-			GROUP BY key
-		)
-		%s
-		LIMIT ?
-	`, timeExpr, where, sortClause(opts))
-
+	query := buildAggregateSQL(dim, filterJoins, filterWhere, sort)
 	args = append(args, limit)
 	return e.executeAggregateQuery(ctx, query, args)
 }
@@ -859,185 +486,11 @@ func (e *SQLiteEngine) executeAggregateQuery(ctx context.Context, query string, 
 
 // ListMessages retrieves messages matching the filter.
 func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) ([]MessageSummary, error) {
-	var conditions []string
-	var args []interface{}
+	filterJoins, conditions, args := buildFilterJoinsAndConditions(filter, "m")
 
-	// Include all messages (deleted messages shown with indicator in TUI)
-
-	if filter.SourceID != nil {
-		conditions = append(conditions, "m.source_id = ?")
-		args = append(args, *filter.SourceID)
-	}
-
-	if filter.After != nil {
-		conditions = append(conditions, "m.sent_at >= ?")
-		args = append(args, filter.After.Format("2006-01-02 15:04:05"))
-	}
-
-	if filter.Before != nil {
-		conditions = append(conditions, "m.sent_at < ?")
-		args = append(args, filter.Before.Format("2006-01-02 15:04:05"))
-	}
-
-	if filter.WithAttachmentsOnly {
-		conditions = append(conditions, "m.has_attachments = 1")
-	}
-
-	// Build JOIN clauses based on filter type
-	var joins []string
-
-	// Sender filter
-	if filter.Sender != "" {
-		joins = append(joins, `
-			JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
-			JOIN participants p_from ON p_from.id = mr_from.participant_id
-		`)
-		conditions = append(conditions, "p_from.email_address = ?")
-		args = append(args, filter.Sender)
-	} else if filter.MatchEmptySender {
-		// Match messages with no sender (NULL or empty email)
-		joins = append(joins, `
-			LEFT JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
-			LEFT JOIN participants p_from ON p_from.id = mr_from.participant_id
-		`)
-		conditions = append(conditions, "(mr_from.id IS NULL OR p_from.email_address IS NULL OR p_from.email_address = '')")
-	}
-
-	// Sender name filter
-	if filter.SenderName != "" {
-		if filter.Sender == "" && !filter.MatchEmptySender {
-			joins = append(joins, `
-				JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
-				JOIN participants p_from ON p_from.id = mr_from.participant_id
-			`)
-		}
-		conditions = append(conditions, "COALESCE(NULLIF(TRIM(p_from.display_name), ''), p_from.email_address) = ?")
-		args = append(args, filter.SenderName)
-	} else if filter.MatchEmptySenderName {
-		conditions = append(conditions, `NOT EXISTS (
-			SELECT 1 FROM message_recipients mr_sn
-			JOIN participants p_sn ON p_sn.id = mr_sn.participant_id
-			WHERE mr_sn.message_id = m.id
-			  AND mr_sn.recipient_type = 'from'
-			  AND COALESCE(NULLIF(TRIM(p_sn.display_name), ''), p_sn.email_address) IS NOT NULL
-		)`)
-	}
-
-	// Recipient filter
-	if filter.Recipient != "" {
-		joins = append(joins, `
-			JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type IN ('to', 'cc', 'bcc')
-			JOIN participants p_to ON p_to.id = mr_to.participant_id
-		`)
-		conditions = append(conditions, "p_to.email_address = ?")
-		args = append(args, filter.Recipient)
-	} else if filter.MatchEmptyRecipient {
-		// Match messages with no recipients
-		joins = append(joins, `
-			LEFT JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type IN ('to', 'cc', 'bcc')
-		`)
-		conditions = append(conditions, "mr_to.id IS NULL")
-	}
-
-	// Recipient name filter — reuses the Recipient filter's join when present.
-	if filter.RecipientName != "" {
-		if filter.Recipient == "" && filter.MatchEmptyRecipient {
-			// MatchEmptyRecipient LEFT JOINs mr without participants — add
-			// the participants join so the p_to alias is available.
-			joins = append(joins, `
-				JOIN participants p_to ON p_to.id = mr_to.participant_id
-			`)
-		} else if filter.Recipient == "" && !filter.MatchEmptyRecipient {
-			joins = append(joins, `
-				JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type IN ('to', 'cc')
-				JOIN participants p_to ON p_to.id = mr_to.participant_id
-			`)
-		}
-		conditions = append(conditions, "COALESCE(NULLIF(TRIM(p_to.display_name), ''), p_to.email_address) = ?")
-		args = append(args, filter.RecipientName)
-	} else if filter.MatchEmptyRecipientName {
-		conditions = append(conditions, `NOT EXISTS (
-			SELECT 1 FROM message_recipients mr_rn
-			JOIN participants p_rn ON p_rn.id = mr_rn.participant_id
-			WHERE mr_rn.message_id = m.id
-			  AND mr_rn.recipient_type IN ('to', 'cc')
-			  AND COALESCE(NULLIF(TRIM(p_rn.display_name), ''), p_rn.email_address) IS NOT NULL
-		)`)
-	}
-
-	// Domain filter
-	// Note: MatchEmptySenderName uses NOT EXISTS (no join), so it doesn't provide p_from.
-	if filter.Domain != "" {
-		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" {
-			joins = append(joins, `
-				JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
-				JOIN participants p_from ON p_from.id = mr_from.participant_id
-			`)
-		}
-		conditions = append(conditions, "p_from.domain = ?")
-		args = append(args, filter.Domain)
-	} else if filter.MatchEmptyDomain {
-		// Match messages with no/empty domain
-		if filter.Sender == "" && !filter.MatchEmptySender && filter.SenderName == "" {
-			joins = append(joins, `
-				LEFT JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
-				LEFT JOIN participants p_from ON p_from.id = mr_from.participant_id
-			`)
-		}
-		conditions = append(conditions, "(p_from.domain IS NULL OR p_from.domain = '')")
-	}
-
-	// Label filter
-	if filter.Label != "" {
-		joins = append(joins, `
-			JOIN message_labels ml ON ml.message_id = m.id
-			JOIN labels l ON l.id = ml.label_id
-		`)
-		conditions = append(conditions, "l.name = ?")
-		args = append(args, filter.Label)
-	} else if filter.MatchEmptyLabel {
-		// Match messages with no labels
-		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM message_labels ml WHERE ml.message_id = m.id)")
-	}
-
-	if filter.TimePeriod != "" {
-		// Infer granularity from TimePeriod format if not explicitly set
-		// "2024" = year, "2024-01" = month, "2024-01-15" = day
-		granularity := filter.TimeGranularity
-		if granularity == TimeYear && len(filter.TimePeriod) > 4 {
-			// TimeYear is the zero value, so check if TimePeriod suggests finer granularity
-			switch len(filter.TimePeriod) {
-			case 7: // "2024-01"
-				granularity = TimeMonth
-			case 10: // "2024-01-15"
-				granularity = TimeDay
-			}
-		}
-
-		var timeExpr string
-		switch granularity {
-		case TimeYear:
-			timeExpr = "strftime('%Y', m.sent_at)"
-		case TimeMonth:
-			timeExpr = "strftime('%Y-%m', m.sent_at)"
-		case TimeDay:
-			timeExpr = "strftime('%Y-%m-%d', m.sent_at)"
-		default:
-			timeExpr = "strftime('%Y-%m', m.sent_at)"
-		}
-		conditions = append(conditions, fmt.Sprintf("%s = ?", timeExpr))
-		args = append(args, filter.TimePeriod)
-	}
-
-	// Conversation/thread filter
-	if filter.ConversationID != nil {
-		conditions = append(conditions, "m.conversation_id = ?")
-		args = append(args, *filter.ConversationID)
-	}
-
-	// Build ORDER BY
+	// Build ORDER BY with validation
 	var orderBy string
-	switch filter.SortField {
+	switch filter.Sorting.Field {
 	case MessageSortByDate:
 		orderBy = "m.sent_at"
 	case MessageSortBySize:
@@ -1045,15 +498,15 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 	case MessageSortBySubject:
 		orderBy = "m.subject"
 	default:
-		orderBy = "m.sent_at"
+		return nil, fmt.Errorf("unsupported message sort field: %d", filter.Sorting.Field)
 	}
-	if filter.SortDirection == SortDesc {
+	if filter.Sorting.Direction == SortDesc {
 		orderBy += " DESC"
 	} else {
 		orderBy += " ASC"
 	}
 
-	limit := filter.Limit
+	limit := filter.Pagination.Limit
 	if limit == 0 {
 		limit = 500
 	}
@@ -1084,9 +537,9 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		WHERE %s
 		ORDER BY %s
 		LIMIT ? OFFSET ?
-	`, strings.Join(joins, "\n"), whereClause, orderBy)
+	`, filterJoins, whereClause, orderBy)
 
-	args = append(args, limit, filter.Offset)
+	args = append(args, limit, filter.Pagination.Offset)
 
 	rows, err := e.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1440,58 +893,98 @@ func (e *SQLiteEngine) ListAccounts(ctx context.Context) ([]AccountInfo, error) 
 func (e *SQLiteEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*TotalStats, error) {
 	stats := &TotalStats{}
 
-	// Build WHERE clause for messages
+	// Build search conditions when SearchQuery is set.
+	var searchConditions []string
+	var searchArgs []interface{}
+	var searchJoins []string
+	var searchFTSJoin string
+	if opts.SearchQuery != "" {
+		q := search.Parse(opts.SearchQuery)
+		searchConditions, searchArgs, searchJoins, searchFTSJoin = e.buildSearchQueryParts(ctx, q)
+	}
+
+	// Build WHERE clause for messages — always use m. prefix since we alias
+	// the messages table for compatibility with search joins.
 	var conditions []string
 	var args []interface{}
 	// Include all messages (deleted messages shown with indicator in TUI)
 	if opts.SourceID != nil {
-		conditions = append(conditions, "source_id = ?")
+		conditions = append(conditions, "m.source_id = ?")
 		args = append(args, *opts.SourceID)
 	}
 	if opts.WithAttachmentsOnly {
-		conditions = append(conditions, "has_attachments = 1")
+		conditions = append(conditions, "m.has_attachments = 1")
 	}
-	whereClause := ""
+	// Merge search conditions
+	conditions = append(conditions, searchConditions...)
+	args = append(args, searchArgs...)
+
+	whereClause := "1=1"
 	if len(conditions) > 0 {
-		whereClause = "WHERE " + strings.Join(conditions, " AND ")
+		whereClause = strings.Join(conditions, " AND ")
 	}
 
-	// Message stats
-	msgQuery := fmt.Sprintf(`
-		SELECT
-			COUNT(*),
-			COALESCE(SUM(size_estimate), 0)
-		FROM messages
-		%s
-	`, whereClause)
+	// Build join clause for search
+	joinClause := ""
+	if searchFTSJoin != "" {
+		joinClause += searchFTSJoin + "\n"
+	}
+	if len(searchJoins) > 0 {
+		joinClause += strings.Join(searchJoins, "\n")
+	}
+
+	// Message stats — when search joins are present, use a subquery to get
+	// distinct matching IDs first, avoiding duplicates from 1:N joins.
+	var msgQuery string
+	if joinClause != "" {
+		msgQuery = fmt.Sprintf(`
+			SELECT
+				COUNT(*),
+				COALESCE(SUM(size_estimate), 0)
+			FROM messages
+			WHERE id IN (
+				SELECT DISTINCT m.id FROM messages m
+				%s
+				WHERE %s
+			)
+		`, joinClause, whereClause)
+	} else {
+		msgQuery = fmt.Sprintf(`
+			SELECT
+				COUNT(*),
+				COALESCE(SUM(size_estimate), 0)
+			FROM messages m
+			WHERE %s
+		`, whereClause)
+	}
 
 	if err := e.db.QueryRowContext(ctx, msgQuery, args...).Scan(&stats.MessageCount, &stats.TotalSize); err != nil {
 		return nil, fmt.Errorf("message stats: %w", err)
 	}
 
-	// Attachment stats - need to join with messages for source/attachment filtering
-	var attConditions []string
-	var attArgs []interface{}
-	// Include all messages (deleted messages shown with indicator in TUI)
-	if opts.SourceID != nil {
-		attConditions = append(attConditions, "m.source_id = ?")
-		attArgs = append(attArgs, *opts.SourceID)
+	// Attachment stats — use IN subquery only when search joins are present
+	// (to de-duplicate 1:N join rows). Without joins, a direct query is faster.
+	var attQuery string
+	if joinClause != "" {
+		attQuery = fmt.Sprintf(`
+			SELECT COUNT(*), COALESCE(SUM(a.size), 0)
+			FROM attachments a
+			WHERE a.message_id IN (
+				SELECT DISTINCT m.id FROM messages m
+				%s
+				WHERE %s
+			)
+		`, joinClause, whereClause)
+	} else {
+		attQuery = fmt.Sprintf(`
+			SELECT COUNT(*), COALESCE(SUM(a.size), 0)
+			FROM attachments a
+			JOIN messages m ON m.id = a.message_id
+			WHERE %s
+		`, whereClause)
 	}
-	if opts.WithAttachmentsOnly {
-		attConditions = append(attConditions, "m.has_attachments = 1")
-	}
-	attWhereClause := "1=1"
-	if len(attConditions) > 0 {
-		attWhereClause = strings.Join(attConditions, " AND ")
-	}
-	attQuery := fmt.Sprintf(`
-		SELECT COUNT(*), COALESCE(SUM(a.size), 0)
-		FROM attachments a
-		JOIN messages m ON m.id = a.message_id
-		WHERE %s
-	`, attWhereClause)
 
-	if err := e.db.QueryRowContext(ctx, attQuery, attArgs...).Scan(&stats.AttachmentCount, &stats.AttachmentSize); err != nil {
+	if err := e.db.QueryRowContext(ctx, attQuery, args...).Scan(&stats.AttachmentCount, &stats.AttachmentSize); err != nil {
 		return nil, fmt.Errorf("attachment stats: %w", err)
 	}
 
@@ -1575,7 +1068,7 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 			// have a standalone MatchEmptyRecipient handler, so mr_to may
 			// not exist yet.
 			joins = append(joins, `
-				JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type IN ('to', 'cc')
+				JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type IN ('to', 'cc', 'bcc')
 				JOIN participants p_to ON p_to.id = mr_to.participant_id
 			`)
 		}
@@ -1603,11 +1096,11 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 		args = append(args, filter.Label)
 	}
 
-	if filter.TimePeriod != "" {
+	if filter.TimeRange.Period != "" {
 		// Infer granularity from TimePeriod format if not explicitly set
-		granularity := filter.TimeGranularity
-		if granularity == TimeYear && len(filter.TimePeriod) > 4 {
-			switch len(filter.TimePeriod) {
+		granularity := filter.TimeRange.Granularity
+		if granularity == TimeYear && len(filter.TimeRange.Period) > 4 {
+			switch len(filter.TimeRange.Period) {
 			case 7:
 				granularity = TimeMonth
 			case 10:
@@ -1627,7 +1120,7 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 			timeExpr = "strftime('%Y-%m', m.sent_at)"
 		}
 		conditions = append(conditions, fmt.Sprintf("%s = ?", timeExpr))
-		args = append(args, filter.TimePeriod)
+		args = append(args, filter.TimeRange.Period)
 	}
 
 	// Build query - only add LIMIT if explicitly set
@@ -1639,9 +1132,9 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	`, strings.Join(joins, "\n"), strings.Join(conditions, " AND "))
 
 	// Only add LIMIT if explicitly set (0 means no limit)
-	if filter.Limit > 0 {
+	if filter.Pagination.Limit > 0 {
 		query += " LIMIT ?"
-		args = append(args, filter.Limit)
+		args = append(args, filter.Pagination.Limit)
 	}
 
 	rows, err := e.db.QueryContext(ctx, query, args...)
@@ -2017,4 +1510,37 @@ func (e *SQLiteEngine) SearchFastCount(ctx context.Context, q *search.Query, fil
 		return 0, fmt.Errorf("search fast count: %w", err)
 	}
 	return count, nil
+}
+
+// SearchFastWithStats delegates to SearchFast + SearchFastCount + GetTotalStats.
+// SQLite doesn't benefit from temp table materialization, so we just call the
+// existing methods independently.
+func (e *SQLiteEngine) SearchFastWithStats(ctx context.Context, q *search.Query, queryStr string,
+	filter MessageFilter, statsGroupBy ViewType, limit, offset int) (*SearchFastResult, error) {
+
+	results, err := e.SearchFast(ctx, q, filter, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	// Best-effort count: don't abort the search if count fails.
+	count, countErr := e.SearchFastCount(ctx, q, filter)
+	if countErr != nil {
+		log.Printf("warning: search count failed (using -1): %v", countErr)
+		count = -1
+	}
+
+	statsOpts := StatsOptions{
+		SourceID:            filter.SourceID,
+		WithAttachmentsOnly: filter.WithAttachmentsOnly,
+		SearchQuery:         queryStr,
+		GroupBy:             statsGroupBy,
+	}
+	stats, _ := e.GetTotalStats(ctx, statsOpts)
+
+	return &SearchFastResult{
+		Messages:   results,
+		TotalCount: count,
+		Stats:      stats,
+	}, nil
 }

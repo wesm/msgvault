@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/spf13/cobra"
+	"github.com/wesm/msgvault/internal/fileutil"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/store"
 )
@@ -31,7 +32,7 @@ Examples:
 		idStr := args[0]
 
 		// Open database
-		dbPath := cfg.DatabasePath()
+		dbPath := cfg.DatabaseDSN()
 		s, err := store.Open(dbPath)
 		if err != nil {
 			return fmt.Errorf("open database: %w", err)
@@ -86,7 +87,7 @@ Examples:
 			return err
 		}
 
-		err = os.WriteFile(outputPath, rawData, 0600) // Restricted permissions for email content
+		err = fileutil.SecureWriteFile(outputPath, rawData, 0600) // Restricted permissions for email content
 		if err != nil {
 			return fmt.Errorf("write file: %w", err)
 		}

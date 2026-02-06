@@ -1,0 +1,27 @@
+#!/bin/sh
+# Pre-commit hook: run fmt check and lint on staged Go files.
+# Install: git config core.hooksPath .githooks
+
+# Check if any Go files are staged
+STAGED_GO=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$')
+if [ -z "$STAGED_GO" ]; then
+    exit 0
+fi
+
+# Check formatting
+UNFORMATTED=$(gofmt -l $STAGED_GO 2>/dev/null)
+if [ -n "$UNFORMATTED" ]; then
+    echo "gofmt: these files need formatting:"
+    echo "$UNFORMATTED"
+    echo ""
+    echo "Run: make fmt"
+    exit 1
+fi
+
+# Run linter
+echo "Running linter..."
+if ! golangci-lint run ./... 2>&1; then
+    echo ""
+    echo "Lint failed. Fix errors before committing."
+    exit 1
+fi

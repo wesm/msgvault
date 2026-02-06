@@ -10,8 +10,8 @@ import (
 type viewLevel int
 
 const (
-	levelAggregates   viewLevel = iota
-	levelDrillDown              // Sub-grouping after drill-down
+	levelAggregates viewLevel = iota
+	levelDrillDown            // Sub-grouping after drill-down
 	levelMessageList
 	levelMessageDetail
 	levelThreadView // Thread/conversation view showing all messages in a thread
@@ -19,28 +19,33 @@ const (
 
 // viewState encapsulates the state for a specific view (cursor, sort, filters, data).
 type viewState struct {
-	level           viewLevel
-	viewType        query.ViewType
-	timeGranularity query.TimeGranularity
-	sortField       query.SortField
-	sortDirection   query.SortDirection
+	level            viewLevel
+	viewType         query.ViewType
+	timeGranularity  query.TimeGranularity
+	sortField        query.SortField
+	sortDirection    query.SortDirection
 	msgSortField     query.MessageSortField
 	msgSortDirection query.SortDirection
-	cursor          int
-	scrollOffset    int
-	filterKey       string              // The aggregate key used to filter messages
-	allMessages     bool                // True when showing all messages (not filtered by aggregate)
-	drillFilter     query.MessageFilter // Filter from parent drill-down
-	drillViewType   query.ViewType      // ViewType that created the drill filter
-	contextStats    *query.TotalStats   // Contextual stats for header display
-	searchQuery     string              // Active search query (for aggregate filtering)
-	searchFilter    query.MessageFilter // Context filter applied to search
-	
+	cursor           int
+	scrollOffset     int
+	filterKey        string              // The aggregate key used to filter messages
+	allMessages      bool                // True when showing all messages (not filtered by aggregate)
+	drillFilter      query.MessageFilter // Filter from parent drill-down
+	drillViewType    query.ViewType      // ViewType that created the drill filter
+	contextStats     *query.TotalStats   // Contextual stats for header display
+	searchQuery      string              // Active search query (for aggregate filtering)
+	searchFilter     query.MessageFilter // Context filter applied to search
+
+	// Message list pagination
+	msgListOffset      int  // Current offset for non-search message pagination
+	msgListLoadingMore bool // True when loading additional message pages
+	msgListComplete    bool // True when all pages have been loaded (no more data)
+
 	// Data
-	rows         []query.AggregateRow
+	rows          []query.AggregateRow
 	messages      []query.MessageSummary
 	messageDetail *query.MessageDetail
-	
+
 	// Detail view specific
 	detailScroll         int
 	detailLineCount      int
@@ -54,7 +59,7 @@ type viewState struct {
 	detailSearchQuery      string
 	detailSearchMatches    []int // Line indices with matches
 	detailSearchMatchIndex int   // Current match index
-	
+
 	// Thread view specific
 	threadConversationID int64
 	threadMessages       []query.MessageSummary
@@ -68,60 +73,36 @@ type navigationSnapshot struct {
 	state viewState
 }
 
-func (m *Model) ensureThreadCursorVisible() {
-	if m.threadCursor < m.threadScrollOffset {
-		m.threadScrollOffset = m.threadCursor
-	} else if m.threadCursor >= m.threadScrollOffset+m.pageSize {
-		m.threadScrollOffset = m.threadCursor - m.pageSize + 1
+// calculateScrollOffset computes the new scroll offset to keep cursor visible within pageSize.
+func calculateScrollOffset(cursor, currentOffset, pageSize int) int {
+	if cursor < currentOffset {
+		return cursor
 	}
+	if cursor >= currentOffset+pageSize {
+		return cursor - pageSize + 1
+	}
+	return currentOffset
+}
+
+func (m *Model) ensureThreadCursorVisible() {
+	// Use pageSize-1 because views reserve one row for the info/notification line
+	visibleRows := m.pageSize - 1
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+	m.threadScrollOffset = calculateScrollOffset(m.threadCursor, m.threadScrollOffset, visibleRows)
 }
 
 func (m Model) navigateDetailPrev() (tea.Model, tea.Cmd) {
-	// Use thread messages if we entered from thread view, otherwise use list messages
-	var msgs []query.MessageSummary
-	if m.detailFromThread {
-		msgs = m.threadMessages
-	} else {
-		msgs = m.messages
-	}
-
-	// Guard against empty message list
-	if len(msgs) == 0 {
-		return m.showFlash("No messages loaded")
-	}
-
-	// Clamp index if it's out of bounds (can happen if list changed)
-	if m.detailMessageIndex >= len(msgs) {
-		m.detailMessageIndex = len(msgs) - 1
-	}
-
-	if m.detailMessageIndex > 0 {
-		// Go to previous message
-		m.detailMessageIndex--
-		// Keep appropriate cursor in sync
-		if m.detailFromThread {
-			m.threadCursor = m.detailMessageIndex
-			// Ensure thread scroll offset keeps cursor visible when returning
-			if m.threadCursor < m.threadScrollOffset {
-				m.threadScrollOffset = m.threadCursor
-			}
-		} else {
-			m.cursor = m.detailMessageIndex
-		}
-		m.pendingDetailSubject = msgs[m.detailMessageIndex].Subject
-		// Keep old messageDetail visible while new one loads (no flash)
-		m.detailScroll = 0
-		m.loading = true
-		m.err = nil
-		m.detailRequestID++
-		return m, m.loadMessageDetail(msgs[m.detailMessageIndex].ID)
-	}
-
-	// At the first message - show flash notification
-	return m.showFlash("At first message")
+	return m.changeDetailMessage(-1)
 }
 
 func (m Model) navigateDetailNext() (tea.Model, tea.Cmd) {
+	return m.changeDetailMessage(1)
+}
+
+// changeDetailMessage navigates to a different message in the detail view by delta offset.
+func (m Model) changeDetailMessage(delta int) (tea.Model, tea.Cmd) {
 	// Use thread messages if we entered from thread view, otherwise use list messages
 	var msgs []query.MessageSummary
 	if m.detailFromThread {
@@ -140,30 +121,32 @@ func (m Model) navigateDetailNext() (tea.Model, tea.Cmd) {
 		m.detailMessageIndex = len(msgs) - 1
 	}
 
-	if m.detailMessageIndex < len(msgs)-1 {
-		// Go to next message
-		m.detailMessageIndex++
-		// Keep appropriate cursor in sync
-		if m.detailFromThread {
-			m.threadCursor = m.detailMessageIndex
-			// Ensure thread scroll offset keeps cursor visible when returning
-			if m.threadCursor >= m.threadScrollOffset+m.pageSize {
-				m.threadScrollOffset = m.threadCursor - m.pageSize + 1
-			}
-		} else {
-			m.cursor = m.detailMessageIndex
-		}
-		m.pendingDetailSubject = msgs[m.detailMessageIndex].Subject
-		// Keep old messageDetail visible while new one loads (no flash)
-		m.detailScroll = 0
-		m.loading = true
-		m.err = nil
-		m.detailRequestID++
-		return m, m.loadMessageDetail(msgs[m.detailMessageIndex].ID)
+	newIndex := m.detailMessageIndex + delta
+	if newIndex < 0 {
+		return m.showFlash("At first message")
+	}
+	if newIndex >= len(msgs) {
+		return m.showFlash("At last message")
 	}
 
-	// At the last message - show flash notification
-	return m.showFlash("At last message")
+	m.detailMessageIndex = newIndex
+	m.pendingDetailSubject = msgs[newIndex].Subject
+
+	// Keep appropriate cursor in sync
+	if m.detailFromThread {
+		m.threadCursor = newIndex
+		m.ensureThreadCursorVisible()
+	} else {
+		m.cursor = newIndex
+	}
+
+	// Reset view state for new message
+	m.detailScroll = 0
+	m.loading = true
+	m.err = nil
+	m.detailRequestID++
+
+	return m, m.loadMessageDetail(msgs[newIndex].ID)
 }
 
 func (m Model) goBack() (tea.Model, tea.Cmd) {
@@ -196,16 +179,21 @@ func (m Model) goBack() (tea.Model, tea.Cmd) {
 	m.err = nil       // Clear any stale error
 	m.loading = false // Data is restored from snapshot
 
+	// Reset loading-more flag: any in-flight pagination request from the
+	// snapshotted view is stale (loadRequestID has changed), so clear the
+	// flag to allow fresh pagination.
+	m.msgListLoadingMore = false
+
 	return m, nil
 }
 
 func (m *Model) ensureCursorVisible() {
-	if m.cursor < m.scrollOffset {
-		m.scrollOffset = m.cursor
+	// Use pageSize-1 because views reserve one row for the info/notification line
+	visibleRows := m.pageSize - 1
+	if visibleRows < 1 {
+		visibleRows = 1
 	}
-	if m.cursor >= m.scrollOffset+m.pageSize {
-		m.scrollOffset = m.cursor - m.pageSize + 1
-	}
+	m.scrollOffset = calculateScrollOffset(m.cursor, m.scrollOffset, visibleRows)
 }
 
 func (m *Model) pushBreadcrumb() {
@@ -213,26 +201,25 @@ func (m *Model) pushBreadcrumb() {
 }
 
 func (m *Model) navigateList(key string, itemCount int) bool {
+	changed := false
+
 	switch key {
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
-			m.ensureCursorVisible()
+			changed = true
 		}
-		return true
 	case "down", "j":
 		if m.cursor < itemCount-1 {
 			m.cursor++
-			m.ensureCursorVisible()
+			changed = true
 		}
-		return true
 	case "pgup", "ctrl+u":
 		m.cursor -= m.pageSize
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
-		m.ensureCursorVisible()
-		return true
+		changed = true
 	case "pgdown", "ctrl+d":
 		m.cursor += m.pageSize
 		if m.cursor >= itemCount {
@@ -241,8 +228,7 @@ func (m *Model) navigateList(key string, itemCount int) bool {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
-		m.ensureCursorVisible()
-		return true
+		changed = true
 	case "home":
 		m.cursor = 0
 		m.scrollOffset = 0
@@ -252,9 +238,13 @@ func (m *Model) navigateList(key string, itemCount int) bool {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
-		m.ensureCursorVisible()
-		return true
+		changed = true
+	default:
+		return false
 	}
-	return false
-}
 
+	if changed {
+		m.ensureCursorVisible()
+	}
+	return true
+}

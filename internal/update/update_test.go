@@ -2,14 +2,26 @@ package update
 
 import (
 	"archive/tar"
-	"compress/gzip"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/wesm/msgvault/internal/testutil"
+)
+
+const (
+	testHash64   = "abc123def456789012345678901234567890123456789012345678901234abcd"
+	testHashAAAA = "abc123def456789012345678901234567890123456789012345678901234aaaa"
+	testHashBBBB = "abc123def456789012345678901234567890123456789012345678901234bbbb"
 )
 
 func TestSanitizeTarPath(t *testing.T) {
+	t.Parallel()
 	destDir := t.TempDir()
 
 	tests := []struct {
@@ -31,6 +43,7 @@ func TestSanitizeTarPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if tt.skipOnWin && runtime.GOOS == "windows" {
 				t.Skip("Unix-style absolute path not applicable on Windows")
 			}
@@ -42,57 +55,14 @@ func TestSanitizeTarPath(t *testing.T) {
 	}
 }
 
-type archiveEntry struct {
-	Name     string
-	Content  string
-	TypeFlag byte
-	LinkName string
-	Mode     int64
-}
-
-func createTestArchive(t *testing.T, path string, entries []archiveEntry) {
-	t.Helper()
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-
-	gzw := gzip.NewWriter(f)
-	defer gzw.Close()
-	tw := tar.NewWriter(gzw)
-	defer tw.Close()
-
-	for _, e := range entries {
-		mode := e.Mode
-		if mode == 0 {
-			mode = 0644
-		}
-		h := &tar.Header{
-			Name:     e.Name,
-			Mode:     mode,
-			Size:     int64(len(e.Content)),
-			Typeflag: e.TypeFlag,
-			Linkname: e.LinkName,
-		}
-		if err := tw.WriteHeader(h); err != nil {
-			t.Fatal(err)
-		}
-		if len(e.Content) > 0 {
-			if _, err := tw.Write([]byte(e.Content)); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-}
-
 func TestExtractTarGzPathTraversal(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	archivePath := filepath.Join(tmpDir, "malicious.tar.gz")
 	extractDir := filepath.Join(tmpDir, "extract")
 	outsideFile := filepath.Join(tmpDir, "pwned")
 
-	createTestArchive(t, archivePath, []archiveEntry{
+	testutil.CreateTarGz(t, archivePath, []testutil.ArchiveEntry{
 		{Name: "../pwned", Content: "owned"},
 	})
 
@@ -101,17 +71,16 @@ func TestExtractTarGzPathTraversal(t *testing.T) {
 		t.Error("extractTarGz should fail with path traversal attempt")
 	}
 
-	if _, err := os.Stat(outsideFile); !os.IsNotExist(err) {
-		t.Error("Malicious file was created outside extract dir")
-	}
+	testutil.MustNotExist(t, outsideFile)
 }
 
 func TestExtractTarGzSymlinkSkipped(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	archivePath := filepath.Join(tmpDir, "symlink.tar.gz")
 	extractDir := filepath.Join(tmpDir, "extract")
 
-	createTestArchive(t, archivePath, []archiveEntry{
+	testutil.CreateTarGz(t, archivePath, []testutil.ArchiveEntry{
 		{Name: "evil-link", TypeFlag: tar.TypeSymlink, LinkName: "/etc/passwd"},
 		{Name: "normal.txt", Content: "test"},
 	})
@@ -120,16 +89,57 @@ func TestExtractTarGzSymlinkSkipped(t *testing.T) {
 		t.Fatalf("extractTarGz failed: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(extractDir, "normal.txt")); err != nil {
-		t.Error("Normal file should have been extracted")
+	testutil.MustExist(t, filepath.Join(extractDir, "normal.txt"))
+	testutil.MustNotExist(t, filepath.Join(extractDir, "evil-link"))
+}
+
+func TestExtractZip(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "test.zip")
+	extractDir := filepath.Join(tmpDir, "extract")
+
+	testutil.CreateZip(t, archivePath, []testutil.ArchiveEntry{
+		{Name: "msgvault.exe", Content: "binary content"},
+		{Name: "README.md", Content: "readme"},
+	})
+
+	if err := extractZip(archivePath, extractDir); err != nil {
+		t.Fatalf("extractZip failed: %v", err)
 	}
 
-	if _, err := os.Lstat(filepath.Join(extractDir, "evil-link")); !os.IsNotExist(err) {
-		t.Error("Symlink should have been skipped")
+	testutil.MustExist(t, filepath.Join(extractDir, "msgvault.exe"))
+	testutil.MustExist(t, filepath.Join(extractDir, "README.md"))
+
+	content, err := os.ReadFile(filepath.Join(extractDir, "msgvault.exe"))
+	if err != nil {
+		t.Fatal(err)
 	}
+	testutil.AssertEqual(t, string(content), "binary content")
+}
+
+func TestExtractZipPathTraversal(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "malicious.zip")
+	extractDir := filepath.Join(tmpDir, "extract")
+	outsideFile := filepath.Join(tmpDir, "pwned")
+
+	testutil.CreateZip(t, archivePath, []testutil.ArchiveEntry{
+		{Name: "../pwned", Content: "owned"},
+	})
+
+	err := extractZip(archivePath, extractDir)
+	if err == nil {
+		t.Error("extractZip should fail with path traversal attempt")
+	}
+
+	testutil.MustNotExist(t, outsideFile)
 }
 
 func TestExtractChecksum(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		body      string
@@ -138,25 +148,25 @@ func TestExtractChecksum(t *testing.T) {
 	}{
 		{
 			name:      "standard sha256sum format",
-			body:      "abc123def456789012345678901234567890123456789012345678901234abcd  msgvault_darwin_arm64.tar.gz",
+			body:      fmt.Sprintf("%s  msgvault_darwin_arm64.tar.gz", testHash64),
 			assetName: "msgvault_darwin_arm64.tar.gz",
-			want:      "abc123def456789012345678901234567890123456789012345678901234abcd",
+			want:      testHash64,
 		},
 		{
 			name:      "uppercase checksum",
 			body:      "ABC123DEF456789012345678901234567890123456789012345678901234ABCD  msgvault_linux_amd64.tar.gz",
 			assetName: "msgvault_linux_amd64.tar.gz",
-			want:      "abc123def456789012345678901234567890123456789012345678901234abcd",
+			want:      testHash64,
 		},
 		{
 			name:      "multiline with target in middle",
-			body:      "abc123def456789012345678901234567890123456789012345678901234aaaa  msgvault_linux_amd64.tar.gz\nabc123def456789012345678901234567890123456789012345678901234bbbb  msgvault_darwin_arm64.tar.gz",
+			body:      fmt.Sprintf("%s  msgvault_linux_amd64.tar.gz\n%s  msgvault_darwin_arm64.tar.gz", testHashAAAA, testHashBBBB),
 			assetName: "msgvault_darwin_arm64.tar.gz",
-			want:      "abc123def456789012345678901234567890123456789012345678901234bbbb",
+			want:      testHashBBBB,
 		},
 		{
 			name:      "no match",
-			body:      "abc123def456789012345678901234567890123456789012345678901234abcd  msgvault_linux_amd64.tar.gz",
+			body:      fmt.Sprintf("%s  msgvault_linux_amd64.tar.gz", testHash64),
 			assetName: "msgvault_darwin_arm64.tar.gz",
 			want:      "",
 		},
@@ -168,41 +178,41 @@ func TestExtractChecksum(t *testing.T) {
 		},
 		{
 			name:      "substring filename should not match",
-			body:      "abc123def456789012345678901234567890123456789012345678901234abcd  msgvault_darwin_arm64.tar.gz.sig",
+			body:      fmt.Sprintf("%s  msgvault_darwin_arm64.tar.gz.sig", testHash64),
 			assetName: "msgvault_darwin_arm64.tar.gz",
 			want:      "",
 		},
 		{
 			name:      "exact match with superset also present",
-			body:      "abc123def456789012345678901234567890123456789012345678901234aaaa  msgvault_darwin_arm64.tar.gz.sig\nabc123def456789012345678901234567890123456789012345678901234bbbb  msgvault_darwin_arm64.tar.gz",
+			body:      fmt.Sprintf("%s  msgvault_darwin_arm64.tar.gz.sig\n%s  msgvault_darwin_arm64.tar.gz", testHashAAAA, testHashBBBB),
 			assetName: "msgvault_darwin_arm64.tar.gz",
-			want:      "abc123def456789012345678901234567890123456789012345678901234bbbb",
+			want:      testHashBBBB,
 		},
 		{
 			name:      "binary mode star prefix",
-			body:      "abc123def456789012345678901234567890123456789012345678901234abcd *msgvault_darwin_arm64.tar.gz",
+			body:      fmt.Sprintf("%s *msgvault_darwin_arm64.tar.gz", testHash64),
 			assetName: "msgvault_darwin_arm64.tar.gz",
-			want:      "abc123def456789012345678901234567890123456789012345678901234abcd",
+			want:      testHash64,
 		},
 		{
 			name:      "trailing comment ignored",
-			body:      "abc123def456789012345678901234567890123456789012345678901234abcd  msgvault_darwin_arm64.tar.gz  # some comment",
+			body:      fmt.Sprintf("%s  msgvault_darwin_arm64.tar.gz  # some comment", testHash64),
 			assetName: "msgvault_darwin_arm64.tar.gz",
-			want:      "abc123def456789012345678901234567890123456789012345678901234abcd",
+			want:      testHash64,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := extractChecksum(tt.body, tt.assetName)
-			if got != tt.want {
-				t.Errorf("extractChecksum() = %q, want %q", got, tt.want)
-			}
+			testutil.AssertEqual(t, got, tt.want)
 		})
 	}
 }
 
 func TestExtractBaseSemver(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		version string
 		want    string
@@ -225,15 +235,14 @@ func TestExtractBaseSemver(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.version, func(t *testing.T) {
-			got := extractBaseSemver(tt.version)
-			if got != tt.want {
-				t.Errorf("extractBaseSemver(%q) = %q, want %q", tt.version, got, tt.want)
-			}
+			t.Parallel()
+			testutil.AssertEqual(t, extractBaseSemver(tt.version), tt.want)
 		})
 	}
 }
 
 func TestIsDevBuildVersion(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		version string
 		want    bool
@@ -252,59 +261,93 @@ func TestIsDevBuildVersion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.version, func(t *testing.T) {
-			got := isDevBuildVersion(tt.version)
-			if got != tt.want {
-				t.Errorf("isDevBuildVersion(%q) = %v, want %v", tt.version, got, tt.want)
-			}
+			t.Parallel()
+			testutil.AssertEqual(t, isDevBuildVersion(tt.version), tt.want)
+		})
+	}
+}
+
+func TestNormalizePrereleaseIdentifiers(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		prerelease string
+		want       string
+	}{
+		{"simple rc with number", "rc10", "rc.10"},
+		{"simple beta with number", "beta2", "beta.2"},
+		{"alpha with number", "alpha1", "alpha.1"},
+		{"multi-part rc10.1 normalizes to rc.10.1", "rc10.1", "rc.10.1"},
+		{"mixed identifiers alpha10.beta2", "alpha10.beta2", "alpha.10.beta.2"},
+		{"alphanumeric suffix rc10a stays unchanged", "rc10a", "rc10a"},
+		{"leading zeros rc01 stays unchanged", "rc01", "rc01"},
+		{"leading zeros beta007 stays unchanged", "beta007", "beta007"},
+		{"pure numeric stays unchanged", "1", "1"},
+		{"pure numeric multi stays unchanged", "1.2.3", "1.2.3"},
+		{"already dotted rc.10 stays unchanged", "rc.10", "rc.10"},
+		{"no number suffix stays unchanged", "alpha", "alpha"},
+		{"empty string", "", ""},
+		{"complex mixed", "pre10.rc2.beta05", "pre.10.rc.2.beta05"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := normalizePrereleaseIdentifiers(tt.prerelease)
+			testutil.AssertEqual(t, got, tt.want)
 		})
 	}
 }
 
 func TestIsNewer(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
+		name   string
 		v1, v2 string
 		want   bool
 	}{
-		{"1.0.0", "0.9.0", true},
-		{"1.1.0", "1.0.0", true},
-		{"1.0.1", "1.0.0", true},
-		{"2.0.0", "1.9.9", true},
-		{"1.0.0", "1.0.0", false},
-		{"0.9.0", "1.0.0", false},
-		{"v1.0.0", "v0.9.0", true},
-		{"0.4.2", "88be010", false},
-		{"0.4.2", "dev", false},
-		{"badversion", "0.4.0", false},
-		{"0.4.0", "0.4.0-5-gabcdef", false},
-		{"0.5.0", "0.4.0-5-gabcdef", true},
-		{"0.4.1", "0.4.0-5-gabcdef", true},
-		{"0.3.0", "0.4.0-5-gabcdef", false},
-		{"0.5.0", "0.4.0-rc1", true},
-		{"0.4.0", "0.4.0-rc1", true},  // release > prerelease of same version
-		{"0.4.0-rc1", "0.4.0", false}, // prerelease is not newer than release
-		{"0.4.0-rc2", "0.4.0-rc1", true},    // rc2 > rc1
-		{"0.4.0-rc10", "0.4.0-rc2", true},   // numeric comparison: 10 > 2
-		{"0.4.0-rc2", "0.4.0-rc10", false},  // numeric comparison: 2 < 10
-		{"0.4.0-beta10", "0.4.0-beta2", true}, // beta10 > beta2
-		{"0.4.0-rc1", "0.4.0-beta1", true},  // rc > beta lexicographically
-		{"0.4.0-alpha1", "0.4.0-beta1", false}, // alpha < beta
-		{"0.4.0-rc.2", "0.4.0-rc.1", true},    // dotted prerelease
-		{"0.4.0-1", "0.4.0-rc1", false},       // numeric segment < non-numeric (semver rule)
-		{"0.4.0-rc1", "0.4.0-1", true},        // non-numeric > numeric
-		{"0.4.0-beta1", "0.3.9", true},        // prerelease of higher base > lower release
+		{"major version bump", "1.0.0", "0.9.0", true},
+		{"minor version bump", "1.1.0", "1.0.0", true},
+		{"patch version bump", "1.0.1", "1.0.0", true},
+		{"major boundary crossing", "2.0.0", "1.9.9", true},
+		{"same version not newer", "1.0.0", "1.0.0", false},
+		{"older version not newer", "0.9.0", "1.0.0", false},
+		{"v prefix handled", "v1.0.0", "v0.9.0", true},
+		{"release vs non-semver hash", "0.4.2", "88be010", false},
+		{"release vs dev string", "0.4.2", "dev", false},
+		{"bad version not newer", "badversion", "0.4.0", false},
+		{"same base as dev build not newer", "0.4.0", "0.4.0-5-gabcdef", false},
+		{"higher minor than dev build", "0.5.0", "0.4.0-5-gabcdef", true},
+		{"higher patch than dev build", "0.4.1", "0.4.0-5-gabcdef", true},
+		{"lower version than dev build", "0.3.0", "0.4.0-5-gabcdef", false},
+		{"higher minor than prerelease", "0.5.0", "0.4.0-rc1", true},
+		{"release newer than its prerelease", "0.4.0", "0.4.0-rc1", true},
+		{"prerelease not newer than release", "0.4.0-rc1", "0.4.0", false},
+		{"rc2 newer than rc1", "0.4.0-rc2", "0.4.0-rc1", true},
+		// Non-dotted prerelease identifiers are normalized for numeric comparison
+		// (e.g., "rc10" -> "rc.10") so rc10 > rc2 as expected.
+		{"non-dotted prerelease comparison rc10 vs rc2", "0.4.0-rc10", "0.4.0-rc2", true},
+		{"non-dotted prerelease comparison rc2 vs rc10", "0.4.0-rc2", "0.4.0-rc10", false},
+		{"non-dotted prerelease beta10 vs beta2", "0.4.0-beta10", "0.4.0-beta2", true},
+		{"rc newer than beta lexicographically", "0.4.0-rc1", "0.4.0-beta1", true},
+		{"alpha older than beta", "0.4.0-alpha1", "0.4.0-beta1", false},
+		{"dotted prerelease numeric comparison rc.10 vs rc.2", "0.4.0-rc.10", "0.4.0-rc.2", true},
+		{"dotted prerelease comparison", "0.4.0-rc.2", "0.4.0-rc.1", true},
+		{"numeric segment less than non-numeric", "0.4.0-1", "0.4.0-rc1", false},
+		{"non-numeric greater than numeric", "0.4.0-rc1", "0.4.0-1", true},
+		{"prerelease of higher base beats lower release", "0.4.0-beta1", "0.3.9", true},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.v1+"_vs_"+tt.v2, func(t *testing.T) {
-			got := isNewer(tt.v1, tt.v2)
-			if got != tt.want {
-				t.Errorf("isNewer(%q, %q) = %v, want %v", tt.v1, tt.v2, got, tt.want)
-			}
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testutil.AssertEqual(t, isNewer(tt.v1, tt.v2), tt.want)
 		})
 	}
 }
 
 func TestFindAssets(t *testing.T) {
+	t.Parallel()
 	assets := []Asset{
 		{Name: "msgvault_linux_amd64.tar.gz", Size: 1000, BrowserDownloadURL: "https://example.com/linux_amd64"},
 		{Name: "msgvault_darwin_arm64.tar.gz", Size: 2000, BrowserDownloadURL: "https://example.com/darwin_arm64"},
@@ -335,15 +378,16 @@ func TestFindAssets(t *testing.T) {
 			wantChecksumsURL: "https://example.com/checksums",
 		},
 		{
-			name:         "asset not found",
-			assetName:    "msgvault_freebsd_amd64.tar.gz",
-			wantAssetNil: true,
+			name:             "asset not found",
+			assetName:        "msgvault_freebsd_amd64.tar.gz",
+			wantAssetNil:     true,
 			wantChecksumsURL: "https://example.com/checksums",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			asset, checksums := findAssets(assets, tt.assetName)
 
 			if tt.wantAssetNil {
@@ -354,25 +398,20 @@ func TestFindAssets(t *testing.T) {
 				if asset == nil {
 					t.Fatal("expected asset to be non-nil")
 				}
-				if asset.BrowserDownloadURL != tt.wantAssetURL {
-					t.Errorf("asset URL = %q, want %q", asset.BrowserDownloadURL, tt.wantAssetURL)
-				}
-				if asset.Size != tt.wantAssetSize {
-					t.Errorf("asset size = %d, want %d", asset.Size, tt.wantAssetSize)
-				}
+				testutil.AssertEqual(t, asset.BrowserDownloadURL, tt.wantAssetURL)
+				testutil.AssertEqual(t, asset.Size, tt.wantAssetSize)
 			}
 
 			if checksums == nil {
 				t.Fatal("expected checksums to be non-nil")
 			}
-			if checksums.BrowserDownloadURL != tt.wantChecksumsURL {
-				t.Errorf("checksums URL = %q, want %q", checksums.BrowserDownloadURL, tt.wantChecksumsURL)
-			}
+			testutil.AssertEqual(t, checksums.BrowserDownloadURL, tt.wantChecksumsURL)
 		})
 	}
 }
 
 func TestFormatSize(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		bytes int64
 		want  string
@@ -386,10 +425,485 @@ func TestFormatSize(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
-			got := FormatSize(tt.bytes)
-			if got != tt.want {
-				t.Errorf("FormatSize(%d) = %q, want %q", tt.bytes, got, tt.want)
+			t.Parallel()
+			testutil.AssertEqual(t, FormatSize(tt.bytes), tt.want)
+		})
+	}
+}
+
+func TestCheckCache(t *testing.T) {
+	tests := []struct {
+		name           string
+		currentVersion string
+		cleanVersion   string
+		isDevBuild     bool
+		cachedVersion  string
+		cacheAge       time.Duration
+		wantInfo       bool // whether UpdateInfo is returned
+		wantDone       bool // whether cache result should be used
+		wantIsDevBuild bool
+	}{
+		{
+			name:           "valid cache no update available",
+			currentVersion: "v1.0.0",
+			cleanVersion:   "1.0.0",
+			isDevBuild:     false,
+			cachedVersion:  "v1.0.0",
+			cacheAge:       30 * time.Minute,
+			wantInfo:       false,
+			wantDone:       true,
+		},
+		{
+			name:           "valid cache update available triggers fresh fetch",
+			currentVersion: "v1.0.0",
+			cleanVersion:   "1.0.0",
+			isDevBuild:     false,
+			cachedVersion:  "v1.1.0",
+			cacheAge:       30 * time.Minute,
+			wantInfo:       false,
+			wantDone:       false, // Need fresh data for download info
+		},
+		{
+			name:           "dev build always returns update info",
+			currentVersion: "0.16.1-2-g75d300a",
+			cleanVersion:   "0.16.1-2-g75d300a",
+			isDevBuild:     true,
+			cachedVersion:  "v1.0.0",
+			cacheAge:       5 * time.Minute,
+			wantInfo:       true,
+			wantDone:       true,
+			wantIsDevBuild: true,
+		},
+		{
+			name:           "expired cache for release build",
+			currentVersion: "v1.0.0",
+			cleanVersion:   "1.0.0",
+			isDevBuild:     false,
+			cachedVersion:  "v1.0.0",
+			cacheAge:       2 * time.Hour, // > 1 hour cache duration
+			wantInfo:       false,
+			wantDone:       false,
+		},
+		{
+			name:           "expired cache for dev build",
+			currentVersion: "0.16.1-2-g75d300a",
+			cleanVersion:   "0.16.1-2-g75d300a",
+			isDevBuild:     true,
+			cachedVersion:  "v1.0.0",
+			cacheAge:       20 * time.Minute, // > 15 minute dev cache duration
+			wantInfo:       false,
+			wantDone:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			t.Setenv("MSGVAULT_HOME", tmpDir)
+
+			// Write cache file with specified age
+			cached := cachedCheck{
+				CheckedAt: time.Now().Add(-tt.cacheAge),
+				Version:   tt.cachedVersion,
+			}
+			data, err := json.Marshal(cached)
+			if err != nil {
+				t.Fatalf("failed to marshal cache: %v", err)
+			}
+			cachePath := filepath.Join(tmpDir, cacheFileName)
+			if err := os.WriteFile(cachePath, data, 0600); err != nil {
+				t.Fatalf("failed to write cache: %v", err)
+			}
+
+			info, done := checkCache(tt.currentVersion, tt.cleanVersion, tt.isDevBuild)
+
+			testutil.AssertEqual(t, done, tt.wantDone)
+			if tt.wantInfo {
+				if info == nil {
+					t.Fatal("expected UpdateInfo to be non-nil")
+				}
+				testutil.AssertEqual(t, info.IsDevBuild, tt.wantIsDevBuild)
+				testutil.AssertEqual(t, info.CurrentVersion, tt.currentVersion)
+				testutil.AssertEqual(t, info.LatestVersion, tt.cachedVersion)
+			} else {
+				if info != nil {
+					t.Errorf("expected UpdateInfo to be nil, got %+v", info)
+				}
 			}
 		})
 	}
+}
+
+func TestCheckCacheNoFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("MSGVAULT_HOME", tmpDir)
+
+	// No cache file exists
+	info, done := checkCache("v1.0.0", "1.0.0", false)
+
+	testutil.AssertEqual(t, done, false)
+	if info != nil {
+		t.Errorf("expected UpdateInfo to be nil, got %+v", info)
+	}
+}
+
+// TestSaveCacheFilePermissions verifies that the update check cache file is
+// saved with restrictive permissions (0600) to protect user data.
+func TestSaveCacheFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file permissions not enforced on Windows")
+	}
+
+	// Use a temp directory as MSGVAULT_HOME to avoid touching real user data
+	tmpDir := t.TempDir()
+	t.Setenv("MSGVAULT_HOME", tmpDir)
+
+	// Call saveCache which writes to getCacheDir()/update_check.json
+	saveCache("1.0.0")
+
+	cachePath := filepath.Join(tmpDir, cacheFileName)
+	info, err := os.Stat(cachePath)
+	if err != nil {
+		t.Fatalf("Stat(%s) error = %v", cachePath, err)
+	}
+
+	// File should have 0600 permissions (owner read/write only)
+	got := info.Mode().Perm()
+	want := os.FileMode(0600)
+	if got != want {
+		t.Errorf("cache file permissions = %04o, want %04o", got, want)
+	}
+}
+
+func TestInstallBinaryTo(t *testing.T) {
+	t.Parallel()
+
+	t.Run("successful installation", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		// Create source binary
+		srcPath := filepath.Join(tmpDir, "new_binary")
+		if err := os.WriteFile(srcPath, []byte("new content"), 0644); err != nil {
+			t.Fatalf("failed to create source: %v", err)
+		}
+
+		// Create existing binary to be replaced
+		dstPath := filepath.Join(tmpDir, "msgvault")
+		if err := os.WriteFile(dstPath, []byte("old content"), 0755); err != nil {
+			t.Fatalf("failed to create existing binary: %v", err)
+		}
+
+		// Install
+		err := installBinaryTo(srcPath, dstPath)
+		if err != nil {
+			t.Fatalf("installBinaryTo failed: %v", err)
+		}
+
+		// Verify new content
+		content, err := os.ReadFile(dstPath)
+		if err != nil {
+			t.Fatalf("failed to read installed binary: %v", err)
+		}
+		testutil.AssertEqual(t, string(content), "new content")
+
+		// Verify backup was cleaned up
+		backupPath := dstPath + ".old"
+		testutil.MustNotExist(t, backupPath)
+
+		// Verify permissions (Windows does not support Unix permissions)
+		if runtime.GOOS != "windows" {
+			info, err := os.Stat(dstPath)
+			if err != nil {
+				t.Fatalf("Stat failed: %v", err)
+			}
+			if info.Mode().Perm() != 0755 {
+				t.Errorf("permissions = %04o, want 0755", info.Mode().Perm())
+			}
+		}
+	})
+
+	t.Run("installation to new location without existing binary", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		// Create source binary
+		srcPath := filepath.Join(tmpDir, "new_binary")
+		if err := os.WriteFile(srcPath, []byte("new content"), 0644); err != nil {
+			t.Fatalf("failed to create source: %v", err)
+		}
+
+		// No existing binary at destination
+		dstPath := filepath.Join(tmpDir, "msgvault")
+
+		// Install
+		err := installBinaryTo(srcPath, dstPath)
+		if err != nil {
+			t.Fatalf("installBinaryTo failed: %v", err)
+		}
+
+		// Verify new content
+		content, err := os.ReadFile(dstPath)
+		if err != nil {
+			t.Fatalf("failed to read installed binary: %v", err)
+		}
+		testutil.AssertEqual(t, string(content), "new content")
+	})
+
+	t.Run("backup restored on copy failure", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("POSIX file permissions not enforced on Windows")
+		}
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		// Create source binary but make it unreadable to cause copy to fail
+		// after the backup rename succeeds
+		srcPath := filepath.Join(tmpDir, "new_binary")
+		if err := os.WriteFile(srcPath, []byte("new content"), 0000); err != nil {
+			t.Fatalf("failed to create source: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = os.Chmod(srcPath, 0644) // Restore for cleanup
+		})
+
+		// Create existing binary
+		dstPath := filepath.Join(tmpDir, "msgvault")
+		if err := os.WriteFile(dstPath, []byte("old content"), 0755); err != nil {
+			t.Fatalf("failed to create existing binary: %v", err)
+		}
+
+		// Attempt install - should fail during copy (not rename)
+		err := installBinaryTo(srcPath, dstPath)
+		if err == nil {
+			t.Fatal("expected installBinaryTo to fail with unreadable source")
+		}
+
+		// Verify original was restored from backup
+		content, err := os.ReadFile(dstPath)
+		if err != nil {
+			t.Fatalf("failed to read restored binary: %v", err)
+		}
+		testutil.AssertEqual(t, string(content), "old content")
+	})
+
+	t.Run("stale backup removed before install", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		// Create source binary
+		srcPath := filepath.Join(tmpDir, "new_binary")
+		if err := os.WriteFile(srcPath, []byte("new content"), 0644); err != nil {
+			t.Fatalf("failed to create source: %v", err)
+		}
+
+		// Create existing binary
+		dstPath := filepath.Join(tmpDir, "msgvault")
+		if err := os.WriteFile(dstPath, []byte("current content"), 0755); err != nil {
+			t.Fatalf("failed to create existing binary: %v", err)
+		}
+
+		// Create stale backup from previous update
+		backupPath := dstPath + ".old"
+		if err := os.WriteFile(backupPath, []byte("stale backup"), 0755); err != nil {
+			t.Fatalf("failed to create stale backup: %v", err)
+		}
+
+		// Install
+		err := installBinaryTo(srcPath, dstPath)
+		if err != nil {
+			t.Fatalf("installBinaryTo failed: %v", err)
+		}
+
+		// Verify stale backup is gone
+		testutil.MustNotExist(t, backupPath)
+
+		// Verify new content installed
+		content, err := os.ReadFile(dstPath)
+		if err != nil {
+			t.Fatalf("failed to read installed binary: %v", err)
+		}
+		testutil.AssertEqual(t, string(content), "new content")
+	})
+}
+
+func TestInstallFromArchiveTo(t *testing.T) {
+	t.Parallel()
+
+	binaryName := "msgvault"
+	if runtime.GOOS == "windows" {
+		binaryName = "msgvault.exe"
+	}
+
+	t.Run("zip happy path", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "test.zip")
+		binaryContent := "fake binary zip"
+
+		testutil.CreateZip(t, archivePath, []testutil.ArchiveEntry{
+			{Name: binaryName, Content: binaryContent},
+			{Name: "README.md", Content: "readme"},
+		})
+
+		checksum, err := hashFile(archivePath)
+		if err != nil {
+			t.Fatalf("hashFile: %v", err)
+		}
+
+		dstDir := filepath.Join(tmpDir, "dest")
+		if err := os.MkdirAll(dstDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		dstPath := filepath.Join(dstDir, binaryName)
+
+		if err := installFromArchiveTo(archivePath, checksum, dstPath); err != nil {
+			t.Fatalf("installFromArchiveTo: %v", err)
+		}
+
+		content, err := os.ReadFile(dstPath)
+		if err != nil {
+			t.Fatalf("read installed binary: %v", err)
+		}
+		testutil.AssertEqual(t, string(content), binaryContent)
+	})
+
+	t.Run("tar.gz happy path", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "test.tar.gz")
+		binaryContent := "fake binary targz"
+
+		testutil.CreateTarGz(t, archivePath, []testutil.ArchiveEntry{
+			{Name: binaryName, Content: binaryContent},
+		})
+
+		checksum, err := hashFile(archivePath)
+		if err != nil {
+			t.Fatalf("hashFile: %v", err)
+		}
+
+		dstDir := filepath.Join(tmpDir, "dest")
+		if err := os.MkdirAll(dstDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		dstPath := filepath.Join(dstDir, binaryName)
+
+		if err := installFromArchiveTo(archivePath, checksum, dstPath); err != nil {
+			t.Fatalf("installFromArchiveTo: %v", err)
+		}
+
+		content, err := os.ReadFile(dstPath)
+		if err != nil {
+			t.Fatalf("read installed binary: %v", err)
+		}
+		testutil.AssertEqual(t, string(content), binaryContent)
+	})
+
+	t.Run("checksum mismatch", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "test.zip")
+
+		testutil.CreateZip(t, archivePath, []testutil.ArchiveEntry{
+			{Name: binaryName, Content: "content"},
+		})
+
+		wrongChecksum := "0000000000000000000000000000000000000000000000000000000000000000"
+		dstPath := filepath.Join(tmpDir, "dest", binaryName)
+
+		err := installFromArchiveTo(archivePath, wrongChecksum, dstPath)
+		if err == nil {
+			t.Fatal("expected error for checksum mismatch")
+		}
+		if !strings.Contains(err.Error(), "checksum mismatch") {
+			t.Errorf("error should contain 'checksum mismatch', got: %v", err)
+		}
+	})
+
+	t.Run("empty checksum", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "test.zip")
+
+		testutil.CreateZip(t, archivePath, []testutil.ArchiveEntry{
+			{Name: binaryName, Content: "content"},
+		})
+
+		dstPath := filepath.Join(tmpDir, "dest", binaryName)
+
+		err := installFromArchiveTo(archivePath, "", dstPath)
+		if err == nil {
+			t.Fatal("expected error for empty checksum")
+		}
+	})
+
+	t.Run("missing binary in archive", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "test.zip")
+
+		testutil.CreateZip(t, archivePath, []testutil.ArchiveEntry{
+			{Name: "README.md", Content: "no binary here"},
+		})
+
+		checksum, err := hashFile(archivePath)
+		if err != nil {
+			t.Fatalf("hashFile: %v", err)
+		}
+
+		dstDir := filepath.Join(tmpDir, "dest")
+		if err := os.MkdirAll(dstDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		dstPath := filepath.Join(dstDir, binaryName)
+
+		err = installFromArchiveTo(archivePath, checksum, dstPath)
+		if err == nil {
+			t.Fatal("expected error for missing binary")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("error should contain 'not found', got: %v", err)
+		}
+	})
+
+	t.Run("overwrites existing binary", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "test.zip")
+		newContent := "new binary content"
+
+		testutil.CreateZip(t, archivePath, []testutil.ArchiveEntry{
+			{Name: binaryName, Content: newContent},
+		})
+
+		checksum, err := hashFile(archivePath)
+		if err != nil {
+			t.Fatalf("hashFile: %v", err)
+		}
+
+		dstDir := filepath.Join(tmpDir, "dest")
+		if err := os.MkdirAll(dstDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		dstPath := filepath.Join(dstDir, binaryName)
+
+		// Pre-existing binary
+		if err := os.WriteFile(dstPath, []byte("old content"), 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := installFromArchiveTo(archivePath, checksum, dstPath); err != nil {
+			t.Fatalf("installFromArchiveTo: %v", err)
+		}
+
+		content, err := os.ReadFile(dstPath)
+		if err != nil {
+			t.Fatalf("read installed binary: %v", err)
+		}
+		testutil.AssertEqual(t, string(content), newContent)
+
+		// Verify backup was cleaned up
+		testutil.MustNotExist(t, dstPath+".old")
+	})
 }

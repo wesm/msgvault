@@ -18,6 +18,18 @@ type ExportResultMsg struct {
 	Err    error
 }
 
+// DeletionContext bundles the parameters needed for staging deletions.
+type DeletionContext struct {
+	AggregateSelection map[string]bool
+	MessageSelection   map[int64]bool
+	AggregateViewType  query.ViewType
+	AccountFilter      *int64
+	Accounts           []query.AccountInfo
+	TimeGranularity    query.TimeGranularity
+	Messages           []query.MessageSummary
+	DrillFilter        *query.MessageFilter
+}
+
 // ActionController handles business logic for actions like deletion and export,
 // keeping domain operations out of the TUI Model.
 type ActionController struct {
@@ -50,31 +62,34 @@ func (c *ActionController) SaveManifest(manifest *deletion.Manifest) error {
 }
 
 // StageForDeletion prepares messages for deletion based on selection.
-func (c *ActionController) StageForDeletion(aggregateSelection map[string]bool, messageSelection map[int64]bool, aggregateViewType query.ViewType, accountFilter *int64, accounts []query.AccountInfo, currentViewType query.ViewType, currentFilterKey string, timeGranularity query.TimeGranularity, messages []query.MessageSummary) (*deletion.Manifest, error) {
-	// Collect Gmail IDs to delete
+func (c *ActionController) StageForDeletion(ctx DeletionContext) (*deletion.Manifest, error) {
+	gmailIDs, err := c.resolveGmailIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(gmailIDs) == 0 {
+		return nil, fmt.Errorf("no messages selected")
+	}
+
+	description := c.buildManifestDescription(ctx)
+	manifest := deletion.NewManifest(description, gmailIDs)
+	manifest.CreatedBy = "tui"
+
+	c.applyManifestFilters(manifest, ctx)
+
+	return manifest, nil
+}
+
+// resolveGmailIDs converts selections (aggregate keys and message IDs) into Gmail IDs.
+func (c *ActionController) resolveGmailIDs(dctx DeletionContext) ([]string, error) {
 	gmailIDSet := make(map[string]bool)
 	ctx := context.Background()
 
 	// From selected aggregates - resolve to Gmail IDs via query engine
-	if len(aggregateSelection) > 0 {
-		for key := range aggregateSelection {
-			filter := query.MessageFilter{
-				SourceID: accountFilter,
-			}
-
-			switch aggregateViewType {
-			case query.ViewSenders:
-				filter.Sender = key
-			case query.ViewRecipients:
-				filter.Recipient = key
-			case query.ViewDomains:
-				filter.Domain = key
-			case query.ViewLabels:
-				filter.Label = key
-			case query.ViewTime:
-				filter.TimePeriod = key
-				filter.TimeGranularity = timeGranularity
-			}
+	if len(dctx.AggregateSelection) > 0 {
+		for key := range dctx.AggregateSelection {
+			filter := c.buildFilterForAggregate(key, dctx)
 
 			ids, err := c.queries.GetGmailIDsByFilter(ctx, filter)
 			if err != nil {
@@ -87,9 +102,9 @@ func (c *ActionController) StageForDeletion(aggregateSelection map[string]bool, 
 	}
 
 	// From selected message IDs
-	if len(messageSelection) > 0 {
-		for _, msg := range messages {
-			if messageSelection[msg.ID] {
+	if len(dctx.MessageSelection) > 0 {
+		for _, msg := range dctx.Messages {
+			if dctx.MessageSelection[msg.ID] {
 				gmailIDSet[msg.SourceMessageID] = true
 			}
 		}
@@ -99,23 +114,49 @@ func (c *ActionController) StageForDeletion(aggregateSelection map[string]bool, 
 	for id := range gmailIDSet {
 		gmailIDs = append(gmailIDs, id)
 	}
+	return gmailIDs, nil
+}
 
-	if len(gmailIDs) == 0 {
-		return nil, fmt.Errorf("no messages selected")
+// buildFilterForAggregate constructs a MessageFilter for a single aggregate key.
+func (c *ActionController) buildFilterForAggregate(key string, dctx DeletionContext) query.MessageFilter {
+	// Start with drill-down filter as base (preserves parent context)
+	// Use Clone() to deep-copy the filter, preventing shared map mutation.
+	var filter query.MessageFilter
+	if dctx.DrillFilter != nil {
+		filter = dctx.DrillFilter.Clone()
+	}
+	if dctx.AccountFilter != nil {
+		filter.SourceID = dctx.AccountFilter
 	}
 
-	// Build description
+	switch dctx.AggregateViewType {
+	case query.ViewSenders:
+		filter.Sender = key
+	case query.ViewRecipients:
+		filter.Recipient = key
+	case query.ViewDomains:
+		filter.Domain = key
+	case query.ViewLabels:
+		filter.Label = key
+	case query.ViewTime:
+		filter.TimeRange.Period = key
+		filter.TimeRange.Granularity = dctx.TimeGranularity
+	}
+	return filter
+}
+
+// buildManifestDescription generates a human-readable description for the manifest.
+func (c *ActionController) buildManifestDescription(ctx DeletionContext) string {
 	var description string
-	if len(aggregateSelection) == 1 {
-		for key := range aggregateSelection {
-			description = fmt.Sprintf("%s-%s", aggregateViewType.String(), key)
+	if len(ctx.AggregateSelection) == 1 {
+		for key := range ctx.AggregateSelection {
+			description = fmt.Sprintf("%s-%s", ctx.AggregateViewType.String(), key)
 			break
 		}
-	} else if len(aggregateSelection) > 1 {
-		description = fmt.Sprintf("%s-multiple(%d)", aggregateViewType.String(), len(aggregateSelection))
-	} else if len(messageSelection) > 0 {
-		// Just a generic description for message list selection
-		description = fmt.Sprintf("messages-multiple(%d)", len(messageSelection))
+	} else if len(ctx.AggregateSelection) > 1 {
+		description = fmt.Sprintf("%s-multiple(%d)", ctx.AggregateViewType.String(), len(ctx.AggregateSelection))
+	} else if len(ctx.MessageSelection) > 0 {
+		description = fmt.Sprintf("messages-multiple(%d)", len(ctx.MessageSelection))
 	} else {
 		description = "selection"
 	}
@@ -123,42 +164,41 @@ func (c *ActionController) StageForDeletion(aggregateSelection map[string]bool, 
 	if len(description) > 30 {
 		description = description[:30]
 	}
+	return description
+}
 
-	manifest := deletion.NewManifest(description, gmailIDs)
-	manifest.CreatedBy = "tui"
-
-	// Set filters
-	if accountFilter != nil {
-		for _, acc := range accounts {
-			if acc.ID == *accountFilter {
-				manifest.Filters.Account = acc.Identifier
+// applyManifestFilters populates the manifest's filter metadata from the context.
+func (c *ActionController) applyManifestFilters(m *deletion.Manifest, ctx DeletionContext) {
+	// Set account filter
+	if ctx.AccountFilter != nil {
+		for _, acc := range ctx.Accounts {
+			if acc.ID == *ctx.AccountFilter {
+				m.Filters.Account = acc.Identifier
 				break
 			}
 		}
-	} else if len(accounts) == 1 {
-		manifest.Filters.Account = accounts[0].Identifier
+	} else if len(ctx.Accounts) == 1 {
+		m.Filters.Account = ctx.Accounts[0].Identifier
 	}
 
 	// Set context filters from all selected aggregates
-	if len(aggregateSelection) > 0 {
-		keys := make([]string, 0, len(aggregateSelection))
-		for key := range aggregateSelection {
+	if len(ctx.AggregateSelection) > 0 {
+		keys := make([]string, 0, len(ctx.AggregateSelection))
+		for key := range ctx.AggregateSelection {
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
-		switch aggregateViewType {
+		switch ctx.AggregateViewType {
 		case query.ViewSenders:
-			manifest.Filters.Senders = keys
+			m.Filters.Senders = keys
 		case query.ViewRecipients:
-			manifest.Filters.Recipients = keys
+			m.Filters.Recipients = keys
 		case query.ViewDomains:
-			manifest.Filters.SenderDomains = keys
+			m.Filters.SenderDomains = keys
 		case query.ViewLabels:
-			manifest.Filters.Labels = keys
+			m.Filters.Labels = keys
 		}
 	}
-
-	return manifest, nil
 }
 
 // ExportAttachments performs the export logic.
@@ -190,7 +230,14 @@ func (c *ActionController) ExportAttachments(detail *query.MessageDetail, select
 	zipFilename := fmt.Sprintf("%s_%d.zip", subject, detail.ID)
 
 	return func() tea.Msg {
-		result := export.Attachments(zipFilename, attachmentsDir, selectedAttachments)
-		return ExportResultMsg{Result: result.Result, Err: result.Err}
+		stats := export.Attachments(zipFilename, attachmentsDir, selectedAttachments)
+		msg := ExportResultMsg{Result: export.FormatExportResult(stats)}
+		// Only set Err for true failures: write errors or zero exported files.
+		// Partial success (some files exported, some errors) should show the
+		// detailed Result which includes both the success info and error list.
+		if stats.WriteError || stats.Count == 0 {
+			msg.Err = fmt.Errorf("export failed")
+		}
+		return msg
 	}
 }

@@ -42,49 +42,20 @@ func (s *Store) MessageExistsBatch(sourceID int64, sourceMessageIDs []string) (m
 	}
 
 	result := make(map[string]int64)
-
-	// SQLite has a limit on the number of parameters, so we chunk
-	const chunkSize = 500
-	for i := 0; i < len(sourceMessageIDs); i += chunkSize {
-		end := i + chunkSize
-		if end > len(sourceMessageIDs) {
-			end = len(sourceMessageIDs)
-		}
-		chunk := sourceMessageIDs[i:end]
-
-		placeholders := make([]string, len(chunk))
-		args := make([]interface{}, len(chunk)+1)
-		args[0] = sourceID
-		for j, id := range chunk {
-			placeholders[j] = "?"
-			args[j+1] = id
-		}
-
-		query := fmt.Sprintf(`
-			SELECT source_message_id, id FROM messages
-			WHERE source_id = ? AND source_message_id IN (%s)
-		`, strings.Join(placeholders, ","))
-
-		rows, err := s.db.Query(query, args...)
-		if err != nil {
-			return nil, err
-		}
-
-		for rows.Next() {
-			var sourceID string
+	err := queryInChunks(s.db, sourceMessageIDs, []interface{}{sourceID},
+		`SELECT source_message_id, id FROM messages WHERE source_id = ? AND source_message_id IN (%s)`,
+		func(rows *sql.Rows) error {
+			var srcID string
 			var id int64
-			if err := rows.Scan(&sourceID, &id); err != nil {
-				rows.Close()
-				return nil, err
+			if err := rows.Scan(&srcID, &id); err != nil {
+				return err
 			}
-			result[sourceID] = id
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
+			result[srcID] = id
+			return nil
+		})
+	if err != nil {
+		return nil, err
 	}
-
 	return result, nil
 }
 
@@ -290,72 +261,53 @@ func (s *Store) EnsureParticipantsBatch(addresses []mime.Address) (map[string]in
 		return result, nil
 	}
 
-	// Query in chunks
-	const chunkSize = 500
-	for i := 0; i < len(emails); i += chunkSize {
-		end := i + chunkSize
-		if end > len(emails) {
-			end = len(emails)
-		}
-		chunk := emails[i:end]
-
-		placeholders := make([]string, len(chunk))
-		args := make([]interface{}, len(chunk))
-		for j, email := range chunk {
-			placeholders[j] = "?"
-			args[j] = email
-		}
-
-		query := fmt.Sprintf(`
-			SELECT email_address, id FROM participants WHERE email_address IN (%s)
-		`, strings.Join(placeholders, ","))
-
-		rows, err := s.db.Query(query, args...)
-		if err != nil {
-			return nil, err
-		}
-
-		for rows.Next() {
+	err := queryInChunks(s.db, emails, nil,
+		`SELECT email_address, id FROM participants WHERE email_address IN (%s)`,
+		func(rows *sql.Rows) error {
 			var email string
 			var id int64
 			if err := rows.Scan(&email, &id); err != nil {
-				rows.Close()
-				return nil, err
+				return err
 			}
 			result[email] = id
-		}
-		rows.Close()
+			return nil
+		})
+	if err != nil {
+		return nil, err
 	}
-
 	return result, nil
 }
 
-// ReplaceMessageRecipients replaces all recipients for a message.
+// ReplaceMessageRecipients replaces all recipients for a message atomically.
 func (s *Store) ReplaceMessageRecipients(messageID int64, recipientType string, participantIDs []int64, displayNames []string) error {
-	// Delete existing
-	_, err := s.db.Exec(`
-		DELETE FROM message_recipients WHERE message_id = ? AND recipient_type = ?
-	`, messageID, recipientType)
-	if err != nil {
-		return err
-	}
-
-	// Insert new
-	for i, pid := range participantIDs {
-		displayName := ""
-		if i < len(displayNames) {
-			displayName = displayNames[i]
-		}
-		_, err := s.db.Exec(`
-			INSERT INTO message_recipients (message_id, participant_id, recipient_type, display_name)
-			VALUES (?, ?, ?, ?)
-		`, messageID, pid, recipientType, displayName)
+	return s.withTx(func(tx *sql.Tx) error {
+		_, err := tx.Exec(`
+			DELETE FROM message_recipients WHERE message_id = ? AND recipient_type = ?
+		`, messageID, recipientType)
 		if err != nil {
 			return err
 		}
-	}
 
-	return nil
+		if len(participantIDs) == 0 {
+			return nil
+		}
+
+		return insertInChunks(tx, len(participantIDs), 4,
+			"INSERT INTO message_recipients (message_id, participant_id, recipient_type, display_name) VALUES ",
+			func(start, end int) ([]string, []interface{}) {
+				values := make([]string, end-start)
+				args := make([]interface{}, 0, (end-start)*4)
+				for i := start; i < end; i++ {
+					values[i-start] = "(?, ?, ?, ?)"
+					displayName := ""
+					if i < len(displayNames) {
+						displayName = displayNames[i]
+					}
+					args = append(args, messageID, participantIDs[i], recipientType, displayName)
+				}
+				return values, args
+			})
+	})
 }
 
 // Label represents a Gmail label.
@@ -394,21 +346,27 @@ func (s *Store) EnsureLabel(sourceID int64, sourceLabelID, name, labelType strin
 	return result.LastInsertId()
 }
 
+// LabelInfo holds the name and type for a label to be ensured.
+type LabelInfo struct {
+	Name string
+	Type string // "system" or "user"
+}
+
+// IsSystemLabel returns true if the given Gmail label ID represents a system label.
+func IsSystemLabel(sourceLabelID string) bool {
+	switch sourceLabelID {
+	case "INBOX", "SENT", "TRASH", "SPAM", "DRAFT", "UNREAD", "STARRED", "IMPORTANT":
+		return true
+	}
+	return strings.HasPrefix(sourceLabelID, "CATEGORY_")
+}
+
 // EnsureLabelsBatch ensures all labels exist and returns a map of source_label_id -> internal ID.
-func (s *Store) EnsureLabelsBatch(sourceID int64, labels map[string]string) (map[string]int64, error) {
+func (s *Store) EnsureLabelsBatch(sourceID int64, labels map[string]LabelInfo) (map[string]int64, error) {
 	result := make(map[string]int64)
 
-	for sourceLabelID, name := range labels {
-		labelType := "user"
-		if strings.HasPrefix(sourceLabelID, "CATEGORY_") ||
-			sourceLabelID == "INBOX" || sourceLabelID == "SENT" ||
-			sourceLabelID == "TRASH" || sourceLabelID == "SPAM" ||
-			sourceLabelID == "DRAFT" || sourceLabelID == "UNREAD" ||
-			sourceLabelID == "STARRED" || sourceLabelID == "IMPORTANT" {
-			labelType = "system"
-		}
-
-		id, err := s.EnsureLabel(sourceID, sourceLabelID, name, labelType)
+	for sourceLabelID, info := range labels {
+		id, err := s.EnsureLabel(sourceID, sourceLabelID, info.Name, info.Type)
 		if err != nil {
 			return nil, err
 		}
@@ -418,27 +376,32 @@ func (s *Store) EnsureLabelsBatch(sourceID int64, labels map[string]string) (map
 	return result, nil
 }
 
-// ReplaceMessageLabels replaces all labels for a message.
+// ReplaceMessageLabels replaces all labels for a message atomically.
 func (s *Store) ReplaceMessageLabels(messageID int64, labelIDs []int64) error {
-	// Delete existing
-	_, err := s.db.Exec(`
-		DELETE FROM message_labels WHERE message_id = ?
-	`, messageID)
-	if err != nil {
-		return err
-	}
-
-	// Insert new
-	for _, lid := range labelIDs {
-		_, err := s.db.Exec(`
-			INSERT INTO message_labels (message_id, label_id) VALUES (?, ?)
-		`, messageID, lid)
+	return s.withTx(func(tx *sql.Tx) error {
+		_, err := tx.Exec(`
+			DELETE FROM message_labels WHERE message_id = ?
+		`, messageID)
 		if err != nil {
 			return err
 		}
-	}
 
-	return nil
+		if len(labelIDs) == 0 {
+			return nil
+		}
+
+		return insertInChunks(tx, len(labelIDs), 2,
+			"INSERT INTO message_labels (message_id, label_id) VALUES ",
+			func(start, end int) ([]string, []interface{}) {
+				values := make([]string, end-start)
+				args := make([]interface{}, 0, (end-start)*2)
+				for i := start; i < end; i++ {
+					values[i-start] = "(?, ?)"
+					args = append(args, messageID, labelIDs[i])
+				}
+				return values, args
+			})
+	})
 }
 
 // MarkMessageDeleted marks a message as deleted from the source.

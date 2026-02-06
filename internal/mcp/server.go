@@ -9,6 +9,43 @@ import (
 	"github.com/wesm/msgvault/internal/query"
 )
 
+// Tool name constants.
+const (
+	ToolSearchMessages   = "search_messages"
+	ToolGetMessage       = "get_message"
+	ToolGetAttachment    = "get_attachment"
+	ToolExportAttachment = "export_attachment"
+	ToolListMessages     = "list_messages"
+	ToolGetStats         = "get_stats"
+	ToolAggregate        = "aggregate"
+)
+
+// Common argument helpers for recurring tool option definitions.
+
+func withLimit(defaultDesc string) mcp.ToolOption {
+	return mcp.WithNumber("limit",
+		mcp.Description("Maximum results to return (default "+defaultDesc+")"),
+	)
+}
+
+func withOffset() mcp.ToolOption {
+	return mcp.WithNumber("offset",
+		mcp.Description("Number of results to skip for pagination (default 0)"),
+	)
+}
+
+func withAfter() mcp.ToolOption {
+	return mcp.WithString("after",
+		mcp.Description("Only messages after this date (YYYY-MM-DD)"),
+	)
+}
+
+func withBefore() mcp.ToolOption {
+	return mcp.WithString("before",
+		mcp.Description("Only messages before this date (YYYY-MM-DD)"),
+	)
+}
+
 // Serve creates an MCP server with email archive tools and serves over stdio.
 // It blocks until stdin is closed or the context is cancelled.
 func Serve(ctx context.Context, engine query.Engine, attachmentsDir string) error {
@@ -23,6 +60,7 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir string) erro
 	s.AddTool(searchMessagesTool(), h.searchMessages)
 	s.AddTool(getMessageTool(), h.getMessage)
 	s.AddTool(getAttachmentTool(), h.getAttachment)
+	s.AddTool(exportAttachmentTool(), h.exportAttachment)
 	s.AddTool(listMessagesTool(), h.listMessages)
 	s.AddTool(getStatsTool(), h.getStats)
 	s.AddTool(aggregateTool(), h.aggregate)
@@ -32,24 +70,20 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir string) erro
 }
 
 func searchMessagesTool() mcp.Tool {
-	return mcp.NewTool("search_messages",
+	return mcp.NewTool(ToolSearchMessages,
 		mcp.WithDescription("Search emails using Gmail-like query syntax. Supports from:, to:, subject:, label:, has:attachment, before:, after:, and free text."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("query",
 			mcp.Required(),
 			mcp.Description("Gmail-style search query (e.g. 'from:alice subject:meeting after:2024-01-01')"),
 		),
-		mcp.WithNumber("limit",
-			mcp.Description("Maximum results to return (default 20)"),
-		),
-		mcp.WithNumber("offset",
-			mcp.Description("Number of results to skip for pagination (default 0)"),
-		),
+		withLimit("20"),
+		withOffset(),
 	)
 }
 
 func getMessageTool() mcp.Tool {
-	return mcp.NewTool("get_message",
+	return mcp.NewTool(ToolGetMessage,
 		mcp.WithDescription("Get full message details including body text, recipients, labels, and attachments by message ID."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithNumber("id",
@@ -60,8 +94,8 @@ func getMessageTool() mcp.Tool {
 }
 
 func getAttachmentTool() mcp.Tool {
-	return mcp.NewTool("get_attachment",
-		mcp.WithDescription("Get attachment content by attachment ID. Returns base64-encoded content with metadata. Use get_message first to find attachment IDs."),
+	return mcp.NewTool(ToolGetAttachment,
+		mcp.WithDescription("Get attachment content by attachment ID. Returns metadata as text and the file content as an embedded resource blob. Use get_message first to find attachment IDs."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithNumber("attachment_id",
 			mcp.Required(),
@@ -70,8 +104,21 @@ func getAttachmentTool() mcp.Tool {
 	)
 }
 
+func exportAttachmentTool() mcp.Tool {
+	return mcp.NewTool(ToolExportAttachment,
+		mcp.WithDescription("Save an attachment to the local filesystem. Use this for file types that cannot be displayed inline (e.g. PDFs, documents). Returns the saved file path."),
+		mcp.WithNumber("attachment_id",
+			mcp.Required(),
+			mcp.Description("Attachment ID (from get_message response)"),
+		),
+		mcp.WithString("destination",
+			mcp.Description("Directory to save the file to (default: ~/Downloads)"),
+		),
+	)
+}
+
 func listMessagesTool() mcp.Tool {
-	return mcp.NewTool("list_messages",
+	return mcp.NewTool(ToolListMessages,
 		mcp.WithDescription("List messages with optional filters. Returns message summaries sorted by date."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("from",
@@ -83,33 +130,25 @@ func listMessagesTool() mcp.Tool {
 		mcp.WithString("label",
 			mcp.Description("Filter by Gmail label"),
 		),
-		mcp.WithString("after",
-			mcp.Description("Only messages after this date (YYYY-MM-DD)"),
-		),
-		mcp.WithString("before",
-			mcp.Description("Only messages before this date (YYYY-MM-DD)"),
-		),
+		withAfter(),
+		withBefore(),
 		mcp.WithBoolean("has_attachment",
 			mcp.Description("Only messages with attachments"),
 		),
-		mcp.WithNumber("limit",
-			mcp.Description("Maximum results to return (default 20)"),
-		),
-		mcp.WithNumber("offset",
-			mcp.Description("Number of results to skip for pagination (default 0)"),
-		),
+		withLimit("20"),
+		withOffset(),
 	)
 }
 
 func getStatsTool() mcp.Tool {
-	return mcp.NewTool("get_stats",
+	return mcp.NewTool(ToolGetStats,
 		mcp.WithDescription("Get archive overview: total messages, size, attachment count, and accounts."),
 		mcp.WithReadOnlyHintAnnotation(true),
 	)
 }
 
 func aggregateTool() mcp.Tool {
-	return mcp.NewTool("aggregate",
+	return mcp.NewTool(ToolAggregate,
 		mcp.WithDescription("Get grouped statistics (e.g. top senders, domains, labels, or message volume over time)."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("group_by",
@@ -117,14 +156,8 @@ func aggregateTool() mcp.Tool {
 			mcp.Description("Dimension to group by"),
 			mcp.Enum("sender", "recipient", "domain", "label", "time"),
 		),
-		mcp.WithNumber("limit",
-			mcp.Description("Maximum groups to return (default 50)"),
-		),
-		mcp.WithString("after",
-			mcp.Description("Only messages after this date (YYYY-MM-DD)"),
-		),
-		mcp.WithString("before",
-			mcp.Description("Only messages before this date (YYYY-MM-DD)"),
-		),
+		withLimit("50"),
+		withAfter(),
+		withBefore(),
 	)
 }

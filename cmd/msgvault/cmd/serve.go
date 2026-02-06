@@ -63,7 +63,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	// Open database
-	dbPath := cfg.DatabasePath()
+	dbPath := cfg.DatabaseDSN()
 	s, err := store.Open(dbPath)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
@@ -209,7 +209,7 @@ func runScheduledSync(ctx context.Context, email string, s *store.Store, oauthMg
 	// Build cache after sync if there were new messages
 	if summary.MessagesAdded > 0 {
 		logger.Info("building cache after sync", "email", email)
-		result, err := buildCache(cfg.DatabasePath(), cfg.AnalyticsDir(), false)
+		result, err := buildCache(cfg.DatabaseDSN(), cfg.AnalyticsDir(), false)
 		if err != nil {
 			logger.Error("cache build failed", "error", err)
 			// Don't fail the sync for cache build errors

@@ -166,9 +166,11 @@ Sync is **read-only** - no modifications to Gmail.
 
 ## Code Style & Linting
 
-All code must pass formatting and linting checks before commit.
+All code must pass formatting and linting checks before commit. A pre-commit
+hook is available to enforce this automatically:
 
 ```bash
+make setup-hooks               # Enable pre-commit hook (fmt + lint)
 make test                      # Run tests
 make fmt                       # Format code (go fmt)
 make lint                      # Run linter (golangci-lint)

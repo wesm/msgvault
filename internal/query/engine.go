@@ -11,14 +11,8 @@ import (
 // - SQLiteEngine: Direct SQLite queries (flexible, moderate performance)
 // - ParquetEngine: Arrow/Parquet queries (fast aggregates, read-only)
 type Engine interface {
-	// Aggregate queries - return rows grouped by key
-	AggregateBySender(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
-	AggregateBySenderName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
-	AggregateByRecipient(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
-	AggregateByRecipientName(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
-	AggregateByDomain(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
-	AggregateByLabel(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
-	AggregateByTime(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
+	// Aggregate performs grouping based on the provided ViewType (Sender, Domain, etc.)
+	Aggregate(ctx context.Context, groupBy ViewType, opts AggregateOptions) ([]AggregateRow, error)
 
 	// SubAggregate performs aggregation on a filtered subset of messages.
 	// This is used for sub-grouping after drill-down, e.g., drilling into
@@ -46,6 +40,17 @@ type Engine interface {
 	// This is used for pagination UI to show "N of M results".
 	SearchFastCount(ctx context.Context, query *search.Query, filter MessageFilter) (int64, error)
 
+	// SearchFastWithStats performs a fast metadata search and returns paginated
+	// results, total count, and aggregate stats in a single operation. The DuckDB
+	// implementation materializes matching IDs into a temp table with one Parquet
+	// scan, then reuses it for count, pagination, and stats — replacing 3-4
+	// separate scans with one.
+	//
+	// queryStr is the raw search string (needed for stats; search.Query doesn't store it).
+	// statsGroupBy controls which view's key columns are used for stats search filtering.
+	SearchFastWithStats(ctx context.Context, query *search.Query, queryStr string,
+		filter MessageFilter, statsGroupBy ViewType, limit, offset int) (*SearchFastResult, error)
+
 	// GetGmailIDsByFilter returns Gmail message IDs (source_message_id) matching a filter.
 	// This is useful for batch operations like staging messages for deletion.
 	GetGmailIDsByFilter(ctx context.Context, filter MessageFilter) ([]string, error)
@@ -60,6 +65,15 @@ type Engine interface {
 	Close() error
 }
 
+// SearchFastResult holds the combined results of a fast search:
+// paginated messages, total count, and aggregate stats — all from a single
+// materialized scan of the matching message IDs.
+type SearchFastResult struct {
+	Messages   []MessageSummary
+	TotalCount int64
+	Stats      *TotalStats
+}
+
 // TotalStats provides overall database statistics.
 type TotalStats struct {
 	MessageCount    int64
@@ -68,29 +82,4 @@ type TotalStats struct {
 	AttachmentSize  int64
 	LabelCount      int64
 	AccountCount    int64
-}
-
-// AggregateFunc is a helper type for selecting aggregate methods.
-type AggregateFunc func(ctx context.Context, opts AggregateOptions) ([]AggregateRow, error)
-
-// GetAggregateFunc returns the appropriate aggregate function for a view type.
-func (e *SQLiteEngine) GetAggregateFunc(viewType ViewType) AggregateFunc {
-	switch viewType {
-	case ViewSenders:
-		return e.AggregateBySender
-	case ViewSenderNames:
-		return e.AggregateBySenderName
-	case ViewRecipients:
-		return e.AggregateByRecipient
-	case ViewRecipientNames:
-		return e.AggregateByRecipientName
-	case ViewDomains:
-		return e.AggregateByDomain
-	case ViewLabels:
-		return e.AggregateByLabel
-	case ViewTime:
-		return e.AggregateByTime
-	default:
-		return e.AggregateBySender
-	}
 }

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -119,6 +120,9 @@ func (c *Client) request(ctx context.Context, op Operation, method, path string,
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
 		}
+		if bodyBytes != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
@@ -205,6 +209,86 @@ func (e *NotFoundError) Error() string {
 	return fmt.Sprintf("not found: %s", e.Path)
 }
 
+// Gmail API JSON response types (unexported, used only for JSON unmarshaling).
+
+type profileResponse struct {
+	EmailAddress  string `json:"emailAddress"`
+	MessagesTotal int64  `json:"messagesTotal"`
+	ThreadsTotal  int64  `json:"threadsTotal"`
+	HistoryID     string `json:"historyId"`
+}
+
+type gmailLabel struct {
+	ID                    string `json:"id"`
+	Name                  string `json:"name"`
+	Type                  string `json:"type"`
+	MessagesTotal         int64  `json:"messagesTotal"`
+	MessagesUnread        int64  `json:"messagesUnread"`
+	MessageListVisibility string `json:"messageListVisibility"`
+	LabelListVisibility   string `json:"labelListVisibility"`
+}
+
+type listLabelsResponse struct {
+	Labels []gmailLabel `json:"labels"`
+}
+
+type gmailMessageRef struct {
+	ID       string `json:"id"`
+	ThreadID string `json:"threadId"`
+}
+
+type listMessagesResponse struct {
+	Messages           []gmailMessageRef `json:"messages"`
+	NextPageToken      string            `json:"nextPageToken"`
+	ResultSizeEstimate int64             `json:"resultSizeEstimate"`
+}
+
+type rawMessageResponse struct {
+	ID           string   `json:"id"`
+	ThreadID     string   `json:"threadId"`
+	LabelIDs     []string `json:"labelIds"`
+	Snippet      string   `json:"snippet"`
+	HistoryID    string   `json:"historyId"`
+	InternalDate string   `json:"internalDate"`
+	SizeEstimate int64    `json:"sizeEstimate"`
+	Raw          string   `json:"raw"` // base64url encoded (unpadded)
+}
+
+// decodeBase64URL decodes a base64url-encoded string, tolerating optional padding.
+// Gmail typically returns unpadded base64url, but this function handles both cases.
+// If padding is present, it validates that padding is correct (rejects malformed padding).
+func decodeBase64URL(s string) ([]byte, error) {
+	if strings.ContainsRune(s, '=') {
+		// Input has padding - use URLEncoding which validates padding correctness
+		return base64.URLEncoding.DecodeString(s)
+	}
+	// No padding - use RawURLEncoding for unpadded base64url
+	return base64.RawURLEncoding.DecodeString(s)
+}
+
+type historyMessageChange struct {
+	Message gmailMessageRef `json:"message"`
+}
+
+type historyLabelChangeJSON struct {
+	Message  gmailMessageRef `json:"message"`
+	LabelIDs []string        `json:"labelIds"`
+}
+
+type historyEntry struct {
+	ID              string                   `json:"id"`
+	MessagesAdded   []historyMessageChange   `json:"messagesAdded"`
+	MessagesDeleted []historyMessageChange   `json:"messagesDeleted"`
+	LabelsAdded     []historyLabelChangeJSON `json:"labelsAdded"`
+	LabelsRemoved   []historyLabelChangeJSON `json:"labelsRemoved"`
+}
+
+type listHistoryResponse struct {
+	History       []historyEntry `json:"history"`
+	NextPageToken string         `json:"nextPageToken"`
+	HistoryID     string         `json:"historyId"`
+}
+
 // GetProfile returns the authenticated user's profile.
 func (c *Client) GetProfile(ctx context.Context) (*Profile, error) {
 	path := fmt.Sprintf("/users/%s/profile", c.userID)
@@ -213,12 +297,7 @@ func (c *Client) GetProfile(ctx context.Context) (*Profile, error) {
 		return nil, err
 	}
 
-	var resp struct {
-		EmailAddress  string `json:"emailAddress"`
-		MessagesTotal int64  `json:"messagesTotal"`
-		ThreadsTotal  int64  `json:"threadsTotal"`
-		HistoryID     string `json:"historyId"`
-	}
+	var resp profileResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("parse profile: %w", err)
 	}
@@ -241,17 +320,7 @@ func (c *Client) ListLabels(ctx context.Context) ([]*Label, error) {
 		return nil, err
 	}
 
-	var resp struct {
-		Labels []struct {
-			ID                    string `json:"id"`
-			Name                  string `json:"name"`
-			Type                  string `json:"type"`
-			MessagesTotal         int64  `json:"messagesTotal"`
-			MessagesUnread        int64  `json:"messagesUnread"`
-			MessageListVisibility string `json:"messageListVisibility"`
-			LabelListVisibility   string `json:"labelListVisibility"`
-		} `json:"labels"`
-	}
+	var resp listLabelsResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("parse labels: %w", err)
 	}
@@ -288,21 +357,14 @@ func (c *Client) ListMessages(ctx context.Context, query string, pageToken strin
 		return nil, err
 	}
 
-	var resp struct {
-		Messages []struct {
-			ID       string `json:"id"`
-			ThreadID string `json:"threadId"`
-		} `json:"messages"`
-		NextPageToken      string `json:"nextPageToken"`
-		ResultSizeEstimate int64  `json:"resultSizeEstimate"`
-	}
+	var resp listMessagesResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("parse messages: %w", err)
 	}
 
 	messages := make([]MessageID, len(resp.Messages))
 	for i, m := range resp.Messages {
-		messages[i] = MessageID{ID: m.ID, ThreadID: m.ThreadID}
+		messages[i] = MessageID(m)
 	}
 
 	return &MessageListResponse{
@@ -320,22 +382,13 @@ func (c *Client) GetMessageRaw(ctx context.Context, messageID string) (*RawMessa
 		return nil, err
 	}
 
-	var resp struct {
-		ID           string   `json:"id"`
-		ThreadID     string   `json:"threadId"`
-		LabelIDs     []string `json:"labelIds"`
-		Snippet      string   `json:"snippet"`
-		HistoryID    string   `json:"historyId"`
-		InternalDate string   `json:"internalDate"`
-		SizeEstimate int64    `json:"sizeEstimate"`
-		Raw          string   `json:"raw"` // base64url encoded
-	}
+	var resp rawMessageResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("parse message: %w", err)
 	}
 
 	// Decode raw MIME from base64url
-	rawBytes, err := base64.URLEncoding.DecodeString(padBase64(resp.Raw))
+	rawBytes, err := decodeBase64URL(resp.Raw)
 	if err != nil {
 		return nil, fmt.Errorf("decode raw MIME: %w", err)
 	}
@@ -353,17 +406,6 @@ func (c *Client) GetMessageRaw(ctx context.Context, messageID string) (*RawMessa
 		SizeEstimate: resp.SizeEstimate,
 		Raw:          rawBytes,
 	}, nil
-}
-
-// padBase64 adds padding to base64url strings if needed.
-func padBase64(s string) string {
-	switch len(s) % 4 {
-	case 2:
-		return s + "=="
-	case 3:
-		return s + "="
-	}
-	return s
 }
 
 // isRateLimitError checks if a 403 response is actually a rate limit error.
@@ -436,93 +478,55 @@ func (c *Client) ListHistory(ctx context.Context, startHistoryID uint64, pageTok
 		return nil, err
 	}
 
-	var resp struct {
-		History []struct {
-			ID            string `json:"id"`
-			MessagesAdded []struct {
-				Message struct {
-					ID       string `json:"id"`
-					ThreadID string `json:"threadId"`
-				} `json:"message"`
-			} `json:"messagesAdded"`
-			MessagesDeleted []struct {
-				Message struct {
-					ID       string `json:"id"`
-					ThreadID string `json:"threadId"`
-				} `json:"message"`
-			} `json:"messagesDeleted"`
-			LabelsAdded []struct {
-				Message struct {
-					ID       string `json:"id"`
-					ThreadID string `json:"threadId"`
-				} `json:"message"`
-				LabelIDs []string `json:"labelIds"`
-			} `json:"labelsAdded"`
-			LabelsRemoved []struct {
-				Message struct {
-					ID       string `json:"id"`
-					ThreadID string `json:"threadId"`
-				} `json:"message"`
-				LabelIDs []string `json:"labelIds"`
-			} `json:"labelsRemoved"`
-		} `json:"history"`
-		NextPageToken string `json:"nextPageToken"`
-		HistoryID     string `json:"historyId"`
-	}
+	var resp listHistoryResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("parse history: %w", err)
 	}
 
 	historyID, _ := strconv.ParseUint(resp.HistoryID, 10, 64)
 
-	records := make([]HistoryRecord, len(resp.History))
-	for i, h := range resp.History {
-		id, _ := strconv.ParseUint(h.ID, 10, 64)
-
-		added := make([]HistoryMessage, len(h.MessagesAdded))
-		for j, m := range h.MessagesAdded {
-			added[j] = HistoryMessage{
-				Message: MessageID{ID: m.Message.ID, ThreadID: m.Message.ThreadID},
-			}
-		}
-
-		deleted := make([]HistoryMessage, len(h.MessagesDeleted))
-		for j, m := range h.MessagesDeleted {
-			deleted[j] = HistoryMessage{
-				Message: MessageID{ID: m.Message.ID, ThreadID: m.Message.ThreadID},
-			}
-		}
-
-		labelsAdded := make([]HistoryLabelChange, len(h.LabelsAdded))
-		for j, l := range h.LabelsAdded {
-			labelsAdded[j] = HistoryLabelChange{
-				Message:  MessageID{ID: l.Message.ID, ThreadID: l.Message.ThreadID},
-				LabelIDs: l.LabelIDs,
-			}
-		}
-
-		labelsRemoved := make([]HistoryLabelChange, len(h.LabelsRemoved))
-		for j, l := range h.LabelsRemoved {
-			labelsRemoved[j] = HistoryLabelChange{
-				Message:  MessageID{ID: l.Message.ID, ThreadID: l.Message.ThreadID},
-				LabelIDs: l.LabelIDs,
-			}
-		}
-
-		records[i] = HistoryRecord{
-			ID:              id,
-			MessagesAdded:   added,
-			MessagesDeleted: deleted,
-			LabelsAdded:     labelsAdded,
-			LabelsRemoved:   labelsRemoved,
-		}
-	}
-
 	return &HistoryResponse{
-		History:       records,
+		History:       mapHistoryEntries(resp.History),
 		NextPageToken: resp.NextPageToken,
 		HistoryID:     historyID,
 	}, nil
+}
+
+// mapHistoryEntries converts JSON history entries to domain types.
+func mapHistoryEntries(entries []historyEntry) []HistoryRecord {
+	records := make([]HistoryRecord, len(entries))
+	for i, h := range entries {
+		id, _ := strconv.ParseUint(h.ID, 10, 64)
+		records[i] = HistoryRecord{
+			ID:              id,
+			MessagesAdded:   mapMessageChanges(h.MessagesAdded),
+			MessagesDeleted: mapMessageChanges(h.MessagesDeleted),
+			LabelsAdded:     mapLabelChanges(h.LabelsAdded),
+			LabelsRemoved:   mapLabelChanges(h.LabelsRemoved),
+		}
+	}
+	return records
+}
+
+func mapMessageChanges(changes []historyMessageChange) []HistoryMessage {
+	out := make([]HistoryMessage, len(changes))
+	for i, c := range changes {
+		out[i] = HistoryMessage{
+			Message: MessageID(c.Message),
+		}
+	}
+	return out
+}
+
+func mapLabelChanges(changes []historyLabelChangeJSON) []HistoryLabelChange {
+	out := make([]HistoryLabelChange, len(changes))
+	for i, c := range changes {
+		out[i] = HistoryLabelChange{
+			Message:  MessageID(c.Message),
+			LabelIDs: c.LabelIDs,
+		}
+	}
+	return out
 }
 
 // TrashMessage moves a message to trash.

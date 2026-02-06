@@ -27,7 +27,7 @@ Examples:
 		}
 
 		// Open database
-		dbPath := cfg.DatabasePath()
+		dbPath := cfg.DatabaseDSN()
 		s, err := store.Open(dbPath)
 		if err != nil {
 			return fmt.Errorf("open database: %w", err)
@@ -38,7 +38,7 @@ Examples:
 		engine := query.NewSQLiteEngine(s.DB())
 
 		// Execute aggregation
-		results, err := engine.AggregateBySender(cmd.Context(), opts)
+		results, err := engine.Aggregate(cmd.Context(), query.ViewSenders, opts)
 		if err != nil {
 			return fmt.Errorf("aggregate by sender: %w", err)
 		}

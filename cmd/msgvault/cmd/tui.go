@@ -15,6 +15,7 @@ import (
 
 var forceSQL bool
 var skipCacheBuild bool
+var noSQLiteScanner bool
 
 var tuiCmd = &cobra.Command{
 	Use:   "tui",
@@ -51,7 +52,7 @@ Performance:
   Use --force-sql to bypass Parquet and query SQLite directly (slow).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Open database
-		dbPath := cfg.DatabasePath()
+		dbPath := cfg.DatabaseDSN()
 		s, err := store.Open(dbPath)
 		if err != nil {
 			return fmt.Errorf("open database: %w", err)
@@ -80,7 +81,11 @@ Performance:
 
 		if !forceSQL && query.HasParquetData(analyticsDir) {
 			// Use DuckDB for fast Parquet queries
-			duckEngine, err := query.NewDuckDBEngine(analyticsDir, dbPath, s.DB())
+			var duckOpts query.DuckDBOptions
+			if noSQLiteScanner {
+				duckOpts.DisableSQLiteScanner = true
+			}
+			duckEngine, err := query.NewDuckDBEngine(analyticsDir, dbPath, s.DB(), duckOpts)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: Failed to open Parquet engine: %v\n", err)
 				fmt.Fprintf(os.Stderr, "Falling back to SQLite (may be slow for large archives)\n")
@@ -169,4 +174,6 @@ func init() {
 	rootCmd.AddCommand(tuiCmd)
 	tuiCmd.Flags().BoolVar(&forceSQL, "force-sql", false, "Force SQLite queries instead of Parquet (slow for large archives)")
 	tuiCmd.Flags().BoolVar(&skipCacheBuild, "no-cache-build", false, "Skip automatic cache build/update")
+	tuiCmd.Flags().BoolVar(&noSQLiteScanner, "no-sqlite-scanner", false, "Disable DuckDB sqlite_scanner extension (use direct SQLite fallback)")
+	_ = tuiCmd.Flags().MarkHidden("no-sqlite-scanner")
 }

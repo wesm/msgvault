@@ -88,6 +88,9 @@ const (
 	ViewDomains
 	ViewLabels
 	ViewTime
+
+	// ViewTypeCount is the total number of view types. Must be last.
+	ViewTypeCount
 )
 
 func (v ViewType) String() string {
@@ -118,6 +121,9 @@ const (
 	TimeYear TimeGranularity = iota
 	TimeMonth
 	TimeDay
+
+	// TimeGranularityCount is the total number of time granularity options. Must be last.
+	TimeGranularityCount
 )
 
 func (g TimeGranularity) String() string {
@@ -188,25 +194,15 @@ type MessageFilter struct {
 	// Filter by conversation (thread)
 	ConversationID *int64 // filter by conversation/thread ID
 
-	// MatchEmpty* flags change how empty filter values are interpreted for each field.
-	// When false (default): empty string means "no filter" (return all)
-	// When true: empty string means "filter for NULL/empty values"
-	// This enables drilldown into empty-bucket aggregates (e.g., messages with no sender).
-	//
-	// IMPORTANT: Only set ONE MatchEmpty* flag at a time. Setting multiple flags
-	// creates an AND condition that may return no results (e.g., messages with
-	// no sender AND no recipient AND no domain). The TUI sets exactly one flag
-	// based on the current view type when drilling into an empty aggregate bucket.
-	MatchEmptySender        bool
-	MatchEmptySenderName    bool
-	MatchEmptyRecipient     bool
-	MatchEmptyRecipientName bool
-	MatchEmptyDomain        bool
-	MatchEmptyLabel         bool
+	// EmptyValueTargets specifies which dimensions to filter for NULL/empty values.
+	// When empty (default): empty filter strings mean "no filter" (return all).
+	// When a ViewType is present in the map: that dimension filters for NULL/empty values,
+	// enabling drilldown into empty-bucket aggregates (e.g., messages with no sender).
+	// Multiple dimensions can be set when drilling from one empty bucket into another.
+	EmptyValueTargets map[ViewType]bool
 
 	// Time range
-	TimePeriod      string // e.g., "2024", "2024-01", "2024-01-15"
-	TimeGranularity TimeGranularity
+	TimeRange TimeRange
 
 	// Account filter
 	SourceID *int64 // nil means all accounts
@@ -219,12 +215,66 @@ type MessageFilter struct {
 	WithAttachmentsOnly bool // only return messages with attachments
 
 	// Pagination
-	Limit  int
-	Offset int
+	Pagination Pagination
 
 	// Sorting
-	SortField     MessageSortField
-	SortDirection SortDirection
+	Sorting MessageSorting
+}
+
+// Pagination specifies limit and offset for paginated queries.
+type Pagination struct {
+	Limit  int
+	Offset int
+}
+
+// MessageSorting specifies how to sort message results.
+type MessageSorting struct {
+	Field     MessageSortField
+	Direction SortDirection
+}
+
+// TimeRange groups time-related filter fields.
+type TimeRange struct {
+	Period      string // e.g., "2024", "2024-01", "2024-01-15"
+	Granularity TimeGranularity
+}
+
+// MatchesEmpty returns true if the given ViewType is in EmptyValueTargets.
+func (f *MessageFilter) MatchesEmpty(v ViewType) bool {
+	return f.EmptyValueTargets != nil && f.EmptyValueTargets[v]
+}
+
+// SetEmptyTarget adds the given ViewType to EmptyValueTargets.
+// Initializes the map if nil.
+func (f *MessageFilter) SetEmptyTarget(v ViewType) {
+	if f.EmptyValueTargets == nil {
+		f.EmptyValueTargets = make(map[ViewType]bool)
+	}
+	f.EmptyValueTargets[v] = true
+}
+
+// HasEmptyTargets returns true if any empty targets are active (set to true).
+func (f *MessageFilter) HasEmptyTargets() bool {
+	for _, active := range f.EmptyValueTargets {
+		if active {
+			return true
+		}
+	}
+	return false
+}
+
+// Clone returns a deep copy of the MessageFilter.
+// This is necessary because EmptyValueTargets is a map, and a simple struct
+// copy would share the underlying map between the original and copy.
+func (f MessageFilter) Clone() MessageFilter {
+	clone := f
+	if f.EmptyValueTargets != nil {
+		clone.EmptyValueTargets = make(map[ViewType]bool, len(f.EmptyValueTargets))
+		for k, v := range f.EmptyValueTargets {
+			clone.EmptyValueTargets[k] = v
+		}
+	}
+	return clone
 }
 
 // AggregateOptions configures an aggregate query.
