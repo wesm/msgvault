@@ -51,6 +51,31 @@ func TestExpandPath(t *testing.T) {
 			expected: filepath.Join(home, "foo"),
 		},
 		{
+			name:     "single-quoted path (Windows CMD)",
+			input:    `'C:\Users\wesmc\testing'`,
+			expected: `C:\Users\wesmc\testing`,
+		},
+		{
+			name:     "double-quoted path (Windows CMD)",
+			input:    `"C:\Users\wesmc\testing"`,
+			expected: `C:\Users\wesmc\testing`,
+		},
+		{
+			name:     "single-quoted tilde path",
+			input:    "'~/custom-data'",
+			expected: filepath.Join(home, "custom-data"),
+		},
+		{
+			name:     "mismatched quotes not stripped",
+			input:    `'C:\Users\wesmc"`,
+			expected: `'C:\Users\wesmc"`,
+		},
+		{
+			name:     "single char not stripped",
+			input:    "'",
+			expected: "'",
+		},
+		{
 			name:     "absolute path unchanged",
 			input:    "/var/log/test",
 			expected: "/var/log/test",
