@@ -213,26 +213,30 @@ func (s *Store) InitSchema() error {
 	return nil
 }
 
-// NeedsFTSBackfill reports whether the FTS table exists but is empty while
-// messages exist. This indicates a database that was synced before FTS
-// population was added and needs a one-time backfill.
-// Returns false if FTS5 is not available or if FTS is already populated.
+// NeedsFTSBackfill reports whether the FTS table needs to be populated.
+// Returns true if FTS5 is available and the FTS row count is significantly
+// less than the message count (empty or interrupted partial backfill).
 func (s *Store) NeedsFTSBackfill() bool {
 	if !s.fts5Available {
 		return false
 	}
-	var ftsCount int64
+	var ftsCount, msgCount int64
 	if err := s.db.QueryRow("SELECT COUNT(*) FROM messages_fts").Scan(&ftsCount); err != nil {
 		return false
 	}
-	if ftsCount > 0 {
-		return false
-	}
-	var msgCount int64
 	if err := s.db.QueryRow("SELECT COUNT(*) FROM messages").Scan(&msgCount); err != nil {
 		return false
 	}
-	return msgCount > 0
+	if msgCount == 0 {
+		return false
+	}
+	// Trigger backfill if fewer than 90% of messages are indexed
+	// (handles both empty and partially-interrupted backfills)
+	threshold := msgCount * 9 / 10
+	if threshold == 0 {
+		threshold = msgCount // for small counts, require all indexed
+	}
+	return ftsCount < threshold
 }
 
 // Stats holds database statistics.

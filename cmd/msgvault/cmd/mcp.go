@@ -40,12 +40,16 @@ Add to Claude Desktop config:
 		}
 		defer s.Close()
 
-		// Ensure schema is up to date and FTS index is populated
+		// Ensure schema is up to date
 		if err := s.InitSchema(); err != nil {
 			return fmt.Errorf("init schema: %w", err)
 		}
-		if err := ensureFTSIndex(s); err != nil {
-			return err
+
+		// Build FTS index in background — MCP should start serving immediately
+		if s.NeedsFTSBackfill() {
+			go func() {
+				_, _ = s.BackfillFTS(nil)
+			}()
 		}
 
 		var engine query.Engine

@@ -538,45 +538,70 @@ func (s *Store) UpsertFTS(messageID int64, subject, bodyText, fromAddr, toAddrs,
 }
 
 // BackfillFTS populates the FTS table from existing message data.
-// Deletes all existing FTS rows first, then re-populates from messages,
-// message_bodies, and participants. The operation is atomic (wrapped in a
-// transaction) so a failure mid-way won't leave the FTS table empty.
+// Processes in batches to avoid blocking for minutes on large archives.
+// The progress callback (if non-nil) is called after each batch with
+// (indexed so far, total messages). Each batch is committed independently
+// so partial progress is preserved if interrupted.
 // Returns the number of rows inserted. No-op if FTS5 is not available.
-func (s *Store) BackfillFTS() (int64, error) {
+func (s *Store) BackfillFTS(progress func(done, total int64)) (int64, error) {
 	if !s.fts5Available {
 		return 0, nil
 	}
 
-	var rowsAffected int64
-	err := s.withTx(func(tx *sql.Tx) error {
-		// Clear existing FTS data
-		if _, err := tx.Exec("DELETE FROM messages_fts"); err != nil {
-			return fmt.Errorf("clear FTS: %w", err)
-		}
+	const batchSize = 5000
 
-		// Populate from messages + message_bodies + participants
-		result, err := tx.Exec(`
-			INSERT INTO messages_fts (rowid, message_id, subject, body, from_addr, to_addr, cc_addr)
-			SELECT m.id, m.id, COALESCE(m.subject, ''), COALESCE(mb.body_text, ''),
-				COALESCE((SELECT p.email_address FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'from' LIMIT 1), ''),
-				COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ') FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'to'), ''),
-				COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ') FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'cc'), '')
-			FROM messages m
-			LEFT JOIN message_bodies mb ON mb.message_id = m.id
-		`)
+	// Get total message count and ID range for progress reporting
+	var total int64
+	var minID, maxID int64
+	err := s.db.QueryRow("SELECT COUNT(*), COALESCE(MIN(id),0), COALESCE(MAX(id),0) FROM messages").Scan(&total, &minID, &maxID)
+	if err != nil {
+		return 0, fmt.Errorf("count messages: %w", err)
+	}
+	if total == 0 {
+		return 0, nil
+	}
+
+	// Clear existing FTS data
+	if _, err := s.db.Exec("DELETE FROM messages_fts"); err != nil {
+		return 0, fmt.Errorf("clear FTS: %w", err)
+	}
+
+	var indexed int64
+	cursor := minID
+
+	for cursor <= maxID {
+		batchEnd := cursor + batchSize
+		n, err := s.backfillFTSBatch(cursor, batchEnd)
 		if err != nil {
-			return fmt.Errorf("populate FTS: %w", err)
+			return indexed, fmt.Errorf("backfill batch [%d,%d): %w", cursor, batchEnd, err)
 		}
+		indexed += n
+		cursor = batchEnd
 
-		n, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("rows affected: %w", err)
+		if progress != nil {
+			progress(indexed, total)
 		}
-		rowsAffected = n
-		return nil
-	})
+	}
 
-	return rowsAffected, err
+	return indexed, nil
+}
+
+// backfillFTSBatch inserts FTS rows for messages with id in [fromID, toID).
+func (s *Store) backfillFTSBatch(fromID, toID int64) (int64, error) {
+	result, err := s.db.Exec(`
+		INSERT OR REPLACE INTO messages_fts (rowid, message_id, subject, body, from_addr, to_addr, cc_addr)
+		SELECT m.id, m.id, COALESCE(m.subject, ''), COALESCE(mb.body_text, ''),
+			COALESCE((SELECT p.email_address FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'from' LIMIT 1), ''),
+			COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ') FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'to'), ''),
+			COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ') FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'cc'), '')
+		FROM messages m
+		LEFT JOIN message_bodies mb ON mb.message_id = m.id
+		WHERE m.id >= ? AND m.id < ?
+	`, fromID, toID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // UpsertAttachment stores an attachment record.

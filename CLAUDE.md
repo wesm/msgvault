@@ -138,7 +138,7 @@ The TUI uses denormalized Parquet files for fast aggregate queries (~3000x faste
 **Parquet schema:**
 - Denormalized: `from_email`, `from_domain`, `to_emails[]`, `labels[]`, etc.
 - Partitioned by `year` for efficient time-range queries
-- ~3MB for 268k messages (vs ~1GB SQLite with bodies)
+- Compact: small fraction of SQLite size (excludes message bodies)
 
 The TUI automatically builds/updates the Parquet cache on launch when new messages are detected.
 

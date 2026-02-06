@@ -977,7 +977,7 @@ func TestStore_BackfillFTS(t *testing.T) {
 	}
 
 	// Run backfill
-	rowsInserted, err := f.Store.BackfillFTS()
+	rowsInserted, err := f.Store.BackfillFTS(nil)
 	testutil.MustNoErr(t, err, "BackfillFTS")
 	if rowsInserted != 2 {
 		t.Errorf("BackfillFTS rows = %d, want 2", rowsInserted)
@@ -1049,7 +1049,7 @@ func TestStore_NeedsFTSBackfill(t *testing.T) {
 	}
 
 	// Run backfill (simulating what CLI commands do after checking)
-	n, err := f.Store.BackfillFTS()
+	n, err := f.Store.BackfillFTS(nil)
 	testutil.MustNoErr(t, err, "BackfillFTS")
 	if n == 0 {
 		t.Error("BackfillFTS returned 0 rows")

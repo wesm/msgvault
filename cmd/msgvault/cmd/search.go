@@ -164,19 +164,21 @@ func init() {
 }
 
 // ensureFTSIndex checks if the FTS search index needs to be built and
-// runs a one-time backfill if so. Prints progress since this can take
-// a few seconds on large archives.
+// runs a one-time backfill if so. Shows progress since this can take
+// a while on large archives. Blocks until complete.
 func ensureFTSIndex(s *store.Store) error {
 	if !s.NeedsFTSBackfill() {
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "Building search index...")
-	n, err := s.BackfillFTS()
+	fmt.Fprintf(os.Stderr, "Building search index...\n")
+	n, err := s.BackfillFTS(func(done, total int64) {
+		fmt.Fprintf(os.Stderr, "\r  Indexed %d / %d messages...", done, total)
+	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, " failed.")
+		fmt.Fprintln(os.Stderr)
 		return fmt.Errorf("build search index: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, " indexed %d messages.\n", n)
+	fmt.Fprintf(os.Stderr, "\r  Indexed %d messages.          \n", n)
 	return nil
 }
 

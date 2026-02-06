@@ -59,12 +59,17 @@ Performance:
 		}
 		defer s.Close()
 
-		// Ensure schema is up to date and FTS index is populated
+		// Ensure schema is up to date
 		if err := s.InitSchema(); err != nil {
 			return fmt.Errorf("init schema: %w", err)
 		}
-		if err := ensureFTSIndex(s); err != nil {
-			return err
+
+		// Build FTS index in background — TUI uses DuckDB/Parquet for
+		// aggregates and only needs FTS for deep search (Tab to switch).
+		if s.NeedsFTSBackfill() {
+			go func() {
+				_, _ = s.BackfillFTS(nil)
+			}()
 		}
 
 		analyticsDir := cfg.AnalyticsDir()
