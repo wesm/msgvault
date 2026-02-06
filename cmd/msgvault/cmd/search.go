@@ -58,6 +58,8 @@ Examples:
 			return fmt.Errorf("empty search query")
 		}
 
+		fmt.Fprintf(os.Stderr, "Searching...")
+
 		// Open database
 		dbPath := cfg.DatabaseDSN()
 		s, err := store.Open(dbPath)
@@ -74,11 +76,8 @@ Examples:
 			return err
 		}
 
-		// Create query engine
+		// Create query engine and execute search
 		engine := query.NewSQLiteEngine(s.DB())
-
-		// Execute search
-		fmt.Fprintf(os.Stderr, "Searching...")
 		results, err := engine.Search(cmd.Context(), q, searchLimit, searchOffset)
 		fmt.Fprintf(os.Stderr, "\r            \r")
 		if err != nil {
