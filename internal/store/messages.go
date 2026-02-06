@@ -540,8 +540,8 @@ func (s *Store) UpsertFTS(messageID int64, subject, bodyText, fromAddr, toAddrs,
 // BackfillFTS populates the FTS table from existing message data.
 // Processes in batches to avoid blocking for minutes on large archives.
 // The progress callback (if non-nil) is called after each batch with
-// (indexed so far, total messages). Each batch is committed independently
-// so partial progress is preserved if interrupted.
+// (position in ID range, total ID range). Each batch is committed
+// independently so partial progress is preserved if interrupted.
 // Returns the number of rows inserted. No-op if FTS5 is not available.
 func (s *Store) BackfillFTS(progress func(done, total int64)) (int64, error) {
 	if !s.fts5Available {
@@ -579,7 +579,11 @@ func (s *Store) BackfillFTS(progress func(done, total int64)) (int64, error) {
 		cursor = batchEnd
 
 		if progress != nil {
-			progress(cursor-minID, idRange)
+			pos := cursor - minID
+			if pos > idRange {
+				pos = idRange
+			}
+			progress(pos, idRange)
 		}
 	}
 
@@ -591,7 +595,7 @@ func (s *Store) backfillFTSBatch(fromID, toID int64) (int64, error) {
 	result, err := s.db.Exec(`
 		INSERT OR REPLACE INTO messages_fts (rowid, message_id, subject, body, from_addr, to_addr, cc_addr)
 		SELECT m.id, m.id, COALESCE(m.subject, ''), COALESCE(mb.body_text, ''),
-			COALESCE((SELECT p.email_address FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'from' LIMIT 1), ''),
+			COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ') FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'from'), ''),
 			COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ') FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'to'), ''),
 			COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ') FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'cc'), '')
 		FROM messages m

@@ -229,7 +229,8 @@ func (s *Store) NeedsFTSBackfill() bool {
 		return false
 	}
 	// Backfill needed if FTS hasn't reached near the end of the messages table.
-	// The -1 handles small ID values where integer division would truncate to 0.
+	// Using subtraction (msgMax - msgMax/10) instead of multiplication (msgMax*9/10)
+	// ensures the threshold is at least msgMax for small values (e.g., msgMax=1).
 	return ftsMax < msgMax-msgMax/10
 }
 

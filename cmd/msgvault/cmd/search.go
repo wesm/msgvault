@@ -173,11 +173,17 @@ func ensureFTSIndex(s *store.Store) error {
 	}
 	fmt.Fprintf(os.Stderr, "Building search index (one-time)...\n")
 	n, err := s.BackfillFTS(func(done, total int64) {
+		if total <= 0 {
+			return
+		}
+		if done > total {
+			done = total
+		}
 		pct := int(done * 100 / total)
 		barWidth := 30
 		filled := barWidth * pct / 100
 		bar := strings.Repeat("=", filled) + strings.Repeat(" ", barWidth-filled)
-		fmt.Fprintf(os.Stderr, "\r  [%s] %3d%%  %d / %d", bar, pct, done, total)
+		fmt.Fprintf(os.Stderr, "\r  [%s] %3d%%", bar, pct)
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr)
