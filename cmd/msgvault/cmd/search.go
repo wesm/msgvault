@@ -66,6 +66,11 @@ Examples:
 		}
 		defer s.Close()
 
+		// Ensure schema is up to date (triggers FTS backfill if needed)
+		if err := s.InitSchema(); err != nil {
+			return fmt.Errorf("init schema: %w", err)
+		}
+
 		// Create query engine
 		engine := query.NewSQLiteEngine(s.DB())
 

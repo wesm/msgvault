@@ -59,6 +59,11 @@ Performance:
 		}
 		defer s.Close()
 
+		// Ensure schema is up to date (triggers FTS backfill if needed)
+		if err := s.InitSchema(); err != nil {
+			return fmt.Errorf("init schema: %w", err)
+		}
+
 		analyticsDir := cfg.AnalyticsDir()
 
 		// Check if cache needs to be built/updated (unless forcing SQL or skipping)
