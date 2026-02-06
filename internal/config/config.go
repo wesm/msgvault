@@ -70,10 +70,20 @@ func NewDefaultConfig() *Config {
 // If path is empty, uses the default location (~/.msgvault/config.toml),
 // which is optional (missing file returns defaults).
 // If path is explicitly provided, the file must exist.
-func Load(path string) (*Config, error) {
+//
+// homeDir overrides the home directory (equivalent to MSGVAULT_HOME).
+// When set, config.toml is loaded from homeDir unless path is also set.
+func Load(path, homeDir string) (*Config, error) {
 	explicit := path != ""
 
 	cfg := NewDefaultConfig()
+
+	// --home overrides the default home directory, just like MSGVAULT_HOME.
+	if homeDir != "" {
+		homeDir = expandPath(homeDir)
+		cfg.HomeDir = homeDir
+		cfg.Data.DataDir = homeDir
+	}
 
 	if !explicit {
 		path = filepath.Join(cfg.HomeDir, "config.toml")
@@ -93,15 +103,21 @@ func Load(path string) (*Config, error) {
 
 	cfg.configPath = path
 
-	// When --config points to a custom location, derive HomeDir and
-	// default DataDir from the config file's parent directory so that
-	// tokens, database, attachments, etc. live alongside the config.
-	if explicit {
+	// When --config points to a custom location without --home,
+	// derive HomeDir and default DataDir from the config file's parent
+	// directory so that tokens, database, attachments, etc. live alongside
+	// the config.
+	if explicit && homeDir == "" {
 		cfg.HomeDir = filepath.Dir(path)
 		cfg.Data.DataDir = cfg.HomeDir
 	}
 
 	if _, err := toml.DecodeFile(path, cfg); err != nil {
+		if strings.Contains(err.Error(), "invalid escape") ||
+			strings.Contains(err.Error(), "hexadecimal digits after") {
+			return nil, fmt.Errorf("decode config: %w\n\nhint: Windows paths in TOML must use "+
+				"forward slashes (C:/Games/msgvault) or single quotes ('C:\\Games\\msgvault').", err)
+		}
 		return nil, fmt.Errorf("decode config: %w", err)
 	}
 
