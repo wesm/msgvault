@@ -59,9 +59,12 @@ Performance:
 		}
 		defer s.Close()
 
-		// Ensure schema is up to date (triggers FTS backfill if needed)
+		// Ensure schema is up to date and FTS index is populated
 		if err := s.InitSchema(); err != nil {
 			return fmt.Errorf("init schema: %w", err)
+		}
+		if err := ensureFTSIndex(s); err != nil {
+			return err
 		}
 
 		analyticsDir := cfg.AnalyticsDir()

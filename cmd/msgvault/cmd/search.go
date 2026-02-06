@@ -66,9 +66,12 @@ Examples:
 		}
 		defer s.Close()
 
-		// Ensure schema is up to date (triggers FTS backfill if needed)
+		// Ensure schema is up to date and FTS index is populated
 		if err := s.InitSchema(); err != nil {
 			return fmt.Errorf("init schema: %w", err)
+		}
+		if err := ensureFTSIndex(s); err != nil {
+			return err
 		}
 
 		// Create query engine
@@ -158,6 +161,23 @@ func init() {
 	searchCmd.Flags().IntVarP(&searchLimit, "limit", "n", 50, "Maximum number of results")
 	searchCmd.Flags().IntVar(&searchOffset, "offset", 0, "Skip first N results")
 	searchCmd.Flags().BoolVar(&searchJSON, "json", false, "Output as JSON")
+}
+
+// ensureFTSIndex checks if the FTS search index needs to be built and
+// runs a one-time backfill if so. Prints progress since this can take
+// a few seconds on large archives.
+func ensureFTSIndex(s *store.Store) error {
+	if !s.NeedsFTSBackfill() {
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "Building search index...")
+	n, err := s.BackfillFTS()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, " failed.")
+		return fmt.Errorf("build search index: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, " indexed %d messages.\n", n)
+	return nil
 }
 
 // Common flag variables used across aggregate commands

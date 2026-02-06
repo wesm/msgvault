@@ -1020,7 +1020,7 @@ func TestStore_FTS5Available(t *testing.T) {
 	t.Logf("FTS5Available = %v", available)
 }
 
-func TestStore_InitSchema_AutoBackfillFTS(t *testing.T) {
+func TestStore_NeedsFTSBackfill(t *testing.T) {
 	f := storetest.New(t)
 
 	if !f.Store.FTS5Available() {
@@ -1043,25 +1043,25 @@ func TestStore_InitSchema_AutoBackfillFTS(t *testing.T) {
 	_, err = f.Store.DB().Exec("DELETE FROM messages_fts")
 	testutil.MustNoErr(t, err, "clear FTS")
 
-	var count int
-	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages_fts").Scan(&count)
-	testutil.MustNoErr(t, err, "count FTS before re-init")
-	if count != 0 {
-		t.Fatalf("FTS count = %d, want 0 before re-init", count)
+	// NeedsFTSBackfill should return true (empty FTS + existing messages)
+	if !f.Store.NeedsFTSBackfill() {
+		t.Fatal("NeedsFTSBackfill() = false, want true")
 	}
 
-	// Re-run InitSchema — should detect empty FTS + existing messages and backfill
-	err = f.Store.InitSchema()
-	testutil.MustNoErr(t, err, "InitSchema re-run")
+	// Run backfill (simulating what CLI commands do after checking)
+	n, err := f.Store.BackfillFTS()
+	testutil.MustNoErr(t, err, "BackfillFTS")
+	if n == 0 {
+		t.Error("BackfillFTS returned 0 rows")
+	}
 
-	// Verify FTS was auto-populated
-	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages_fts").Scan(&count)
-	testutil.MustNoErr(t, err, "count FTS after re-init")
-	if count == 0 {
-		t.Error("FTS should have been auto-populated by InitSchema, got 0 rows")
+	// NeedsFTSBackfill should now return false
+	if f.Store.NeedsFTSBackfill() {
+		t.Error("NeedsFTSBackfill() = true after backfill, want false")
 	}
 
 	// Verify the backfilled data is searchable
+	var count int
 	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'backfill'").Scan(&count)
 	testutil.MustNoErr(t, err, "FTS MATCH backfill")
 	if count != 1 {

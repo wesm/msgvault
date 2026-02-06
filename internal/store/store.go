@@ -210,27 +210,29 @@ func (s *Store) InitSchema() error {
 		s.fts5Available = true
 	}
 
-	// Auto-backfill FTS if the table exists but is empty while messages exist.
-	// This handles existing databases that synced before FTS population was added.
-	if s.fts5Available {
-		var ftsCount int64
-		if err := s.db.QueryRow("SELECT COUNT(*) FROM messages_fts").Scan(&ftsCount); err != nil {
-			return fmt.Errorf("count FTS rows: %w", err)
-		}
-		if ftsCount == 0 {
-			var msgCount int64
-			if err := s.db.QueryRow("SELECT COUNT(*) FROM messages").Scan(&msgCount); err != nil {
-				return fmt.Errorf("count messages: %w", err)
-			}
-			if msgCount > 0 {
-				if _, err := s.BackfillFTS(); err != nil {
-					return fmt.Errorf("auto-backfill FTS: %w", err)
-				}
-			}
-		}
-	}
-
 	return nil
+}
+
+// NeedsFTSBackfill reports whether the FTS table exists but is empty while
+// messages exist. This indicates a database that was synced before FTS
+// population was added and needs a one-time backfill.
+// Returns false if FTS5 is not available or if FTS is already populated.
+func (s *Store) NeedsFTSBackfill() bool {
+	if !s.fts5Available {
+		return false
+	}
+	var ftsCount int64
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM messages_fts").Scan(&ftsCount); err != nil {
+		return false
+	}
+	if ftsCount > 0 {
+		return false
+	}
+	var msgCount int64
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM messages").Scan(&msgCount); err != nil {
+		return false
+	}
+	return msgCount > 0
 }
 
 // Stats holds database statistics.
