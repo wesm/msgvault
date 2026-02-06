@@ -15,10 +15,11 @@ func TestExpandPath(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		input    string
-		expected string
-		unixOnly bool // skip on Windows (uses Unix-style absolute paths)
+		name        string
+		input       string
+		expected    string
+		unixOnly    bool // skip on Windows (uses Unix-style absolute paths)
+		windowsOnly bool // skip on non-Windows (quote stripping is Windows-only)
 	}{
 		{
 			name:     "empty string",
@@ -51,19 +52,22 @@ func TestExpandPath(t *testing.T) {
 			expected: filepath.Join(home, "foo"),
 		},
 		{
-			name:     "single-quoted path (Windows CMD)",
-			input:    `'C:\Users\wesmc\testing'`,
-			expected: `C:\Users\wesmc\testing`,
+			name:        "single-quoted path (Windows CMD)",
+			input:       `'C:\Users\wesmc\testing'`,
+			expected:    `C:\Users\wesmc\testing`,
+			windowsOnly: true,
 		},
 		{
-			name:     "double-quoted path (Windows CMD)",
-			input:    `"C:\Users\wesmc\testing"`,
-			expected: `C:\Users\wesmc\testing`,
+			name:        "double-quoted path (Windows CMD)",
+			input:       `"C:\Users\wesmc\testing"`,
+			expected:    `C:\Users\wesmc\testing`,
+			windowsOnly: true,
 		},
 		{
-			name:     "single-quoted tilde path",
-			input:    "'~/custom-data'",
-			expected: filepath.Join(home, "custom-data"),
+			name:        "single-quoted tilde path",
+			input:       "'~/custom-data'",
+			expected:    filepath.Join(home, "custom-data"),
+			windowsOnly: true,
 		},
 		{
 			name:     "mismatched quotes not stripped",
@@ -103,6 +107,9 @@ func TestExpandPath(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.unixOnly && runtime.GOOS == "windows" {
 				t.Skip("skipping Unix-specific path test on Windows")
+			}
+			if tt.windowsOnly && runtime.GOOS != "windows" {
+				t.Skip("skipping Windows-specific path test on non-Windows")
 			}
 			got := expandPath(tt.input)
 			if got != tt.expected {

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -244,7 +245,9 @@ func expandPath(path string) string {
 		return path
 	}
 	// Strip surrounding quotes left by Windows CMD (e.g. --home 'C:\Users\foo').
-	if len(path) >= 2 &&
+	// Only on Windows — Unix shells strip quotes before the process sees them,
+	// and literal quote characters in Unix paths are valid (if unusual).
+	if runtime.GOOS == "windows" && len(path) >= 2 &&
 		((path[0] == '\'' && path[len(path)-1] == '\'') ||
 			(path[0] == '"' && path[len(path)-1] == '"')) {
 		path = path[1 : len(path)-1]
