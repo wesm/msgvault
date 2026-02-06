@@ -78,7 +78,9 @@ Examples:
 		engine := query.NewSQLiteEngine(s.DB())
 
 		// Execute search
+		fmt.Fprintf(os.Stderr, "Searching...")
 		results, err := engine.Search(cmd.Context(), q, searchLimit, searchOffset)
+		fmt.Fprintf(os.Stderr, "\r            \r")
 		if err != nil {
 			return fmt.Errorf("search: %w", err)
 		}
@@ -164,21 +166,25 @@ func init() {
 }
 
 // ensureFTSIndex checks if the FTS search index needs to be built and
-// runs a one-time backfill if so. Shows progress since this can take
-// a while on large archives. Blocks until complete.
+// runs a one-time backfill if so. Shows a live progress bar since this
+// can take a while on large archives. Blocks until complete.
 func ensureFTSIndex(s *store.Store) error {
 	if !s.NeedsFTSBackfill() {
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "Building search index...\n")
+	fmt.Fprintf(os.Stderr, "Building search index (one-time)...\n")
 	n, err := s.BackfillFTS(func(done, total int64) {
-		fmt.Fprintf(os.Stderr, "\r  Indexed %d / %d messages...", done, total)
+		pct := int(done * 100 / total)
+		barWidth := 30
+		filled := barWidth * pct / 100
+		bar := strings.Repeat("=", filled) + strings.Repeat(" ", barWidth-filled)
+		fmt.Fprintf(os.Stderr, "\r  [%s] %3d%%  %d / %d", bar, pct, done, total)
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr)
 		return fmt.Errorf("build search index: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "\r  Indexed %d messages.          \n", n)
+	fmt.Fprintf(os.Stderr, "\r  [%s] 100%%  %d messages indexed.\n", strings.Repeat("=", 30), n)
 	return nil
 }
 
