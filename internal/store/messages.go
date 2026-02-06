@@ -539,33 +539,44 @@ func (s *Store) UpsertFTS(messageID int64, subject, bodyText, fromAddr, toAddrs,
 
 // BackfillFTS populates the FTS table from existing message data.
 // Deletes all existing FTS rows first, then re-populates from messages,
-// message_bodies, and participants. Returns the number of rows inserted.
-// No-op if FTS5 is not available.
+// message_bodies, and participants. The operation is atomic (wrapped in a
+// transaction) so a failure mid-way won't leave the FTS table empty.
+// Returns the number of rows inserted. No-op if FTS5 is not available.
 func (s *Store) BackfillFTS() (int64, error) {
 	if !s.fts5Available {
 		return 0, nil
 	}
 
-	// Clear existing FTS data
-	if _, err := s.db.Exec("DELETE FROM messages_fts"); err != nil {
-		return 0, fmt.Errorf("clear FTS: %w", err)
-	}
+	var rowsAffected int64
+	err := s.withTx(func(tx *sql.Tx) error {
+		// Clear existing FTS data
+		if _, err := tx.Exec("DELETE FROM messages_fts"); err != nil {
+			return fmt.Errorf("clear FTS: %w", err)
+		}
 
-	// Populate from messages + message_bodies + participants
-	result, err := s.db.Exec(`
-		INSERT INTO messages_fts (rowid, message_id, subject, body, from_addr, to_addr, cc_addr)
-		SELECT m.id, m.id, COALESCE(m.subject, ''), COALESCE(mb.body_text, ''),
-			COALESCE((SELECT p.email_address FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'from' LIMIT 1), ''),
-			COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ') FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'to'), ''),
-			COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ') FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'cc'), '')
-		FROM messages m
-		LEFT JOIN message_bodies mb ON mb.message_id = m.id
-	`)
-	if err != nil {
-		return 0, fmt.Errorf("populate FTS: %w", err)
-	}
+		// Populate from messages + message_bodies + participants
+		result, err := tx.Exec(`
+			INSERT INTO messages_fts (rowid, message_id, subject, body, from_addr, to_addr, cc_addr)
+			SELECT m.id, m.id, COALESCE(m.subject, ''), COALESCE(mb.body_text, ''),
+				COALESCE((SELECT p.email_address FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'from' LIMIT 1), ''),
+				COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ') FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'to'), ''),
+				COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ') FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'cc'), '')
+			FROM messages m
+			LEFT JOIN message_bodies mb ON mb.message_id = m.id
+		`)
+		if err != nil {
+			return fmt.Errorf("populate FTS: %w", err)
+		}
 
-	return result.RowsAffected()
+		n, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("rows affected: %w", err)
+		}
+		rowsAffected = n
+		return nil
+	})
+
+	return rowsAffected, err
 }
 
 // UpsertAttachment stores an attachment record.

@@ -213,13 +213,18 @@ func (s *Store) InitSchema() error {
 	// Auto-backfill FTS if the table exists but is empty while messages exist.
 	// This handles existing databases that synced before FTS population was added.
 	if s.fts5Available {
-		var ftsCount, msgCount int64
-		if err := s.db.QueryRow("SELECT COUNT(*) FROM messages_fts").Scan(&ftsCount); err == nil {
-			if ftsCount == 0 {
-				if err := s.db.QueryRow("SELECT COUNT(*) FROM messages").Scan(&msgCount); err == nil && msgCount > 0 {
-					if _, err := s.BackfillFTS(); err != nil {
-						return fmt.Errorf("auto-backfill FTS: %w", err)
-					}
+		var ftsCount int64
+		if err := s.db.QueryRow("SELECT COUNT(*) FROM messages_fts").Scan(&ftsCount); err != nil {
+			return fmt.Errorf("count FTS rows: %w", err)
+		}
+		if ftsCount == 0 {
+			var msgCount int64
+			if err := s.db.QueryRow("SELECT COUNT(*) FROM messages").Scan(&msgCount); err != nil {
+				return fmt.Errorf("count messages: %w", err)
+			}
+			if msgCount > 0 {
+				if _, err := s.BackfillFTS(); err != nil {
+					return fmt.Errorf("auto-backfill FTS: %w", err)
 				}
 			}
 		}

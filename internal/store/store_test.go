@@ -1020,6 +1020,55 @@ func TestStore_FTS5Available(t *testing.T) {
 	t.Logf("FTS5Available = %v", available)
 }
 
+func TestStore_InitSchema_AutoBackfillFTS(t *testing.T) {
+	f := storetest.New(t)
+
+	if !f.Store.FTS5Available() {
+		t.Skip("FTS5 not available")
+	}
+
+	// Create messages with bodies so there's data to backfill
+	msgID := f.CreateMessage("msg-auto-backfill")
+	err := f.Store.UpsertMessageBody(msgID,
+		sql.NullString{String: "auto backfill test body", Valid: true},
+		sql.NullString{},
+	)
+	testutil.MustNoErr(t, err, "UpsertMessageBody")
+
+	pid := f.EnsureParticipant("autotest@example.com", "Auto", "example.com")
+	err = f.Store.ReplaceMessageRecipients(msgID, "from", []int64{pid}, []string{"Auto"})
+	testutil.MustNoErr(t, err, "ReplaceMessageRecipients")
+
+	// Clear FTS to simulate a pre-existing DB without FTS population
+	_, err = f.Store.DB().Exec("DELETE FROM messages_fts")
+	testutil.MustNoErr(t, err, "clear FTS")
+
+	var count int
+	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages_fts").Scan(&count)
+	testutil.MustNoErr(t, err, "count FTS before re-init")
+	if count != 0 {
+		t.Fatalf("FTS count = %d, want 0 before re-init", count)
+	}
+
+	// Re-run InitSchema — should detect empty FTS + existing messages and backfill
+	err = f.Store.InitSchema()
+	testutil.MustNoErr(t, err, "InitSchema re-run")
+
+	// Verify FTS was auto-populated
+	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages_fts").Scan(&count)
+	testutil.MustNoErr(t, err, "count FTS after re-init")
+	if count == 0 {
+		t.Error("FTS should have been auto-populated by InitSchema, got 0 rows")
+	}
+
+	// Verify the backfilled data is searchable
+	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'backfill'").Scan(&count)
+	testutil.MustNoErr(t, err, "FTS MATCH backfill")
+	if count != 1 {
+		t.Errorf("FTS match 'backfill' = %d, want 1", count)
+	}
+}
+
 func TestStore_ReplaceMessageLabels_LargeBatch(t *testing.T) {
 	f := storetest.New(t)
 
