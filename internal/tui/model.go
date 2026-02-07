@@ -767,7 +767,7 @@ func (m Model) handleDataLoaded(msg dataLoadedMsg) (tea.Model, tea.Cmd) {
 	m.loading = false
 	m.inlineSearchLoading = false
 	if msg.err != nil {
-		m.err = msg.err
+		m.err = query.HintRepairEncoding(msg.err)
 		m.restorePosition = false // Clear flag on error to prevent stale state
 		return m, nil
 	}
@@ -845,7 +845,7 @@ func (m Model) handleMessagesLoaded(msg messagesLoadedMsg) (tea.Model, tea.Cmd) 
 	m.inlineSearchLoading = false
 	m.msgListLoadingMore = false
 	if msg.err != nil {
-		m.err = msg.err
+		m.err = query.HintRepairEncoding(msg.err)
 		m.restorePosition = false // Clear flag on error to prevent stale state
 	} else {
 		m.err = nil // Clear any previous error
@@ -881,7 +881,7 @@ func (m Model) handleMessageDetailLoaded(msg messageDetailLoadedMsg) (tea.Model,
 	m.transitionBuffer = "" // Unfreeze view now that data is ready
 	m.loading = false
 	if msg.err != nil {
-		m.err = msg.err
+		m.err = query.HintRepairEncoding(msg.err)
 	} else {
 		m.err = nil // Clear any previous error
 		m.messageDetail = msg.detail
@@ -901,7 +901,7 @@ func (m Model) handleThreadMessagesLoaded(msg threadMessagesLoadedMsg) (tea.Mode
 	m.transitionBuffer = "" // Unfreeze view now that data is ready
 	m.loading = false
 	if msg.err != nil {
-		m.err = msg.err
+		m.err = query.HintRepairEncoding(msg.err)
 	} else {
 		m.err = nil
 		m.threadMessages = msg.messages
@@ -925,7 +925,7 @@ func (m Model) handleSearchResults(msg searchResultsMsg) (tea.Model, tea.Cmd) {
 	m.inlineSearchLoading = false
 	m.searchLoadingMore = false
 	if msg.err != nil {
-		m.err = msg.err
+		m.err = query.HintRepairEncoding(msg.err)
 		return m, nil
 	}
 
