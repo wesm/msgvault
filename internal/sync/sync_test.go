@@ -631,14 +631,24 @@ func TestFullSync_InvalidUTF8InAllAddressFields(t *testing.T) {
 func TestFullSync_InvalidUTF8InAttachmentFilename(t *testing.T) {
 	env := newTestEnv(t)
 
-	// Construct a MIME message with an attachment whose filename has a mis-labeled
-	// RFC 2047 charset (claims UTF-8, bytes are Latin-1). While enmime currently
-	// sanitizes filenames to valid UTF-8, this test ensures defense-in-depth.
-	raw := testemail.NewMessage().
-		Subject("Attachment Test").
-		Body("Body text.").
-		WithAttachment("test.bin", "application/octet-stream", []byte("content")).
-		Bytes()
+	// Construct a MIME message with raw Latin-1 byte \xE9 (é) in the attachment
+	// filename. Enmime sanitizes invalid bytes to U+FFFD before our code sees them;
+	// the sync-level EnsureUTF8 call is defense-in-depth for any future parser changes.
+	raw := []byte("From: sender@example.com\n" +
+		"To: recipient@example.com\n" +
+		"Subject: Attachment Test\n" +
+		"Date: Mon, 01 Jan 2024 12:00:00 +0000\n" +
+		"MIME-Version: 1.0\n" +
+		"Content-Type: multipart/mixed; boundary=\"b\"\n" +
+		"\n" +
+		"--b\n" +
+		"Content-Type: text/plain; charset=\"utf-8\"\n\nBody text.\n" +
+		"--b\n" +
+		"Content-Type: application/pdf; name=\"caf\xe9.pdf\"\n" +
+		"Content-Disposition: attachment; filename=\"caf\xe9.pdf\"\n" +
+		"Content-Transfer-Encoding: base64\n\n" +
+		"SGVsbG8gV29ybGQh\n" +
+		"--b--\n")
 
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12345
@@ -650,12 +660,22 @@ func TestFullSync_InvalidUTF8InAttachmentFilename(t *testing.T) {
 	assertSummary(t, summary, WantSummary{Added: intPtr(1)})
 	assertAttachmentCount(t, env.Store, 1)
 
-	filename, err := env.Store.InspectAttachmentFilename("msg-attach")
+	filename, mimeType, err := env.Store.InspectAttachment("msg-attach")
 	if err != nil {
-		t.Fatalf("InspectAttachmentFilename: %v", err)
+		t.Fatalf("InspectAttachment: %v", err)
 	}
-	if filename != "test.bin" {
-		t.Errorf("attachment filename = %q, want %q", filename, "test.bin")
+
+	// Enmime replaces the invalid \xE9 byte with U+FFFD (replacement character).
+	// Our EnsureUTF8 would convert it to the proper é if enmime didn't sanitize first.
+	// Either way, the stored filename must be valid UTF-8.
+	wantFilename := "caf\uFFFD.pdf"
+	if filename != wantFilename {
+		t.Errorf("attachment filename = %q, want %q", filename, wantFilename)
+	}
+
+	// Content-type should be the clean base MIME type
+	if mimeType != "application/pdf" {
+		t.Errorf("attachment mime_type = %q, want %q", mimeType, "application/pdf")
 	}
 }
 

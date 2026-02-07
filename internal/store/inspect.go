@@ -197,16 +197,16 @@ func (s *Store) InspectThreadSourceID(sourceMessageID string) (string, error) {
 	return threadSourceID, err
 }
 
-// InspectAttachmentFilename returns the filename for the first attachment of a message.
-func (s *Store) InspectAttachmentFilename(sourceMessageID string) (string, error) {
-	var filename string
-	err := s.db.QueryRow(s.Rebind(`
-		SELECT a.filename FROM attachments a
+// InspectAttachment returns the filename and mime_type for the first attachment (by ID) of a message.
+func (s *Store) InspectAttachment(sourceMessageID string) (filename, mimeType string, err error) {
+	err = s.db.QueryRow(s.Rebind(`
+		SELECT a.filename, a.mime_type FROM attachments a
 		JOIN messages m ON a.message_id = m.id
 		WHERE m.source_message_id = ?
+		ORDER BY a.id
 		LIMIT 1
-	`), sourceMessageID).Scan(&filename)
-	return filename, err
+	`), sourceMessageID).Scan(&filename, &mimeType)
+	return
 }
 
 // InspectMessageDates returns sent_at and internal_date for a message.
