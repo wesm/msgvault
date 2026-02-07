@@ -26,6 +26,10 @@ oauth_client*.json
 # Python
 __pycache__/
 
+# Go caches
+.gocache/
+.gopath/
+
 # IDE
 .idea/
 .vscode/
