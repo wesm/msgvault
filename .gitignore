@@ -1,6 +1,7 @@
 # Go binaries
 /msgvault
 /mimeshootout
+/devdata
 
 # Database files
 *.db
@@ -39,3 +40,4 @@ __pycache__/
 
 # Claude Code
 .claude/
+
