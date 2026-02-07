@@ -64,17 +64,24 @@ Examples:
 		sigChan := make(chan os.Signal, 2)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		defer signal.Stop(sigChan)
+		done := make(chan struct{})
+		defer close(done)
 		go func() {
 			signals := 0
-			for range sigChan {
-				signals++
-				if signals == 1 {
-					fmt.Fprintln(os.Stderr, "\nInterrupted. Saving checkpoint...")
-					cancel()
-					continue
+			for {
+				select {
+				case <-done:
+					return
+				case <-sigChan:
+					signals++
+					if signals == 1 {
+						fmt.Fprintln(os.Stderr, "\nInterrupted. Saving checkpoint...")
+						cancel()
+						continue
+					}
+					fmt.Fprintln(os.Stderr, "Interrupted again. Exiting immediately.")
+					os.Exit(130)
 				}
-				fmt.Fprintln(os.Stderr, "Interrupted again. Exiting immediately.")
-				os.Exit(130)
 			}
 		}()
 
