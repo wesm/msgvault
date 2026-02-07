@@ -18,62 +18,6 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
-// mockStore implements the minimal store interface for testing
-type mockStore struct{}
-
-func (m *mockStore) GetStats() (*struct {
-	MessageCount    int64
-	ThreadCount     int64
-	AttachmentCount int64
-	LabelCount      int64
-	SourceCount     int64
-	DatabaseSize    int64
-}, error) {
-	return &struct {
-		MessageCount    int64
-		ThreadCount     int64
-		AttachmentCount int64
-		LabelCount      int64
-		SourceCount     int64
-		DatabaseSize    int64
-	}{
-		MessageCount:    1000,
-		ThreadCount:     500,
-		AttachmentCount: 100,
-		LabelCount:      20,
-		SourceCount:     2,
-		DatabaseSize:    1024 * 1024 * 50, // 50MB
-	}, nil
-}
-
-func newTestServer(t *testing.T) *Server {
-	t.Helper()
-
-	cfg := &config.Config{
-		Server: config.ServerConfig{
-			APIPort: 8080,
-			APIKey:  "test-api-key",
-		},
-		Accounts: []config.AccountSchedule{
-			{Email: "test@gmail.com", Schedule: "0 2 * * *", Enabled: true},
-		},
-	}
-
-	sched := scheduler.New(func(ctx context.Context, email string) error {
-		return nil
-	})
-
-	// Note: store is nil, so handlers that use store will fail
-	// This is intentional for basic server tests
-	return &Server{
-		cfg:       cfg,
-		store:     nil,
-		scheduler: sched,
-		logger:    nil,
-		router:    nil,
-	}
-}
-
 func TestHealthEndpoint(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{APIPort: 8080},
@@ -172,7 +116,9 @@ func TestSchedulerStatusEndpoint(t *testing.T) {
 		Server: config.ServerConfig{APIPort: 8080},
 	}
 	sched := scheduler.New(func(ctx context.Context, email string) error { return nil })
-	sched.AddAccount("test@gmail.com", "0 2 * * *")
+	if err := sched.AddAccount("test@gmail.com", "0 2 * * *"); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
 
 	srv := NewServer(cfg, nil, sched, testLogger())
 

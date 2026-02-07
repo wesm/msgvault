@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 
 	"golang.org/x/time/rate"
@@ -51,10 +53,10 @@ func CORSMiddleware(cfg CORSConfig) func(http.Handler) http.Handler {
 
 				// Handle preflight
 				if r.Method == "OPTIONS" {
-					w.Header().Set("Access-Control-Allow-Methods", joinStrings(cfg.AllowedMethods, ", "))
-					w.Header().Set("Access-Control-Allow-Headers", joinStrings(cfg.AllowedHeaders, ", "))
+					w.Header().Set("Access-Control-Allow-Methods", strings.Join(cfg.AllowedMethods, ", "))
+					w.Header().Set("Access-Control-Allow-Headers", strings.Join(cfg.AllowedHeaders, ", "))
 					if cfg.MaxAge > 0 {
-						w.Header().Set("Access-Control-Max-Age", itoa(cfg.MaxAge))
+						w.Header().Set("Access-Control-Max-Age", strconv.Itoa(cfg.MaxAge))
 					}
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -116,36 +118,11 @@ func RateLimitMiddleware(limiter *RateLimiter) func(http.Handler) http.Handler {
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Retry-After", "1")
 				w.WriteHeader(http.StatusTooManyRequests)
-				w.Write([]byte(`{"error":"rate_limit_exceeded","message":"Too many requests. Please slow down."}`))
+				_, _ = w.Write([]byte(`{"error":"rate_limit_exceeded","message":"Too many requests. Please slow down."}`))
 				return
 			}
 
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// Helper functions
-
-func joinStrings(strs []string, sep string) string {
-	if len(strs) == 0 {
-		return ""
-	}
-	result := strs[0]
-	for i := 1; i < len(strs); i++ {
-		result += sep + strs[i]
-	}
-	return result
-}
-
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	result := ""
-	for i > 0 {
-		result = string(rune('0'+i%10)) + result
-		i /= 10
-	}
-	return result
 }

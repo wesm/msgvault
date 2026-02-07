@@ -11,12 +11,12 @@ import (
 
 // StatsResponse represents the archive statistics.
 type StatsResponse struct {
-	TotalMessages   int64 `json:"total_messages"`
-	TotalThreads    int64 `json:"total_threads"`
-	TotalAccounts   int64 `json:"total_accounts"`
-	TotalLabels     int64 `json:"total_labels"`
-	TotalAttach     int64 `json:"total_attachments"`
-	DatabaseSize    int64 `json:"database_size_bytes"`
+	TotalMessages int64 `json:"total_messages"`
+	TotalThreads  int64 `json:"total_threads"`
+	TotalAccounts int64 `json:"total_accounts"`
+	TotalLabels   int64 `json:"total_labels"`
+	TotalAttach   int64 `json:"total_attachments"`
+	DatabaseSize  int64 `json:"database_size_bytes"`
 }
 
 // AccountInfo represents an account in list responses.
@@ -45,7 +45,7 @@ type ErrorResponse struct {
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(data)
 }
 
 // writeError writes an error response.
@@ -76,22 +76,22 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 // MessageSummary represents a message in list responses.
 type MessageSummary struct {
-	ID          int64    `json:"id"`
-	Subject     string   `json:"subject"`
-	From        string   `json:"from"`
-	To          []string `json:"to"`
-	SentAt      string   `json:"sent_at"`
-	Snippet     string   `json:"snippet"`
-	Labels      []string `json:"labels"`
-	HasAttach   bool     `json:"has_attachments"`
-	SizeBytes   int64    `json:"size_bytes"`
+	ID        int64    `json:"id"`
+	Subject   string   `json:"subject"`
+	From      string   `json:"from"`
+	To        []string `json:"to"`
+	SentAt    string   `json:"sent_at"`
+	Snippet   string   `json:"snippet"`
+	Labels    []string `json:"labels"`
+	HasAttach bool     `json:"has_attachments"`
+	SizeBytes int64    `json:"size_bytes"`
 }
 
 // MessageDetail represents a full message response.
 type MessageDetail struct {
 	MessageSummary
-	Body        string            `json:"body"`
-	Attachments []AttachmentInfo  `json:"attachments"`
+	Body        string           `json:"body"`
+	Attachments []AttachmentInfo `json:"attachments"`
 }
 
 // AttachmentInfo represents attachment metadata.

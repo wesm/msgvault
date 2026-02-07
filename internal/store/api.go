@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 )
 
@@ -74,10 +75,16 @@ func (s *Store) ListMessages(offset, limit int) ([]APIMessage, int64, error) {
 		}
 
 		// Get To recipients
-		m.To = s.getRecipients(m.ID, "to")
+		m.To, err = s.getRecipients(m.ID, "to")
+		if err != nil {
+			return nil, 0, err
+		}
 
 		// Get labels
-		m.Labels = s.getLabels(m.ID)
+		m.Labels, err = s.getLabels(m.ID)
+		if err != nil {
+			return nil, 0, err
+		}
 
 		messages = append(messages, m)
 	}
@@ -116,14 +123,23 @@ func (s *Store) GetMessage(id int64) (*APIMessage, error) {
 	}
 
 	// Get recipients
-	m.To = s.getRecipients(m.ID, "to")
+	m.To, err = s.getRecipients(m.ID, "to")
+	if err != nil {
+		return nil, err
+	}
 
 	// Get labels
-	m.Labels = s.getLabels(m.ID)
+	m.Labels, err = s.getLabels(m.ID)
+	if err != nil {
+		return nil, err
+	}
 
 	// Get body
 	var bodyText, bodyHTML sql.NullString
-	s.db.QueryRow("SELECT body_text, body_html FROM message_bodies WHERE message_id = ?", id).Scan(&bodyText, &bodyHTML)
+	err = s.db.QueryRow("SELECT body_text, body_html FROM message_bodies WHERE message_id = ?", id).Scan(&bodyText, &bodyHTML)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("get message body: %w", err)
+	}
 	if bodyText.Valid {
 		m.Body = bodyText.String
 	} else if bodyHTML.Valid {
@@ -187,7 +203,9 @@ func (s *Store) SearchMessages(query string, offset, limit int) ([]APIMessage, i
 		JOIN messages m ON m.id = fts.rowid
 		WHERE messages_fts MATCH ? AND m.deleted_from_source_at IS NULL
 	`
-	s.db.QueryRow(countQuery, query).Scan(&total)
+	if err := s.db.QueryRow(countQuery, query).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count FTS results: %w", err)
+	}
 
 	// Get message details
 	messages := make([]APIMessage, 0, len(ids))
@@ -214,7 +232,9 @@ func (s *Store) searchMessagesLike(query string, offset, limit int) ([]APIMessag
 		AND (subject LIKE ? OR snippet LIKE ?)
 	`
 	var total int64
-	s.db.QueryRow(countQuery, likePattern, likePattern).Scan(&total)
+	if err := s.db.QueryRow(countQuery, likePattern, likePattern).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count search results: %w", err)
+	}
 
 	searchQuery := `
 		SELECT
@@ -251,8 +271,14 @@ func (s *Store) searchMessagesLike(query string, offset, limit int) ([]APIMessag
 		if sentAt.Valid {
 			m.SentAt = sentAt.Time
 		}
-		m.To = s.getRecipients(m.ID, "to")
-		m.Labels = s.getLabels(m.ID)
+		m.To, err = s.getRecipients(m.ID, "to")
+		if err != nil {
+			return nil, 0, err
+		}
+		m.Labels, err = s.getLabels(m.ID)
+		if err != nil {
+			return nil, 0, err
+		}
 		messages = append(messages, m)
 	}
 
@@ -261,7 +287,7 @@ func (s *Store) searchMessagesLike(query string, offset, limit int) ([]APIMessag
 
 // Helper functions
 
-func (s *Store) getRecipients(messageID int64, recipientType string) []string {
+func (s *Store) getRecipients(messageID int64, recipientType string) ([]string, error) {
 	query := `
 		SELECT COALESCE(p.email_address, '')
 		FROM message_recipients mr
@@ -270,21 +296,24 @@ func (s *Store) getRecipients(messageID int64, recipientType string) []string {
 	`
 	rows, err := s.db.Query(query, messageID, recipientType)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("get recipients: %w", err)
 	}
 	defer rows.Close()
 
 	var recipients []string
 	for rows.Next() {
 		var email string
-		if rows.Scan(&email) == nil && email != "" {
+		if err := rows.Scan(&email); err != nil {
+			return nil, fmt.Errorf("scan recipient: %w", err)
+		}
+		if email != "" {
 			recipients = append(recipients, email)
 		}
 	}
-	return recipients
+	return recipients, rows.Err()
 }
 
-func (s *Store) getLabels(messageID int64) []string {
+func (s *Store) getLabels(messageID int64) ([]string, error) {
 	query := `
 		SELECT l.name
 		FROM message_labels ml
@@ -293,16 +322,17 @@ func (s *Store) getLabels(messageID int64) []string {
 	`
 	rows, err := s.db.Query(query, messageID)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("get labels: %w", err)
 	}
 	defer rows.Close()
 
 	var labels []string
 	for rows.Next() {
 		var name string
-		if rows.Scan(&name) == nil {
-			labels = append(labels, name)
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan label: %w", err)
 		}
+		labels = append(labels, name)
 	}
-	return labels
+	return labels, rows.Err()
 }

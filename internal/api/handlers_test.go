@@ -310,7 +310,9 @@ func TestHandleTriggerSync(t *testing.T) {
 	sched := scheduler.New(func(ctx context.Context, email string) error {
 		return nil
 	})
-	sched.AddAccount("test@gmail.com", "0 2 * * *")
+	if err := sched.AddAccount("test@gmail.com", "0 2 * * *"); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
 
 	srv := NewServer(cfg, s, sched, testLogger())
 

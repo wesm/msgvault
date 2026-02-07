@@ -90,7 +90,9 @@ func TestRemoveAccount(t *testing.T) {
 		return nil
 	})
 
-	s.AddAccount("test@gmail.com", "0 2 * * *")
+	if err := s.AddAccount("test@gmail.com", "0 2 * * *"); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
 	s.RemoveAccount("test@gmail.com")
 
 	s.mu.RLock()
@@ -198,7 +200,9 @@ func TestTriggerSync(t *testing.T) {
 		return nil
 	})
 
-	s.AddAccount("test@gmail.com", "0 0 1 1 *") // Far future, won't trigger naturally
+	if err := s.AddAccount("test@gmail.com", "0 0 1 1 *"); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
 
 	// Trigger manually
 	err := s.TriggerSync("test@gmail.com")
@@ -237,11 +241,13 @@ func TestSyncPreventsDoubleRun(t *testing.T) {
 		return nil
 	})
 
-	s.AddAccount("test@gmail.com", "0 0 1 1 *")
+	if err := s.AddAccount("test@gmail.com", "0 0 1 1 *"); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
 
 	// Try to trigger multiple times concurrently
 	for i := 0; i < 5; i++ {
-		s.TriggerSync("test@gmail.com")
+		_ = s.TriggerSync("test@gmail.com")
 	}
 
 	time.Sleep(200 * time.Millisecond)
@@ -256,8 +262,12 @@ func TestStatus(t *testing.T) {
 		return nil
 	})
 
-	s.AddAccount("test@gmail.com", "0 2 * * *")
-	s.AddAccount("other@gmail.com", "0 3 * * *")
+	if err := s.AddAccount("test@gmail.com", "0 2 * * *"); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
+	if err := s.AddAccount("other@gmail.com", "0 3 * * *"); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
 	s.Start()
 	defer s.Stop()
 
@@ -291,8 +301,12 @@ func TestStatusAfterSyncSuccess(t *testing.T) {
 		return nil
 	})
 
-	s.AddAccount("test@gmail.com", "0 0 1 1 *")
-	s.TriggerSync("test@gmail.com")
+	if err := s.AddAccount("test@gmail.com", "0 0 1 1 *"); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
+	if err := s.TriggerSync("test@gmail.com"); err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -316,8 +330,12 @@ func TestStatusAfterSyncError(t *testing.T) {
 		return errors.New("sync failed")
 	})
 
-	s.AddAccount("test@gmail.com", "0 0 1 1 *")
-	s.TriggerSync("test@gmail.com")
+	if err := s.AddAccount("test@gmail.com", "0 0 1 1 *"); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
+	if err := s.TriggerSync("test@gmail.com"); err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -338,12 +356,12 @@ func TestValidateCronExpr(t *testing.T) {
 		expr    string
 		wantErr bool
 	}{
-		{"0 2 * * *", false},      // 2am daily
-		{"*/15 * * * *", false},   // Every 15 minutes
-		{"0 0 1 * *", false},      // Monthly on 1st
-		{"0 0 * * 0", false},      // Weekly on Sunday
+		{"0 2 * * *", false},    // 2am daily
+		{"*/15 * * * *", false}, // Every 15 minutes
+		{"0 0 1 * *", false},    // Monthly on 1st
+		{"0 0 * * 0", false},    // Weekly on Sunday
 		{"invalid", true},
-		{"* * * * * *", true},     // Too many fields
+		{"* * * * * *", true}, // Too many fields
 		{"", true},
 	}
 
