@@ -43,13 +43,12 @@ func (s *Server) setupRouter() chi.Router {
 
 	// Standard middleware
 	r.Use(chimw.RequestID)
-	r.Use(chimw.RealIP)
 	r.Use(s.loggerMiddleware)
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.Timeout(60 * time.Second))
 
-	// CORS middleware
-	r.Use(CORSMiddleware(DefaultCORSConfig()))
+	// CORS middleware (disabled by default — no origins allowed)
+	r.Use(CORSMiddleware(CORSConfig{}))
 
 	// Rate limiting (10 req/sec with burst of 20)
 	rateLimiter := NewRateLimiter(10, 20)
@@ -86,7 +85,15 @@ func (s *Server) setupRouter() chi.Router {
 
 // Start begins listening for HTTP requests.
 func (s *Server) Start() error {
-	addr := fmt.Sprintf(":%d", s.cfg.Server.APIPort)
+	bindAddr := s.cfg.Server.BindAddr
+	if bindAddr == "" {
+		bindAddr = "127.0.0.1"
+	}
+	addr := fmt.Sprintf("%s:%d", bindAddr, s.cfg.Server.APIPort)
+
+	if s.cfg.Server.APIKey == "" {
+		s.logger.Warn("API server running without authentication — set [server] api_key in config.toml")
+	}
 
 	s.server = &http.Server{
 		Addr:         addr,
@@ -158,7 +165,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				"path", r.URL.Path,
 				"remote_addr", r.RemoteAddr,
 			)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing API key")
 			return
 		}
 

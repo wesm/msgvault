@@ -1,10 +1,12 @@
 package api
 
 import (
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/time/rate"
 )
@@ -68,51 +70,77 @@ func CORSMiddleware(cfg CORSConfig) func(http.Handler) http.Handler {
 	}
 }
 
-// RateLimiter provides per-IP rate limiting.
+// rateLimiterEntry tracks a limiter and when it was last used for TTL eviction.
+type rateLimiterEntry struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
+// RateLimiter provides per-IP rate limiting with TTL-based eviction.
 type RateLimiter struct {
 	mu       sync.Mutex
-	limiters map[string]*rate.Limiter
+	limiters map[string]*rateLimiterEntry
 	rate     rate.Limit
 	burst    int
+	ttl      time.Duration
 }
 
 // NewRateLimiter creates a new rate limiter.
-// rate is requests per second, burst is the maximum burst size.
+// rps is requests per second, burst is the maximum burst size.
 func NewRateLimiter(rps float64, burst int) *RateLimiter {
-	return &RateLimiter{
-		limiters: make(map[string]*rate.Limiter),
+	rl := &RateLimiter{
+		limiters: make(map[string]*rateLimiterEntry),
 		rate:     rate.Limit(rps),
 		burst:    burst,
+		ttl:      10 * time.Minute,
 	}
+	go rl.evictLoop()
+	return rl
 }
 
-// getLimiter returns the rate limiter for the given key (usually IP address).
-func (rl *RateLimiter) getLimiter(key string) *rate.Limiter {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	limiter, exists := rl.limiters[key]
-	if !exists {
-		limiter = rate.NewLimiter(rl.rate, rl.burst)
-		rl.limiters[key] = limiter
+// evictLoop periodically removes stale limiter entries.
+func (rl *RateLimiter) evictLoop() {
+	ticker := time.NewTicker(rl.ttl)
+	defer ticker.Stop()
+	for range ticker.C {
+		rl.mu.Lock()
+		cutoff := time.Now().Add(-rl.ttl)
+		for key, entry := range rl.limiters {
+			if entry.lastSeen.Before(cutoff) {
+				delete(rl.limiters, key)
+			}
+		}
+		rl.mu.Unlock()
 	}
-	return limiter
 }
 
 // Allow checks if a request from the given key should be allowed.
 func (rl *RateLimiter) Allow(key string) bool {
-	return rl.getLimiter(key).Allow()
+	rl.mu.Lock()
+	entry, exists := rl.limiters[key]
+	if !exists {
+		entry = &rateLimiterEntry{limiter: rate.NewLimiter(rl.rate, rl.burst)}
+		rl.limiters[key] = entry
+	}
+	entry.lastSeen = time.Now()
+	rl.mu.Unlock()
+	return entry.limiter.Allow()
+}
+
+// clientIP extracts the host IP from RemoteAddr, stripping the port.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // RateLimitMiddleware returns a middleware that rate limits requests by IP.
 func RateLimitMiddleware(limiter *RateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Use X-Real-IP if set (from RealIP middleware), otherwise RemoteAddr
-			ip := r.Header.Get("X-Real-IP")
-			if ip == "" {
-				ip = r.RemoteAddr
-			}
+			ip := clientIP(r)
 
 			if !limiter.Allow(ip) {
 				w.Header().Set("Content-Type", "application/json")

@@ -120,8 +120,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
+	bindAddr := cfg.Server.BindAddr
+	if bindAddr == "" {
+		bindAddr = "127.0.0.1"
+	}
 	fmt.Printf("msgvault daemon started\n")
-	fmt.Printf("  API server: http://localhost:%d\n", cfg.Server.APIPort)
+	fmt.Printf("  API server: http://%s:%d\n", bindAddr, cfg.Server.APIPort)
 	fmt.Printf("  Scheduled accounts: %d\n", count)
 	fmt.Printf("  Data directory: %s\n", cfg.Data.DataDir)
 	fmt.Println()

@@ -28,10 +28,15 @@ type Scheduler struct {
 	running   map[string]bool         // email -> currently syncing
 	lastRun   map[string]time.Time    // email -> last successful run
 	lastErr   map[string]error        // email -> last error
+
+	ctx    context.Context    // cancelled on Stop
+	cancel context.CancelFunc // cancels ctx
+	wg     sync.WaitGroup     // tracks running sync goroutines
 }
 
 // New creates a new Scheduler with the given sync callback.
 func New(syncFunc SyncFunc) *Scheduler {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Scheduler{
 		cron: cron.New(cron.WithParser(cron.NewParser(
 			cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow,
@@ -43,6 +48,8 @@ func New(syncFunc SyncFunc) *Scheduler {
 		running:   make(map[string]bool),
 		lastRun:   make(map[string]time.Time),
 		lastErr:   make(map[string]error),
+		ctx:       ctx,
+		cancel:    cancel,
 	}
 }
 
@@ -119,10 +126,26 @@ func (s *Scheduler) Start() {
 	s.logger.Info("scheduler started", "jobs", len(s.jobs))
 }
 
-// Stop gracefully stops the scheduler and waits for running jobs to complete.
+// Stop gracefully stops the scheduler, cancels running sync jobs, and waits
+// for them to finish. Returns a context that is done when all work completes.
 func (s *Scheduler) Stop() context.Context {
 	s.logger.Info("scheduler stopping")
-	return s.cron.Stop()
+	cronCtx := s.cron.Stop()
+	s.cancel() // signal running syncs to stop
+
+	done := make(chan struct{})
+	go func() {
+		<-cronCtx.Done()
+		s.wg.Wait()
+		close(done)
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-done
+		cancel()
+	}()
+	return ctx
 }
 
 // runSync executes sync for an account (called by cron).
@@ -137,6 +160,8 @@ func (s *Scheduler) runSync(email string) {
 	s.running[email] = true
 	s.mu.Unlock()
 
+	s.wg.Add(1)
+	defer s.wg.Done()
 	defer func() {
 		s.mu.Lock()
 		s.running[email] = false
@@ -146,8 +171,7 @@ func (s *Scheduler) runSync(email string) {
 	s.logger.Info("starting scheduled sync", "email", email)
 	start := time.Now()
 
-	ctx := context.Background()
-	err := s.syncFunc(ctx, email)
+	err := s.syncFunc(s.ctx, email)
 
 	s.mu.Lock()
 	if err != nil {
@@ -166,15 +190,28 @@ func (s *Scheduler) runSync(email string) {
 	s.mu.Unlock()
 }
 
+// IsScheduled returns true if the account has been added to the scheduler.
+func (s *Scheduler) IsScheduled(email string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, exists := s.jobs[email]
+	return exists
+}
+
 // TriggerSync manually triggers a sync for an account (outside of schedule).
-// Returns an error if a sync is already running for this account.
+// Returns an error if a sync is already running or the account is not scheduled.
 func (s *Scheduler) TriggerSync(email string) error {
 	s.mu.RLock()
-	if s.running[email] {
-		s.mu.RUnlock()
+	_, exists := s.jobs[email]
+	running := s.running[email]
+	s.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("account %s is not scheduled", email)
+	}
+	if running {
 		return fmt.Errorf("sync already running for %s", email)
 	}
-	s.mu.RUnlock()
 
 	go s.runSync(email)
 	return nil

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/wesm/msgvault/internal/scheduler"
@@ -55,6 +56,11 @@ func writeError(w http.ResponseWriter, status int, err string, message string) {
 
 // handleStats returns archive statistics.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "Database not available")
+		return
+	}
+
 	stats, err := s.store.GetStats()
 	if err != nil {
 		s.logger.Error("failed to get stats", "error", err)
@@ -142,7 +148,7 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 			Subject:   m.Subject,
 			From:      m.From,
 			To:        m.To,
-			SentAt:    m.SentAt.Format("2006-01-02T15:04:05Z"),
+			SentAt:    m.SentAt.UTC().Format(time.RFC3339),
 			Snippet:   m.Snippet,
 			Labels:    m.Labels,
 			HasAttach: m.HasAttachments,
@@ -189,7 +195,7 @@ func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 			Subject:   msg.Subject,
 			From:      msg.From,
 			To:        msg.To,
-			SentAt:    msg.SentAt.Format("2006-01-02T15:04:05Z"),
+			SentAt:    msg.SentAt.UTC().Format(time.RFC3339),
 			Snippet:   msg.Snippet,
 			Labels:    msg.Labels,
 			HasAttach: msg.HasAttachments,
@@ -247,7 +253,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			Subject:   m.Subject,
 			From:      m.From,
 			To:        m.To,
-			SentAt:    m.SentAt.Format("2006-01-02T15:04:05Z"),
+			SentAt:    m.SentAt.UTC().Format(time.RFC3339),
 			Snippet:   m.Snippet,
 			Labels:    m.Labels,
 			HasAttach: m.HasAttachments,
@@ -280,10 +286,10 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		for _, status := range s.scheduler.Status() {
 			if status.Email == acc.Email {
 				if !status.LastRun.IsZero() {
-					info.LastSyncAt = status.LastRun.Format("2006-01-02T15:04:05Z")
+					info.LastSyncAt = status.LastRun.UTC().Format(time.RFC3339)
 				}
 				if !status.NextRun.IsZero() {
-					info.NextSyncAt = status.NextRun.Format("2006-01-02T15:04:05Z")
+					info.NextSyncAt = status.NextRun.UTC().Format(time.RFC3339)
 				}
 				break
 			}
@@ -302,6 +308,11 @@ func (s *Server) handleTriggerSync(w http.ResponseWriter, r *http.Request) {
 	account := chi.URLParam(r, "account")
 	if account == "" {
 		writeError(w, http.StatusBadRequest, "missing_account", "Account email is required")
+		return
+	}
+
+	if !s.scheduler.IsScheduled(account) {
+		writeError(w, http.StatusNotFound, "not_found", "Account is not scheduled: "+account)
 		return
 	}
 
