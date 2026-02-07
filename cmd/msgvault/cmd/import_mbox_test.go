@@ -95,3 +95,82 @@ func TestExtractMboxFromZip_DisambiguatesCollidingBaseNames(t *testing.T) {
 		t.Fatalf("expected disambiguated output names, got %q", b0)
 	}
 }
+
+func TestExtractMboxFromZip_FlattensTraversalNamesSafely(t *testing.T) {
+	tmp := t.TempDir()
+
+	zipPath := filepath.Join(tmp, "export.zip")
+	writeZipFile(t, zipPath, map[string]string{
+		"../evil.mbox": "From a@b Sat Jan 1 00:00:00 2024\nSubject: x\n\nBody\n",
+	})
+
+	destDir := filepath.Join(tmp, "extract")
+	files, err := extractMboxFromZip(zipPath, destDir)
+	if err != nil {
+		t.Fatalf("extractMboxFromZip: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("len(files) = %d, want 1", len(files))
+	}
+	if filepath.Dir(files[0]) != destDir {
+		t.Fatalf("expected extracted file under destDir; got %q", files[0])
+	}
+	if filepath.Base(files[0]) != "evil.mbox" {
+		t.Fatalf("expected flattened base name evil.mbox, got %q", filepath.Base(files[0]))
+	}
+}
+
+func TestExtractMboxFromZip_EnforcesEntrySizeLimit(t *testing.T) {
+	tmp := t.TempDir()
+
+	prevEntry := maxZipEntryBytes
+	prevTotal := maxZipTotalBytes
+	maxZipEntryBytes = 10
+	maxZipTotalBytes = 0
+	t.Cleanup(func() {
+		maxZipEntryBytes = prevEntry
+		maxZipTotalBytes = prevTotal
+	})
+
+	zipPath := filepath.Join(tmp, "export.zip")
+	writeZipFile(t, zipPath, map[string]string{
+		"big.mbox": strings.Repeat("a", 11),
+	})
+
+	destDir := filepath.Join(tmp, "extract")
+	_, err := extractMboxFromZip(zipPath, destDir)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("expected limit error, got %v", err)
+	}
+}
+
+func TestExtractMboxFromZip_EnforcesTotalSizeLimit(t *testing.T) {
+	tmp := t.TempDir()
+
+	prevEntry := maxZipEntryBytes
+	prevTotal := maxZipTotalBytes
+	maxZipEntryBytes = 100
+	maxZipTotalBytes = 10
+	t.Cleanup(func() {
+		maxZipEntryBytes = prevEntry
+		maxZipTotalBytes = prevTotal
+	})
+
+	zipPath := filepath.Join(tmp, "export.zip")
+	writeZipFile(t, zipPath, map[string]string{
+		"a.mbox": strings.Repeat("a", 6),
+		"b.mbox": strings.Repeat("b", 6),
+	})
+
+	destDir := filepath.Join(tmp, "extract")
+	_, err := extractMboxFromZip(zipPath, destDir)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("expected limit error, got %v", err)
+	}
+}

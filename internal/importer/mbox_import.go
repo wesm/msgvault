@@ -393,8 +393,8 @@ func storeAttachment(st *store.Store, attachmentsDir string, messageID int64, at
 	storagePath := filepath.Join(subdir, att.ContentHash)
 	fullPath := filepath.Join(attachmentsDir, storagePath)
 
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-		return err
+	if err := fileutil.SecureMkdirAll(filepath.Dir(fullPath), 0700); err != nil {
+		return fmt.Errorf("create attachment dir: %w", err)
 	}
 
 	if _, err := os.Stat(fullPath); errors.Is(err, os.ErrNotExist) {

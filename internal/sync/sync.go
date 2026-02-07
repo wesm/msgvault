@@ -635,8 +635,8 @@ func (s *Syncer) storeAttachment(messageID int64, att *mime.Attachment) error {
 	fullPath := filepath.Join(s.opts.AttachmentsDir, storagePath)
 
 	// Create directory if needed
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-		return err
+	if err := fileutil.SecureMkdirAll(filepath.Dir(fullPath), 0700); err != nil {
+		return fmt.Errorf("create attachment dir: %w", err)
 	}
 
 	// Write file if it doesn't exist (deduplication)

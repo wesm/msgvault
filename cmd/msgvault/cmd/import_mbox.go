@@ -6,10 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -33,6 +35,17 @@ type mboxCheckpoint struct {
 	File   string `json:"file"`
 	Offset int64  `json:"offset"`
 }
+
+var errZipExtractLimitExceeded = errors.New("zip extraction limit exceeded")
+
+var (
+	// These are intentionally very high defaults; they exist to prevent zip-bomb
+	// style resource exhaustion while still supporting large real-world exports.
+	//
+	// Tests may temporarily override these values.
+	maxZipEntryBytes int64 = 50 << 30  // 50 GiB per extracted mbox file
+	maxZipTotalBytes int64 = 200 << 30 // 200 GiB total extracted bytes
+)
 
 var importMboxCmd = &cobra.Command{
 	Use:   "import-mbox <identifier> <export-file>",
@@ -258,15 +271,27 @@ func extractMboxFromZip(zipPath, destDir string) ([]string, error) {
 
 	var outFiles []string
 	seenNames := make(map[string]struct{})
+	var totalWritten int64
 
 	for _, zf := range zr.File {
 		if zf.FileInfo().IsDir() {
 			continue
 		}
-		name := filepath.Base(zf.Name)
+
+		name, err := zipEntryBaseName(zf.Name)
+		if err != nil {
+			return nil, fmt.Errorf("invalid zip entry name %q: %w", zf.Name, err)
+		}
 		ext := strings.ToLower(filepath.Ext(name))
 		if ext != ".mbox" && ext != ".mbx" {
 			continue
+		}
+
+		if maxZipTotalBytes > 0 && totalWritten >= maxZipTotalBytes {
+			return nil, fmt.Errorf("%w: total extracted bytes exceeds limit (%d bytes)", errZipExtractLimitExceeded, maxZipTotalBytes)
+		}
+		if maxZipEntryBytes > 0 && zf.UncompressedSize64 > uint64(maxZipEntryBytes) {
+			return nil, fmt.Errorf("%w: zip entry %q too large (%d bytes > %d bytes)", errZipExtractLimitExceeded, zf.Name, zf.UncompressedSize64, maxZipEntryBytes)
 		}
 
 		outName := name
@@ -278,7 +303,10 @@ func extractMboxFromZip(zipPath, destDir string) ([]string, error) {
 		}
 		seenNames[outName] = struct{}{}
 
-		outPath := filepath.Join(destDir, outName)
+		outPath, err := safeJoinUnderDir(destDir, outName)
+		if err != nil {
+			return nil, fmt.Errorf("invalid extracted path for %q: %w", zf.Name, err)
+		}
 		rc, err := zf.Open()
 		if err != nil {
 			return nil, fmt.Errorf("open zip entry %q: %w", zf.Name, err)
@@ -290,17 +318,37 @@ func extractMboxFromZip(zipPath, destDir string) ([]string, error) {
 			return nil, fmt.Errorf("create extracted file: %w", err)
 		}
 
-		_, copyErr := io.Copy(w, rc)
+		limit := maxZipEntryBytes
+		if maxZipTotalBytes > 0 {
+			remaining := maxZipTotalBytes - totalWritten
+			if remaining <= 0 {
+				_ = w.Close()
+				_ = rc.Close()
+				_ = os.Remove(outPath)
+				return nil, fmt.Errorf("%w: total extracted bytes exceeds limit (%d bytes)", errZipExtractLimitExceeded, maxZipTotalBytes)
+			}
+			if limit <= 0 || remaining < limit {
+				limit = remaining
+			}
+		}
+
+		n, copyErr := copyWithLimit(w, rc, limit)
 		closeErr := w.Close()
 		_ = rc.Close()
 
 		if copyErr != nil {
+			_ = os.Remove(outPath)
+			if errors.Is(copyErr, errZipExtractLimitExceeded) {
+				return nil, fmt.Errorf("%w: extract %q: %v", errZipExtractLimitExceeded, zf.Name, copyErr)
+			}
 			return nil, fmt.Errorf("extract %q: %w", zf.Name, copyErr)
 		}
 		if closeErr != nil {
+			_ = os.Remove(outPath)
 			return nil, fmt.Errorf("close extracted file: %w", closeErr)
 		}
 
+		totalWritten += n
 		outFiles = append(outFiles, outPath)
 	}
 
@@ -311,6 +359,83 @@ func extractMboxFromZip(zipPath, destDir string) ([]string, error) {
 	sort.Strings(outFiles)
 	_ = fileutil.SecureWriteFile(sentinel, []byte("ok\n"), 0600)
 	return outFiles, nil
+}
+
+func zipEntryBaseName(name string) (string, error) {
+	// ZIP uses forward slashes, but some producers include backslashes.
+	cleaned := path.Clean(strings.ReplaceAll(name, "\\", "/"))
+	base := path.Base(cleaned)
+	if base == "." || base == ".." || base == "/" || base == "" {
+		return "", fmt.Errorf("invalid base name %q", base)
+	}
+	// Be strict: the extracted name should be a single path segment.
+	if strings.Contains(base, "/") || strings.Contains(base, "\\") {
+		return "", fmt.Errorf("base name contains path separator: %q", base)
+	}
+	return base, nil
+}
+
+func safeJoinUnderDir(dir, name string) (string, error) {
+	outPath := filepath.Join(dir, name)
+	rel, err := filepath.Rel(dir, outPath)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path escapes destination dir")
+	}
+	return outPath, nil
+}
+
+func copyWithLimit(dst io.Writer, src io.Reader, max int64) (int64, error) {
+	if max <= 0 {
+		n, err := io.Copy(dst, src)
+		return n, err
+	}
+
+	var n int64
+	buf := make([]byte, 32*1024)
+	for {
+		if n == max {
+			// Peek one byte to determine whether there's more data.
+			var one [1]byte
+			nr, er := src.Read(one[:])
+			if nr > 0 {
+				return n, fmt.Errorf("%w: limit %d bytes", errZipExtractLimitExceeded, max)
+			}
+			if er == io.EOF {
+				return n, nil
+			}
+			if er != nil {
+				return n, er
+			}
+			continue
+		}
+
+		toRead := len(buf)
+		rem := max - n
+		if rem < int64(toRead) {
+			toRead = int(rem)
+		}
+
+		nr, er := src.Read(buf[:toRead])
+		if nr > 0 {
+			nw, ew := dst.Write(buf[:nr])
+			n += int64(nw)
+			if ew != nil {
+				return n, ew
+			}
+			if nw != nr {
+				return n, io.ErrShortWrite
+			}
+		}
+		if er != nil {
+			if er == io.EOF {
+				return n, nil
+			}
+			return n, er
+		}
+	}
 }
 
 func findExtractedMboxFiles(dir string) ([]string, error) {
