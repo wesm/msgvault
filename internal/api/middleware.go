@@ -83,6 +83,7 @@ type RateLimiter struct {
 	rate     rate.Limit
 	burst    int
 	ttl      time.Duration
+	stop     chan struct{} // closed by Close() to stop evictLoop
 }
 
 // NewRateLimiter creates a new rate limiter.
@@ -93,24 +94,40 @@ func NewRateLimiter(rps float64, burst int) *RateLimiter {
 		rate:     rate.Limit(rps),
 		burst:    burst,
 		ttl:      10 * time.Minute,
+		stop:     make(chan struct{}),
 	}
 	go rl.evictLoop()
 	return rl
+}
+
+// Close stops the background eviction goroutine.
+func (rl *RateLimiter) Close() {
+	select {
+	case <-rl.stop:
+		// already closed
+	default:
+		close(rl.stop)
+	}
 }
 
 // evictLoop periodically removes stale limiter entries.
 func (rl *RateLimiter) evictLoop() {
 	ticker := time.NewTicker(rl.ttl)
 	defer ticker.Stop()
-	for range ticker.C {
-		rl.mu.Lock()
-		cutoff := time.Now().Add(-rl.ttl)
-		for key, entry := range rl.limiters {
-			if entry.lastSeen.Before(cutoff) {
-				delete(rl.limiters, key)
+	for {
+		select {
+		case <-ticker.C:
+			rl.mu.Lock()
+			cutoff := time.Now().Add(-rl.ttl)
+			for key, entry := range rl.limiters {
+				if entry.lastSeen.Before(cutoff) {
+					delete(rl.limiters, key)
+				}
 			}
+			rl.mu.Unlock()
+		case <-rl.stop:
+			return
 		}
-		rl.mu.Unlock()
 	}
 }
 

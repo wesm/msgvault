@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -33,12 +34,14 @@ type ServerConfig struct {
 }
 
 // IsLoopback returns true if the bind address is a loopback address.
+// Handles the full 127.0.0.0/8 range, IPv6 ::1, and "localhost".
 func (s ServerConfig) IsLoopback() bool {
 	addr := s.BindAddr
-	if addr == "" {
-		addr = "127.0.0.1"
+	if addr == "" || addr == "localhost" {
+		return true
 	}
-	return addr == "127.0.0.1" || addr == "localhost" || addr == "::1"
+	ip := net.ParseIP(addr)
+	return ip != nil && ip.IsLoopback()
 }
 
 // ValidateSecure returns an error if the server is configured insecurely

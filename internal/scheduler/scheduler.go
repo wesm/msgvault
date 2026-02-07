@@ -86,6 +86,14 @@ func (s *Scheduler) AddAccount(email, cronExpr string) error {
 
 	// Validate and add the cron job
 	entryID, err := s.cron.AddFunc(cronExpr, func() {
+		s.mu.Lock()
+		if s.stopped || s.running[email] {
+			s.mu.Unlock()
+			return
+		}
+		s.running[email] = true
+		s.wg.Add(1)
+		s.mu.Unlock()
 		s.runSync(email)
 	})
 	if err != nil {
@@ -177,19 +185,9 @@ func (s *Scheduler) Stop() context.Context {
 	return ctx
 }
 
-// runSync executes sync for an account (called by cron).
+// runSync executes sync for an account (called by cron or TriggerSync).
+// The caller must have already called wg.Add(1) and set running[email] = true.
 func (s *Scheduler) runSync(email string) {
-	// Prevent concurrent syncs for the same account
-	s.mu.Lock()
-	if s.running[email] {
-		s.mu.Unlock()
-		s.logger.Warn("skipping sync, already running", "email", email)
-		return
-	}
-	s.running[email] = true
-	s.mu.Unlock()
-
-	s.wg.Add(1)
 	defer s.wg.Done()
 	defer func() {
 		s.mu.Lock()
@@ -228,20 +226,25 @@ func (s *Scheduler) IsScheduled(email string) bool {
 }
 
 // TriggerSync manually triggers a sync for an account (outside of schedule).
-// Returns an error if a sync is already running or the account is not scheduled.
+// Returns an error if a sync is already running, the account is not scheduled,
+// or the scheduler has been stopped.
 func (s *Scheduler) TriggerSync(email string) error {
-	s.mu.RLock()
-	_, exists := s.jobs[email]
-	running := s.running[email]
-	s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if !exists {
+	if s.stopped {
+		return fmt.Errorf("scheduler is stopped")
+	}
+
+	if _, exists := s.jobs[email]; !exists {
 		return fmt.Errorf("account %s is not scheduled", email)
 	}
-	if running {
+	if s.running[email] {
 		return fmt.Errorf("sync already running for %s", email)
 	}
 
+	s.running[email] = true
+	s.wg.Add(1)
 	go s.runSync(email)
 	return nil
 }

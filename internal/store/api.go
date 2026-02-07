@@ -307,7 +307,10 @@ func scanMessageRows(rows *sql.Rows) ([]APIMessage, []int64, error) {
 		messages = append(messages, m)
 		ids = append(ids, m.ID)
 	}
-	return messages, ids, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterate messages: %w", err)
+	}
+	return messages, ids, nil
 }
 
 // batchPopulate batch-loads recipients and labels for a slice of messages.
@@ -365,7 +368,10 @@ func (s *Store) batchGetRecipients(messageIDs []int64, recipientType string) (ma
 			result[msgID] = append(result[msgID], email)
 		}
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recipients: %w", err)
+	}
+	return result, nil
 }
 
 // batchGetLabels loads labels for multiple messages in a single query.
@@ -403,7 +409,10 @@ func (s *Store) batchGetLabels(messageIDs []int64) (map[int64][]string, error) {
 		}
 		result[msgID] = append(result[msgID], name)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate labels: %w", err)
+	}
+	return result, nil
 }
 
 // Single-message helpers (still used by GetMessage for single PK lookups)
@@ -431,7 +440,10 @@ func (s *Store) getRecipients(messageID int64, recipientType string) ([]string, 
 			recipients = append(recipients, email)
 		}
 	}
-	return recipients, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recipients: %w", err)
+	}
+	return recipients, nil
 }
 
 func (s *Store) getLabels(messageID int64) ([]string, error) {
@@ -455,5 +467,8 @@ func (s *Store) getLabels(messageID int64) ([]string, error) {
 		}
 		labels = append(labels, name)
 	}
-	return labels, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate labels: %w", err)
+	}
+	return labels, nil
 }

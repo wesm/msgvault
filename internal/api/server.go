@@ -3,9 +3,10 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -51,12 +52,13 @@ type AccountStatus struct {
 
 // Server represents the HTTP API server.
 type Server struct {
-	cfg       *config.Config
-	store     MessageStore
-	scheduler SyncScheduler
-	logger    *slog.Logger
-	router    chi.Router
-	server    *http.Server
+	cfg         *config.Config
+	store       MessageStore
+	scheduler   SyncScheduler
+	logger      *slog.Logger
+	router      chi.Router
+	server      *http.Server
+	rateLimiter *RateLimiter
 }
 
 // NewServer creates a new API server.
@@ -95,8 +97,8 @@ func (s *Server) setupRouter() chi.Router {
 	r.Use(CORSMiddleware(corsConfig))
 
 	// Rate limiting (10 req/sec with burst of 20)
-	rateLimiter := NewRateLimiter(10, 20)
-	r.Use(RateLimitMiddleware(rateLimiter))
+	s.rateLimiter = NewRateLimiter(10, 20)
+	r.Use(RateLimitMiddleware(s.rateLimiter))
 
 	// Health check (no auth required)
 	r.Get("/health", s.handleHealth)
@@ -138,7 +140,7 @@ func (s *Server) Start() error {
 	if bindAddr == "" {
 		bindAddr = "127.0.0.1"
 	}
-	addr := fmt.Sprintf("%s:%d", bindAddr, s.cfg.Server.APIPort)
+	addr := net.JoinHostPort(bindAddr, strconv.Itoa(s.cfg.Server.APIPort))
 
 	if s.cfg.Server.APIKey == "" {
 		s.logger.Warn("API server running without authentication — set [server] api_key in config.toml")
@@ -158,6 +160,9 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.rateLimiter != nil {
+		s.rateLimiter.Close()
+	}
 	if s.server == nil {
 		return nil
 	}

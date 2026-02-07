@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -134,7 +136,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		bindAddr = "127.0.0.1"
 	}
 	fmt.Printf("msgvault daemon started\n")
-	fmt.Printf("  API server: http://%s:%d\n", bindAddr, cfg.Server.APIPort)
+	fmt.Printf("  API server: http://%s\n", net.JoinHostPort(bindAddr, strconv.Itoa(cfg.Server.APIPort)))
 	fmt.Printf("  Scheduled accounts: %d\n", count)
 	fmt.Printf("  Data directory: %s\n", cfg.Data.DataDir)
 	fmt.Println()
