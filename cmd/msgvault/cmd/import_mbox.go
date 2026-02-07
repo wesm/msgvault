@@ -298,7 +298,8 @@ func extractMboxFromZip(zipPath, destDir string) ([]string, error) {
 		if _, ok := seenNames[outName]; ok {
 			// Flatten to base name to avoid zip-slip directory traversal.
 			// Disambiguate collisions by suffixing a short hash of the original zip entry name.
-			sum := sha256.Sum256([]byte(zf.Name))
+			cleanName := path.Clean(strings.ReplaceAll(zf.Name, "\\", "/"))
+			sum := sha256.Sum256([]byte(cleanName))
 			outName = fmt.Sprintf("%s_%s%s", strings.TrimSuffix(name, ext), hex.EncodeToString(sum[:4]), ext)
 		}
 		seenNames[outName] = struct{}{}

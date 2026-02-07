@@ -387,6 +387,14 @@ func storeAttachment(st *store.Store, attachmentsDir string, messageID int64, at
 	if attachmentsDir == "" || len(att.Content) == 0 || att.ContentHash == "" {
 		return nil
 	}
+	if len(att.ContentHash) < 2 {
+		return fmt.Errorf("invalid attachment content hash %q", att.ContentHash)
+	}
+	for _, c := range att.ContentHash {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return fmt.Errorf("invalid attachment content hash %q", att.ContentHash)
+		}
+	}
 
 	// Content-addressed storage: first 2 chars / full hash
 	subdir := att.ContentHash[:2]
