@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"log/slog"
 	"net"
 	"net/http"
@@ -217,7 +218,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			authHeader = authHeader[7:]
 		}
 
-		if authHeader != s.cfg.Server.APIKey {
+		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(s.cfg.Server.APIKey)) != 1 {
 			s.logger.Warn("unauthorized API request",
 				"path", r.URL.Path,
 				"remote_addr", r.RemoteAddr,

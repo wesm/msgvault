@@ -235,14 +235,23 @@ func (s *Store) SearchMessages(query string, offset, limit int) ([]APIMessage, i
 	return messages, total, nil
 }
 
+// escapeLike escapes SQL LIKE special characters (%, _) so they are
+// matched literally. The escaped string should be used with ESCAPE '\'.
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
+}
+
 // searchMessagesLike is a fallback search using LIKE with batch-loaded recipients and labels.
 func (s *Store) searchMessagesLike(query string, offset, limit int) ([]APIMessage, int64, error) {
-	likePattern := "%" + query + "%"
+	likePattern := "%" + escapeLike(query) + "%"
 
 	countQuery := `
 		SELECT COUNT(*) FROM messages
 		WHERE deleted_from_source_at IS NULL
-		AND (subject LIKE ? OR snippet LIKE ?)
+		AND (subject LIKE ? ESCAPE '\' OR snippet LIKE ? ESCAPE '\')
 	`
 	var total int64
 	if err := s.db.QueryRow(countQuery, likePattern, likePattern).Scan(&total); err != nil {
@@ -262,7 +271,7 @@ func (s *Store) searchMessagesLike(query string, offset, limit int) ([]APIMessag
 		LEFT JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
 		LEFT JOIN participants p ON p.id = mr.participant_id
 		WHERE m.deleted_from_source_at IS NULL
-		AND (m.subject LIKE ? OR m.snippet LIKE ?)
+		AND (m.subject LIKE ? ESCAPE '\' OR m.snippet LIKE ? ESCAPE '\')
 		ORDER BY COALESCE(m.sent_at, m.received_at, m.internal_date) DESC
 		LIMIT ? OFFSET ?
 	`

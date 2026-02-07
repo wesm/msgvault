@@ -249,10 +249,12 @@ func (c *Config) ScheduledAccounts() []AccountSchedule {
 
 // GetAccountSchedule returns the schedule for a specific account email.
 // Returns nil if the account is not configured for scheduling.
+// The returned value is a copy, so mutations won't affect the config.
 func (c *Config) GetAccountSchedule(email string) *AccountSchedule {
 	for i := range c.Accounts {
 		if c.Accounts[i].Email == email {
-			return &c.Accounts[i]
+			acc := c.Accounts[i]
+			return &acc
 		}
 	}
 	return nil
