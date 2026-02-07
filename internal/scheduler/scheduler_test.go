@@ -428,6 +428,28 @@ func TestStatusAfterSyncError(t *testing.T) {
 	t.Error("test@gmail.com not found in status")
 }
 
+func TestTriggerSyncAfterStop(t *testing.T) {
+	s := New(func(ctx context.Context, email string) error {
+		return nil
+	})
+
+	if err := s.AddAccount("test@gmail.com", "0 0 1 1 *"); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
+
+	ctx := s.Stop()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Stop() did not complete in time")
+	}
+
+	err := s.TriggerSync("test@gmail.com")
+	if err == nil {
+		t.Error("TriggerSync() after Stop() = nil, want error")
+	}
+}
+
 func TestValidateCronExpr(t *testing.T) {
 	tests := []struct {
 		expr    string

@@ -78,12 +78,13 @@ type rateLimiterEntry struct {
 
 // RateLimiter provides per-IP rate limiting with TTL-based eviction.
 type RateLimiter struct {
-	mu       sync.Mutex
-	limiters map[string]*rateLimiterEntry
-	rate     rate.Limit
-	burst    int
-	ttl      time.Duration
-	stop     chan struct{} // closed by Close() to stop evictLoop
+	mu        sync.Mutex
+	limiters  map[string]*rateLimiterEntry
+	rate      rate.Limit
+	burst     int
+	ttl       time.Duration
+	stop      chan struct{} // closed by Close() to stop evictLoop
+	closeOnce sync.Once
 }
 
 // NewRateLimiter creates a new rate limiter.
@@ -100,14 +101,10 @@ func NewRateLimiter(rps float64, burst int) *RateLimiter {
 	return rl
 }
 
-// Close stops the background eviction goroutine.
+// Close stops the background eviction goroutine. Safe to call multiple
+// times concurrently.
 func (rl *RateLimiter) Close() {
-	select {
-	case <-rl.stop:
-		// already closed
-	default:
-		close(rl.stop)
-	}
+	rl.closeOnce.Do(func() { close(rl.stop) })
 }
 
 // evictLoop periodically removes stale limiter entries.

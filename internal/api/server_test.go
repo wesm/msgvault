@@ -328,10 +328,14 @@ func TestSecurityValidation(t *testing.T) {
 		wantError bool
 	}{
 		{"loopback no key", config.ServerConfig{BindAddr: "127.0.0.1"}, false},
+		{"loopback 127.0.0.2 no key", config.ServerConfig{BindAddr: "127.0.0.2"}, false},
+		{"loopback 127.255.255.254 no key", config.ServerConfig{BindAddr: "127.255.255.254"}, false},
+		{"ipv6 loopback no key", config.ServerConfig{BindAddr: "::1"}, false},
 		{"localhost no key", config.ServerConfig{BindAddr: "localhost"}, false},
 		{"empty addr no key", config.ServerConfig{BindAddr: ""}, false},
 		{"non-loopback with key", config.ServerConfig{BindAddr: "0.0.0.0", APIKey: "secret"}, false},
 		{"non-loopback no key", config.ServerConfig{BindAddr: "0.0.0.0"}, true},
+		{"non-loopback ipv6 no key", config.ServerConfig{BindAddr: "::"}, true},
 		{"non-loopback insecure override", config.ServerConfig{BindAddr: "0.0.0.0", AllowInsecure: true}, false},
 	}
 
