@@ -36,3 +36,5 @@ __pycache__/
 *.swp
 *.swo
 .projects/
+
+devdata
