@@ -444,6 +444,12 @@ func (s *Syncer) parseToModel(sourceID int64, raw *gmail.RawMessage, threadID st
 	ensureAddressUTF8(parsed.Cc)
 	ensureAddressUTF8(parsed.Bcc)
 
+	// Ensure attachment filenames and content types are valid UTF-8
+	for i := range parsed.Attachments {
+		parsed.Attachments[i].Filename = textutil.EnsureUTF8(parsed.Attachments[i].Filename)
+		parsed.Attachments[i].ContentType = textutil.EnsureUTF8(parsed.Attachments[i].ContentType)
+	}
+
 	// Ensure participants exist in database
 	allAddresses := append(append(append(parsed.From, parsed.To...), parsed.Cc...), parsed.Bcc...)
 	participantMap, err := s.store.EnsureParticipantsBatch(allAddresses)

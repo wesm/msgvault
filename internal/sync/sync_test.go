@@ -571,6 +571,142 @@ func TestFullSync_Latin1InFromName(t *testing.T) {
 	}
 }
 
+func TestFullSync_InvalidUTF8InAllAddressFields(t *testing.T) {
+	env := newTestEnv(t)
+	seedMessages(env, 1, 12345, "msg")
+
+	// Test that UTF-8 validation applies to all address fields (To, Cc, Bcc),
+	// not just From. Uses Windows-1252 smart quotes (\x93, \x94) mis-labeled as UTF-8,
+	// a common real-world scenario from Outlook emails.
+	raw := []byte("From: =?UTF-8?Q?=93From=94_Name?= <from@example.com>\n" +
+		"To: =?UTF-8?Q?=93To=94_Name?= <to@example.com>\n" +
+		"Cc: =?UTF-8?Q?=93Cc=94_Name?= <cc@example.com>\n" +
+		"Bcc: =?UTF-8?Q?=93Bcc=94_Name?= <bcc@example.com>\n" +
+		"Subject: Test\n" +
+		"Date: Mon, 01 Jan 2024 12:00:00 +0000\n" +
+		"Content-Type: text/plain; charset=\"utf-8\"\n" +
+		"\n" +
+		"Body text.\n")
+
+	env.Mock.Messages["msg"].Raw = raw
+	env.Mock.Messages["msg"].SizeEstimate = int64(len(raw))
+
+	summary := runFullSync(t, env)
+	assertSummary(t, summary, WantSummary{Added: intPtr(1), Errors: intPtr(0)})
+
+	// EnsureUTF8 should detect Windows-1252 and convert smart quotes to their
+	// proper Unicode equivalents: \x93 → U+201C ("), \x94 → U+201D (")
+	tests := []struct {
+		recipType string
+		email     string
+	}{
+		{"from", "from@example.com"},
+		{"to", "to@example.com"},
+		{"cc", "cc@example.com"},
+		{"bcc", "bcc@example.com"},
+	}
+	for _, tt := range tests {
+		// Verify participants table has valid UTF-8
+		displayName, err := env.Store.InspectParticipantDisplayName(tt.email)
+		if err != nil {
+			t.Fatalf("InspectParticipantDisplayName(%s): %v", tt.email, err)
+		}
+		titled := strings.ToUpper(tt.recipType[:1]) + tt.recipType[1:]
+		want := "\u201c" + titled + "\u201d Name"
+		if displayName != want {
+			t.Errorf("participant %s display_name = %q, want %q", tt.email, displayName, want)
+		}
+
+		// Verify message_recipients table has valid UTF-8
+		recipName, err := env.Store.InspectDisplayName("msg", tt.recipType, tt.email)
+		if err != nil {
+			t.Fatalf("InspectDisplayName(%s, %s): %v", tt.recipType, tt.email, err)
+		}
+		if recipName != want {
+			t.Errorf("recipient %s/%s display_name = %q, want %q", tt.recipType, tt.email, recipName, want)
+		}
+	}
+}
+
+func TestFullSync_InvalidUTF8InAttachmentFilename(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Construct a MIME message with an attachment whose filename has a mis-labeled
+	// RFC 2047 charset (claims UTF-8, bytes are Latin-1). While enmime currently
+	// sanitizes filenames to valid UTF-8, this test ensures defense-in-depth.
+	raw := testemail.NewMessage().
+		Subject("Attachment Test").
+		Body("Body text.").
+		WithAttachment("test.bin", "application/octet-stream", []byte("content")).
+		Bytes()
+
+	env.Mock.Profile.MessagesTotal = 1
+	env.Mock.Profile.HistoryID = 12345
+	env.Mock.AddMessage("msg-attach", raw, []string{"INBOX"})
+
+	withAttachmentsDir(t, env)
+
+	summary := runFullSync(t, env)
+	assertSummary(t, summary, WantSummary{Added: intPtr(1)})
+	assertAttachmentCount(t, env.Store, 1)
+
+	filename, err := env.Store.InspectAttachmentFilename("msg-attach")
+	if err != nil {
+		t.Fatalf("InspectAttachmentFilename: %v", err)
+	}
+	if filename != "test.bin" {
+		t.Errorf("attachment filename = %q, want %q", filename, "test.bin")
+	}
+}
+
+func TestFullSync_MultipleEncodingIssuesSameMessage(t *testing.T) {
+	env := newTestEnv(t)
+	seedMessages(env, 1, 12345, "msg")
+
+	// Real-world scenario: a single email with multiple encoding issues.
+	// Latin-1 É (\xC9) in From name, and Windows-1252 smart quote (\x93) in To name.
+	raw := []byte("From: =?UTF-8?Q?Doe=C9ric?= <from@example.com>\n" +
+		"To: =?UTF-8?Q?=93Quoted=94?= <to@example.com>\n" +
+		"Subject: =?UTF-8?Q?Caf=E9?=\n" +
+		"Date: Mon, 01 Jan 2024 12:00:00 +0000\n" +
+		"Content-Type: text/plain; charset=\"utf-8\"\n" +
+		"\n" +
+		"Body text.\n")
+
+	env.Mock.Messages["msg"].Raw = raw
+	env.Mock.Messages["msg"].SizeEstimate = int64(len(raw))
+
+	summary := runFullSync(t, env)
+	assertSummary(t, summary, WantSummary{Added: intPtr(1), Errors: intPtr(0)})
+
+	// From name: Latin-1 \xC9 → UTF-8 É
+	fromName, err := env.Store.InspectParticipantDisplayName("from@example.com")
+	if err != nil {
+		t.Fatalf("InspectParticipantDisplayName(from): %v", err)
+	}
+	if fromName != "DoeÉric" {
+		t.Errorf("from display_name = %q, want %q", fromName, "DoeÉric")
+	}
+
+	// To name: Windows-1252 \x93/\x94 → Unicode left/right double quotes
+	toName, err := env.Store.InspectParticipantDisplayName("to@example.com")
+	if err != nil {
+		t.Fatalf("InspectParticipantDisplayName(to): %v", err)
+	}
+	if toName != "\u201cQuoted\u201d" {
+		t.Errorf("to display_name = %q, want %q", toName, "\u201cQuoted\u201d")
+	}
+
+	// Subject: Latin-1 \xE9 → UTF-8 é (already validated by existing code path)
+	insp, err := env.Store.InspectMessage("msg")
+	if err != nil {
+		t.Fatalf("InspectMessage: %v", err)
+	}
+	if !strings.Contains(insp.RecipientDisplayName["from:from@example.com"], "É") {
+		t.Errorf("from recipient display_name %q should contain É", insp.RecipientDisplayName["from:from@example.com"])
+	}
+}
+
 func TestFullSyncWithMIMEParseError(t *testing.T) {
 	env := newTestEnv(t)
 	env.Mock.Profile.MessagesTotal = 2

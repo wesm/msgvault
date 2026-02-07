@@ -197,6 +197,18 @@ func (s *Store) InspectThreadSourceID(sourceMessageID string) (string, error) {
 	return threadSourceID, err
 }
 
+// InspectAttachmentFilename returns the filename for the first attachment of a message.
+func (s *Store) InspectAttachmentFilename(sourceMessageID string) (string, error) {
+	var filename string
+	err := s.db.QueryRow(s.Rebind(`
+		SELECT a.filename FROM attachments a
+		JOIN messages m ON a.message_id = m.id
+		WHERE m.source_message_id = ?
+		LIMIT 1
+	`), sourceMessageID).Scan(&filename)
+	return filename, err
+}
+
 // InspectMessageDates returns sent_at and internal_date for a message.
 func (s *Store) InspectMessageDates(sourceMessageID string) (sentAt, internalDate string, err error) {
 	err = s.db.QueryRow(s.Rebind(
