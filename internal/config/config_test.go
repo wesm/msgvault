@@ -13,7 +13,7 @@ func TestServerConfigDefaults(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("MSGVAULT_HOME", tmpDir)
 
-	cfg, err := Load("")
+	cfg, err := Load("", "")
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -34,7 +34,7 @@ func TestAccountScheduleEmpty(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("MSGVAULT_HOME", tmpDir)
 
-	cfg, err := Load("")
+	cfg, err := Load("", "")
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -74,7 +74,7 @@ enabled = false
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	cfg, err := Load(configPath)
+	cfg, err := Load(configPath, "")
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -186,10 +186,11 @@ func TestExpandPath(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		input    string
-		expected string
-		unixOnly bool // skip on Windows (uses Unix-style absolute paths)
+		name        string
+		input       string
+		expected    string
+		unixOnly    bool // skip on Windows (uses Unix-style absolute paths)
+		windowsOnly bool // skip on non-Windows (quote stripping is Windows-only)
 	}{
 		{
 			name:     "empty string",
@@ -222,6 +223,34 @@ func TestExpandPath(t *testing.T) {
 			expected: filepath.Join(home, "foo"),
 		},
 		{
+			name:        "single-quoted path (Windows CMD)",
+			input:       `'C:\Users\wesmc\testing'`,
+			expected:    `C:\Users\wesmc\testing`,
+			windowsOnly: true,
+		},
+		{
+			name:        "double-quoted path (Windows CMD)",
+			input:       `"C:\Users\wesmc\testing"`,
+			expected:    `C:\Users\wesmc\testing`,
+			windowsOnly: true,
+		},
+		{
+			name:        "single-quoted tilde path",
+			input:       "'~/custom-data'",
+			expected:    filepath.Join(home, "custom-data"),
+			windowsOnly: true,
+		},
+		{
+			name:     "mismatched quotes not stripped",
+			input:    `'C:\Users\wesmc"`,
+			expected: `'C:\Users\wesmc"`,
+		},
+		{
+			name:     "single char not stripped",
+			input:    "'",
+			expected: "'",
+		},
+		{
 			name:     "absolute path unchanged",
 			input:    "/var/log/test",
 			expected: "/var/log/test",
@@ -250,6 +279,9 @@ func TestExpandPath(t *testing.T) {
 			if tt.unixOnly && runtime.GOOS == "windows" {
 				t.Skip("skipping Unix-specific path test on Windows")
 			}
+			if tt.windowsOnly && runtime.GOOS != "windows" {
+				t.Skip("skipping Windows-specific path test on non-Windows")
+			}
 			got := expandPath(tt.input)
 			if got != tt.expected {
 				t.Errorf("expandPath(%q) = %q, want %q", tt.input, got, tt.expected)
@@ -264,7 +296,7 @@ func TestLoadEmptyPath(t *testing.T) {
 	t.Setenv("MSGVAULT_HOME", tmpDir)
 
 	// Load with empty path should use defaults
-	cfg, err := Load("")
+	cfg, err := Load("", "")
 	if err != nil {
 		t.Fatalf("Load(\"\") failed: %v", err)
 	}
@@ -308,7 +340,7 @@ rate_limit_qps = 10
 		t.Fatalf("failed to write config file: %v", err)
 	}
 
-	cfg, err := Load("")
+	cfg, err := Load("", "")
 	if err != nil {
 		t.Fatalf("Load(\"\") failed: %v", err)
 	}
@@ -336,7 +368,7 @@ rate_limit_qps = 10
 
 func TestLoadExplicitPathNotFound(t *testing.T) {
 	// When --config explicitly specifies a file that doesn't exist, Load should error
-	_, err := Load("/nonexistent/path/config.toml")
+	_, err := Load("/nonexistent/path/config.toml", "")
 	if err == nil {
 		t.Fatal("Load with explicit nonexistent path should return error")
 	}
@@ -363,7 +395,7 @@ rate_limit_qps = 3
 		t.Fatalf("failed to write config file: %v", err)
 	}
 
-	cfg, err := Load(configPath)
+	cfg, err := Load(configPath, "")
 	if err != nil {
 		t.Fatalf("Load(%q) failed: %v", configPath, err)
 	}
@@ -404,7 +436,7 @@ data_dir = "` + filepath.ToSlash(customDataDir) + `"
 		t.Fatalf("failed to write config file: %v", err)
 	}
 
-	cfg, err := Load(configPath)
+	cfg, err := Load(configPath, "")
 	if err != nil {
 		t.Fatalf("Load(%q) failed: %v", configPath, err)
 	}
@@ -437,7 +469,7 @@ client_secrets = "secrets/client.json"
 		t.Fatalf("failed to write config file: %v", err)
 	}
 
-	cfg, err := Load(configPath)
+	cfg, err := Load(configPath, "")
 	if err != nil {
 		t.Fatalf("Load(%q) failed: %v", configPath, err)
 	}
@@ -473,7 +505,7 @@ func TestLoadExplicitPathWithTilde(t *testing.T) {
 	}
 	tildePath := "~" + tmpDir[len(home):] + "/config.toml"
 
-	cfg, err := Load(tildePath)
+	cfg, err := Load(tildePath, "")
 	if err != nil {
 		t.Fatalf("Load(%q) failed: %v", tildePath, err)
 	}
@@ -491,7 +523,7 @@ func TestLoadConfigFilePath(t *testing.T) {
 		t.Fatalf("failed to write config file: %v", err)
 	}
 
-	cfg, err := Load(configPath)
+	cfg, err := Load(configPath, "")
 	if err != nil {
 		t.Fatalf("Load(%q) failed: %v", configPath, err)
 	}
@@ -626,6 +658,122 @@ func TestMkTempDir(t *testing.T) {
 		assertTempDirSecured(t, expectedBase)
 		assertTempDirSecured(t, dir)
 	})
+}
+
+func TestLoadBackslashErrorHint(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "invalid escape (backslash G)",
+			// \G is not a valid TOML escape → "invalid escape" error
+			content: "[data]\ndata_dir = \"C:\\Games\\msgvault\"\n",
+		},
+		{
+			name: "unicode escape (backslash U)",
+			// \U is a TOML Unicode escape expecting 8 hex digits → "hexadecimal digits" error
+			content: "[data]\ndata_dir = \"C:\\Users\\wesmc\\msgvault\"\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			t.Setenv("MSGVAULT_HOME", tmpDir)
+
+			configPath := filepath.Join(tmpDir, "config.toml")
+			if err := os.WriteFile(configPath, []byte(tt.content), 0o644); err != nil {
+				t.Fatalf("failed to write config file: %v", err)
+			}
+
+			_, err := Load("", "")
+			if err == nil {
+				t.Fatal("Load should fail on TOML backslash error")
+			}
+
+			errMsg := err.Error()
+			if !strings.Contains(errMsg, "hint:") {
+				t.Errorf("error should contain hint, got: %s", errMsg)
+			}
+			if !strings.Contains(errMsg, "forward slashes") {
+				t.Errorf("error should mention forward slashes, got: %s", errMsg)
+			}
+			if !strings.Contains(errMsg, "single quotes") {
+				t.Errorf("error should mention single quotes, got: %s", errMsg)
+			}
+		})
+	}
+}
+
+func TestLoadWithHomeDir(t *testing.T) {
+	homeDir := t.TempDir()
+
+	cfg, err := Load("", homeDir)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.HomeDir != homeDir {
+		t.Errorf("HomeDir = %q, want %q", cfg.HomeDir, homeDir)
+	}
+	if cfg.Data.DataDir != homeDir {
+		t.Errorf("Data.DataDir = %q, want %q", cfg.Data.DataDir, homeDir)
+	}
+
+	// Derived paths should use the home directory
+	expectedDB := filepath.Join(homeDir, "msgvault.db")
+	if cfg.DatabaseDSN() != expectedDB {
+		t.Errorf("DatabaseDSN() = %q, want %q", cfg.DatabaseDSN(), expectedDB)
+	}
+	expectedTokens := filepath.Join(homeDir, "tokens")
+	if cfg.TokensDir() != expectedTokens {
+		t.Errorf("TokensDir() = %q, want %q", cfg.TokensDir(), expectedTokens)
+	}
+}
+
+func TestLoadWithHomeDirReadsConfig(t *testing.T) {
+	// --home should load config.toml from that directory
+	homeDir := t.TempDir()
+	configPath := filepath.Join(homeDir, "config.toml")
+	configContent := `[sync]
+rate_limit_qps = 42
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load("", homeDir)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.Sync.RateLimitQPS != 42 {
+		t.Errorf("Sync.RateLimitQPS = %d, want 42", cfg.Sync.RateLimitQPS)
+	}
+	if cfg.HomeDir != homeDir {
+		t.Errorf("HomeDir = %q, want %q", cfg.HomeDir, homeDir)
+	}
+}
+
+func TestLoadWithHomeDirExpandsTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("failed to get user home dir: %v", err)
+	}
+
+	cfg, err := Load("", "~/custom-data")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	expected := filepath.Join(home, "custom-data")
+	if cfg.HomeDir != expected {
+		t.Errorf("HomeDir = %q, want %q", cfg.HomeDir, expected)
+	}
+	if cfg.Data.DataDir != expected {
+		t.Errorf("Data.DataDir = %q, want %q", cfg.Data.DataDir, expected)
+	}
 }
 
 func TestNewDefaultConfig(t *testing.T) {

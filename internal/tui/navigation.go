@@ -84,13 +84,18 @@ func calculateScrollOffset(cursor, currentOffset, pageSize int) int {
 	return currentOffset
 }
 
-func (m *Model) ensureThreadCursorVisible() {
-	// Use pageSize-1 because views reserve one row for the info/notification line
-	visibleRows := m.pageSize - 1
-	if visibleRows < 1 {
-		visibleRows = 1
+// visibleRows returns the number of data rows visible in the viewport.
+// Views reserve one row for the info/notification line, so this is pageSize-1.
+func (m *Model) visibleRows() int {
+	v := m.pageSize - 1
+	if v < 1 {
+		return 1
 	}
-	m.threadScrollOffset = calculateScrollOffset(m.threadCursor, m.threadScrollOffset, visibleRows)
+	return v
+}
+
+func (m *Model) ensureThreadCursorVisible() {
+	m.threadScrollOffset = calculateScrollOffset(m.threadCursor, m.threadScrollOffset, m.visibleRows())
 }
 
 func (m Model) navigateDetailPrev() (tea.Model, tea.Cmd) {
@@ -188,12 +193,7 @@ func (m Model) goBack() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) ensureCursorVisible() {
-	// Use pageSize-1 because views reserve one row for the info/notification line
-	visibleRows := m.pageSize - 1
-	if visibleRows < 1 {
-		visibleRows = 1
-	}
-	m.scrollOffset = calculateScrollOffset(m.cursor, m.scrollOffset, visibleRows)
+	m.scrollOffset = calculateScrollOffset(m.cursor, m.scrollOffset, m.visibleRows())
 }
 
 func (m *Model) pushBreadcrumb() {
@@ -215,20 +215,35 @@ func (m *Model) navigateList(key string, itemCount int) bool {
 			changed = true
 		}
 	case "pgup", "ctrl+u":
-		m.cursor -= m.pageSize
+		step := m.visibleRows()
+		m.cursor -= step
+		m.scrollOffset -= step
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
-		changed = true
+		if m.scrollOffset < 0 {
+			m.scrollOffset = 0
+		}
+		return true
 	case "pgdown", "ctrl+d":
-		m.cursor += m.pageSize
+		step := m.visibleRows()
+		m.cursor += step
+		m.scrollOffset += step
 		if m.cursor >= itemCount {
 			m.cursor = itemCount - 1
 		}
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
-		changed = true
+		// Clamp scroll so cursor stays visible and we don't scroll past the end
+		maxScroll := itemCount - m.visibleRows()
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if m.scrollOffset > maxScroll {
+			m.scrollOffset = maxScroll
+		}
+		return true
 	case "home":
 		m.cursor = 0
 		m.scrollOffset = 0

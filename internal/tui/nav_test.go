@@ -3,6 +3,7 @@ package tui
 import (
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wesm/msgvault/internal/query"
 )
 
@@ -197,6 +198,342 @@ func TestNavigateList(t *testing.T) {
 			}
 			if m.cursor != tt.wantCursor {
 				t.Errorf("navigateList(%q, %d) cursor = %d, want %d", tt.key, tt.itemCount, m.cursor, tt.wantCursor)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Page Up/Down Scroll Tests
+// =============================================================================
+
+func TestNavigateListPageDown(t *testing.T) {
+	tests := []struct {
+		name             string
+		pageSize         int // raw pageSize; visibleRows = pageSize - 1
+		itemCount        int
+		initCursor       int
+		initScrollOffset int
+		wantCursor       int
+		wantScrollOffset int
+	}{
+		{
+			name:             "moves by visibleRows not pageSize",
+			pageSize:         24,
+			itemCount:        100,
+			initCursor:       0,
+			initScrollOffset: 0,
+			wantCursor:       23, // visibleRows = 24 - 1 = 23
+			wantScrollOffset: 23,
+		},
+		{
+			name:             "preserves relative cursor position",
+			pageSize:         24,
+			itemCount:        100,
+			initCursor:       5,
+			initScrollOffset: 0,
+			wantCursor:       28, // 5 + 23
+			wantScrollOffset: 23, // 0 + 23
+		},
+		{
+			name:             "clamps cursor at end of list",
+			pageSize:         24,
+			itemCount:        30,
+			initCursor:       20,
+			initScrollOffset: 10,
+			wantCursor:       29, // clamped to itemCount-1
+			wantScrollOffset: 7,  // clamped: 30 - 23 = 7
+		},
+		{
+			name:             "clamps scroll at max",
+			pageSize:         24,
+			itemCount:        40,
+			initCursor:       25,
+			initScrollOffset: 15,
+			wantCursor:       39, // clamped to 39
+			wantScrollOffset: 17, // max: 40 - 23 = 17
+		},
+		{
+			name:             "small list fewer items than visibleRows",
+			pageSize:         24,
+			itemCount:        10,
+			initCursor:       3,
+			initScrollOffset: 0,
+			wantCursor:       9,
+			wantScrollOffset: 0, // max scroll = 0 since items < visibleRows
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewBuilder().WithPageSizeRaw(tt.pageSize).Build()
+			m.cursor = tt.initCursor
+			m.scrollOffset = tt.initScrollOffset
+
+			handled := m.navigateList("pgdown", tt.itemCount)
+			if !handled {
+				t.Fatal("expected pgdown to be handled")
+			}
+			if m.cursor != tt.wantCursor {
+				t.Errorf("cursor = %d, want %d", m.cursor, tt.wantCursor)
+			}
+			if m.scrollOffset != tt.wantScrollOffset {
+				t.Errorf("scrollOffset = %d, want %d", m.scrollOffset, tt.wantScrollOffset)
+			}
+		})
+	}
+}
+
+func TestNavigateListPageUp(t *testing.T) {
+	tests := []struct {
+		name             string
+		pageSize         int
+		itemCount        int
+		initCursor       int
+		initScrollOffset int
+		wantCursor       int
+		wantScrollOffset int
+	}{
+		{
+			name:             "moves by visibleRows not pageSize",
+			pageSize:         24,
+			itemCount:        100,
+			initCursor:       50,
+			initScrollOffset: 30,
+			wantCursor:       27, // 50 - 23
+			wantScrollOffset: 7,  // 30 - 23
+		},
+		{
+			name:             "preserves relative cursor position",
+			pageSize:         24,
+			itemCount:        100,
+			initCursor:       30,
+			initScrollOffset: 25,
+			wantCursor:       7,
+			wantScrollOffset: 2,
+		},
+		{
+			name:             "clamps cursor at top",
+			pageSize:         24,
+			itemCount:        100,
+			initCursor:       10,
+			initScrollOffset: 5,
+			wantCursor:       0,
+			wantScrollOffset: 0,
+		},
+		{
+			name:             "clamps scroll at zero",
+			pageSize:         24,
+			itemCount:        100,
+			initCursor:       30,
+			initScrollOffset: 10,
+			wantCursor:       7, // 30 - 23
+			wantScrollOffset: 0, // clamped to 0
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewBuilder().WithPageSizeRaw(tt.pageSize).Build()
+			m.cursor = tt.initCursor
+			m.scrollOffset = tt.initScrollOffset
+
+			handled := m.navigateList("pgup", tt.itemCount)
+			if !handled {
+				t.Fatal("expected pgup to be handled")
+			}
+			if m.cursor != tt.wantCursor {
+				t.Errorf("cursor = %d, want %d", m.cursor, tt.wantCursor)
+			}
+			if m.scrollOffset != tt.wantScrollOffset {
+				t.Errorf("scrollOffset = %d, want %d", m.scrollOffset, tt.wantScrollOffset)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Thread View Page Up/Down Tests
+// =============================================================================
+
+func TestThreadViewPageDown(t *testing.T) {
+	tests := []struct {
+		name             string
+		pageSize         int
+		threadMsgCount   int
+		initCursor       int
+		initScrollOffset int
+		wantCursor       int
+		wantScrollOffset int
+	}{
+		{
+			name:             "moves by visibleRows not pageSize",
+			pageSize:         24,
+			threadMsgCount:   100,
+			initCursor:       0,
+			initScrollOffset: 0,
+			wantCursor:       23,
+			wantScrollOffset: 23,
+		},
+		{
+			name:             "preserves relative cursor position",
+			pageSize:         24,
+			threadMsgCount:   100,
+			initCursor:       5,
+			initScrollOffset: 0,
+			wantCursor:       28,
+			wantScrollOffset: 23,
+		},
+		{
+			name:             "clamps at end of thread",
+			pageSize:         24,
+			threadMsgCount:   30,
+			initCursor:       20,
+			initScrollOffset: 10,
+			wantCursor:       29,
+			wantScrollOffset: 7,
+		},
+		{
+			name:             "small thread fewer items than visibleRows",
+			pageSize:         24,
+			threadMsgCount:   5,
+			initCursor:       1,
+			initScrollOffset: 0,
+			wantCursor:       4,
+			wantScrollOffset: 0,
+		},
+		{
+			name:             "empty thread",
+			pageSize:         24,
+			threadMsgCount:   0,
+			initCursor:       0,
+			initScrollOffset: 0,
+			wantCursor:       0,
+			wantScrollOffset: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewBuilder().
+				WithLevel(levelThreadView).
+				WithPageSizeRaw(tt.pageSize).
+				WithLoading(false).
+				Build()
+			m.threadMessages = makeMessages(tt.threadMsgCount)
+			m.threadCursor = tt.initCursor
+			m.threadScrollOffset = tt.initScrollOffset
+
+			m, _ = sendKey(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
+
+			if m.threadCursor != tt.wantCursor {
+				t.Errorf("threadCursor = %d, want %d", m.threadCursor, tt.wantCursor)
+			}
+			if m.threadScrollOffset != tt.wantScrollOffset {
+				t.Errorf("threadScrollOffset = %d, want %d", m.threadScrollOffset, tt.wantScrollOffset)
+			}
+		})
+	}
+}
+
+func TestThreadViewPageUp(t *testing.T) {
+	tests := []struct {
+		name             string
+		pageSize         int
+		threadMsgCount   int
+		initCursor       int
+		initScrollOffset int
+		wantCursor       int
+		wantScrollOffset int
+	}{
+		{
+			name:             "moves by visibleRows not pageSize",
+			pageSize:         24,
+			threadMsgCount:   100,
+			initCursor:       50,
+			initScrollOffset: 30,
+			wantCursor:       27,
+			wantScrollOffset: 7,
+		},
+		{
+			name:             "preserves relative cursor position",
+			pageSize:         24,
+			threadMsgCount:   100,
+			initCursor:       30,
+			initScrollOffset: 25,
+			wantCursor:       7,
+			wantScrollOffset: 2,
+		},
+		{
+			name:             "clamps at top",
+			pageSize:         24,
+			threadMsgCount:   100,
+			initCursor:       10,
+			initScrollOffset: 5,
+			wantCursor:       0,
+			wantScrollOffset: 0,
+		},
+		{
+			name:             "small thread",
+			pageSize:         24,
+			threadMsgCount:   5,
+			initCursor:       4,
+			initScrollOffset: 0,
+			wantCursor:       0,
+			wantScrollOffset: 0,
+		},
+		{
+			name:             "empty thread",
+			pageSize:         24,
+			threadMsgCount:   0,
+			initCursor:       0,
+			initScrollOffset: 0,
+			wantCursor:       0,
+			wantScrollOffset: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewBuilder().
+				WithLevel(levelThreadView).
+				WithPageSizeRaw(tt.pageSize).
+				WithLoading(false).
+				Build()
+			m.threadMessages = makeMessages(tt.threadMsgCount)
+			m.threadCursor = tt.initCursor
+			m.threadScrollOffset = tt.initScrollOffset
+
+			m, _ = sendKey(t, m, tea.KeyMsg{Type: tea.KeyPgUp})
+
+			if m.threadCursor != tt.wantCursor {
+				t.Errorf("threadCursor = %d, want %d", m.threadCursor, tt.wantCursor)
+			}
+			if m.threadScrollOffset != tt.wantScrollOffset {
+				t.Errorf("threadScrollOffset = %d, want %d", m.threadScrollOffset, tt.wantScrollOffset)
+			}
+		})
+	}
+}
+
+func TestVisibleRows(t *testing.T) {
+	tests := []struct {
+		name     string
+		pageSize int
+		want     int
+	}{
+		{"normal", 24, 23},
+		{"small", 2, 1},
+		{"minimum clamped", 1, 1},
+		{"zero clamped", 0, 1},
+		{"negative clamped", -5, 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewBuilder().WithPageSizeRaw(tt.pageSize).Build()
+			if got := m.visibleRows(); got != tt.want {
+				t.Errorf("visibleRows() = %d, want %d", got, tt.want)
 			}
 		})
 	}

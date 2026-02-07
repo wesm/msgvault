@@ -810,20 +810,33 @@ func (m Model) handleThreadViewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ensureThreadCursorVisible()
 		}
 	case "pgup", "ctrl+u":
-		m.threadCursor -= m.pageSize
+		step := m.visibleRows()
+		m.threadCursor -= step
+		m.threadScrollOffset -= step
 		if m.threadCursor < 0 {
 			m.threadCursor = 0
 		}
-		m.ensureThreadCursorVisible()
+		if m.threadScrollOffset < 0 {
+			m.threadScrollOffset = 0
+		}
 	case "pgdown", "ctrl+d":
-		m.threadCursor += m.pageSize
-		if m.threadCursor >= len(m.threadMessages) {
-			m.threadCursor = len(m.threadMessages) - 1
+		step := m.visibleRows()
+		itemCount := len(m.threadMessages)
+		m.threadCursor += step
+		m.threadScrollOffset += step
+		if m.threadCursor >= itemCount {
+			m.threadCursor = itemCount - 1
 		}
 		if m.threadCursor < 0 {
 			m.threadCursor = 0
 		}
-		m.ensureThreadCursorVisible()
+		maxScroll := itemCount - m.visibleRows()
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if m.threadScrollOffset > maxScroll {
+			m.threadScrollOffset = maxScroll
+		}
 
 	// View message detail
 	case "enter":

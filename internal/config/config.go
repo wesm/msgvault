@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -104,10 +105,20 @@ func NewDefaultConfig() *Config {
 // If path is empty, uses the default location (~/.msgvault/config.toml),
 // which is optional (missing file returns defaults).
 // If path is explicitly provided, the file must exist.
-func Load(path string) (*Config, error) {
+//
+// homeDir overrides the home directory (equivalent to MSGVAULT_HOME).
+// When set, config.toml is loaded from homeDir unless path is also set.
+func Load(path, homeDir string) (*Config, error) {
 	explicit := path != ""
 
 	cfg := NewDefaultConfig()
+
+	// --home overrides the default home directory, just like MSGVAULT_HOME.
+	if homeDir != "" {
+		homeDir = expandPath(homeDir)
+		cfg.HomeDir = homeDir
+		cfg.Data.DataDir = homeDir
+	}
 
 	if !explicit {
 		path = filepath.Join(cfg.HomeDir, "config.toml")
@@ -127,15 +138,21 @@ func Load(path string) (*Config, error) {
 
 	cfg.configPath = path
 
-	// When --config points to a custom location, derive HomeDir and
-	// default DataDir from the config file's parent directory so that
-	// tokens, database, attachments, etc. live alongside the config.
-	if explicit {
+	// When --config points to a custom location without --home,
+	// derive HomeDir and default DataDir from the config file's parent
+	// directory so that tokens, database, attachments, etc. live alongside
+	// the config.
+	if explicit && homeDir == "" {
 		cfg.HomeDir = filepath.Dir(path)
 		cfg.Data.DataDir = cfg.HomeDir
 	}
 
 	if _, err := toml.DecodeFile(path, cfg); err != nil {
+		if strings.Contains(err.Error(), "invalid escape") ||
+			strings.Contains(err.Error(), "hexadecimal digits after") {
+			return nil, fmt.Errorf("decode config: %w\n\nhint: Windows paths in TOML must use "+
+				"forward slashes (C:/Games/msgvault) or single quotes ('C:\\Games\\msgvault').", err)
+		}
 		return nil, fmt.Errorf("decode config: %w", err)
 	}
 
@@ -277,9 +294,19 @@ func resolveRelative(path, base string) string {
 
 // expandPath expands ~ to the user's home directory.
 // Only expands paths that are exactly "~" or start with "~/".
+// It also strips surrounding single or double quotes, which Windows CMD
+// passes through literally (unlike Unix shells which strip them).
 func expandPath(path string) string {
 	if path == "" {
 		return path
+	}
+	// Strip surrounding quotes left by Windows CMD (e.g. --home 'C:\Users\foo').
+	// Only on Windows — Unix shells strip quotes before the process sees them,
+	// and literal quote characters in Unix paths are valid (if unusual).
+	if runtime.GOOS == "windows" && len(path) >= 2 &&
+		((path[0] == '\'' && path[len(path)-1] == '\'') ||
+			(path[0] == '"' && path[len(path)-1] == '"')) {
+		path = path[1 : len(path)-1]
 	}
 	if path == "~" || strings.HasPrefix(path, "~"+string(os.PathSeparator)) || strings.HasPrefix(path, "~/") {
 		home, err := os.UserHomeDir()

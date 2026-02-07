@@ -42,7 +42,7 @@ enabled = false
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, err := config.Load(configPath)
+	cfg, err := config.Load(configPath, "")
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -126,7 +126,7 @@ client_secrets = "/path/to/secrets.json"
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, err := config.Load(configPath)
+	cfg, err := config.Load(configPath, "")
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
