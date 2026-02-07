@@ -22,9 +22,6 @@ func TestServerConfigDefaults(t *testing.T) {
 	if cfg.Server.APIPort != 8080 {
 		t.Errorf("Server.APIPort = %d, want 8080", cfg.Server.APIPort)
 	}
-	if cfg.Server.MCPEnabled != false {
-		t.Errorf("Server.MCPEnabled = %v, want false", cfg.Server.MCPEnabled)
-	}
 	if cfg.Server.APIKey != "" {
 		t.Errorf("Server.APIKey = %q, want empty", cfg.Server.APIKey)
 	}
@@ -57,7 +54,6 @@ func TestLoadWithServerConfig(t *testing.T) {
 [server]
 api_port = 9090
 api_key = "test-secret-key"
-mcp_enabled = true
 
 [[accounts]]
 email = "test@gmail.com"
@@ -85,9 +81,6 @@ enabled = false
 	}
 	if cfg.Server.APIKey != "test-secret-key" {
 		t.Errorf("Server.APIKey = %q, want test-secret-key", cfg.Server.APIKey)
-	}
-	if cfg.Server.MCPEnabled != true {
-		t.Errorf("Server.MCPEnabled = %v, want true", cfg.Server.MCPEnabled)
 	}
 
 	// Check accounts
@@ -803,6 +796,34 @@ func TestLoadWithHomeDirExpandsTilde(t *testing.T) {
 	}
 	if cfg.Data.DataDir != expected {
 		t.Errorf("Data.DataDir = %q, want %q", cfg.Data.DataDir, expected)
+	}
+}
+
+// TestLoadDeprecatedMCPEnabled verifies that old config files containing the
+// removed mcp_enabled field still load successfully. BurntSushi/toml silently
+// ignores unknown keys, so existing configs should not break after the field
+// was removed from ServerConfig.
+func TestLoadDeprecatedMCPEnabled(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("MSGVAULT_HOME", tmpDir)
+
+	configContent := `
+[server]
+api_port = 9090
+mcp_enabled = true
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load("", "")
+	if err != nil {
+		t.Fatalf("Load() should succeed with deprecated mcp_enabled, got error: %v", err)
+	}
+
+	if cfg.Server.APIPort != 9090 {
+		t.Errorf("Server.APIPort = %d, want 9090", cfg.Server.APIPort)
 	}
 }
 

@@ -26,7 +26,6 @@ type ServerConfig struct {
 	APIPort         int      `toml:"api_port"`         // HTTP server port (default: 8080)
 	BindAddr        string   `toml:"bind_addr"`        // Bind address (default: 127.0.0.1)
 	APIKey          string   `toml:"api_key"`          // API authentication key
-	MCPEnabled      bool     `toml:"mcp_enabled"`      // Enable MCP server endpoint
 	AllowInsecure   bool     `toml:"allow_insecure"`   // Allow unauthenticated non-loopback access
 	CORSOrigins     []string `toml:"cors_origins"`     // Allowed CORS origins (empty = disabled)
 	CORSCredentials bool     `toml:"cors_credentials"` // Allow credentials in CORS
@@ -121,9 +120,8 @@ func NewDefaultConfig() *Config {
 			MaxResults: 20,
 		},
 		Server: ServerConfig{
-			APIPort:    8080,
-			BindAddr:   "127.0.0.1",
-			MCPEnabled: false,
+			APIPort:  8080,
+			BindAddr: "127.0.0.1",
 		},
 		Accounts: []AccountSchedule{},
 	}

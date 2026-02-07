@@ -20,7 +20,6 @@ client_secrets = "/path/to/secrets.json"
 [server]
 api_port = 9090
 api_key = "test-key"
-mcp_enabled = true
 
 [[accounts]]
 email = "user1@gmail.com"
@@ -53,9 +52,6 @@ enabled = false
 	}
 	if cfg.Server.APIKey != "test-key" {
 		t.Errorf("APIKey = %q, want test-key", cfg.Server.APIKey)
-	}
-	if !cfg.Server.MCPEnabled {
-		t.Error("MCPEnabled = false, want true")
 	}
 
 	// Verify scheduled accounts

@@ -521,6 +521,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 			m.id,
 			m.source_message_id,
 			m.conversation_id,
+			COALESCE(conv.source_conversation_id, ''),
 			COALESCE(m.subject, ''),
 			COALESCE(m.snippet, ''),
 			COALESCE(p_sender.email_address, ''),
@@ -533,6 +534,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		FROM messages m
 		LEFT JOIN message_recipients mr_sender ON mr_sender.message_id = m.id AND mr_sender.recipient_type = 'from'
 		LEFT JOIN participants p_sender ON p_sender.id = mr_sender.participant_id
+		LEFT JOIN conversations conv ON conv.id = m.conversation_id
 		%s
 		WHERE %s
 		ORDER BY %s
@@ -556,6 +558,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 			&msg.ID,
 			&msg.SourceMessageID,
 			&msg.ConversationID,
+			&msg.SourceConversationID,
 			&msg.Subject,
 			&msg.Snippet,
 			&msg.FromEmail,
@@ -655,6 +658,7 @@ func (e *SQLiteEngine) getMessageByQuery(ctx context.Context, whereClause string
 			m.id,
 			m.source_message_id,
 			m.conversation_id,
+			COALESCE(conv.source_conversation_id, ''),
 			COALESCE(m.subject, ''),
 			COALESCE(m.snippet, ''),
 			m.sent_at,
@@ -662,6 +666,7 @@ func (e *SQLiteEngine) getMessageByQuery(ctx context.Context, whereClause string
 			COALESCE(m.size_estimate, 0),
 			m.has_attachments
 		FROM messages m
+		LEFT JOIN conversations conv ON conv.id = m.conversation_id
 		WHERE %s
 	`, whereClause)
 
@@ -671,6 +676,7 @@ func (e *SQLiteEngine) getMessageByQuery(ctx context.Context, whereClause string
 		&msg.ID,
 		&msg.SourceMessageID,
 		&msg.ConversationID,
+		&msg.SourceConversationID,
 		&msg.Subject,
 		&msg.Snippet,
 		&sentAt,
@@ -1344,6 +1350,7 @@ func (e *SQLiteEngine) Search(ctx context.Context, q *search.Query, limit, offse
 			m.id,
 			m.source_message_id,
 			m.conversation_id,
+			COALESCE(conv.source_conversation_id, ''),
 			COALESCE(m.subject, ''),
 			COALESCE(m.snippet, ''),
 			COALESCE(p_sender.email_address, ''),
@@ -1356,6 +1363,7 @@ func (e *SQLiteEngine) Search(ctx context.Context, q *search.Query, limit, offse
 		FROM messages m
 		LEFT JOIN message_recipients mr_sender ON mr_sender.message_id = m.id AND mr_sender.recipient_type = 'from'
 		LEFT JOIN participants p_sender ON p_sender.id = mr_sender.participant_id
+		LEFT JOIN conversations conv ON conv.id = m.conversation_id
 		%s
 		%s
 		WHERE %s
@@ -1380,6 +1388,7 @@ func (e *SQLiteEngine) Search(ctx context.Context, q *search.Query, limit, offse
 			&msg.ID,
 			&msg.SourceMessageID,
 			&msg.ConversationID,
+			&msg.SourceConversationID,
 			&msg.Subject,
 			&msg.Snippet,
 			&msg.FromEmail,

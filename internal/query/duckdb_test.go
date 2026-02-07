@@ -2087,7 +2087,11 @@ func TestDuckDBEngine_AggregateByRecipientName_EmptyStringFallback(t *testing.T)
 		`).
 		addEmptyTable("labels", "labels", "labels.parquet", labelsCols, `(1::BIGINT, 'x')`).
 		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
-		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`))
+		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`).
+		addTable("conversations", "conversations", "conversations.parquet", conversationsCols, `
+			(100::BIGINT, 'thread100'),
+			(101::BIGINT, 'thread101')
+		`))
 
 	ctx := context.Background()
 	results, err := engine.Aggregate(ctx, ViewRecipientNames, DefaultAggregateOptions())
@@ -2132,7 +2136,11 @@ func TestDuckDBEngine_ListMessages_MatchEmptyRecipientName(t *testing.T) {
 		`).
 		addEmptyTable("labels", "labels", "labels.parquet", labelsCols, `(1::BIGINT, 'x')`).
 		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
-		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`))
+		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`).
+		addTable("conversations", "conversations", "conversations.parquet", conversationsCols, `
+			(100::BIGINT, 'thread100'),
+			(101::BIGINT, 'thread101')
+		`))
 
 	ctx := context.Background()
 	filter := MessageFilter{EmptyValueTargets: map[ViewType]bool{ViewRecipientNames: true}}
@@ -2724,7 +2732,11 @@ func TestDuckDBEngine_VARCHARParquetColumns(t *testing.T) {
 		`).
 		addEmptyTable("labels", "labels", "labels.parquet", labelsCols, `(1::BIGINT, 'x')`).
 		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
-		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, '100', 'x')`))
+		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, '100', 'x')`).
+		addTable("conversations", "conversations", "conversations.parquet", conversationsCols, `
+			(100::BIGINT, 'thread100'),
+			(101::BIGINT, 'thread101')
+		`))
 
 	ctx := context.Background()
 

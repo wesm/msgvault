@@ -73,6 +73,12 @@ type AttachmentFixture struct {
 	Filename  string
 }
 
+// ConversationFixture defines a conversation row for Parquet test data.
+type ConversationFixture struct {
+	ID                   int64
+	SourceConversationID string
+}
+
 // ---------------------------------------------------------------------------
 // TestDataBuilder: typed builder that generates Parquet test data
 // ---------------------------------------------------------------------------
@@ -86,13 +92,14 @@ type TestDataBuilder struct {
 	nextLabelID int64
 	nextConvID  int64
 
-	sources      []SourceFixture
-	messages     []MessageFixture
-	participants []ParticipantFixture
-	recipients   []RecipientFixture
-	labels       []LabelFixture
-	msgLabels    []MessageLabelFixture
-	attachments  []AttachmentFixture
+	sources       []SourceFixture
+	messages      []MessageFixture
+	participants  []ParticipantFixture
+	recipients    []RecipientFixture
+	labels        []LabelFixture
+	msgLabels     []MessageLabelFixture
+	attachments   []AttachmentFixture
+	conversations []ConversationFixture
 
 	emptyAttachments bool // if true, write empty attachments file
 }
@@ -192,6 +199,22 @@ func (b *TestDataBuilder) AddMessage(opt MessageOpt) int64 {
 		Year:            sentAt.Year(),
 		Month:           int(sentAt.Month()),
 	})
+
+	// Track conversation if not already present
+	convExists := false
+	for _, c := range b.conversations {
+		if c.ID == convID {
+			convExists = true
+			break
+		}
+	}
+	if !convExists {
+		b.conversations = append(b.conversations, ConversationFixture{
+			ID:                   convID,
+			SourceConversationID: fmt.Sprintf("thread%d", convID),
+		})
+	}
+
 	return id
 }
 
@@ -316,6 +339,13 @@ func (b *TestDataBuilder) attachmentsSQL() string {
 	})
 }
 
+func (b *TestDataBuilder) conversationsSQL() string {
+	return joinRows(b.conversations, func(c ConversationFixture) string {
+		return fmt.Sprintf("(%d::BIGINT, %s)",
+			c.ID, sqlStr(c.SourceConversationID))
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Build: generate Parquet files
 // ---------------------------------------------------------------------------
@@ -329,6 +359,7 @@ const (
 	labelsCols            = "id, name"
 	messageLabelsCols     = "message_id, label_id"
 	attachmentsCols       = "message_id, size, filename"
+	conversationsCols     = "id, source_conversation_id"
 )
 
 // Build generates Parquet files from the accumulated data and returns the
@@ -358,7 +389,7 @@ func (b *TestDataBuilder) addMessageTables(pb *parquetBuilder) {
 	}
 }
 
-// addAuxiliaryTables adds sources, participants, recipients, labels, and message_labels.
+// addAuxiliaryTables adds sources, participants, recipients, labels, message_labels, and conversations.
 func (b *TestDataBuilder) addAuxiliaryTables(pb *parquetBuilder) {
 	auxTables := []struct {
 		name, subdir, file, cols, dummy, sql string
@@ -369,6 +400,7 @@ func (b *TestDataBuilder) addAuxiliaryTables(pb *parquetBuilder) {
 		{"message_recipients", "message_recipients", "message_recipients.parquet", messageRecipientsCols, "(0::BIGINT, 0::BIGINT, '', '')", b.recipientsSQL(), len(b.recipients) == 0},
 		{"labels", "labels", "labels.parquet", labelsCols, "(0::BIGINT, '')", b.labelsSQL(), len(b.labels) == 0},
 		{"message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, "(0::BIGINT, 0::BIGINT)", b.messageLabelsSQL(), len(b.msgLabels) == 0},
+		{"conversations", "conversations", "conversations.parquet", conversationsCols, "(0::BIGINT, '')", b.conversationsSQL(), len(b.conversations) == 0},
 	}
 	for _, a := range auxTables {
 		if a.empty {

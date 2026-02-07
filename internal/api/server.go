@@ -13,6 +13,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/wesm/msgvault/internal/config"
+	"github.com/wesm/msgvault/internal/scheduler"
+	"github.com/wesm/msgvault/internal/store"
 )
 
 // MessageStore defines the store operations the API needs.
@@ -23,15 +25,8 @@ type MessageStore interface {
 	SearchMessages(query string, offset, limit int) ([]APIMessage, int64, error)
 }
 
-// StoreStats holds aggregate statistics from the store.
-type StoreStats struct {
-	MessageCount    int64
-	ThreadCount     int64
-	SourceCount     int64
-	LabelCount      int64
-	AttachmentCount int64
-	DatabaseSize    int64
-}
+// StoreStats is an alias for store.Stats — single source of truth.
+type StoreStats = store.Stats
 
 // SyncScheduler defines the scheduler operations the API needs.
 type SyncScheduler interface {
@@ -41,15 +36,8 @@ type SyncScheduler interface {
 	IsRunning() bool
 }
 
-// AccountStatus represents the sync status of a scheduled account.
-type AccountStatus struct {
-	Email     string    `json:"email"`
-	Running   bool      `json:"running"`
-	LastRun   time.Time `json:"last_run,omitempty"`
-	NextRun   time.Time `json:"next_run"`
-	Schedule  string    `json:"schedule"`
-	LastError string    `json:"last_error,omitempty"`
-}
+// AccountStatus is an alias for scheduler.AccountStatus — single source of truth.
+type AccountStatus = scheduler.AccountStatus
 
 // Server represents the HTTP API server.
 type Server struct {

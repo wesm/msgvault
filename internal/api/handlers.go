@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/wesm/msgvault/internal/store"
 )
 
 // StatsResponse represents the archive statistics.
@@ -19,28 +20,12 @@ type StatsResponse struct {
 	DatabaseSize  int64 `json:"database_size_bytes"`
 }
 
-// APIMessage represents a message from the store.
-type APIMessage struct {
-	ID             int64
-	Subject        string
-	From           string
-	To             []string
-	SentAt         time.Time
-	Snippet        string
-	Labels         []string
-	HasAttachments bool
-	SizeEstimate   int64
-	Body           string
-	Headers        map[string]string
-	Attachments    []APIAttachment
-}
+// APIMessage is an alias for store.APIMessage — single source of truth for
+// the message DTO shared between the store and API layers.
+type APIMessage = store.APIMessage
 
-// APIAttachment represents attachment metadata.
-type APIAttachment struct {
-	Filename string
-	MimeType string
-	Size     int64
-}
+// APIAttachment is an alias for store.APIAttachment.
+type APIAttachment = store.APIAttachment
 
 // AccountInfo represents an account in list responses.
 type AccountInfo struct {
