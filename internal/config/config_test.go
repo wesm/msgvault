@@ -179,6 +179,36 @@ func TestGetAccountSchedule(t *testing.T) {
 	}
 }
 
+func TestGetAccountScheduleReturnsCopy(t *testing.T) {
+	cfg := &Config{
+		Accounts: []AccountSchedule{
+			{Email: "test@gmail.com", Schedule: "0 2 * * *", Enabled: true},
+		},
+	}
+
+	// Get a reference and mutate it
+	acc := cfg.GetAccountSchedule("test@gmail.com")
+	if acc == nil {
+		t.Fatal("GetAccountSchedule returned nil")
+	}
+
+	// Mutate the returned copy
+	acc.Schedule = "modified"
+	acc.Enabled = false
+	acc.Email = "hacked@gmail.com"
+
+	// Original config must be unchanged
+	if cfg.Accounts[0].Schedule != "0 2 * * *" {
+		t.Errorf("original Schedule = %q, want '0 2 * * *' (mutation leaked)", cfg.Accounts[0].Schedule)
+	}
+	if cfg.Accounts[0].Enabled != true {
+		t.Error("original Enabled = false, want true (mutation leaked)")
+	}
+	if cfg.Accounts[0].Email != "test@gmail.com" {
+		t.Errorf("original Email = %q, want test@gmail.com (mutation leaked)", cfg.Accounts[0].Email)
+	}
+}
+
 func TestExpandPath(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
