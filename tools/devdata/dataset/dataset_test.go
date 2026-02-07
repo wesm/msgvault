@@ -6,6 +6,33 @@ import (
 	"testing"
 )
 
+func TestValidateDatasetName(t *testing.T) {
+	valid := []string{"gold", "dev", "test-data", "my_dataset", "v2", "A", "foo123", "a-b_c"}
+	for _, name := range valid {
+		if err := ValidateDatasetName(name); err != nil {
+			t.Errorf("ValidateDatasetName(%q) = %v, want nil", name, err)
+		}
+	}
+
+	invalid := []string{
+		"",                           // empty
+		"../etc",                     // path traversal
+		"test db",                    // space
+		"'; DROP TABLE messages; --", // SQL injection
+		"foo/bar",                    // slash
+		"test\x00name",               // null byte
+		"hello world",                // space
+		"a.b",                        // dot
+		"data!",                      // exclamation
+		"name\nline",                 // newline
+	}
+	for _, name := range invalid {
+		if err := ValidateDatasetName(name); err == nil {
+			t.Errorf("ValidateDatasetName(%q) = nil, want error", name)
+		}
+	}
+}
+
 func TestIsSymlink(t *testing.T) {
 	dir := t.TempDir()
 

@@ -2,6 +2,7 @@ package dataset
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -100,7 +101,7 @@ func createTestSourceDB(t *testing.T, dir string, messageCount int) string {
 		_, err = db.Exec(`
 			INSERT INTO messages (id, conversation_id, source_id, source_message_id, message_type, sent_at, sender_id, subject)
 			VALUES (?, ?, 1, ?, 'email', datetime('2024-01-01', '+' || ? || ' hours'), ?, ?)`,
-			i, convID, i, i, senderID, "Subject "+string(rune('A'+i%26)))
+			i, convID, fmt.Sprintf("msg_%d", i), i, senderID, "Subject "+string(rune('A'+i%26)))
 		if err != nil {
 			t.Fatalf("insert message %d: %v", i, err)
 		}
@@ -166,37 +167,49 @@ func TestCopySubset_Basic(t *testing.T) {
 	var count int64
 
 	// Messages
-	db.QueryRow("SELECT COUNT(*) FROM messages").Scan(&count)
+	if err := db.QueryRow("SELECT COUNT(*) FROM messages").Scan(&count); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
 	if count != 5 {
 		t.Errorf("destination messages = %d, want 5", count)
 	}
 
 	// Participants should be present
-	db.QueryRow("SELECT COUNT(*) FROM participants").Scan(&count)
+	if err := db.QueryRow("SELECT COUNT(*) FROM participants").Scan(&count); err != nil {
+		t.Fatalf("count participants: %v", err)
+	}
 	if count == 0 {
 		t.Error("expected participants to be copied")
 	}
 
 	// Conversations should be present
-	db.QueryRow("SELECT COUNT(*) FROM conversations").Scan(&count)
+	if err := db.QueryRow("SELECT COUNT(*) FROM conversations").Scan(&count); err != nil {
+		t.Fatalf("count conversations: %v", err)
+	}
 	if count == 0 {
 		t.Error("expected conversations to be copied")
 	}
 
 	// Labels should be present
-	db.QueryRow("SELECT COUNT(*) FROM labels").Scan(&count)
+	if err := db.QueryRow("SELECT COUNT(*) FROM labels").Scan(&count); err != nil {
+		t.Fatalf("count labels: %v", err)
+	}
 	if count == 0 {
 		t.Error("expected labels to be copied")
 	}
 
 	// Message labels
-	db.QueryRow("SELECT COUNT(*) FROM message_labels").Scan(&count)
+	if err := db.QueryRow("SELECT COUNT(*) FROM message_labels").Scan(&count); err != nil {
+		t.Fatalf("count message_labels: %v", err)
+	}
 	if count == 0 {
 		t.Error("expected message_labels to be copied")
 	}
 
 	// Message bodies
-	db.QueryRow("SELECT COUNT(*) FROM message_bodies").Scan(&count)
+	if err := db.QueryRow("SELECT COUNT(*) FROM message_bodies").Scan(&count); err != nil {
+		t.Fatalf("count message_bodies: %v", err)
+	}
 	if count != 5 {
 		t.Errorf("destination message_bodies = %d, want 5", count)
 	}
@@ -309,15 +322,24 @@ func TestCopySubset_DestinationExists(t *testing.T) {
 
 	srcDB := createTestSourceDB(t, srcDir, 5)
 
-	// Create destination first
-	os.MkdirAll(dstDir, 0755)
+	// Create destination directory (but not the database file).
+	// MkdirAll is idempotent so CopySubset should succeed.
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := CopySubset(srcDB, dstDir, 5)
-	// The copy should still work since MkdirAll doesn't error on existing dirs,
-	// but the newdata command validates this. Let's verify it doesn't corrupt.
+	result, err := CopySubset(srcDB, dstDir, 5)
 	if err != nil {
-		// This is acceptable — destination db may conflict
-		return
+		t.Fatalf("CopySubset with pre-existing dir: %v", err)
+	}
+
+	if result.Messages != 5 {
+		t.Errorf("Messages = %d, want 5", result.Messages)
+	}
+
+	// Verify database was actually created
+	if _, err := os.Stat(filepath.Join(dstDir, "msgvault.db")); err != nil {
+		t.Errorf("msgvault.db not created in pre-existing directory: %v", err)
 	}
 }
 
@@ -342,6 +364,27 @@ func TestCopySubset_SQLInjectionInPath(t *testing.T) {
 	}
 }
 
+func TestCopySubset_ControlCharInPath(t *testing.T) {
+	dstDir := filepath.Join(t.TempDir(), "dst")
+	base := t.TempDir()
+
+	// Paths with control characters should be rejected.
+	// These are expected to fail before any file I/O (rejected by the
+	// control character check), so the paths need not exist on disk.
+	controlPaths := []string{
+		filepath.Join(base, "test\ndb", "msgvault.db"),   // newline
+		filepath.Join(base, "test\tdb", "msgvault.db"),   // tab
+		filepath.Join(base, "test\x7Fdb", "msgvault.db"), // DEL
+		filepath.Join(base, "test\x01db", "msgvault.db"), // SOH
+	}
+	for _, p := range controlPaths {
+		_, err := CopySubset(p, dstDir, 5)
+		if err == nil {
+			t.Errorf("CopySubset(%q) = nil error, want control character rejection", p)
+		}
+	}
+}
+
 func TestCopyFileIfExists(t *testing.T) {
 	dir := t.TempDir()
 
@@ -352,7 +395,7 @@ func TestCopyFileIfExists(t *testing.T) {
 	}
 
 	dstFile := filepath.Join(dir, "dst-config.toml")
-	if err := CopyFileIfExists(srcFile, dstFile); err != nil {
+	if err := CopyFileIfExists(srcFile, dstFile, dir); err != nil {
 		t.Fatalf("CopyFileIfExists: %v", err)
 	}
 
@@ -365,12 +408,36 @@ func TestCopyFileIfExists(t *testing.T) {
 	}
 
 	// Test with non-existent file (should not error)
-	if err := CopyFileIfExists(filepath.Join(dir, "nonexistent"), filepath.Join(dir, "out")); err != nil {
+	if err := CopyFileIfExists(filepath.Join(dir, "nonexistent"), filepath.Join(dir, "out"), dir); err != nil {
 		t.Fatalf("CopyFileIfExists for missing file: %v", err)
 	}
 
 	// Test with relative paths (should error)
-	if err := CopyFileIfExists("relative/path", filepath.Join(dir, "out")); err == nil {
+	if err := CopyFileIfExists("relative/path", filepath.Join(dir, "out"), dir); err == nil {
 		t.Error("expected error for relative source path")
+	}
+}
+
+func TestCopyFileIfExists_SymlinkEscape(t *testing.T) {
+	// Create a dataset directory and an outside directory
+	datasetDir := t.TempDir()
+	outsideDir := t.TempDir()
+
+	// Create a file outside the dataset
+	outsideFile := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(outsideFile, []byte("secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a symlink inside the dataset pointing outside
+	symlinkPath := filepath.Join(datasetDir, "escape.txt")
+	if err := os.Symlink(outsideFile, symlinkPath); err != nil {
+		t.Fatal(err)
+	}
+
+	dstFile := filepath.Join(t.TempDir(), "out.txt")
+	err := CopyFileIfExists(symlinkPath, dstFile, datasetDir)
+	if err == nil {
+		t.Error("expected error for symlink escaping containDir")
 	}
 }

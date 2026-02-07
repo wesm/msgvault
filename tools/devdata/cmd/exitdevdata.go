@@ -20,8 +20,14 @@ func init() {
 }
 
 func runExitDevData(cmd *cobra.Command, args []string) error {
-	path := msgvaultPath()
-	goldPath := datasetPath("gold")
+	path, err := msgvaultPath()
+	if err != nil {
+		return err
+	}
+	goldPath, err := datasetPath("gold")
+	if err != nil {
+		return err
+	}
 
 	// Check if in dev mode
 	isSym, err := dataset.IsSymlink(path)
@@ -43,16 +49,13 @@ func runExitDevData(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%s not found; cannot restore without gold copy", goldPath)
 	}
 
-	// Re-verify symlink immediately before removal (Lstat guard)
-	info, err := os.Lstat(path)
-	if err != nil {
+	// Lstat guard + remove: re-verify symlink immediately before os.Remove
+	// to prevent accidental deletion of a real directory via race condition.
+	if info, err := os.Lstat(path); err != nil {
 		return fmt.Errorf("lstat %s: %w", path, err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
+	} else if info.Mode()&os.ModeSymlink == 0 {
 		return fmt.Errorf("%s is no longer a symlink; aborting to prevent accidental data deletion", path)
 	}
-
-	// Remove symlink
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("remove symlink %s: %w", path, err)
 	}

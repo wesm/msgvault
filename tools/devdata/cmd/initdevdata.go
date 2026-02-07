@@ -20,8 +20,14 @@ func init() {
 }
 
 func runInitDevData(cmd *cobra.Command, args []string) error {
-	path := msgvaultPath()
-	goldPath := datasetPath("gold")
+	path, err := msgvaultPath()
+	if err != nil {
+		return err
+	}
+	goldPath, err := datasetPath("gold")
+	if err != nil {
+		return err
+	}
 
 	// Check if already a symlink (already initialized)
 	isSym, err := dataset.IsSymlink(path)

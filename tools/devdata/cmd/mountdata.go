@@ -25,8 +25,18 @@ func init() {
 }
 
 func runMountData(cmd *cobra.Command, args []string) error {
-	path := msgvaultPath()
-	target := datasetPath(mountDatasetFlag)
+	if err := dataset.ValidateDatasetName(mountDatasetFlag); err != nil {
+		return err
+	}
+
+	path, err := msgvaultPath()
+	if err != nil {
+		return err
+	}
+	target, err := datasetPath(mountDatasetFlag)
+	if err != nil {
+		return err
+	}
 
 	// Verify ~/.msgvault is a symlink
 	isSym, err := dataset.IsSymlink(path)
@@ -43,7 +53,11 @@ func runMountData(cmd *cobra.Command, args []string) error {
 
 	// Verify target dataset exists
 	if !dataset.Exists(target) {
-		datasets, _ := dataset.ListDatasets(homeDir())
+		home, err := homeDir()
+		if err != nil {
+			return err
+		}
+		datasets, _ := dataset.ListDatasets(home)
 		var names []string
 		for _, d := range datasets {
 			if !d.IsDefault {

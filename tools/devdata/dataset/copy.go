@@ -30,9 +30,22 @@ type CopyResult struct {
 func CopySubset(srcDBPath, dstDir string, rowCount int) (*CopyResult, error) {
 	start := time.Now()
 
+	// Track whether we created the directory so cleanup only removes what we made.
+	createdDir := false
+	if _, err := os.Stat(dstDir); os.IsNotExist(err) {
+		createdDir = true
+	}
+
 	// Create destination directory
 	if err := os.MkdirAll(dstDir, 0700); err != nil {
 		return nil, fmt.Errorf("create destination directory: %w", err)
+	}
+
+	// cleanupDir removes the destination only if CopySubset created it.
+	cleanupDir := func() {
+		if createdDir {
+			_ = os.RemoveAll(dstDir)
+		}
 	}
 
 	dstDBPath := filepath.Join(dstDir, "msgvault.db")
@@ -40,87 +53,116 @@ func CopySubset(srcDBPath, dstDir string, rowCount int) (*CopyResult, error) {
 	// Phase 1: Create destination DB with schema using store.Open + InitSchema
 	st, err := store.Open(dstDBPath)
 	if err != nil {
-		os.RemoveAll(dstDir)
+		cleanupDir()
 		return nil, fmt.Errorf("create destination database: %w", err)
 	}
 	if err := st.InitSchema(); err != nil {
-		st.Close()
-		os.RemoveAll(dstDir)
+		_ = st.Close()
+		cleanupDir()
 		return nil, fmt.Errorf("initialize schema: %w", err)
 	}
-	st.Close()
+	if err := st.Close(); err != nil {
+		cleanupDir()
+		return nil, fmt.Errorf("close schema database: %w", err)
+	}
 
 	// Phase 2: Re-open with foreign keys OFF for bulk copy
 	dsn := dstDBPath + "?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=OFF"
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
-		os.RemoveAll(dstDir)
+		cleanupDir()
 		return nil, fmt.Errorf("reopen database: %w", err)
 	}
+	// NOTE: On error paths, cleanupDir() may remove the DB file before this
+	// deferred Close runs. That is harmless — Close on a deleted file is a no-op.
 	defer db.Close()
 
-	// Sanitize source path for ATTACH: reject null bytes, escape single quotes
-	if strings.ContainsRune(srcDBPath, 0) {
-		os.RemoveAll(dstDir)
-		return nil, fmt.Errorf("source database path contains null byte")
+	// Canonicalize source path for ATTACH (defense in depth — caller should
+	// also validate, but CopySubset is public and must not trust its inputs).
+	srcDBPath, err = filepath.Abs(filepath.Clean(srcDBPath))
+	if err != nil {
+		cleanupDir()
+		return nil, fmt.Errorf("canonicalize source path: %w", err)
+	}
+	// Reject control characters (null, newline, tab, etc.) that have no
+	// business in a filesystem path and could interfere with SQL parsing.
+	for _, r := range srcDBPath {
+		if r < 0x20 || r == 0x7F {
+			cleanupDir()
+			return nil, fmt.Errorf("source database path contains control character (0x%02X)", r)
+		}
 	}
 	escapedSrcPath := strings.ReplaceAll(srcDBPath, "'", "''")
 
 	// Attach source database
 	attachSQL := fmt.Sprintf("ATTACH DATABASE '%s' AS src", escapedSrcPath)
 	if _, err := db.Exec(attachSQL); err != nil {
-		os.RemoveAll(dstDir)
+		cleanupDir()
 		return nil, fmt.Errorf("attach source database: %w", err)
 	}
 
 	// Begin transaction for bulk copy
 	tx, err := db.Begin()
 	if err != nil {
-		os.RemoveAll(dstDir)
+		cleanupDir()
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
 
 	result, err := copyData(tx, rowCount)
 	if err != nil {
-		tx.Rollback()
-		db.Exec("DETACH DATABASE src")
-		os.RemoveAll(dstDir)
+		_ = tx.Rollback()
+		_, _ = db.Exec("DETACH DATABASE src")
+		cleanupDir()
 		return nil, err
 	}
 
 	if err := tx.Commit(); err != nil {
-		db.Exec("DETACH DATABASE src")
-		os.RemoveAll(dstDir)
+		_, _ = db.Exec("DETACH DATABASE src")
+		cleanupDir()
 		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
 
-	// Re-enable foreign keys and verify integrity
+	// Verify referential integrity. PRAGMA foreign_key_check is a standalone
+	// integrity scan that works regardless of the foreign_keys setting.
+	// We enable foreign_keys here so subsequent operations (if any) would
+	// enforce FK constraints, but the connection is about to close.
 	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		os.RemoveAll(dstDir)
+		cleanupDir()
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
 	rows, err := db.Query("PRAGMA foreign_key_check")
 	if err != nil {
-		os.RemoveAll(dstDir)
+		cleanupDir()
 		return nil, fmt.Errorf("foreign key check: %w", err)
 	}
 	var violations []string
 	for rows.Next() {
 		var table, rowid, parent, fkid string
-		if err := rows.Scan(&table, &rowid, &parent, &fkid); err == nil {
+		if err := rows.Scan(&table, &rowid, &parent, &fkid); err != nil {
+			violations = append(violations, fmt.Sprintf("scan error: %v", err))
+		} else {
 			violations = append(violations, fmt.Sprintf("%s(rowid=%s) -> %s", table, rowid, parent))
 		}
 	}
-	rows.Close()
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		cleanupDir()
+		return nil, fmt.Errorf("iterate foreign key check: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		cleanupDir()
+		return nil, fmt.Errorf("close foreign key check rows: %w", err)
+	}
+
 	if len(violations) > 0 {
-		os.RemoveAll(dstDir)
+		cleanupDir()
 		return nil, fmt.Errorf("foreign key violations: %s", strings.Join(violations, "; "))
 	}
 
 	// Update denormalized conversation counts
 	if err := updateConversationCounts(db); err != nil {
-		os.RemoveAll(dstDir)
+		cleanupDir()
 		return nil, fmt.Errorf("update conversation counts: %w", err)
 	}
 
@@ -128,7 +170,10 @@ func CopySubset(srcDBPath, dstDir string, rowCount int) (*CopyResult, error) {
 	_ = populateFTS(db)
 
 	// Detach source
-	db.Exec("DETACH DATABASE src")
+	if _, err := db.Exec("DETACH DATABASE src"); err != nil {
+		cleanupDir()
+		return nil, fmt.Errorf("detach source database: %w", err)
+	}
 
 	// Get final DB size
 	if info, err := os.Stat(dstDBPath); err == nil {
@@ -168,7 +213,9 @@ func copyData(tx *sql.Tx, rowCount int) (*CopyResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("copy conversations: %w", err)
 	}
-	result.Conversations, _ = res.RowsAffected()
+	if result.Conversations, err = res.RowsAffected(); err != nil {
+		return nil, fmt.Errorf("conversations rows affected: %w", err)
+	}
 
 	// d. Participants referenced by selected messages (senders + recipients)
 	res, err = tx.Exec(`
@@ -181,7 +228,9 @@ func copyData(tx *sql.Tx, rowCount int) (*CopyResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("copy participants: %w", err)
 	}
-	result.Participants, _ = res.RowsAffected()
+	if result.Participants, err = res.RowsAffected(); err != nil {
+		return nil, fmt.Errorf("participants rows affected: %w", err)
+	}
 
 	// e. Participant identifiers for copied participants
 	if _, err := tx.Exec(`
@@ -247,7 +296,9 @@ func copyData(tx *sql.Tx, rowCount int) (*CopyResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("copy labels: %w", err)
 	}
-	result.Labels, _ = res.RowsAffected()
+	if result.Labels, err = res.RowsAffected(); err != nil {
+		return nil, fmt.Errorf("labels rows affected: %w", err)
+	}
 
 	// n. Message labels (intersection of copied messages and copied labels)
 	if _, err := tx.Exec(`
@@ -257,8 +308,11 @@ func copyData(tx *sql.Tx, rowCount int) (*CopyResult, error) {
 		return nil, fmt.Errorf("copy message_labels: %w", err)
 	}
 
-	// Clean up temp table
-	tx.Exec("DROP TABLE IF EXISTS selected_messages")
+	// Clean up temp table. On rollback this DROP won't execute, but that's
+	// fine — temp tables are connection-scoped and cleaned up on db.Close().
+	if _, err := tx.Exec("DROP TABLE IF EXISTS selected_messages"); err != nil {
+		return nil, fmt.Errorf("drop temp table: %w", err)
+	}
 
 	return result, nil
 }
@@ -294,16 +348,49 @@ func populateFTS(db *sql.DB) error {
 	return err
 }
 
+func isSafeFilename(filename string) bool {
+	// Reject absolute paths and those with null bytes or path separators
+	if filepath.IsAbs(filename) || strings.ContainsAny(filename, "\x00/\\") {
+		return false
+	}
+	// Clean and check for traversal (ensures no ".." escapes)
+	cleaned := filepath.Clean(filename)
+	return filepath.IsLocal(cleaned)
+}
+
 // CopyFileIfExists copies a single file from src to dst.
 // Returns nil if the source file does not exist.
-// Both paths must be validated by the caller to prevent path traversal.
-func CopyFileIfExists(src, dst string) error {
+// Both paths must be absolute. containDir is the root directory that src
+// must resolve within after symlink resolution (e.g. the dataset root).
+// This prevents a symlink in the source dataset from reading files outside
+// the dataset.
+func CopyFileIfExists(src, dst, containDir string) error {
 	// Validate paths are absolute
 	if !filepath.IsAbs(src) || !filepath.IsAbs(dst) {
 		return fmt.Errorf("paths must be absolute: src=%q, dst=%q", src, dst)
 	}
+	if !filepath.IsAbs(containDir) {
+		return fmt.Errorf("containDir must be absolute: %q", containDir)
+	}
 
-	srcFile, err := os.Open(src)
+	// Resolve symlinks in src and verify containment within containDir.
+	resolvedSrc, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("resolve source file %s: %w", src, err)
+	}
+	resolvedContainDir, err := filepath.EvalSymlinks(containDir)
+	if err != nil {
+		return fmt.Errorf("resolve contain directory %s: %w", containDir, err)
+	}
+	rel, err := filepath.Rel(resolvedContainDir, resolvedSrc)
+	if err != nil || !isSafeFilename(rel) {
+		return fmt.Errorf("source file %s resolves outside %s (symlink escape)", src, containDir)
+	}
+
+	srcFile, err := os.Open(resolvedSrc)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -316,10 +403,19 @@ func CopyFileIfExists(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("create destination file %s: %w", dst, err)
 	}
-	defer dstFile.Close()
 
 	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		_ = dstFile.Close()
 		return fmt.Errorf("copy %s to %s: %w", src, dst, err)
+	}
+
+	if err := dstFile.Sync(); err != nil {
+		_ = dstFile.Close()
+		return fmt.Errorf("sync destination file %s: %w", dst, err)
+	}
+
+	if err := dstFile.Close(); err != nil {
+		return fmt.Errorf("close destination file %s: %w", dst, err)
 	}
 
 	return nil

@@ -36,14 +36,35 @@ func init() {
 }
 
 func runNewData(cmd *cobra.Command, args []string) error {
-	home := homeDir()
+	if newDataRowFlag <= 0 {
+		return fmt.Errorf("--rows must be a positive integer, got %d", newDataRowFlag)
+	}
+	if err := dataset.ValidateDatasetName(newDataDstFlag); err != nil {
+		return fmt.Errorf("invalid --dst: %w", err)
+	}
+	if newDataSrcFlag != "" {
+		if err := dataset.ValidateDatasetName(newDataSrcFlag); err != nil {
+			return fmt.Errorf("invalid --src: %w", err)
+		}
+	}
+
+	home, err := homeDir()
+	if err != nil {
+		return err
+	}
 
 	// Resolve source path
 	var srcDir string
 	if newDataSrcFlag != "" {
-		srcDir = datasetPath(newDataSrcFlag)
+		srcDir, err = datasetPath(newDataSrcFlag)
+		if err != nil {
+			return err
+		}
 	} else {
-		mvPath := msgvaultPath()
+		mvPath, err := msgvaultPath()
+		if err != nil {
+			return err
+		}
 		resolved, err := filepath.EvalSymlinks(mvPath)
 		if err != nil {
 			return fmt.Errorf("resolve %s: %w", mvPath, err)
@@ -52,10 +73,13 @@ func runNewData(cmd *cobra.Command, args []string) error {
 	}
 
 	// Resolve destination path
-	dstDir := datasetPath(newDataDstFlag)
+	dstDir, err := datasetPath(newDataDstFlag)
+	if err != nil {
+		return err
+	}
 
 	// Canonicalize and validate paths
-	srcDir, err := filepath.Abs(filepath.Clean(srcDir))
+	srcDir, err = filepath.Abs(filepath.Clean(srcDir))
 	if err != nil {
 		return fmt.Errorf("resolve source path: %w", err)
 	}
@@ -64,15 +88,19 @@ func runNewData(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve destination path: %w", err)
 	}
 
-	// Path traversal protection: verify both paths are within home directory
-	absHome, err := filepath.Abs(home)
+	// Path traversal protection: verify both paths are within home directory.
+	// Use filepath.Rel to compute the relative path from home to each target;
+	// if the result starts with ".." the path escapes the home directory.
+	absHome, err := filepath.Abs(filepath.Clean(home))
 	if err != nil {
 		return fmt.Errorf("resolve home directory: %w", err)
 	}
-	if !strings.HasPrefix(srcDir, absHome+string(filepath.Separator)) && srcDir != absHome {
+	srcRel, err := filepath.Rel(absHome, srcDir)
+	if err != nil || srcRel == ".." || strings.HasPrefix(srcRel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("source path %q is outside home directory", srcDir)
 	}
-	if !strings.HasPrefix(dstDir, absHome+string(filepath.Separator)) && dstDir != absHome {
+	dstRel, err := filepath.Rel(absHome, dstDir)
+	if err != nil || dstRel == ".." || strings.HasPrefix(dstRel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("destination path %q is outside home directory", dstDir)
 	}
 
@@ -107,7 +135,7 @@ func runNewData(cmd *cobra.Command, args []string) error {
 	// Copy config.toml if present
 	srcConfig := filepath.Join(srcDir, "config.toml")
 	dstConfig := filepath.Join(dstDir, "config.toml")
-	if err := dataset.CopyFileIfExists(srcConfig, dstConfig); err != nil {
+	if err := dataset.CopyFileIfExists(srcConfig, dstConfig, srcDir); err != nil {
 		fmt.Fprintf(os.Stderr, "devdata: warning: could not copy config.toml: %v\n", err)
 	}
 

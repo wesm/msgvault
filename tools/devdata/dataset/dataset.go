@@ -2,12 +2,30 @@
 package dataset
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
+
+var validDatasetName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// ValidateDatasetName checks that name contains only safe characters [a-zA-Z0-9_-].
+// This prevents path traversal and SQL injection via dataset names used to
+// construct filesystem paths and SQLite ATTACH statements.
+func ValidateDatasetName(name string) error {
+	if name == "" {
+		return fmt.Errorf("dataset name must not be empty")
+	}
+	if !validDatasetName.MatchString(name) {
+		return fmt.Errorf("dataset name %q contains invalid characters; only letters, digits, hyphens, and underscores are allowed", name)
+	}
+	return nil
+}
 
 // DatasetInfo describes a discovered dataset directory.
 type DatasetInfo struct {
@@ -55,24 +73,35 @@ func DatabaseSize(path string) int64 {
 }
 
 // ReplaceSymlink atomically replaces the symlink at linkPath to point to target.
-// It re-verifies that linkPath is a symlink immediately before removal to prevent
-// accidental deletion of a real directory.
+// It uses a temp-symlink + rename pattern to avoid any TOCTOU race window:
+// os.Rename atomically replaces the old symlink, and will fail with an error
+// (not silently delete) if linkPath has become a real directory.
 func ReplaceSymlink(linkPath, target string) error {
-	// Re-verify immediately before removal (Lstat guard)
+	// Fast-fail with a clear message if linkPath is not a symlink.
 	info, err := os.Lstat(linkPath)
 	if err != nil {
 		return fmt.Errorf("lstat %s: %w", linkPath, err)
 	}
 	if info.Mode()&os.ModeSymlink == 0 {
-		return fmt.Errorf("%s is not a symlink; refusing to remove (safety check)", linkPath)
+		return fmt.Errorf("%s is not a symlink; refusing to replace (safety check)", linkPath)
 	}
 
-	if err := os.Remove(linkPath); err != nil {
-		return fmt.Errorf("remove symlink %s: %w", linkPath, err)
+	// Create a temporary symlink next to the target, then atomically rename
+	// it over linkPath. os.Rename on POSIX replaces an existing symlink
+	// atomically, and fails with ENOTDIR/EISDIR if linkPath has become a
+	// real directory — so no data can be lost even under a race.
+	// Use a random suffix to avoid collisions between concurrent calls.
+	var randBytes [4]byte
+	if _, err := rand.Read(randBytes[:]); err != nil {
+		return fmt.Errorf("generate random suffix: %w", err)
 	}
-
-	if err := os.Symlink(target, linkPath); err != nil {
-		return fmt.Errorf("create symlink %s -> %s: %w", linkPath, target, err)
+	tmpPath := linkPath + ".tmp." + hex.EncodeToString(randBytes[:])
+	if err := os.Symlink(target, tmpPath); err != nil {
+		return fmt.Errorf("create temp symlink %s -> %s: %w", tmpPath, target, err)
+	}
+	if err := os.Rename(tmpPath, linkPath); err != nil {
+		_ = os.Remove(tmpPath) // best-effort cleanup on failure
+		return fmt.Errorf("rename symlink %s -> %s: %w", tmpPath, linkPath, err)
 	}
 
 	return nil
