@@ -123,22 +123,16 @@ func TestExtractMboxFromZip_FlattensTraversalNamesSafely(t *testing.T) {
 func TestExtractMboxFromZip_EnforcesEntrySizeLimit(t *testing.T) {
 	tmp := t.TempDir()
 
-	prevEntry := maxZipEntryBytes
-	prevTotal := maxZipTotalBytes
-	maxZipEntryBytes = 10
-	maxZipTotalBytes = 0
-	t.Cleanup(func() {
-		maxZipEntryBytes = prevEntry
-		maxZipTotalBytes = prevTotal
-	})
-
 	zipPath := filepath.Join(tmp, "export.zip")
 	writeZipFile(t, zipPath, map[string]string{
 		"big.mbox": strings.Repeat("a", 11),
 	})
 
 	destDir := filepath.Join(tmp, "extract")
-	_, err := extractMboxFromZip(zipPath, destDir)
+	_, err := extractMboxFromZipWithLimits(zipPath, destDir, zipExtractLimits{
+		MaxEntryBytes: 10,
+		MaxTotalBytes: 0,
+	})
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -150,15 +144,6 @@ func TestExtractMboxFromZip_EnforcesEntrySizeLimit(t *testing.T) {
 func TestExtractMboxFromZip_EnforcesTotalSizeLimit(t *testing.T) {
 	tmp := t.TempDir()
 
-	prevEntry := maxZipEntryBytes
-	prevTotal := maxZipTotalBytes
-	maxZipEntryBytes = 100
-	maxZipTotalBytes = 10
-	t.Cleanup(func() {
-		maxZipEntryBytes = prevEntry
-		maxZipTotalBytes = prevTotal
-	})
-
 	zipPath := filepath.Join(tmp, "export.zip")
 	writeZipFile(t, zipPath, map[string]string{
 		"a.mbox": strings.Repeat("a", 6),
@@ -166,7 +151,10 @@ func TestExtractMboxFromZip_EnforcesTotalSizeLimit(t *testing.T) {
 	})
 
 	destDir := filepath.Join(tmp, "extract")
-	_, err := extractMboxFromZip(zipPath, destDir)
+	_, err := extractMboxFromZipWithLimits(zipPath, destDir, zipExtractLimits{
+		MaxEntryBytes: 100,
+		MaxTotalBytes: 10,
+	})
 	if err == nil {
 		t.Fatalf("expected error")
 	}

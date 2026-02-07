@@ -38,14 +38,17 @@ type mboxCheckpoint struct {
 
 var errZipExtractLimitExceeded = errors.New("zip extraction limit exceeded")
 
-var (
-	// These are intentionally very high defaults; they exist to prevent zip-bomb
-	// style resource exhaustion while still supporting large real-world exports.
-	//
-	// Tests may temporarily override these values.
-	maxZipEntryBytes int64 = 50 << 30  // 50 GiB per extracted mbox file
-	maxZipTotalBytes int64 = 200 << 30 // 200 GiB total extracted bytes
+// These are intentionally very high defaults; they exist to prevent zip-bomb
+// style resource exhaustion while still supporting large real-world exports.
+const (
+	defaultMaxZipEntryBytes int64 = 50 << 30  // 50 GiB per extracted mbox file
+	defaultMaxZipTotalBytes int64 = 200 << 30 // 200 GiB total extracted bytes
 )
+
+type zipExtractLimits struct {
+	MaxEntryBytes int64
+	MaxTotalBytes int64
+}
 
 var importMboxCmd = &cobra.Command{
 	Use:   "import-mbox <identifier> <export-file>",
@@ -249,6 +252,13 @@ func sha256File(path string) (string, error) {
 }
 
 func extractMboxFromZip(zipPath, destDir string) ([]string, error) {
+	return extractMboxFromZipWithLimits(zipPath, destDir, zipExtractLimits{
+		MaxEntryBytes: defaultMaxZipEntryBytes,
+		MaxTotalBytes: defaultMaxZipTotalBytes,
+	})
+}
+
+func extractMboxFromZipWithLimits(zipPath, destDir string, limits zipExtractLimits) ([]string, error) {
 	// Use a sentinel file so we can reuse the extracted path across retries/resumes.
 	sentinel := filepath.Join(destDir, ".done")
 	if _, err := os.Stat(sentinel); err == nil {
@@ -287,11 +297,11 @@ func extractMboxFromZip(zipPath, destDir string) ([]string, error) {
 			continue
 		}
 
-		if maxZipTotalBytes > 0 && totalWritten >= maxZipTotalBytes {
-			return nil, fmt.Errorf("%w: total extracted bytes exceeds limit (%d bytes)", errZipExtractLimitExceeded, maxZipTotalBytes)
+		if limits.MaxTotalBytes > 0 && totalWritten >= limits.MaxTotalBytes {
+			return nil, fmt.Errorf("%w: total extracted bytes exceeds limit (%d bytes)", errZipExtractLimitExceeded, limits.MaxTotalBytes)
 		}
-		if maxZipEntryBytes > 0 && zf.UncompressedSize64 > uint64(maxZipEntryBytes) {
-			return nil, fmt.Errorf("%w: zip entry %q too large (%d bytes > %d bytes)", errZipExtractLimitExceeded, zf.Name, zf.UncompressedSize64, maxZipEntryBytes)
+		if limits.MaxEntryBytes > 0 && zf.UncompressedSize64 > uint64(limits.MaxEntryBytes) {
+			return nil, fmt.Errorf("%w: zip entry %q too large (%d bytes > %d bytes)", errZipExtractLimitExceeded, zf.Name, zf.UncompressedSize64, limits.MaxEntryBytes)
 		}
 
 		outName := name
@@ -319,14 +329,14 @@ func extractMboxFromZip(zipPath, destDir string) ([]string, error) {
 			return nil, fmt.Errorf("create extracted file: %w", err)
 		}
 
-		limit := maxZipEntryBytes
-		if maxZipTotalBytes > 0 {
-			remaining := maxZipTotalBytes - totalWritten
+		limit := limits.MaxEntryBytes
+		if limits.MaxTotalBytes > 0 {
+			remaining := limits.MaxTotalBytes - totalWritten
 			if remaining <= 0 {
 				_ = w.Close()
 				_ = rc.Close()
 				_ = os.Remove(outPath)
-				return nil, fmt.Errorf("%w: total extracted bytes exceeds limit (%d bytes)", errZipExtractLimitExceeded, maxZipTotalBytes)
+				return nil, fmt.Errorf("%w: total extracted bytes exceeds limit (%d bytes)", errZipExtractLimitExceeded, limits.MaxTotalBytes)
 			}
 			if limit <= 0 || remaining < limit {
 				limit = remaining
