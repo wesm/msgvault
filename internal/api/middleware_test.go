@@ -120,6 +120,27 @@ func TestRateLimiter(t *testing.T) {
 	}
 }
 
+func TestRateLimiterCloseConcurrent(t *testing.T) {
+	rl := NewRateLimiter(10, 10)
+
+	// Spawn many goroutines calling Close() concurrently — must not panic.
+	const n = 50
+	start := make(chan struct{})
+	done := make(chan struct{}, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			<-start
+			rl.Close()
+			done <- struct{}{}
+		}()
+	}
+	close(start) // release all at once
+	for i := 0; i < n; i++ {
+		<-done
+	}
+	// If we get here without a panic, the test passes.
+}
+
 func TestRateLimitMiddleware(t *testing.T) {
 	rl := NewRateLimiter(1, 1) // Very restrictive for testing
 	middleware := RateLimitMiddleware(rl)
