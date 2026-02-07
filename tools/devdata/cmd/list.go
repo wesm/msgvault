@@ -21,7 +21,10 @@ func init() {
 }
 
 func runList(cmd *cobra.Command, args []string) error {
-	path := msgvaultPath()
+	path, err := msgvaultPath()
+	if err != nil {
+		return err
+	}
 
 	// Show current symlink status
 	isSym, err := dataset.IsSymlink(path)
@@ -40,7 +43,11 @@ func runList(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "devdata: dev mode not active (%s is a real directory)\n", path)
 	}
 
-	datasets, err := dataset.ListDatasets(homeDir())
+	home, err := homeDir()
+	if err != nil {
+		return err
+	}
+	datasets, err := dataset.ListDatasets(home)
 	if err != nil {
 		return fmt.Errorf("list datasets: %w", err)
 	}

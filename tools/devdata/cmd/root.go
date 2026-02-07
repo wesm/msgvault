@@ -32,24 +32,31 @@ func Execute() error {
 }
 
 // homeDir returns the resolved home directory.
-func homeDir() string {
+func homeDir() (string, error) {
 	if homeFlag != "" {
-		return homeFlag
+		return homeFlag, nil
 	}
 	h, err := os.UserHomeDir()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "devdata: cannot determine home directory: %v\n", err)
-		os.Exit(1)
+		return "", fmt.Errorf("cannot determine home directory: %w", err)
 	}
-	return h
+	return h, nil
 }
 
 // msgvaultPath returns the path to ~/.msgvault.
-func msgvaultPath() string {
-	return filepath.Join(homeDir(), ".msgvault")
+func msgvaultPath() (string, error) {
+	h, err := homeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(h, ".msgvault"), nil
 }
 
 // datasetPath returns the path to ~/.msgvault-<name>.
-func datasetPath(name string) string {
-	return filepath.Join(homeDir(), ".msgvault-"+name)
+func datasetPath(name string) (string, error) {
+	h, err := homeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(h, ".msgvault-"+name), nil
 }
