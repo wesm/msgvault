@@ -16,7 +16,7 @@
 - Modifying msgvault's own code or config resolution. The tool operates entirely through filesystem symlinks.
 - Syncing data between datasets. Each dataset is independent after creation.
 - Managing OAuth tokens or credentials. `new-data` copies config.toml but not tokens/ (the dev dataset won't authenticate to Gmail, which is the desired behavior for expendable copies).
-- Attachment file copying. Only the SQLite database and config are copied; attachment blobs in `attachments/` are not duplicated.
+- Attachment file copying. Only the SQLite database and config are copied; attachment blobs in `attachments/` are not duplicated. The `attachments` table rows are copied with their `storage_path` values intact, meaning code that tries to read attachment files will get file-not-found errors. This is acceptable for dev datasets — the metadata is present for query/display testing, but actual file access is not expected.
 
 ## Technical Decisions
 
@@ -26,7 +26,7 @@
 | CLI framework | `spf13/cobra` | Matches msgvault's existing CLI. |
 | Database copying | SQLite `ATTACH DATABASE` + `INSERT INTO ... SELECT` | Copies data in a single transaction with referential integrity. No need for row-by-row iteration. |
 | SQLite driver | `mattn/go-sqlite3` (CGO) | Matches msgvault. Required for FTS5 tag. |
-| Build location | `tools/devdata/` | Separate binary, not a msgvault subcommand. Dev tooling lives in `tools/`. |
+| Build location | `tools/devdata/` | Separate binary, not a msgvault subcommand. Dev tooling lives in `tools/`. (Note: this establishes a new `tools/` convention for Go-based dev tools; the existing `scripts/mimeshootout/` uses `scripts/` for shell-based tooling.) |
 | Module | Same `github.com/wesm/msgvault` module | Shares `go.mod` with msgvault. Can import `internal/store` for schema embedding. |
 | Row selection | Most recent N messages by `sent_at DESC` | Most useful for development — recent data reflects current schema and patterns. |
 
@@ -97,6 +97,8 @@ Undoes `init-dev-data`, restoring the original directory layout.
 4. Rename `~/.msgvault-gold` → `~/.msgvault`.
 5. Print confirmation.
 
+**Note:** This command always restores `~/.msgvault-gold` regardless of what the symlink currently points to. If the user has mounted a different dataset (e.g., `~/.msgvault-dev`), that dataset is not deleted — it simply becomes unmounted. The user should run `mount-data --dataset gold` first if they want to verify the current mount before exiting dev mode.
+
 **Error handling:**
 - If `~/.msgvault` is a real directory: print message that dev mode is not active.
 - If `~/.msgvault-gold` doesn't exist: error — cannot restore without gold copy.
@@ -136,8 +138,10 @@ Creates a new dataset by copying N messages from a source dataset.
    n. `sync_runs` — skip (not needed for dev)
    o. `sync_checkpoints` — skip (not needed for dev)
 10. Update denormalized counts on conversations.
-11. Rebuild FTS5 index if available.
+11. Rebuild FTS5 index if available (using the same query structure as `store.backfillFTSBatch`: joins `messages` with `message_bodies` for body text, and resolves `from_addr`/`to_addr`/`cc_addr` via correlated subqueries on `message_recipients` + `participants`).
 12. Print summary: messages copied, database size.
+
+**Note:** The `analytics/` Parquet cache directory is intentionally not copied. The TUI auto-builds this cache on launch when new messages are detected, so running `./msgvault tui` against a new dev dataset will trigger a cache build automatically.
 
 **Data selection strategy:**
 - Select the N most recent messages by `sent_at DESC`.
@@ -158,6 +162,25 @@ Creates a new dataset by copying N messages from a source dataset.
 | Windows | `os.Symlink()` | Requires Developer Mode enabled or admin. Tool prints a clear error if symlink creation fails with a permissions hint. |
 
 All symlink operations use Go's `os` package — no shell-outs to `ln` or `mklink`.
+
+### MSGVAULT_HOME Interaction
+
+msgvault supports a `MSGVAULT_HOME` environment variable that overrides the default `~/.msgvault` path. If `MSGVAULT_HOME` is set, msgvault ignores the `~/.msgvault` symlink entirely — it reads directly from the directory specified by the env var.
+
+`devdata` should check for `MSGVAULT_HOME` on startup:
+- If `MSGVAULT_HOME` is set, print a warning: "MSGVAULT_HOME is set to `<path>`; symlink operations on ~/.msgvault will not affect msgvault's data directory."
+- The `--home` flag overrides this detection (the user is explicitly choosing a base directory).
+
+This is a warning only — the tool still operates on `~/.msgvault` symlinks. The user may have `MSGVAULT_HOME` set for a separate purpose, and the symlink-based workflow still functions if `MSGVAULT_HOME` is unset at runtime.
+
+### Schema Version Compatibility
+
+`new-data` creates the destination database using the current embedded schema (from `internal/store`), then copies rows from the source using `INSERT INTO ... SELECT`. If the source database was created by an older version of msgvault with a different schema (missing columns, different column order), the copy may fail.
+
+This is acceptable because:
+1. The tool is version-coupled to msgvault — it shares the same Go module and is built from the same source tree.
+2. If the schema has changed, the user should run `new-data` with a source database that matches the current schema.
+3. The `SELECT *` queries will produce a clear SQL error on column count mismatch rather than silently corrupting data.
 
 ## Implementation Stages
 

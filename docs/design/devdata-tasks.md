@@ -9,14 +9,15 @@
 - `tools/devdata/cmd/root.go` — Cobra root command with `--home` flag to override home directory (defaults to `os.UserHomeDir()`)
 
 **Code:**
-- `main.go`: minimal — `func main() { cmd.Execute() }`
+- `main.go`: minimal — `func main() { os.Exit(run()) }` where `run()` returns 0 or 1 (matches msgvault's pattern of returning errors from the entry point)
 - `root.go`:
   - `var rootCmd = &cobra.Command{Use: "devdata", Short: "Manage msgvault datasets"}`
   - Persistent flag `--home` (string) to override the base directory (default: user home dir). All dataset paths derive from this.
   - Helper `homeDir() string` returns the resolved home directory.
   - Helper `msgvaultPath() string` returns `<home>/.msgvault`.
   - Helper `datasetPath(name string) string` returns `<home>/.msgvault-<name>`.
-  - `func Execute()` calls `rootCmd.Execute()` with `os.Exit(1)` on error.
+  - `func Execute() error` returns `rootCmd.Execute()` — errors propagate to `main()` rather than calling `os.Exit` directly, ensuring deferred cleanup runs.
+  - In `PersistentPreRunE`: if `MSGVAULT_HOME` is set and `--home` was not explicitly provided, print a warning to stderr about the env var being set.
 
 **Dependencies:**
 - `github.com/spf13/cobra` (already in go.mod)
@@ -32,8 +33,8 @@
 - `Exists(path string) bool` — `os.Stat` check
 - `HasDatabase(path string) bool` — checks `<path>/msgvault.db` exists
 - `ReplaceSymlink(linkPath, target string) error` — remove old link, create new one
-- `ListDatasets(homeDir string) ([]DatasetInfo, error)` — glob `<home>/.msgvault-*`, return name/path/size/hasDB for each
-- `DatasetInfo` struct: `Name string`, `Path string`, `HasDB bool`, `Active bool` (matches current symlink target)
+- `ListDatasets(homeDir string) ([]DatasetInfo, error)` — glob `<home>/.msgvault-*`, return name/path/size/hasDB for each. Also includes `<home>/.msgvault` itself when it is a real directory (not a symlink), reported with `Name: "(default)"`.
+- `DatasetInfo` struct: `Name string`, `Path string`, `HasDB bool`, `Active bool` (matches current symlink target), `IsDefault bool` (true for the real `~/.msgvault` directory when not in dev mode)
 
 ### 1.3 Implement `init-dev-data` command
 
@@ -100,7 +101,22 @@ build-devdata:
 	@chmod +x devdata
 ```
 
-### 1.7 Verify Stage 1
+### 1.7 Automated tests for dataset package
+
+**Files to create:**
+- `tools/devdata/dataset/dataset_test.go`
+
+**Tests (using `t.TempDir()` for isolated filesystem):**
+- `TestIsSymlink` — create a real dir and a symlink, verify correct detection
+- `TestReadTarget` — create a symlink, verify target resolution
+- `TestReplaceSymlink` — create a symlink to dir A, replace with dir B, verify
+- `TestListDatasets` — create `home/.msgvault-foo`, `home/.msgvault-bar` (with/without `msgvault.db`), verify listing
+- `TestListDatasets_NoSymlink` — verify behavior when `~/.msgvault` is a real directory
+- `TestHasDatabase` — verify with and without `msgvault.db` present
+
+These are pure filesystem tests — no database dependencies, fast to run.
+
+### 1.8 Verify Stage 1
 
 **Manual testing checklist:**
 - `make build-devdata` compiles successfully
@@ -135,6 +151,8 @@ build-devdata:
 - `tools/devdata/dataset/copy.go`
 
 **Code — function `CopySubset(srcDBPath, dstDir string, rowCount int) error`:**
+
+**Note on `SELECT *`:** The copy statements below use `SELECT *` for brevity. This is version-coupled — both source and destination use the same embedded schema from this build. If the schema evolves and column order changes between versions, `INSERT INTO ... SELECT *` will fail with a column count mismatch (a clear error, not silent corruption). This is acceptable for a dev tool built from the same source tree. If cross-version compatibility becomes needed, switch to explicit column lists.
 
 1. Create `dstDir` with `os.MkdirAll(dstDir, 0700)`
 2. Create destination DB at `<dstDir>/msgvault.db`
@@ -220,11 +238,22 @@ UPDATE conversations SET
   participant_count = (SELECT COUNT(*) FROM conversation_participants WHERE conversation_id = conversations.id),
   last_message_at = (SELECT MAX(sent_at) FROM messages WHERE conversation_id = conversations.id);
 ```
-12. Populate FTS5 index (if available):
+**Note:** `participant_count` reflects only participants that were copied into the dev dataset (those referenced by the selected messages), not the original conversation's full participant list. This is acceptable for dev data — the counts are self-consistent within the subset.
+12. Populate FTS5 index (if available — match the query from `store.backfillFTSBatch`):
 ```sql
-INSERT INTO messages_fts(message_id, subject, body, from_addr, to_addr, cc_addr)
-  SELECT m.id, m.subject, mb.body_text, ...
-  FROM messages m LEFT JOIN message_bodies mb ON mb.message_id = m.id ...;
+INSERT OR REPLACE INTO messages_fts(rowid, message_id, subject, body, from_addr, to_addr, cc_addr)
+  SELECT m.id, m.id, COALESCE(m.subject, ''), COALESCE(mb.body_text, ''),
+    COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ')
+              FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id
+              WHERE mr.message_id = m.id AND mr.recipient_type = 'from'), ''),
+    COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ')
+              FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id
+              WHERE mr.message_id = m.id AND mr.recipient_type = 'to'), ''),
+    COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ')
+              FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id
+              WHERE mr.message_id = m.id AND mr.recipient_type = 'cc'), '')
+  FROM messages m
+  LEFT JOIN message_bodies mb ON mb.message_id = m.id;
 ```
 13. Detach source: `DETACH DATABASE src`
 14. Print summary: messages copied, conversations, participants, DB file size
@@ -250,9 +279,35 @@ INSERT INTO messages_fts(message_id, subject, body, from_addr, to_addr, cc_addr)
 
 **Code:**
 - The `store` package embeds `schema.sql` and `schema_sqlite.sql` via `//go:embed`. Access these through the store package's exported schema initialization, or directly embed them in the tool.
-- Preferred approach: use `store.Open()` + `store.InitSchema()` to create the destination database, then close the store and re-open with raw `database/sql` for the ATTACH + bulk copy. This reuses existing schema logic and ensures the destination DB has the exact same schema as msgvault expects.
+- Preferred approach — two-phase open:
+  1. Use `store.Open()` + `store.InitSchema()` to create the destination database with the exact schema msgvault expects. This opens with `_foreign_keys=ON` (the store default).
+  2. Close the store connection.
+  3. Re-open with raw `database/sql` using `_foreign_keys=OFF` in the DSN for the ATTACH + bulk copy phase.
+  4. After the bulk copy transaction commits, re-enable FKs with `PRAGMA foreign_keys = ON` and run `PRAGMA foreign_key_check` to verify integrity.
 
-### 2.5 Verify Stage 2
+  The close-and-reopen is necessary because `store.Open()` hardcodes `_foreign_keys=ON` and FK mode cannot be changed after the first statement on a connection.
+
+### 2.5 Automated tests for copy logic
+
+**Files to create:**
+- `tools/devdata/dataset/copy_test.go`
+
+**Tests (using `t.TempDir()` + in-memory SQLite source DB):**
+- `TestCopySubset_Basic` — create a source DB with schema + 10 messages (with participants, conversations, labels), copy 5, verify:
+  - Exactly 5 messages in destination
+  - All referenced participants present
+  - All referenced conversations present
+  - Labels and message_labels present
+  - FK check passes
+- `TestCopySubset_AllRows` — request more rows than exist, verify all copied with no error
+- `TestCopySubset_FTSPopulated` — verify FTS5 index populated in destination (search for a known subject)
+- `TestCopySubset_ConversationCounts` — verify denormalized counts are consistent with actual data
+- `TestCopySubset_DestinationExists` — verify error when destination directory already exists
+- `TestCopyFileIfExists` — verify config.toml copy, and no error when source file missing
+
+The source DB can be created using `store.Open()` + `store.InitSchema()` + direct INSERTs for test data. This tests the complex SQL copy logic that could silently produce incomplete data.
+
+### 2.6 Verify Stage 2
 
 **Manual testing checklist:**
 - `./devdata init-dev-data` (if not already in dev mode)
@@ -278,6 +333,7 @@ INSERT INTO messages_fts(message_id, subject, body, from_addr, to_addr, cc_addr)
 **Code:**
 - `var listCmd = &cobra.Command{Use: "list", Short: "List available datasets"}`
 - Uses `dataset.ListDatasets(homeDir())` to enumerate `~/.msgvault-*` directories
+- When `~/.msgvault` is a real directory (not in dev mode), include it in the output as `(default)` with a note that dev mode is not active
 - Output table columns: `NAME`, `PATH`, `DB SIZE`, `ACTIVE` (asterisk if current symlink target)
 - Also shows whether `~/.msgvault` is a symlink or real directory
 - Uses `text/tabwriter` for aligned output (matches msgvault's `list-accounts` style)
