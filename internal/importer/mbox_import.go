@@ -182,7 +182,11 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 			summary.FinalOffset = lastCheckpointOffset
 			summary.Duration = time.Since(start)
 			// Record best-effort checkpoint before returning.
-			_ = saveMboxCheckpoint(st, syncID, absPath, lastCheckpointOffset, &cp)
+			if err := saveMboxCheckpoint(st, syncID, absPath, lastCheckpointOffset, &cp); err != nil {
+				cp.ErrorsCount++
+				summary.Errors++
+				log.Warn("failed to save checkpoint", "error", err)
+			}
 			return summary, nil
 		}
 
@@ -217,13 +221,16 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 			continue
 		}
 		if _, ok := existing[sourceMsgID]; ok {
-			cp.MessagesUpdated++
 			summary.MessagesSkipped++
 
 			// Update checkpoint offset even when skipping so resumption progresses.
 			lastCheckpointOffset = r.NextFromOffset()
 			if cp.MessagesProcessed%int64(opts.CheckpointInterval) == 0 {
-				_ = saveMboxCheckpoint(st, syncID, absPath, lastCheckpointOffset, &cp)
+				if err := saveMboxCheckpoint(st, syncID, absPath, lastCheckpointOffset, &cp); err != nil {
+					cp.ErrorsCount++
+					summary.Errors++
+					log.Warn("failed to save checkpoint", "error", err)
+				}
 			}
 			continue
 		}
@@ -240,7 +247,11 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 		lastCheckpointOffset = r.NextFromOffset()
 
 		if cp.MessagesProcessed%int64(opts.CheckpointInterval) == 0 {
-			_ = saveMboxCheckpoint(st, syncID, absPath, lastCheckpointOffset, &cp)
+			if err := saveMboxCheckpoint(st, syncID, absPath, lastCheckpointOffset, &cp); err != nil {
+				cp.ErrorsCount++
+				summary.Errors++
+				log.Warn("failed to save checkpoint", "error", err)
+			}
 		}
 	}
 
@@ -248,7 +259,11 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 	summary.Duration = time.Since(start)
 
 	// Final checkpoint and mark sync complete.
-	_ = saveMboxCheckpoint(st, syncID, absPath, r.Offset(), &cp)
+	if err := saveMboxCheckpoint(st, syncID, absPath, r.Offset(), &cp); err != nil {
+		cp.ErrorsCount++
+		summary.Errors++
+		log.Warn("failed to save checkpoint", "error", err)
+	}
 	if err := st.CompleteSync(syncID, fmt.Sprintf("offset:%d", r.Offset())); err != nil {
 		return summary, fmt.Errorf("complete sync: %w", err)
 	}
@@ -257,7 +272,10 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 }
 
 func saveMboxCheckpoint(st *store.Store, syncID int64, file string, offset int64, cp *store.Checkpoint) error {
-	b, _ := json.Marshal(mboxCheckpoint{File: file, Offset: offset})
+	b, err := json.Marshal(mboxCheckpoint{File: file, Offset: offset})
+	if err != nil {
+		return fmt.Errorf("marshal checkpoint: %w", err)
+	}
 	cp.PageToken = string(b)
 	return st.UpdateSyncCheckpoint(syncID, cp)
 }

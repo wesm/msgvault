@@ -61,13 +61,21 @@ Examples:
 		// Handle Ctrl+C gracefully (save checkpoint and exit cleanly).
 		ctx, cancel := context.WithCancel(cmd.Context())
 		defer cancel()
-		sigChan := make(chan os.Signal, 1)
+		sigChan := make(chan os.Signal, 2)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		defer signal.Stop(sigChan)
 		go func() {
-			<-sigChan
-			fmt.Println("\nInterrupted. Saving checkpoint...")
-			cancel()
+			signals := 0
+			for range sigChan {
+				signals++
+				if signals == 1 {
+					fmt.Fprintln(os.Stderr, "\nInterrupted. Saving checkpoint...")
+					cancel()
+					continue
+				}
+				fmt.Fprintln(os.Stderr, "Interrupted again. Exiting immediately.")
+				os.Exit(130)
+			}
 		}()
 
 		dbPath := cfg.DatabaseDSN()
@@ -176,10 +184,10 @@ func init() {
 	rootCmd.AddCommand(importMboxCmd)
 
 	importMboxCmd.Flags().StringVar(&importMboxSourceType, "source-type", "mbox", "Source type to record in the database (e.g. mbox, hey)")
-	importMboxCmd.Flags().StringVar(&importMboxLabel, "label", "", "Label to apply to all imported messages")
+	importMboxCmd.Flags().StringVar(&importMboxLabel, "label", "", "Label to apply to newly imported messages")
 	importMboxCmd.Flags().BoolVar(&importMboxNoResume, "no-resume", false, "Do not resume from an interrupted import")
 	importMboxCmd.Flags().IntVar(&importMboxCheckpointInterval, "checkpoint-interval", 200, "Save progress every N messages")
-	importMboxCmd.Flags().BoolVar(&importMboxNoAttachments, "no-attachments", false, "Do not write attachments to disk")
+	importMboxCmd.Flags().BoolVar(&importMboxNoAttachments, "no-attachments", false, "Do not store attachments (disk or database)")
 }
 
 func resolveMboxExport(path string, importsDir string) ([]string, error) {
