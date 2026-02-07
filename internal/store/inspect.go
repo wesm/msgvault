@@ -139,6 +139,15 @@ func (s *Store) InspectDisplayName(sourceMessageID, recipientType, email string)
 	return displayName, err
 }
 
+// InspectParticipantDisplayName returns the display_name from the participants table for an email.
+func (s *Store) InspectParticipantDisplayName(email string) (string, error) {
+	var displayName string
+	err := s.db.QueryRow(s.Rebind(
+		"SELECT display_name FROM participants WHERE email_address = ?"),
+		email).Scan(&displayName)
+	return displayName, err
+}
+
 // InspectDeletedFromSource checks whether a message has deleted_from_source_at set.
 func (s *Store) InspectDeletedFromSource(sourceMessageID string) (bool, error) {
 	var deletedAt sql.NullTime

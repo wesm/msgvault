@@ -438,6 +438,12 @@ func (s *Syncer) parseToModel(sourceID int64, raw *gmail.RawMessage, threadID st
 	bodyHTML := textutil.EnsureUTF8(parsed.BodyHTML)
 	snippet := textutil.EnsureUTF8(raw.Snippet)
 
+	// Ensure participant names are valid UTF-8 before database insertion
+	ensureAddressUTF8(parsed.From)
+	ensureAddressUTF8(parsed.To)
+	ensureAddressUTF8(parsed.Cc)
+	ensureAddressUTF8(parsed.Bcc)
+
 	// Ensure participants exist in database
 	allAddresses := append(append(append(parsed.From, parsed.To...), parsed.Cc...), parsed.Bcc...)
 	participantMap, err := s.store.EnsureParticipantsBatch(allAddresses)
@@ -584,6 +590,13 @@ func (s *Syncer) ingestMessage(ctx context.Context, sourceID int64, raw *gmail.R
 	}
 
 	return s.persistMessage(data, labelMap)
+}
+
+// ensureAddressUTF8 validates and converts address names to valid UTF-8 in place.
+func ensureAddressUTF8(addrs []mime.Address) {
+	for i := range addrs {
+		addrs[i].Name = textutil.EnsureUTF8(addrs[i].Name)
+	}
 }
 
 // storeRecipients stores recipient records.

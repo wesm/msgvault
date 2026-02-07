@@ -526,6 +526,51 @@ func TestFullSync_MessageVariations(t *testing.T) {
 	}
 }
 
+func TestFullSync_Latin1InFromName(t *testing.T) {
+	env := newTestEnv(t)
+	seedMessages(env, 1, 12345, "msg")
+
+	// Build a MIME message with an RFC 2047 encoded From name that claims UTF-8
+	// but actually contains Latin-1 bytes. This is a real-world scenario where a
+	// sender's MUA mis-labels the charset, producing invalid UTF-8 after decoding.
+	// The =C9 byte is Latin-1 É, which is not valid UTF-8 when surrounded by ASCII.
+	raw := []byte("From: =?UTF-8?Q?Jane_Doe=C9ric?= <sender@example.com>\n" +
+		"To: recipient@example.com\n" +
+		"Subject: Test\n" +
+		"Date: Mon, 01 Jan 2024 12:00:00 +0000\n" +
+		"Content-Type: text/plain; charset=\"utf-8\"\n" +
+		"\n" +
+		"Body text.\n")
+
+	env.Mock.Messages["msg"].Raw = raw
+	env.Mock.Messages["msg"].SizeEstimate = int64(len(raw))
+
+	summary := runFullSync(t, env)
+	assertSummary(t, summary, WantSummary{Added: intPtr(1), Errors: intPtr(0)})
+
+	// Verify the participant display_name in the participants table is valid UTF-8.
+	// Before the fix, raw Latin-1 bytes would be stored as-is, causing DuckDB errors
+	// when exporting to Parquet.
+	displayName, err := env.Store.InspectParticipantDisplayName("sender@example.com")
+	if err != nil {
+		t.Fatalf("InspectParticipantDisplayName: %v", err)
+	}
+	// EnsureUTF8 should convert the Latin-1 \xC9 to the UTF-8 É (U+00C9)
+	want := "Jane DoeÉric"
+	if displayName != want {
+		t.Errorf("participant display_name = %q, want %q", displayName, want)
+	}
+
+	// Also verify the message_recipients display_name is valid
+	recipDisplayName, err := env.Store.InspectDisplayName("msg", "from", "sender@example.com")
+	if err != nil {
+		t.Fatalf("InspectDisplayName: %v", err)
+	}
+	if recipDisplayName != want {
+		t.Errorf("recipient display_name = %q, want %q", recipDisplayName, want)
+	}
+}
+
 func TestFullSyncWithMIMEParseError(t *testing.T) {
 	env := newTestEnv(t)
 	env.Mock.Profile.MessagesTotal = 2
