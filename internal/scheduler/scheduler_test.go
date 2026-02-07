@@ -192,6 +192,83 @@ func TestStartStop(t *testing.T) {
 	}
 }
 
+func TestIsRunning(t *testing.T) {
+	s := New(func(ctx context.Context, email string) error {
+		return nil
+	})
+
+	// Not running before Start
+	if s.IsRunning() {
+		t.Error("IsRunning() = true before Start()")
+	}
+
+	s.Start()
+
+	// Running after Start
+	if !s.IsRunning() {
+		t.Error("IsRunning() = false after Start()")
+	}
+
+	ctx := s.Stop()
+
+	// Not running after Stop
+	if s.IsRunning() {
+		t.Error("IsRunning() = true after Stop()")
+	}
+
+	// Wait for stop
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Error("Stop() did not complete in time")
+	}
+}
+
+func TestStopCancelsRunningSync(t *testing.T) {
+	syncStarted := make(chan struct{})
+	s := New(func(ctx context.Context, email string) error {
+		close(syncStarted)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+
+	if err := s.AddAccount("test@gmail.com", "0 0 1 1 *"); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
+
+	// Trigger sync
+	if err := s.TriggerSync("test@gmail.com"); err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+
+	// Wait for sync to start
+	select {
+	case <-syncStarted:
+	case <-time.After(time.Second):
+		t.Fatal("sync did not start")
+	}
+
+	// Stop should cancel the running sync
+	ctx := s.Stop()
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Error("Stop() did not complete after cancelling sync")
+	}
+
+	// Verify the error was recorded
+	statuses := s.Status()
+	for _, status := range statuses {
+		if status.Email == "test@gmail.com" {
+			if status.LastError == "" {
+				t.Error("expected error after cancelled sync")
+			}
+			return
+		}
+	}
+}
+
 func TestTriggerSync(t *testing.T) {
 	var called atomic.Int32
 	s := New(func(ctx context.Context, email string) error {

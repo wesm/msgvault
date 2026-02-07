@@ -16,6 +16,16 @@ import (
 // It receives the account email and should perform incremental sync + cache build.
 type SyncFunc func(ctx context.Context, email string) error
 
+// AccountStatus represents the sync status of a scheduled account.
+type AccountStatus struct {
+	Email     string    `json:"email"`
+	Running   bool      `json:"running"`
+	LastRun   time.Time `json:"last_run,omitempty"`
+	NextRun   time.Time `json:"next_run"`
+	Schedule  string    `json:"schedule"`
+	LastError string    `json:"last_error,omitempty"`
+}
+
 // Scheduler manages cron-based email sync scheduling.
 type Scheduler struct {
 	cron     *cron.Cron
@@ -29,9 +39,11 @@ type Scheduler struct {
 	lastRun   map[string]time.Time    // email -> last successful run
 	lastErr   map[string]error        // email -> last error
 
-	ctx    context.Context    // cancelled on Stop
-	cancel context.CancelFunc // cancels ctx
-	wg     sync.WaitGroup     // tracks running sync goroutines
+	ctx     context.Context    // cancelled on Stop
+	cancel  context.CancelFunc // cancels ctx
+	wg      sync.WaitGroup     // tracks running sync goroutines
+	started bool               // true after Start(), false after Stop()
+	stopped bool               // true after Stop()
 }
 
 // New creates a new Scheduler with the given sync callback.
@@ -122,14 +134,31 @@ func (s *Scheduler) RemoveAccount(email string) {
 
 // Start begins executing scheduled jobs.
 func (s *Scheduler) Start() {
+	s.mu.Lock()
+	s.started = true
+	s.stopped = false
+	s.mu.Unlock()
+
 	s.cron.Start()
 	s.logger.Info("scheduler started", "jobs", len(s.jobs))
+}
+
+// IsRunning returns true if the scheduler has been started and not yet stopped.
+func (s *Scheduler) IsRunning() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.started && !s.stopped
 }
 
 // Stop gracefully stops the scheduler, cancels running sync jobs, and waits
 // for them to finish. Returns a context that is done when all work completes.
 func (s *Scheduler) Stop() context.Context {
 	s.logger.Info("scheduler stopping")
+
+	s.mu.Lock()
+	s.stopped = true
+	s.mu.Unlock()
+
 	cronCtx := s.cron.Stop()
 	s.cancel() // signal running syncs to stop
 
@@ -238,16 +267,6 @@ func (s *Scheduler) Status() []AccountStatus {
 		statuses = append(statuses, status)
 	}
 	return statuses
-}
-
-// AccountStatus represents the sync status of a scheduled account.
-type AccountStatus struct {
-	Email     string    `json:"email"`
-	Running   bool      `json:"running"`
-	LastRun   time.Time `json:"last_run,omitempty"`
-	NextRun   time.Time `json:"next_run"`
-	Schedule  string    `json:"schedule"`
-	LastError string    `json:"last_error,omitempty"`
 }
 
 // ValidateCronExpr validates a cron expression without scheduling anything.

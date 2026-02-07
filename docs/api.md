@@ -8,15 +8,33 @@ The msgvault HTTP API provides remote access to your email archive when running 
 msgvault serve
 ```
 
-The server listens on port 8080 by default. Configure in `config.toml`:
+The server listens on `127.0.0.1:8080` by default (loopback only). Configure in `config.toml`:
 
 ```toml
 [server]
 api_port = 8080
-api_key = "your-secret-key"
+bind_addr = "127.0.0.1"    # Default: loopback only
+api_key = "your-secret-key" # Required for non-loopback bind addresses
 ```
 
-## Authentication
+## Security
+
+### Bind Address
+
+The server binds to `127.0.0.1` (loopback) by default. To expose the API on a network interface:
+
+1. Set `bind_addr` to the desired address (e.g., `"0.0.0.0"` for all interfaces)
+2. You **must** also set `api_key` — the server refuses to start on a non-loopback address without authentication
+
+To explicitly opt out of this safety check (not recommended for production):
+
+```toml
+[server]
+bind_addr = "0.0.0.0"
+allow_insecure = true   # Allows unauthenticated non-loopback access
+```
+
+### Authentication
 
 All API endpoints (except `/health`) require authentication when `api_key` is configured.
 
@@ -29,6 +47,20 @@ All API endpoints (except `/health`) require authentication when `api_key` is co
 ```bash
 curl -H "Authorization: Bearer your-secret-key" http://localhost:8080/api/v1/stats
 ```
+
+### CORS
+
+CORS is disabled by default (no origins allowed). To enable CORS for browser-based clients, configure allowed origins explicitly:
+
+```toml
+[server]
+cors_origins = ["http://localhost:3000", "https://myapp.example.com"]
+cors_credentials = false   # Whether to allow credentials
+cors_max_age = 86400       # Preflight cache duration (seconds, default: 86400)
+```
+
+**Allowed methods:** `GET, POST, PUT, DELETE, OPTIONS`
+**Allowed headers:** `Accept, Authorization, Content-Type, X-API-Key`
 
 ## Rate Limiting
 
@@ -158,7 +190,7 @@ Returns a single message with full body and attachments.
 GET /api/v1/search?q={query}
 ```
 
-Search messages using full-text search.
+Search messages using full-text search (FTS5 with LIKE fallback).
 
 **Query Parameters:**
 | Parameter | Type | Required | Description |
@@ -238,13 +270,9 @@ Manually trigger an incremental sync for an account.
 }
 ```
 
-**Error Response (409 Conflict):**
-```json
-{
-  "error": "sync_error",
-  "message": "sync already running for user@gmail.com"
-}
-```
+**Error Responses:**
+- `404 Not Found` - Account is not scheduled
+- `409 Conflict` - Sync already running for this account
 
 ---
 
@@ -273,6 +301,8 @@ Returns the current scheduler status and all scheduled accounts.
 }
 ```
 
+The `running` field at the top level reflects the actual scheduler lifecycle state (true after `Start()`, false after `Stop()`). Per-account `running` indicates whether a sync is currently in progress for that account.
+
 ## Error Responses
 
 All errors return a consistent JSON format:
@@ -284,25 +314,21 @@ All errors return a consistent JSON format:
 }
 ```
 
-**Common Error Codes:**
+**Error Codes:**
 | Code | HTTP Status | Description |
 |------|-------------|-------------|
 | `unauthorized` | 401 | Missing or invalid API key |
 | `rate_limit_exceeded` | 429 | Too many requests |
 | `invalid_id` | 400 | Invalid message/resource ID |
 | `missing_query` | 400 | Required query parameter missing |
+| `missing_account` | 400 | Account email is required |
 | `not_found` | 404 | Resource not found |
+| `sync_error` | 409 | Sync conflict (already running) |
 | `internal_error` | 500 | Server error |
 | `store_unavailable` | 503 | Database not available |
+| `scheduler_unavailable` | 503 | Scheduler not available |
 
-## CORS
-
-The API supports Cross-Origin Resource Sharing (CORS) for browser-based clients:
-
-- **Allowed Origins:** `*` (configurable)
-- **Allowed Methods:** `GET, POST, PUT, DELETE, OPTIONS`
-- **Allowed Headers:** `Accept, Authorization, Content-Type, X-API-Key`
-- **Preflight Cache:** 24 hours
+All timestamps in responses use RFC 3339 format in UTC (e.g., `"2024-01-15T10:30:00Z"`).
 
 ## Examples
 
@@ -352,3 +378,13 @@ const params = new URLSearchParams({ q: 'invoice' });
 const results = await fetch(`${API_URL}/search?${params}`, { headers }).then(r => r.json());
 results.messages.forEach(msg => console.log(`- ${msg.subject}`));
 ```
+
+## Deferred Enhancements
+
+These are tracked as follow-ups and not required for the initial merge:
+
+- Unifying API on top of `internal/query.Engine` as the only query path
+- Advanced auth models (tokens/scopes/users) beyond API key
+- Multi-node daemon coordination and distributed rate limiting
+- Full observability package (metrics/tracing dashboards)
+- IMAP import support for Yahoo, Outlook, and other email systems

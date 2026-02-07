@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/wesm/msgvault/internal/scheduler"
 )
 
 // StatsResponse represents the archive statistics.
@@ -18,6 +17,29 @@ type StatsResponse struct {
 	TotalLabels   int64 `json:"total_labels"`
 	TotalAttach   int64 `json:"total_attachments"`
 	DatabaseSize  int64 `json:"database_size_bytes"`
+}
+
+// APIMessage represents a message from the store.
+type APIMessage struct {
+	ID             int64
+	Subject        string
+	From           string
+	To             []string
+	SentAt         time.Time
+	Snippet        string
+	Labels         []string
+	HasAttachments bool
+	SizeEstimate   int64
+	Body           string
+	Headers        map[string]string
+	Attachments    []APIAttachment
+}
+
+// APIAttachment represents attachment metadata.
+type APIAttachment struct {
+	Filename string
+	MimeType string
+	Size     int64
 }
 
 // AccountInfo represents an account in list responses.
@@ -32,14 +54,50 @@ type AccountInfo struct {
 
 // SchedulerStatusResponse represents scheduler status.
 type SchedulerStatusResponse struct {
-	Running  bool                      `json:"running"`
-	Accounts []scheduler.AccountStatus `json:"accounts"`
+	Running  bool            `json:"running"`
+	Accounts []AccountStatus `json:"accounts"`
 }
 
 // ErrorResponse represents an API error.
 type ErrorResponse struct {
 	Error   string `json:"error"`
 	Message string `json:"message,omitempty"`
+}
+
+// MessageSummary represents a message in list responses.
+type MessageSummary struct {
+	ID        int64    `json:"id"`
+	Subject   string   `json:"subject"`
+	From      string   `json:"from"`
+	To        []string `json:"to"`
+	SentAt    string   `json:"sent_at"`
+	Snippet   string   `json:"snippet"`
+	Labels    []string `json:"labels"`
+	HasAttach bool     `json:"has_attachments"`
+	SizeBytes int64    `json:"size_bytes"`
+}
+
+// MessageDetail represents a full message response.
+type MessageDetail struct {
+	MessageSummary
+	Body        string           `json:"body"`
+	Attachments []AttachmentInfo `json:"attachments"`
+}
+
+// AttachmentInfo represents attachment metadata in API responses.
+type AttachmentInfo struct {
+	Filename string `json:"filename"`
+	MimeType string `json:"mime_type"`
+	Size     int64  `json:"size_bytes"`
+}
+
+// SearchResult represents search results.
+type SearchResult struct {
+	Query    string           `json:"query"`
+	Total    int64            `json:"total"`
+	Page     int              `json:"page"`
+	PageSize int              `json:"page_size"`
+	Messages []MessageSummary `json:"messages"`
 }
 
 // writeJSON writes a JSON response.
@@ -52,6 +110,29 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 // writeError writes an error response.
 func writeError(w http.ResponseWriter, status int, err string, message string) {
 	writeJSON(w, status, ErrorResponse{Error: err, Message: message})
+}
+
+// toMessageSummary converts an APIMessage to a MessageSummary for API responses.
+func toMessageSummary(m APIMessage) MessageSummary {
+	to := m.To
+	if to == nil {
+		to = []string{}
+	}
+	labels := m.Labels
+	if labels == nil {
+		labels = []string{}
+	}
+	return MessageSummary{
+		ID:        m.ID,
+		Subject:   m.Subject,
+		From:      m.From,
+		To:        to,
+		SentAt:    m.SentAt.UTC().Format(time.RFC3339),
+		Snippet:   m.Snippet,
+		Labels:    labels,
+		HasAttach: m.HasAttachments,
+		SizeBytes: m.SizeEstimate,
+	}
 }
 
 // handleStats returns archive statistics.
@@ -78,42 +159,6 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// MessageSummary represents a message in list responses.
-type MessageSummary struct {
-	ID        int64    `json:"id"`
-	Subject   string   `json:"subject"`
-	From      string   `json:"from"`
-	To        []string `json:"to"`
-	SentAt    string   `json:"sent_at"`
-	Snippet   string   `json:"snippet"`
-	Labels    []string `json:"labels"`
-	HasAttach bool     `json:"has_attachments"`
-	SizeBytes int64    `json:"size_bytes"`
-}
-
-// MessageDetail represents a full message response.
-type MessageDetail struct {
-	MessageSummary
-	Body        string           `json:"body"`
-	Attachments []AttachmentInfo `json:"attachments"`
-}
-
-// AttachmentInfo represents attachment metadata.
-type AttachmentInfo struct {
-	Filename string `json:"filename"`
-	MimeType string `json:"mime_type"`
-	Size     int64  `json:"size_bytes"`
-}
-
-// SearchResult represents search results.
-type SearchResult struct {
-	Query    string           `json:"query"`
-	Total    int64            `json:"total"`
-	Page     int              `json:"page"`
-	PageSize int              `json:"page_size"`
-	Messages []MessageSummary `json:"messages"`
 }
 
 // handleListMessages returns a paginated list of messages.
@@ -143,17 +188,7 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 
 	summaries := make([]MessageSummary, len(messages))
 	for i, m := range messages {
-		summaries[i] = MessageSummary{
-			ID:        m.ID,
-			Subject:   m.Subject,
-			From:      m.From,
-			To:        m.To,
-			SentAt:    m.SentAt.UTC().Format(time.RFC3339),
-			Snippet:   m.Snippet,
-			Labels:    m.Labels,
-			HasAttach: m.HasAttachments,
-			SizeBytes: m.SizeEstimate,
-		}
+		summaries[i] = toMessageSummary(m)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -190,27 +225,15 @@ func (s *Server) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	detail := MessageDetail{
-		MessageSummary: MessageSummary{
-			ID:        msg.ID,
-			Subject:   msg.Subject,
-			From:      msg.From,
-			To:        msg.To,
-			SentAt:    msg.SentAt.UTC().Format(time.RFC3339),
-			Snippet:   msg.Snippet,
-			Labels:    msg.Labels,
-			HasAttach: msg.HasAttachments,
-			SizeBytes: msg.SizeEstimate,
-		},
-		Body: msg.Body,
+		MessageSummary: toMessageSummary(*msg),
+		Body:           msg.Body,
 	}
 
+	attachments := make([]AttachmentInfo, 0, len(msg.Attachments))
 	for _, att := range msg.Attachments {
-		detail.Attachments = append(detail.Attachments, AttachmentInfo{
-			Filename: att.Filename,
-			MimeType: att.MimeType,
-			Size:     att.Size,
-		})
+		attachments = append(attachments, AttachmentInfo(att))
 	}
+	detail.Attachments = attachments
 
 	writeJSON(w, http.StatusOK, detail)
 }
@@ -248,17 +271,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	summaries := make([]MessageSummary, len(messages))
 	for i, m := range messages {
-		summaries[i] = MessageSummary{
-			ID:        m.ID,
-			Subject:   m.Subject,
-			From:      m.From,
-			To:        m.To,
-			SentAt:    m.SentAt.UTC().Format(time.RFC3339),
-			Snippet:   m.Snippet,
-			Labels:    m.Labels,
-			HasAttach: m.HasAttachments,
-			SizeBytes: m.SizeEstimate,
-		}
+		summaries[i] = toMessageSummary(m)
 	}
 
 	writeJSON(w, http.StatusOK, SearchResult{
@@ -272,6 +285,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 // handleListAccounts returns all configured accounts.
 func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
+	if s.scheduler == nil {
+		writeError(w, http.StatusServiceUnavailable, "scheduler_unavailable", "Scheduler not available")
+		return
+	}
+
 	var accounts []AccountInfo
 
 	// Get schedule info from config
@@ -298,6 +316,10 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		accounts = append(accounts, info)
 	}
 
+	if accounts == nil {
+		accounts = []AccountInfo{}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"accounts": accounts,
 	})
@@ -305,6 +327,11 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 
 // handleTriggerSync manually triggers a sync for an account.
 func (s *Server) handleTriggerSync(w http.ResponseWriter, r *http.Request) {
+	if s.scheduler == nil {
+		writeError(w, http.StatusServiceUnavailable, "scheduler_unavailable", "Scheduler not available")
+		return
+	}
+
 	account := chi.URLParam(r, "account")
 	if account == "" {
 		writeError(w, http.StatusBadRequest, "missing_account", "Account email is required")
@@ -332,9 +359,18 @@ func (s *Server) handleTriggerSync(w http.ResponseWriter, r *http.Request) {
 
 // handleSchedulerStatus returns the scheduler status.
 func (s *Server) handleSchedulerStatus(w http.ResponseWriter, r *http.Request) {
+	if s.scheduler == nil {
+		writeError(w, http.StatusServiceUnavailable, "scheduler_unavailable", "Scheduler not available")
+		return
+	}
+
 	statuses := s.scheduler.Status()
+	if statuses == nil {
+		statuses = []AccountStatus{}
+	}
+
 	writeJSON(w, http.StatusOK, SchedulerStatusResponse{
-		Running:  true,
+		Running:  s.scheduler.IsRunning(),
 		Accounts: statuses,
 	})
 }

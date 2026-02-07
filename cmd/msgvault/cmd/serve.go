@@ -51,6 +51,11 @@ func init() {
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
+	// Validate security posture before doing any work
+	if err := cfg.Server.ValidateSecure(); err != nil {
+		return err
+	}
+
 	// Validate config
 	if cfg.OAuth.ClientSecrets == "" {
 		return errOAuthNotConfigured()
@@ -109,8 +114,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Start the scheduler
 	sched.Start()
 
+	// Create adapters for the API interfaces
+	storeAdapter := &storeAPIAdapter{store: s}
+	schedAdapter := &schedulerAdapter{scheduler: sched}
+
 	// Create and start API server
-	apiServer := api.NewServer(cfg, s, sched, logger)
+	apiServer := api.NewServer(cfg, storeAdapter, schedAdapter, logger)
 
 	// Start API server in goroutine
 	serverErr := make(chan error, 1)
@@ -170,6 +179,120 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// storeAPIAdapter adapts store.Store to api.MessageStore.
+type storeAPIAdapter struct {
+	store *store.Store
+}
+
+func (a *storeAPIAdapter) GetStats() (*api.StoreStats, error) {
+	stats, err := a.store.GetStats()
+	if err != nil {
+		return nil, err
+	}
+	return &api.StoreStats{
+		MessageCount:    stats.MessageCount,
+		ThreadCount:     stats.ThreadCount,
+		SourceCount:     stats.SourceCount,
+		LabelCount:      stats.LabelCount,
+		AttachmentCount: stats.AttachmentCount,
+		DatabaseSize:    stats.DatabaseSize,
+	}, nil
+}
+
+func (a *storeAPIAdapter) ListMessages(offset, limit int) ([]api.APIMessage, int64, error) {
+	msgs, total, err := a.store.ListMessages(offset, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	return convertMessages(msgs), total, nil
+}
+
+func (a *storeAPIAdapter) GetMessage(id int64) (*api.APIMessage, error) {
+	msg, err := a.store.GetMessage(id)
+	if err != nil {
+		return nil, err
+	}
+	if msg == nil {
+		return nil, nil
+	}
+	result := convertMessage(*msg)
+	return &result, nil
+}
+
+func (a *storeAPIAdapter) SearchMessages(query string, offset, limit int) ([]api.APIMessage, int64, error) {
+	msgs, total, err := a.store.SearchMessages(query, offset, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	return convertMessages(msgs), total, nil
+}
+
+func convertMessages(msgs []store.APIMessage) []api.APIMessage {
+	result := make([]api.APIMessage, len(msgs))
+	for i, m := range msgs {
+		result[i] = convertMessage(m)
+	}
+	return result
+}
+
+func convertMessage(m store.APIMessage) api.APIMessage {
+	var attachments []api.APIAttachment
+	for _, a := range m.Attachments {
+		attachments = append(attachments, api.APIAttachment{
+			Filename: a.Filename,
+			MimeType: a.MimeType,
+			Size:     a.Size,
+		})
+	}
+	return api.APIMessage{
+		ID:             m.ID,
+		Subject:        m.Subject,
+		From:           m.From,
+		To:             m.To,
+		SentAt:         m.SentAt,
+		Snippet:        m.Snippet,
+		Labels:         m.Labels,
+		HasAttachments: m.HasAttachments,
+		SizeEstimate:   m.SizeEstimate,
+		Body:           m.Body,
+		Headers:        m.Headers,
+		Attachments:    attachments,
+	}
+}
+
+// schedulerAdapter adapts scheduler.Scheduler to api.SyncScheduler.
+type schedulerAdapter struct {
+	scheduler *scheduler.Scheduler
+}
+
+func (a *schedulerAdapter) IsScheduled(email string) bool {
+	return a.scheduler.IsScheduled(email)
+}
+
+func (a *schedulerAdapter) TriggerSync(email string) error {
+	return a.scheduler.TriggerSync(email)
+}
+
+func (a *schedulerAdapter) IsRunning() bool {
+	return a.scheduler.IsRunning()
+}
+
+func (a *schedulerAdapter) Status() []api.AccountStatus {
+	statuses := a.scheduler.Status()
+	result := make([]api.AccountStatus, len(statuses))
+	for i, s := range statuses {
+		result[i] = api.AccountStatus{
+			Email:     s.Email,
+			Running:   s.Running,
+			LastRun:   s.LastRun,
+			NextRun:   s.NextRun,
+			Schedule:  s.Schedule,
+			LastError: s.LastError,
+		}
+	}
+	return result
 }
 
 // runScheduledSync performs an incremental sync for a scheduled account.

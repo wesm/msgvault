@@ -11,22 +11,56 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/wesm/msgvault/internal/config"
-	"github.com/wesm/msgvault/internal/scheduler"
-	"github.com/wesm/msgvault/internal/store"
 )
+
+// MessageStore defines the store operations the API needs.
+type MessageStore interface {
+	GetStats() (*StoreStats, error)
+	ListMessages(offset, limit int) ([]APIMessage, int64, error)
+	GetMessage(id int64) (*APIMessage, error)
+	SearchMessages(query string, offset, limit int) ([]APIMessage, int64, error)
+}
+
+// StoreStats holds aggregate statistics from the store.
+type StoreStats struct {
+	MessageCount    int64
+	ThreadCount     int64
+	SourceCount     int64
+	LabelCount      int64
+	AttachmentCount int64
+	DatabaseSize    int64
+}
+
+// SyncScheduler defines the scheduler operations the API needs.
+type SyncScheduler interface {
+	IsScheduled(email string) bool
+	TriggerSync(email string) error
+	Status() []AccountStatus
+	IsRunning() bool
+}
+
+// AccountStatus represents the sync status of a scheduled account.
+type AccountStatus struct {
+	Email     string    `json:"email"`
+	Running   bool      `json:"running"`
+	LastRun   time.Time `json:"last_run,omitempty"`
+	NextRun   time.Time `json:"next_run"`
+	Schedule  string    `json:"schedule"`
+	LastError string    `json:"last_error,omitempty"`
+}
 
 // Server represents the HTTP API server.
 type Server struct {
 	cfg       *config.Config
-	store     *store.Store
-	scheduler *scheduler.Scheduler
+	store     MessageStore
+	scheduler SyncScheduler
 	logger    *slog.Logger
 	router    chi.Router
 	server    *http.Server
 }
 
 // NewServer creates a new API server.
-func NewServer(cfg *config.Config, store *store.Store, sched *scheduler.Scheduler, logger *slog.Logger) *Server {
+func NewServer(cfg *config.Config, store MessageStore, sched SyncScheduler, logger *slog.Logger) *Server {
 	s := &Server{
 		cfg:       cfg,
 		store:     store,
@@ -47,8 +81,18 @@ func (s *Server) setupRouter() chi.Router {
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.Timeout(60 * time.Second))
 
-	// CORS middleware (disabled by default — no origins allowed)
-	r.Use(CORSMiddleware(CORSConfig{}))
+	// CORS middleware (config-driven; disabled when no origins configured)
+	corsConfig := CORSConfig{
+		AllowedOrigins:   s.cfg.Server.CORSOrigins,
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-API-Key"},
+		AllowCredentials: s.cfg.Server.CORSCredentials,
+		MaxAge:           s.cfg.Server.CORSMaxAge,
+	}
+	if corsConfig.MaxAge == 0 && len(corsConfig.AllowedOrigins) > 0 {
+		corsConfig.MaxAge = 86400
+	}
+	r.Use(CORSMiddleware(corsConfig))
 
 	// Rate limiting (10 req/sec with burst of 20)
 	rateLimiter := NewRateLimiter(10, 20)
@@ -84,7 +128,12 @@ func (s *Server) setupRouter() chi.Router {
 }
 
 // Start begins listening for HTTP requests.
+// Returns an error if the security posture is invalid.
 func (s *Server) Start() error {
+	if err := s.cfg.Server.ValidateSecure(); err != nil {
+		return err
+	}
+
 	bindAddr := s.cfg.Server.BindAddr
 	if bindAddr == "" {
 		bindAddr = "127.0.0.1"
@@ -109,6 +158,9 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.server == nil {
+		return nil
+	}
 	s.logger.Info("shutting down API server")
 	return s.server.Shutdown(ctx)
 }

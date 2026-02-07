@@ -22,10 +22,33 @@ type ChatConfig struct {
 
 // ServerConfig holds HTTP API server configuration.
 type ServerConfig struct {
-	APIPort    int    `toml:"api_port"`    // HTTP server port (default: 8080)
-	BindAddr   string `toml:"bind_addr"`   // Bind address (default: 127.0.0.1)
-	APIKey     string `toml:"api_key"`     // API authentication key
-	MCPEnabled bool   `toml:"mcp_enabled"` // Enable MCP server endpoint
+	APIPort         int      `toml:"api_port"`         // HTTP server port (default: 8080)
+	BindAddr        string   `toml:"bind_addr"`        // Bind address (default: 127.0.0.1)
+	APIKey          string   `toml:"api_key"`          // API authentication key
+	MCPEnabled      bool     `toml:"mcp_enabled"`      // Enable MCP server endpoint
+	AllowInsecure   bool     `toml:"allow_insecure"`   // Allow unauthenticated non-loopback access
+	CORSOrigins     []string `toml:"cors_origins"`     // Allowed CORS origins (empty = disabled)
+	CORSCredentials bool     `toml:"cors_credentials"` // Allow credentials in CORS
+	CORSMaxAge      int      `toml:"cors_max_age"`     // Preflight cache duration in seconds (default: 86400)
+}
+
+// IsLoopback returns true if the bind address is a loopback address.
+func (s ServerConfig) IsLoopback() bool {
+	addr := s.BindAddr
+	if addr == "" {
+		addr = "127.0.0.1"
+	}
+	return addr == "127.0.0.1" || addr == "localhost" || addr == "::1"
+}
+
+// ValidateSecure returns an error if the server is configured insecurely
+// without an explicit opt-in via allow_insecure.
+func (s ServerConfig) ValidateSecure() error {
+	if !s.IsLoopback() && s.APIKey == "" && !s.AllowInsecure {
+		return fmt.Errorf("refusing to start: bind address %q is not loopback and no api_key is set\n\n"+
+			"Set [server] api_key in config.toml, or set allow_insecure = true to override", s.BindAddr)
+	}
+	return nil
 }
 
 // AccountSchedule defines sync schedule for a single account.
