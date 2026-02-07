@@ -40,7 +40,7 @@ Examples:
 		// Execute aggregation
 		results, err := engine.Aggregate(cmd.Context(), query.ViewDomains, opts)
 		if err != nil {
-			return fmt.Errorf("aggregate by domain: %w", err)
+			return query.HintRepairEncoding(fmt.Errorf("aggregate by domain: %w", err))
 		}
 
 		if len(results) == 0 {

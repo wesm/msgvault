@@ -81,7 +81,7 @@ Examples:
 		results, err := engine.Search(cmd.Context(), q, searchLimit, searchOffset)
 		fmt.Fprintf(os.Stderr, "\r            \r")
 		if err != nil {
-			return fmt.Errorf("search: %w", err)
+			return query.HintRepairEncoding(fmt.Errorf("search: %w", err))
 		}
 
 		if len(results) == 0 {

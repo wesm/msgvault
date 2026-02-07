@@ -40,7 +40,7 @@ Examples:
 		// Execute aggregation
 		results, err := engine.Aggregate(cmd.Context(), query.ViewLabels, opts)
 		if err != nil {
-			return fmt.Errorf("aggregate by label: %w", err)
+			return query.HintRepairEncoding(fmt.Errorf("aggregate by label: %w", err))
 		}
 
 		if len(results) == 0 {
