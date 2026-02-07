@@ -92,7 +92,7 @@ Performance:
 		// Determine query engine to use
 		var engine query.Engine
 
-		if !forceSQL && query.HasParquetData(analyticsDir) {
+		if !forceSQL && query.HasCompleteParquetData(analyticsDir) {
 			// Use DuckDB for fast Parquet queries
 			var duckOpts query.DuckDBOptions
 			if noSQLiteScanner {
@@ -178,6 +178,11 @@ func cacheNeedsBuild(dbPath, analyticsDir string) (bool, string) {
 	files, _ := filepath.Glob(filepath.Join(messagesDir, "*", "*.parquet"))
 	if len(files) == 0 {
 		return true, "cache directory empty"
+	}
+
+	// Check for required parquet tables (e.g. conversations added in a newer version)
+	if missingRequiredParquet(analyticsDir) {
+		return true, "cache missing required tables"
 	}
 
 	return false, ""

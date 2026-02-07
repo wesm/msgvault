@@ -78,6 +78,11 @@ func (b *MessageSummaryBuilder) WithConversationID(id int64) *MessageSummaryBuil
 	return b
 }
 
+func (b *MessageSummaryBuilder) WithSourceConversationID(id string) *MessageSummaryBuilder {
+	b.s.SourceConversationID = id
+	return b
+}
+
 func (b *MessageSummaryBuilder) WithDeletedAt(t *time.Time) *MessageSummaryBuilder {
 	b.s.DeletedAt = t
 	return b
@@ -179,6 +184,11 @@ func (b *MessageDetailBuilder) WithSourceMessageID(id string) *MessageDetailBuil
 
 func (b *MessageDetailBuilder) WithConversationID(id int64) *MessageDetailBuilder {
 	b.d.ConversationID = id
+	return b
+}
+
+func (b *MessageDetailBuilder) WithSourceConversationID(id string) *MessageDetailBuilder {
+	b.d.SourceConversationID = id
 	return b
 }
 

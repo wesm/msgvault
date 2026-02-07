@@ -9,15 +9,23 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/marcboeker/go-duckdb"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/config"
+	"github.com/wesm/msgvault/internal/query"
 )
 
 var fullRebuild bool
+
+// buildCacheMu serializes concurrent buildCache calls. The scheduler may
+// trigger syncs for multiple accounts in parallel, each of which calls
+// buildCache on completion. Without this lock, concurrent writes to shared
+// files (_last_sync.json, parquet directories) can corrupt the cache.
+var buildCacheMu sync.Mutex
 
 // syncState tracks the last exported message ID for incremental updates.
 type syncState struct {
@@ -77,6 +85,9 @@ type buildResult struct {
 }
 
 func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, error) {
+	buildCacheMu.Lock()
+	defer buildCacheMu.Unlock()
+
 	stateFile := filepath.Join(analyticsDir, "_last_sync.json")
 
 	// Create output directory
@@ -118,6 +129,18 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 		maxID = maxMessageID.Int64
 	}
 
+	// Check for missing required parquet tables independently of whether
+	// new messages exist. A legacy cache might be missing tables (e.g.
+	// conversations) regardless of message count. Force full rebuild to
+	// avoid stale incr_*.parquet shards and ensure all tables are populated.
+	// Gate on maxID > 0: when the DB has zero messages, missing messages
+	// parquet is legitimate, not a sign of a broken cache.
+	if !fullRebuild && maxID > 0 && missingRequiredParquet(analyticsDir) {
+		fmt.Println("Backfilling missing cache tables (full rebuild)...")
+		fullRebuild = true
+		lastMessageID = 0
+	}
+
 	if maxID <= lastMessageID && !fullRebuild {
 		return &buildResult{Skipped: true}, nil
 	}
@@ -140,7 +163,7 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 	// On full rebuild, clear existing cache
 	if fullRebuild {
 		fmt.Println("Full rebuild: clearing existing cache...")
-		for _, subdir := range []string{"messages", "participants", "message_recipients", "labels", "message_labels", "attachments", "sources"} {
+		for _, subdir := range query.RequiredParquetDirs {
 			if err := os.RemoveAll(filepath.Join(analyticsDir, subdir)); err != nil {
 				return nil, fmt.Errorf("clear existing cache: %w", err)
 			}
@@ -148,7 +171,7 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 	}
 
 	// Create subdirectories
-	for _, subdir := range []string{"messages", "participants", "message_recipients", "labels", "message_labels", "attachments", "sources"} {
+	for _, subdir := range query.RequiredParquetDirs {
 		if err := os.MkdirAll(filepath.Join(analyticsDir, subdir), 0755); err != nil {
 			return nil, fmt.Errorf("create %s dir: %w", subdir, err)
 		}
@@ -342,6 +365,23 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 		return nil, fmt.Errorf("export sources: %w", err)
 	}
 
+	// 8. Export conversations (for Gmail thread IDs)
+	conversationsDir := filepath.Join(analyticsDir, "conversations")
+	escapedConversationsDir := strings.ReplaceAll(conversationsDir, "'", "''")
+	if err := runExport("conversations", fmt.Sprintf(`
+	COPY (
+		SELECT
+			id,
+			COALESCE(TRY_CAST(source_conversation_id AS VARCHAR), '') as source_conversation_id
+		FROM sqlite_db.conversations
+	) TO '%s/conversations.parquet' (
+		FORMAT PARQUET,
+		COMPRESSION 'zstd'
+	)
+	`, escapedConversationsDir)); err != nil {
+		return nil, fmt.Errorf("export conversations: %w", err)
+	}
+
 	fmt.Printf("  %-25s %s\n", "Total:", time.Since(buildStart).Round(time.Millisecond))
 
 	// Count exported messages
@@ -366,6 +406,29 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 		MaxMessageID:  maxID,
 		OutputDir:     analyticsDir,
 	}, nil
+}
+
+// missingRequiredParquet returns true if some parquet data exists but is
+// missing one or more required tables (e.g. upgrading from a cache that
+// predates the conversations export). Returns false for a fresh empty cache.
+func missingRequiredParquet(analyticsDir string) bool {
+	if query.HasCompleteParquetData(analyticsDir) {
+		return false
+	}
+	// Incomplete — check if any table has data (partial/broken cache vs fresh).
+	for _, dir := range query.RequiredParquetDirs {
+		pattern := filepath.Join(analyticsDir, dir, "*.parquet")
+		if matches, _ := filepath.Glob(pattern); len(matches) > 0 {
+			return true
+		}
+		// For messages, also check hive-partitioned layout (messages/year=*/*.parquet)
+		if dir == "messages" {
+			if deep, _ := filepath.Glob(filepath.Join(analyticsDir, dir, "*", "*.parquet")); len(deep) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 var cacheStatsCmd = &cobra.Command{
@@ -537,6 +600,7 @@ func setupSQLiteSource(duckDB *sql.DB, dbPath string) (cleanup func(), err error
 		{"participants", "SELECT id, email_address, domain, display_name FROM participants", ""},
 		{"labels", "SELECT id, name FROM labels", ""},
 		{"sources", "SELECT id, identifier FROM sources", ""},
+		{"conversations", "SELECT id, source_conversation_id FROM conversations", ""},
 	}
 
 	for _, t := range tables {

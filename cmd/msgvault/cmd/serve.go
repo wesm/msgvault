@@ -184,87 +184,31 @@ func runServe(cmd *cobra.Command, args []string) error {
 }
 
 // storeAPIAdapter adapts store.Store to api.MessageStore.
+// Since api.APIMessage, api.StoreStats, etc. are type aliases for store types,
+// the adapter methods are simple pass-throughs with no conversion needed.
 type storeAPIAdapter struct {
 	store *store.Store
 }
 
 func (a *storeAPIAdapter) GetStats() (*api.StoreStats, error) {
-	stats, err := a.store.GetStats()
-	if err != nil {
-		return nil, err
-	}
-	return &api.StoreStats{
-		MessageCount:    stats.MessageCount,
-		ThreadCount:     stats.ThreadCount,
-		SourceCount:     stats.SourceCount,
-		LabelCount:      stats.LabelCount,
-		AttachmentCount: stats.AttachmentCount,
-		DatabaseSize:    stats.DatabaseSize,
-	}, nil
+	return a.store.GetStats()
 }
 
 func (a *storeAPIAdapter) ListMessages(offset, limit int) ([]api.APIMessage, int64, error) {
-	msgs, total, err := a.store.ListMessages(offset, limit)
-	if err != nil {
-		return nil, 0, err
-	}
-	return convertMessages(msgs), total, nil
+	return a.store.ListMessages(offset, limit)
 }
 
 func (a *storeAPIAdapter) GetMessage(id int64) (*api.APIMessage, error) {
-	msg, err := a.store.GetMessage(id)
-	if err != nil {
-		return nil, err
-	}
-	if msg == nil {
-		return nil, nil
-	}
-	result := convertMessage(*msg)
-	return &result, nil
+	return a.store.GetMessage(id)
 }
 
 func (a *storeAPIAdapter) SearchMessages(query string, offset, limit int) ([]api.APIMessage, int64, error) {
-	msgs, total, err := a.store.SearchMessages(query, offset, limit)
-	if err != nil {
-		return nil, 0, err
-	}
-	return convertMessages(msgs), total, nil
-}
-
-func convertMessages(msgs []store.APIMessage) []api.APIMessage {
-	result := make([]api.APIMessage, len(msgs))
-	for i, m := range msgs {
-		result[i] = convertMessage(m)
-	}
-	return result
-}
-
-func convertMessage(m store.APIMessage) api.APIMessage {
-	var attachments []api.APIAttachment
-	for _, a := range m.Attachments {
-		attachments = append(attachments, api.APIAttachment{
-			Filename: a.Filename,
-			MimeType: a.MimeType,
-			Size:     a.Size,
-		})
-	}
-	return api.APIMessage{
-		ID:             m.ID,
-		Subject:        m.Subject,
-		From:           m.From,
-		To:             m.To,
-		SentAt:         m.SentAt,
-		Snippet:        m.Snippet,
-		Labels:         m.Labels,
-		HasAttachments: m.HasAttachments,
-		SizeEstimate:   m.SizeEstimate,
-		Body:           m.Body,
-		Headers:        m.Headers,
-		Attachments:    attachments,
-	}
+	return a.store.SearchMessages(query, offset, limit)
 }
 
 // schedulerAdapter adapts scheduler.Scheduler to api.SyncScheduler.
+// Since api.AccountStatus is a type alias for scheduler.AccountStatus,
+// the adapter methods are simple pass-throughs.
 type schedulerAdapter struct {
 	scheduler *scheduler.Scheduler
 }
@@ -282,19 +226,7 @@ func (a *schedulerAdapter) IsRunning() bool {
 }
 
 func (a *schedulerAdapter) Status() []api.AccountStatus {
-	statuses := a.scheduler.Status()
-	result := make([]api.AccountStatus, len(statuses))
-	for i, s := range statuses {
-		result[i] = api.AccountStatus{
-			Email:     s.Email,
-			Running:   s.Running,
-			LastRun:   s.LastRun,
-			NextRun:   s.NextRun,
-			Schedule:  s.Schedule,
-			LastError: s.LastError,
-		}
-	}
-	return result
+	return a.scheduler.Status()
 }
 
 // runScheduledSync performs an incremental sync for a scheduled account.

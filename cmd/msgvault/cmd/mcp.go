@@ -55,7 +55,7 @@ Add to Claude Desktop config:
 		var engine query.Engine
 		analyticsDir := cfg.AnalyticsDir()
 
-		if !mcpForceSQL && query.HasParquetData(analyticsDir) {
+		if !mcpForceSQL && query.HasCompleteParquetData(analyticsDir) {
 			var duckOpts query.DuckDBOptions
 			if mcpNoSQLiteScanner {
 				duckOpts.DisableSQLiteScanner = true

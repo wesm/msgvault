@@ -89,7 +89,7 @@ func runToolExpectError(t *testing.T, name string, fn toolHandler, args map[stri
 func TestSearchMessages(t *testing.T) {
 	eng := &querytest.MockEngine{
 		SearchFastResults: []query.MessageSummary{
-			testutil.NewMessageSummary(1).WithSubject("Hello").WithFromEmail("alice@example.com").Build(),
+			testutil.NewMessageSummary(1).WithSubject("Hello").WithFromEmail("alice@example.com").WithSourceConversationID("thread-abc").Build(),
 		},
 	}
 	h := newTestHandlers(eng)
@@ -98,6 +98,9 @@ func TestSearchMessages(t *testing.T) {
 		msgs := runTool[[]query.MessageSummary](t, "search_messages", h.searchMessages, map[string]any{"query": "from:alice"})
 		if len(msgs) != 1 || msgs[0].Subject != "Hello" {
 			t.Fatalf("unexpected result: %v", msgs)
+		}
+		if msgs[0].SourceConversationID != "thread-abc" {
+			t.Fatalf("expected SourceConversationID 'thread-abc', got %q", msgs[0].SourceConversationID)
 		}
 	})
 
@@ -124,7 +127,7 @@ func TestSearchFallbackToFTS(t *testing.T) {
 func TestGetMessage(t *testing.T) {
 	eng := &querytest.MockEngine{
 		Messages: map[int64]*query.MessageDetail{
-			42: testutil.NewMessageDetail(42).WithSubject("Test Message").WithBodyText("Hello world").BuildPtr(),
+			42: testutil.NewMessageDetail(42).WithSubject("Test Message").WithBodyText("Hello world").WithSourceConversationID("thread-xyz").BuildPtr(),
 		},
 	}
 	h := newTestHandlers(eng)
@@ -133,6 +136,9 @@ func TestGetMessage(t *testing.T) {
 		msg := runTool[query.MessageDetail](t, "get_message", h.getMessage, map[string]any{"id": float64(42)})
 		if msg.Subject != "Test Message" {
 			t.Fatalf("unexpected subject: %s", msg.Subject)
+		}
+		if msg.SourceConversationID != "thread-xyz" {
+			t.Fatalf("expected SourceConversationID 'thread-xyz', got %q", msg.SourceConversationID)
 		}
 	})
 
@@ -212,7 +218,7 @@ func TestAggregate(t *testing.T) {
 func TestListMessages(t *testing.T) {
 	eng := &querytest.MockEngine{
 		ListResults: []query.MessageSummary{
-			testutil.NewMessageSummary(1).WithSubject("Test").WithFromEmail("alice@example.com").Build(),
+			testutil.NewMessageSummary(1).WithSubject("Test").WithFromEmail("alice@example.com").WithSourceConversationID("thread-list").Build(),
 		},
 	}
 	h := newTestHandlers(eng)
@@ -225,6 +231,9 @@ func TestListMessages(t *testing.T) {
 		})
 		if len(msgs) != 1 {
 			t.Fatalf("expected 1 message, got %d", len(msgs))
+		}
+		if msgs[0].SourceConversationID != "thread-list" {
+			t.Fatalf("expected SourceConversationID 'thread-list', got %q", msgs[0].SourceConversationID)
 		}
 	})
 
