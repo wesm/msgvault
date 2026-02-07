@@ -51,9 +51,9 @@ Points `~/.msgvault` at `~/.msgvault-<name>`.
 - `~/.msgvault-<name>` must exist.
 
 **Steps:**
-1. Verify `~/.msgvault` is a symlink.
+1. Verify `~/.msgvault` is a symlink via `os.Lstat()`.
 2. Verify `~/.msgvault-<name>` exists and contains `msgvault.db`.
-3. Remove the existing symlink.
+3. Immediately before removal, re-verify via `os.Lstat()` that `~/.msgvault` is still a symlink. If it is not a symlink (e.g., due to a race condition or logic error), abort with an error to prevent accidental deletion of a real directory. Remove the verified symlink with `os.Remove()`.
 4. Create symlink: `~/.msgvault` → `~/.msgvault-<name>`.
 5. Print confirmation with the dataset now active.
 
@@ -91,9 +91,9 @@ Undoes `init-dev-data`, restoring the original directory layout.
 - `~/.msgvault-gold` must exist.
 
 **Steps:**
-1. Verify `~/.msgvault` is a symlink.
+1. Verify `~/.msgvault` is a symlink via `os.Lstat()`.
 2. Verify `~/.msgvault-gold` exists.
-3. Remove the symlink `~/.msgvault`.
+3. Immediately before removal, re-verify via `os.Lstat()` that `~/.msgvault` is still a symlink. If it is not a symlink (e.g., due to a race condition or logic error), abort with an error to prevent accidental deletion of a real directory. Remove the verified symlink with `os.Remove()`.
 4. Rename `~/.msgvault-gold` → `~/.msgvault`.
 5. Print confirmation.
 
@@ -113,14 +113,14 @@ Creates a new dataset by copying N messages from a source dataset.
 - `--rows <count>` (required): Number of messages to copy.
 
 **Steps:**
-1. Resolve source path: `~/.msgvault-<src>` if `--src` provided, otherwise resolve `~/.msgvault` (following symlinks).
+1. Resolve source path: `~/.msgvault-<src>` if `--src` provided, otherwise resolve `~/.msgvault` (following symlinks). Canonicalize both source and destination paths with `filepath.Clean()` and `filepath.Abs()`, then verify they are within the expected home directory to prevent path traversal (e.g., `--dst ../../etc` must be rejected).
 2. Verify source `msgvault.db` exists.
 3. Verify `~/.msgvault-<dst>` does not exist.
 4. Create `~/.msgvault-<dst>/`.
-5. Copy `config.toml` from source if it exists.
+5. Copy `config.toml` from source if it exists. Validate that the resolved config.toml paths are within their respective dataset directories (no path traversal via symlinks or `../` sequences).
 6. Open source database (read-only).
 7. Create destination database, initialize schema.
-8. Attach source database to destination connection.
+8. Attach source database to destination connection. The `ATTACH DATABASE` statement must not use unsanitized string interpolation for the path. Since SQLite's `ATTACH` does not support parameter binding for the filename, validate that `srcDBPath` contains no null bytes, and escape single quotes using `strings.ReplaceAll(srcDBPath, "'", "''")` before interpolation into the SQL statement.
 9. Copy data in dependency order (single transaction):
    a. `sources` — all rows (small table)
    b. `participants` — all referenced by selected messages
@@ -181,6 +181,20 @@ This is acceptable because:
 1. The tool is version-coupled to msgvault — it shares the same Go module and is built from the same source tree.
 2. If the schema has changed, the user should run `new-data` with a source database that matches the current schema.
 3. The `SELECT *` queries will produce a clear SQL error on column count mismatch rather than silently corrupting data.
+
+## Security Considerations
+
+### Symlink removal safety
+
+All operations that remove a symlink (`mount-data`, `exit-dev-data`, and `ReplaceSymlink`) must re-verify via `os.Lstat()` that the path is still a symlink immediately before calling `os.Remove()`. If a race condition or logic error causes the path to become a real directory between the initial check and removal, `os.Remove()` on a non-empty directory will fail (Go's behavior), but on an empty directory it would succeed and delete user data. The Lstat guard makes this explicit and fails fast with a clear error message rather than depending on directory-non-empty as a safety net.
+
+### SQL injection in ATTACH DATABASE
+
+SQLite's `ATTACH DATABASE` does not support parameterized binding for the filename argument — it requires a string literal. Since `srcDBPath` is derived from user-controlled flags (`--src`), it must be sanitized before interpolation. The implementation must: (1) reject paths containing null bytes, (2) escape single quotes via `strings.ReplaceAll(path, "'", "''")`, and (3) use the canonicalized absolute path (which also prevents path traversal). This eliminates SQL injection via crafted dataset names like `'; DROP TABLE messages; --`.
+
+### Path traversal protection
+
+Dataset names from `--src` and `--dst` flags are used to construct filesystem paths (`~/.msgvault-<name>`). Without validation, a name like `../../etc` would write outside the home directory. All dataset paths must be canonicalized with `filepath.Clean()` and `filepath.Abs()`, then verified to be within the expected home directory. The `copyFileIfExists` helper must similarly validate that source and destination paths are within their respective dataset directories before performing file I/O.
 
 ## Implementation Stages
 
