@@ -5,7 +5,7 @@ Security Review Bot - Uses Claude to review PRs for security issues
 This script:
 1. Fetches the PR diff from GitHub
 2. Sends it to Claude 4.5 Sonnet for security analysis
-3. Posts inline comments on security concerns
+3. Posts a single consolidated comment with all findings
 
 Adapted for msgvault (Go email archiver) from moneyflow.
 """
@@ -376,125 +376,48 @@ def parse_claude_response(response: str) -> list[dict] | None:
         return None
 
 
-def get_existing_bot_comments(pr) -> set[str]:
-    """Get set of existing bot comments to avoid duplicates."""
-    existing = set()
+def delete_old_bot_comments(pr) -> int:
+    """Delete previous security review bot comments to keep noise down."""
+    deleted = 0
     for comment in pr.get_issue_comments():
         if (
             comment.user.login == "github-actions[bot]"
-            and "Automated security review" in comment.body
+            and "Powered by Claude" in comment.body
+            and "Security Review:" in comment.body
         ):
-            # Extract a simple signature from the comment
-            if "**In `" in comment.body:
-                start = comment.body.find("**In `") + 6
-                end = comment.body.find("`:**", start)
-                if end > start:
-                    filename = comment.body[start:end]
-                    title_start = comment.body.find("**", end) + 2
-                    title_end = comment.body.find("**", title_start)
-                    if title_end > title_start:
-                        title = comment.body[title_start:title_end][:50]
-                        existing.add(f"{filename}:{title}")
-    return existing
+            try:
+                comment.delete()
+                deleted += 1
+            except Exception as e:
+                print(f"Warning: Failed to delete old comment: {e}", file=sys.stderr)
+    return deleted
 
 
 def post_review_comments(issues: list[dict]) -> None:
-    """Post review comments on the PR."""
-    if not issues:
-        print("No security issues found")
-        post_summary_comment(0)
-        return
-
+    """Post a single consolidated review comment on the PR."""
     g = Github(os.environ["GITHUB_TOKEN"])
     repo = g.get_repo(os.environ["REPO_NAME"])
     pr = repo.get_pull(int(os.environ["PR_NUMBER"]))
 
-    # Get existing comments to avoid duplicates
-    existing_comments = get_existing_bot_comments(pr)
-    print(f"Found {len(existing_comments)} existing bot comments")
-
-    # Fetch once outside the loop to avoid redundant API calls
-    head_commit = repo.get_commit(pr.head.sha)
-    pr_files = list(pr.get_files())
+    # Clean up old bot comments so we never accumulate noise
+    deleted = delete_old_bot_comments(pr)
+    if deleted:
+        print(f"Deleted {deleted} old bot comment(s)")
 
     severity_emoji = {"high": "\U0001f6a8", "medium": "\u26a0\ufe0f", "low": "\u2139\ufe0f"}
 
-    comments_posted = 0
-    skipped_duplicates = 0
-    skipped_low_severity = 0
+    # Filter to medium/high only
+    actionable = [i for i in issues if i["severity"] != "low"]
+    low_count = len(issues) - len(actionable)
 
-    for issue in issues:
-        # Skip low severity issues to reduce noise
-        if issue["severity"] == "low":
-            skipped_low_severity += 1
-            continue
+    if not actionable:
+        extra = ""
+        if low_count > 0:
+            extra = f"\n\n**Note:** {low_count} low severity issue(s) were found but omitted to reduce noise."
 
-        # Check for duplicate
-        signature = f"{issue['file']}:{issue['title'][:50]}"
-        if signature in existing_comments:
-            print(f"Skipping duplicate comment: {signature}")
-            skipped_duplicates += 1
-            continue
+        body = f"""## Security Review: No High/Medium Issues Found
 
-        emoji = severity_emoji.get(issue["severity"], "\u26a0\ufe0f")
-        comment_body = f"""{emoji} **{issue["title"]}** ({issue["severity"]} severity)
-
-{issue["description"]}
-
----
-*Automated security review by Claude 4.5 Sonnet - Human review still required*
-"""
-
-        try:
-            if issue.get("line") and issue.get("file"):
-                target_file = next((f for f in pr_files if f.filename == issue["file"]), None)
-
-                if target_file and target_file.patch:
-                    pr.create_review_comment(
-                        body=comment_body,
-                        commit=head_commit,
-                        path=issue["file"],
-                        line=issue["line"],
-                    )
-                    comments_posted += 1
-                else:
-                    pr.create_issue_comment(f"**In `{issue['file']}`:**\n\n{comment_body}")
-                    comments_posted += 1
-            else:
-                pr.create_issue_comment(comment_body)
-                comments_posted += 1
-
-        except Exception as e:
-            print(f"Error posting comment: {e}", file=sys.stderr)
-            try:
-                pr.create_issue_comment(
-                    f"**In `{issue.get('file', 'unknown')}`:**\n\n{comment_body}"
-                )
-                comments_posted += 1
-            except Exception as e2:
-                print(f"Error posting fallback comment: {e2}", file=sys.stderr)
-
-    print(f"Posted {comments_posted} security review comments")
-    print(f"Skipped {skipped_duplicates} duplicates, {skipped_low_severity} low severity")
-    post_summary_comment(comments_posted, skipped_duplicates, skipped_low_severity)
-
-
-def post_summary_comment(
-    num_issues: int, skipped_duplicates: int = 0, skipped_low_severity: int = 0
-) -> None:
-    """Post a summary comment on the PR."""
-    g = Github(os.environ["GITHUB_TOKEN"])
-    repo = g.get_repo(os.environ["REPO_NAME"])
-    pr = repo.get_pull(int(os.environ["PR_NUMBER"]))
-
-    if num_issues == 0:
-        extra_info = ""
-        if skipped_low_severity > 0:
-            extra_info = f"\n\n**Note:** {skipped_low_severity} low severity issue(s) were found but not posted to reduce noise."
-
-        summary = f"""## Security Review: No High/Medium Issues Found
-
-Claude's automated security review did not identify any high or medium severity security concerns in this PR.{extra_info}
+Claude's automated security review did not identify any high or medium severity security concerns in this PR.{extra}
 
 **Note:** This is an automated review and should not replace human security review, especially for changes involving:
 - OAuth token handling
@@ -508,28 +431,39 @@ Claude's automated security review did not identify any high or medium severity 
 *Powered by Claude 4.5 Sonnet*
 """
     else:
-        extra_info = ""
-        if skipped_duplicates > 0:
-            extra_info += f"\n- {skipped_duplicates} duplicate issue(s) were skipped"
-        if skipped_low_severity > 0:
-            extra_info += (
-                f"\n- {skipped_low_severity} low severity issue(s) were skipped to reduce noise"
+        findings = []
+        for issue in actionable:
+            emoji = severity_emoji.get(issue["severity"], "\u26a0\ufe0f")
+            loc = f"`{issue['file']}"
+            if issue.get("line"):
+                loc += f":{issue['line']}"
+            loc += "`"
+            findings.append(
+                f"### {emoji} {issue['title']} ({issue['severity']})\n"
+                f"**Location:** {loc}\n\n"
+                f"{issue['description']}"
             )
 
-        if extra_info:
-            extra_info = f"\n\n**Additionally:**{extra_info}"
+        findings_text = "\n\n---\n\n".join(findings)
 
-        summary = f"""## Security Review: {num_issues} High/Medium Issue{"s" if num_issues != 1 else ""} Found
+        extra = ""
+        if low_count > 0:
+            extra = f"\n\n**Note:** {low_count} low severity issue(s) were omitted to reduce noise."
 
-Claude's automated security review identified potential security concerns. Please review the inline comments.{extra_info}
+        body = f"""## Security Review: {len(actionable)} High/Medium Issue{"s" if len(actionable) != 1 else ""} Found
 
-**Note:** This is an automated review. False positives are possible. Please review each issue carefully and use your judgment.
+Claude's automated security review identified potential security concerns. Please review each finding below.{extra}
 
 ---
-*Powered by Claude 4.5 Sonnet*
+
+{findings_text}
+
+---
+*Powered by Claude 4.5 Sonnet — this is an automated review, false positives are possible.*
 """
 
-    pr.create_issue_comment(summary)
+    pr.create_issue_comment(body)
+    print(f"Posted 1 consolidated comment ({len(actionable)} findings, {low_count} low omitted)")
 
 
 def post_analysis_failed_comment() -> None:
@@ -537,6 +471,9 @@ def post_analysis_failed_comment() -> None:
     g = Github(os.environ["GITHUB_TOKEN"])
     repo = g.get_repo(os.environ["REPO_NAME"])
     pr = repo.get_pull(int(os.environ["PR_NUMBER"]))
+
+    # Clean up old bot comments first
+    delete_old_bot_comments(pr)
 
     summary = """## Security Review: Analysis Failed
 
