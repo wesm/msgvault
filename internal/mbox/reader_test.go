@@ -57,6 +57,44 @@ func TestReader_Next_SplitsAndUnescapes(t *testing.T) {
 	}
 }
 
+func TestReader_Offset_RespectsSeekPosition(t *testing.T) {
+	mboxData := strings.Join([]string{
+		"From a@example.com Mon Jan 1 00:00:00 2024",
+		"Subject: One",
+		"",
+		"Body1",
+		"",
+		"From b@example.com Mon Jan 1 00:00:01 2024",
+		"Subject: Two",
+		"",
+		"Body2",
+		"",
+	}, "\n")
+
+	start := strings.Index(mboxData, "From b@example.com")
+	if start < 0 {
+		t.Fatalf("missing second From line")
+	}
+
+	sr := strings.NewReader(mboxData)
+	if _, err := sr.Seek(int64(start), io.SeekStart); err != nil {
+		t.Fatalf("Seek(): %v", err)
+	}
+
+	r := NewReader(sr)
+	if got := r.Offset(); got != int64(start) {
+		t.Fatalf("Offset() = %d, want %d", got, start)
+	}
+
+	msg, err := r.Next()
+	if err != nil {
+		t.Fatalf("Next(): %v", err)
+	}
+	if !strings.HasPrefix(msg.FromLine, "From b@example.com") {
+		t.Fatalf("unexpected FromLine: %q", msg.FromLine)
+	}
+}
+
 func TestValidate_FindsSeparator(t *testing.T) {
 	data := "not mbox\nFrom a@b Sat Jan 1 00:00:00 2024\nSubject: x\n\nBody\n"
 	if err := Validate(strings.NewReader(data), 1024); err != nil {

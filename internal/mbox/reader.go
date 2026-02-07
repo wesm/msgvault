@@ -53,6 +53,13 @@ type Reader struct {
 // NewReader creates a new MBOX reader.
 func NewReader(r io.Reader) *Reader {
 	or := &offsetReader{r: r}
+	// If the underlying reader is seekable (e.g. *os.File), initialize the counter
+	// from the current position so offsets remain absolute after a prior Seek().
+	if s, ok := r.(io.Seeker); ok {
+		if off, err := s.Seek(0, io.SeekCurrent); err == nil {
+			or.n = off
+		}
+	}
 	return &Reader{
 		or: or,
 		br: bufio.NewReader(or),
@@ -66,7 +73,7 @@ func (r *Reader) Offset() int64 {
 }
 
 // NextFromOffset reports the stream offset of the next message's "From " line.
-// Valid only after a successful Next() call (or 0 at end-of-file).
+// Valid only after a successful Next() call (or Offset() at end-of-file).
 func (r *Reader) NextFromOffset() int64 {
 	if r.hasNextFrom {
 		return r.nextFromOffset

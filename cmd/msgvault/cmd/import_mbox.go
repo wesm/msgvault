@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +28,11 @@ var (
 	importMboxCheckpointInterval int
 	importMboxNoAttachments      bool
 )
+
+type mboxCheckpoint struct {
+	File   string `json:"file"`
+	Offset int64  `json:"offset"`
+}
 
 var importMboxCmd = &cobra.Command{
 	Use:   "import-mbox <identifier> <export-file>",
@@ -83,6 +89,34 @@ Examples:
 		mboxFiles, err := resolveMboxExport(exportPath, cfg.Data.DataDir)
 		if err != nil {
 			return err
+		}
+
+		// If we're resuming, start from the active file in a multi-file zip export.
+		if !importMboxNoResume {
+			src, err := st.GetOrCreateSource(importMboxSourceType, identifier)
+			if err != nil {
+				return fmt.Errorf("get/create source: %w", err)
+			}
+			active, err := st.GetActiveSync(src.ID)
+			if err != nil {
+				return fmt.Errorf("check active sync: %w", err)
+			}
+			if active != nil && active.CursorBefore.Valid && active.CursorBefore.String != "" {
+				var cp mboxCheckpoint
+				if err := json.Unmarshal([]byte(active.CursorBefore.String), &cp); err == nil && cp.File != "" {
+					startIdx := -1
+					for i, p := range mboxFiles {
+						if p == cp.File {
+							startIdx = i
+							break
+						}
+					}
+					if startIdx == -1 {
+						return fmt.Errorf("active mbox import is for a different file (%q); rerun with --no-resume to start fresh", cp.File)
+					}
+					mboxFiles = mboxFiles[startIdx:]
+				}
+			}
 		}
 
 		var (

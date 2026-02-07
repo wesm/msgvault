@@ -126,9 +126,7 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 						summary.ResumedOffset = offset
 						log.Info("resuming mbox import", "file", absPath, "offset", offset, "processed", cp.MessagesProcessed)
 					} else if mcp.File != "" && mcp.File != absPath {
-						// There's an active import for a different file; fail it and start fresh.
-						_ = st.FailSync(active.ID, fmt.Sprintf("mbox import resumed with different file (was %s, now %s)", mcp.File, absPath))
-						syncID = 0
+						return nil, fmt.Errorf("active mbox import is for a different file (%q), not %q; rerun with --no-resume to start fresh", mcp.File, absPath)
 					}
 				}
 			}
@@ -141,6 +139,10 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 			return nil, fmt.Errorf("start sync: %w", err)
 		}
 	}
+
+	// Save an initial checkpoint so the active sync always records which file it's importing,
+	// even if the run is interrupted before the first periodic checkpoint.
+	_ = saveMboxCheckpoint(st, syncID, absPath, offset, &cp)
 
 	// Ensure label (once).
 	var labelIDs []int64
