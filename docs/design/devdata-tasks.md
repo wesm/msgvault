@@ -32,7 +32,7 @@
 - `ReadTarget(path string) (string, error)` — `os.Readlink` wrapper
 - `Exists(path string) bool` — `os.Stat` check
 - `HasDatabase(path string) bool` — checks `<path>/msgvault.db` exists
-- `ReplaceSymlink(linkPath, target string) error` — remove old link, create new one
+- `ReplaceSymlink(linkPath, target string) error` — re-verify via `os.Lstat()` that `linkPath` is still a symlink immediately before removal (return error if it's a real directory to prevent accidental data deletion), remove old link, create new one
 - `ListDatasets(homeDir string) ([]DatasetInfo, error)` — glob `<home>/.msgvault-*`, return name/path/size/hasDB for each. Also includes `<home>/.msgvault` itself when it is a real directory (not a symlink), reported with `Name: "(default)"`.
 - `DatasetInfo` struct: `Name string`, `Path string`, `HasDB bool`, `Active bool` (matches current symlink target), `IsDefault bool` (true for the real `~/.msgvault` directory when not in dev mode)
 
@@ -66,7 +66,7 @@
   2. `goldPath := datasetPath("gold")`
   3. If `!IsSymlink(path)`: print "Not in dev mode (no symlink at ~/.msgvault)" and return nil
   4. If `!Exists(goldPath)`: return error "~/.msgvault-gold not found; cannot restore"
-  5. `os.Remove(path)` (removes symlink only)
+  5. Re-verify via `os.Lstat()` that `path` is still a symlink (abort with error if not, to prevent accidental directory deletion). `os.Remove(path)` (removes verified symlink only)
   6. `os.Rename(goldPath, path)`
   7. Print "Exited dev mode: ~/.msgvault restored"
 
@@ -113,6 +113,8 @@ build-devdata:
 - `TestListDatasets` — create `home/.msgvault-foo`, `home/.msgvault-bar` (with/without `msgvault.db`), verify listing
 - `TestListDatasets_NoSymlink` — verify behavior when `~/.msgvault` is a real directory
 - `TestHasDatabase` — verify with and without `msgvault.db` present
+- `TestReplaceSymlink_RefusesRealDirectory` — create a real directory (not a symlink), call `ReplaceSymlink`, verify it returns an error and does not delete the directory
+- `TestReplaceSymlink_RaceCondition` — verify that `ReplaceSymlink` checks symlink status immediately before removal (Lstat guard)
 
 These are pure filesystem tests — no database dependencies, fast to run.
 
@@ -142,8 +144,9 @@ These are pure filesystem tests — no database dependencies, fast to run.
 - Logic (scaffold):
   1. Resolve source path: if `--src` set, use `datasetPath(src)`; otherwise resolve `msgvaultPath()` following symlinks via `filepath.EvalSymlinks`
   2. Resolve destination path: `datasetPath(dst)`
-  3. Validate: source has `msgvault.db`, destination does not exist
-  4. Call `copyDataset(srcDB, dstDir, rows)` (implemented in 2.2)
+  3. Canonicalize both paths with `filepath.Clean()` and `filepath.Abs()`. Verify both resolved paths are within the expected home directory (reject paths containing `../` traversal that would escape the home directory bounds). Return a clear error for invalid paths.
+  4. Validate: source has `msgvault.db`, destination does not exist
+  5. Call `copyDataset(srcDB, dstDir, rows)` (implemented in 2.2)
 
 ### 2.2 Implement database subset copy logic
 
@@ -159,7 +162,7 @@ These are pure filesystem tests — no database dependencies, fast to run.
 3. Open destination DB with `mattn/go-sqlite3`:
    - `_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=OFF` (FK off during bulk copy)
 4. Initialize schema by executing embedded `schema.sql` and `schema_sqlite.sql` (import from `internal/store`)
-5. Attach source: `ATTACH DATABASE '<srcDBPath>' AS src`
+5. Attach source: Validate that `srcDBPath` contains no null bytes. Escape single quotes using `strings.ReplaceAll(srcDBPath, "'", "''")` before interpolation into `ATTACH DATABASE '...' AS src`. (SQLite's `ATTACH` does not support parameterized binding for the filename, so string escaping is required to prevent SQL injection.)
 6. Begin transaction
 7. Copy data in dependency order — each step is a single `INSERT INTO ... SELECT`:
 
@@ -269,6 +272,7 @@ INSERT OR REPLACE INTO messages_fts(rowid, message_id, subject, body, from_addr,
 
 **Code:**
 - `copyFileIfExists(filepath.Join(srcDir, "config.toml"), filepath.Join(dstDir, "config.toml"))`
+- Before copying, validate that both `srcDir` and `dstDir` are canonical absolute paths (via `filepath.Clean()` and `filepath.Abs()`) and that neither resolves outside the intended dataset directory. The caller (`newdata.go`) performs this validation in step 3, but `copyFileIfExists` should also verify the final resolved paths don't escape bounds (defense in depth).
 - Simple `io.Copy` from src to dst, skip if source file doesn't exist
 - Place this helper in `tools/devdata/dataset/copy.go`
 
@@ -303,6 +307,8 @@ INSERT OR REPLACE INTO messages_fts(rowid, message_id, subject, body, from_addr,
 - `TestCopySubset_FTSPopulated` — verify FTS5 index populated in destination (search for a known subject)
 - `TestCopySubset_ConversationCounts` — verify denormalized counts are consistent with actual data
 - `TestCopySubset_DestinationExists` — verify error when destination directory already exists
+- `TestCopySubset_PathTraversal` — verify that source/destination paths containing `../` that escape the home directory are rejected
+- `TestCopySubset_SQLInjectionInPath` — verify that a source path containing single quotes (e.g., `test'db`) is properly escaped and does not cause SQL injection in the ATTACH statement
 - `TestCopyFileIfExists` — verify config.toml copy, and no error when source file missing
 
 The source DB can be created using `store.Open()` + `store.InitSchema()` + direct INSERTs for test data. This tests the complex SQL copy logic that could silently produce incomplete data.
