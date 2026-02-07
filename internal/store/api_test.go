@@ -79,9 +79,12 @@ func TestSearchMessagesLikeLiteralWildcards(t *testing.T) {
 		t.Fatalf("EnsureConversation: %v", err)
 	}
 
-	// Seed messages: one with literal %, one with literal _, one plain
+	// Seed messages: one with literal %, one with literal _, one plain,
+	// plus confounding rows that would match if wildcards weren't escaped.
 	seedMessage(t, st, source.ID, convID, "msg-pct", "100% off sale", "great deal")
+	seedMessage(t, st, source.ID, convID, "msg-pct-confound", "100 days sale", "another deal") // would match "100%" if % is a wildcard
 	seedMessage(t, st, source.ID, convID, "msg-us", "file_name.txt", "attachment info")
+	seedMessage(t, st, source.ID, convID, "msg-us-confound", "fileXname.txt", "another attachment") // would match "file_name" if _ is a wildcard
 	seedMessage(t, st, source.ID, convID, "msg-plain", "plain subject", "nothing special")
 
 	tests := []struct {
@@ -91,13 +94,13 @@ func TestSearchMessagesLikeLiteralWildcards(t *testing.T) {
 		wantLen   int // number of result rows
 	}{
 		{
-			name:      "literal percent matches only percent message",
+			name:      "literal percent matches only percent message not confounding row",
 			query:     "100%",
 			wantCount: 1,
 			wantLen:   1,
 		},
 		{
-			name:      "literal underscore matches only underscore message",
+			name:      "literal underscore matches only underscore message not confounding row",
 			query:     "file_name",
 			wantCount: 1,
 			wantLen:   1,
