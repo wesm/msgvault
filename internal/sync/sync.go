@@ -647,6 +647,14 @@ func (s *Syncer) storeAttachment(messageID int64, att *mime.Attachment) error {
 	if len(att.Content) == 0 {
 		return nil
 	}
+	if len(att.ContentHash) < 2 {
+		return fmt.Errorf("invalid attachment content hash %q", att.ContentHash)
+	}
+	for _, c := range att.ContentHash {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return fmt.Errorf("invalid attachment content hash %q", att.ContentHash)
+		}
+	}
 
 	// Content-addressed storage: first 2 chars / full hash
 	subdir := att.ContentHash[:2]
@@ -654,8 +662,8 @@ func (s *Syncer) storeAttachment(messageID int64, att *mime.Attachment) error {
 	fullPath := filepath.Join(s.opts.AttachmentsDir, storagePath)
 
 	// Create directory if needed
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-		return err
+	if err := fileutil.SecureMkdirAll(filepath.Dir(fullPath), 0700); err != nil {
+		return fmt.Errorf("create attachment dir: %w", err)
 	}
 
 	// Write file if it doesn't exist (deduplication)

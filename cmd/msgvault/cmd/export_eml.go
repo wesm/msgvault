@@ -57,7 +57,7 @@ Examples:
 			}
 			sourceMessageID = msg.SourceMessageID
 		} else {
-			// It's a source message ID (Gmail ID)
+			// It's a source message ID (e.g. Gmail ID or imported ID)
 			sourceMessageID = idStr
 			msg, err := engine.GetMessageBySourceID(cmd.Context(), idStr)
 			if err != nil {
@@ -99,5 +99,5 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(exportEMLCmd)
-	exportEMLCmd.Flags().StringVarP(&exportEMLOutput, "output", "o", "", "Output file path (default: <gmail_id>.eml, use - for stdout)")
+	exportEMLCmd.Flags().StringVarP(&exportEMLOutput, "output", "o", "", "Output file path (default: <source_message_id>.eml, use - for stdout)")
 }
