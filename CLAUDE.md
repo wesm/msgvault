@@ -4,6 +4,8 @@
 
 When a task involves multiple steps (e.g., implement + commit + PR), complete ALL steps in sequence without stopping. If creating a branch, committing, and opening a PR, finish the entire chain.
 
+Always commit after every turn. Don't wait for the user to ask — if you made changes, commit them before responding.
+
 ## Project Overview
 
 msgvault is an offline Gmail archive tool that exports and stores email data locally with full-text search capabilities. The goal is to archive 20+ years of Gmail data from multiple accounts, make it searchable, and eventually delete emails from Gmail once safely archived.
