@@ -1663,6 +1663,61 @@ func TestCacheNeedsBuild(t *testing.T) {
 			},
 			wantBuild: false,
 		},
+		{
+			name: "InvalidSyncState_NeedsBuild",
+			setup: func(t *testing.T, dbPath, analyticsDir string) {
+				// Malformed JSON in _last_sync.json
+				if err := os.MkdirAll(analyticsDir, 0755); err != nil {
+					t.Fatalf("MkdirAll: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(analyticsDir, "_last_sync.json"), []byte("{corrupt"), 0644); err != nil {
+					t.Fatalf("write state: %v", err)
+				}
+				createFakeParquet(t, analyticsDir)
+			},
+			wantBuild:  true,
+			wantReason: "invalid sync state",
+		},
+		{
+			name: "DBOpenFailure_NeedsBuild",
+			setup: func(t *testing.T, dbPath, analyticsDir string) {
+				// Replace DB file with a directory so store.Open fails
+				os.Remove(dbPath)
+				if err := os.MkdirAll(dbPath, 0755); err != nil {
+					t.Fatalf("MkdirAll: %v", err)
+				}
+				writeSyncState(t, analyticsDir, 5)
+				createFakeParquet(t, analyticsDir)
+			},
+			wantBuild:  true,
+			wantReason: "cannot verify cache status",
+		},
+		{
+			name: "MissingRequiredParquetTables_NeedsBuild",
+			setup: func(t *testing.T, dbPath, analyticsDir string) {
+				// Only messages parquet exists, missing other required tables
+				db, err := sql.Open("sqlite3", dbPath)
+				if err != nil {
+					t.Fatalf("open db: %v", err)
+				}
+				defer db.Close()
+				_, err = db.Exec(`INSERT INTO messages (id, source_id, source_message_id, sent_at) VALUES (5, 1, 'msg5', datetime('now'))`)
+				if err != nil {
+					t.Fatalf("insert message: %v", err)
+				}
+				writeSyncState(t, analyticsDir, 5)
+				// Only create messages parquet — other required dirs missing
+				msgDir := filepath.Join(analyticsDir, "messages", "year=2024")
+				if err := os.MkdirAll(msgDir, 0755); err != nil {
+					t.Fatalf("MkdirAll: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(msgDir, "data.parquet"), []byte("fake"), 0644); err != nil {
+					t.Fatalf("write parquet: %v", err)
+				}
+			},
+			wantBuild:  true,
+			wantReason: "cache missing required tables",
+		},
 	}
 
 	for _, tt := range tests {
