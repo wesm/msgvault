@@ -209,3 +209,56 @@ func TestOpenFilterModal(t *testing.T) {
 		t.Errorf("expected modalCursor 0, got %d", m.modalCursor)
 	}
 }
+
+func TestFilterToggleInDrillDown(t *testing.T) {
+	// Simulate being in a sub-aggregate drill-down with filters initially on.
+	model := NewBuilder().WithLevel(levelDrillDown).WithPageSize(10).WithSize(100, 20).Build()
+	model.filters.attachmentsOnly = true
+	model.filters.hideDeletedFromSource = true
+	model.drillFilter = query.MessageFilter{
+		Sender:                "alice@example.com",
+		WithAttachmentsOnly:   true,
+		HideDeletedFromSource: true,
+	}
+
+	// Open filter modal
+	m := applyAggregateKey(t, model, key('f'))
+	if m.modal != modalFilterToggle {
+		t.Fatalf("expected modalFilterToggle, got %v", m.modal)
+	}
+
+	// Toggle both filters off
+	m, _ = applyModalKey(t, m, keyEnter()) // cursor 0: toggle attachmentsOnly off
+	m, _ = applyModalKey(t, m, key('j'))   // move to cursor 1
+	m, _ = applyModalKey(t, m, keyEnter()) // toggle hideDeletedFromSource off
+
+	if m.filters.attachmentsOnly {
+		t.Error("expected attachmentsOnly = false after toggle")
+	}
+	if m.filters.hideDeletedFromSource {
+		t.Error("expected hideDeletedFromSource = false after toggle")
+	}
+
+	// Close modal — drillFilter must be resynced
+	m, cmd := applyModalKey(t, m, keyEsc())
+
+	if m.modal != modalNone {
+		t.Errorf("expected modalNone, got %v", m.modal)
+	}
+	if cmd == nil {
+		t.Error("expected command to reload data after Esc")
+	}
+
+	// Verify drillFilter was resynced with the updated global toggles
+	if m.drillFilter.WithAttachmentsOnly {
+		t.Error("expected drillFilter.WithAttachmentsOnly = false after resync")
+	}
+	if m.drillFilter.HideDeletedFromSource {
+		t.Error("expected drillFilter.HideDeletedFromSource = false after resync")
+	}
+
+	// Non-toggle fields should be preserved
+	if m.drillFilter.Sender != "alice@example.com" {
+		t.Errorf("expected drillFilter.Sender preserved, got %q", m.drillFilter.Sender)
+	}
+}

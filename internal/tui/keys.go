@@ -945,6 +945,9 @@ func (m Model) handleAccountSelectorKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// filterOptionCount is the number of toggleable options in the filter modal.
+const filterOptionCount = 2
+
 func (m Model) handleFilterToggleKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
@@ -952,7 +955,7 @@ func (m Model) handleFilterToggleKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.modalCursor--
 		}
 	case "down", "j":
-		if m.modalCursor < 1 {
+		if m.modalCursor < filterOptionCount-1 {
 			m.modalCursor++
 		}
 	case "enter", " ":
@@ -969,10 +972,13 @@ func (m Model) handleFilterToggleKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 
 		// Keep drillFilter in sync with global toggles so drill-down
-		// results reflect the latest filter state.
-		if m.level == levelMessageList {
+		// and sub-aggregate results reflect the latest filter state.
+		if m.level == levelMessageList || m.level == levelDrillDown {
 			m.drillFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
 			m.drillFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
+		}
+
+		if m.level == levelMessageList {
 			m.loadRequestID++
 			return m, tea.Batch(m.loadMessages(), m.loadStats())
 		}

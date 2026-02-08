@@ -1344,7 +1344,29 @@ func (e *SQLiteEngine) buildSearchQueryParts(ctx context.Context, q *search.Quer
 
 func (e *SQLiteEngine) Search(ctx context.Context, q *search.Query, limit, offset int) ([]MessageSummary, error) {
 	conditions, args, joins, ftsJoin := e.buildSearchQueryParts(ctx, q)
+	return e.executeSearchQuery(ctx, conditions, args, joins, ftsJoin, limit, offset)
+}
 
+// SearchFast searches using the same FTS5 path as Search but additionally
+// applies MessageFilter fields (e.g. HideDeletedFromSource) that cannot be
+// expressed through search.Query alone.
+func (e *SQLiteEngine) SearchFast(ctx context.Context, q *search.Query, filter MessageFilter, limit, offset int) ([]MessageSummary, error) {
+	// Merge filter context into query - always AND with existing filters
+	mergedQuery := MergeFilterIntoQuery(q, filter)
+
+	conditions, args, joins, ftsJoin := e.buildSearchQueryParts(ctx, mergedQuery)
+
+	// Apply filter fields that MergeFilterIntoQuery cannot express via search.Query
+	if filter.HideDeletedFromSource {
+		conditions = append(conditions, "m.deleted_from_source_at IS NULL")
+	}
+
+	return e.executeSearchQuery(ctx, conditions, args, joins, ftsJoin, limit, offset)
+}
+
+// executeSearchQuery runs a search query built from conditions/joins and returns
+// paginated MessageSummary results. Shared by Search and SearchFast.
+func (e *SQLiteEngine) executeSearchQuery(ctx context.Context, conditions []string, args []interface{}, joins []string, ftsJoin string, limit, offset int) ([]MessageSummary, error) {
 	if limit == 0 {
 		limit = 100
 	}
@@ -1421,109 +1443,6 @@ func (e *SQLiteEngine) Search(ctx context.Context, q *search.Query, limit, offse
 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate messages: %w", err)
-	}
-
-	// Fetch labels for results
-	if len(results) > 0 {
-		if err := e.fetchLabelsForMessages(ctx, results); err != nil {
-			return nil, fmt.Errorf("fetch labels: %w", err)
-		}
-	}
-
-	return results, nil
-}
-
-// SearchFast searches message metadata only (no body text).
-// For SQLite, this falls back to regular Search since FTS5 is fast enough
-// and provides better results than metadata-only search.
-// The filter parameter is applied to narrow the search scope.
-func (e *SQLiteEngine) SearchFast(ctx context.Context, q *search.Query, filter MessageFilter, limit, offset int) ([]MessageSummary, error) {
-	// Merge filter context into query - always AND with existing filters
-	mergedQuery := MergeFilterIntoQuery(q, filter)
-
-	conditions, args, joins, ftsJoin := e.buildSearchQueryParts(ctx, mergedQuery)
-
-	// Apply filter fields that MergeFilterIntoQuery cannot express via search.Query
-	if filter.HideDeletedFromSource {
-		conditions = append(conditions, "m.deleted_from_source_at IS NULL")
-	}
-
-	if limit == 0 {
-		limit = 100
-	}
-
-	whereClause := strings.Join(conditions, " AND ")
-	if whereClause == "" {
-		whereClause = "1=1"
-	}
-
-	query := fmt.Sprintf(`
-		SELECT DISTINCT
-			m.id,
-			m.source_message_id,
-			m.conversation_id,
-			COALESCE(conv.source_conversation_id, ''),
-			COALESCE(m.subject, ''),
-			COALESCE(m.snippet, ''),
-			COALESCE(p_sender.email_address, ''),
-			COALESCE(p_sender.display_name, ''),
-			m.sent_at,
-			COALESCE(m.size_estimate, 0),
-			m.has_attachments,
-			m.attachment_count,
-			m.deleted_from_source_at
-		FROM messages m
-		LEFT JOIN message_recipients mr_sender ON mr_sender.message_id = m.id AND mr_sender.recipient_type = 'from'
-		LEFT JOIN participants p_sender ON p_sender.id = mr_sender.participant_id
-		LEFT JOIN conversations conv ON conv.id = m.conversation_id
-		%s
-		%s
-		WHERE %s
-		ORDER BY m.sent_at DESC
-		LIMIT ? OFFSET ?
-	`, ftsJoin, strings.Join(joins, "\n"), whereClause)
-
-	args = append(args, limit, offset)
-
-	rows, err := e.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("search fast: %w", err)
-	}
-	defer rows.Close()
-
-	var results []MessageSummary
-	for rows.Next() {
-		var msg MessageSummary
-		var sentAt sql.NullTime
-		var deletedAt sql.NullTime
-		if err := rows.Scan(
-			&msg.ID,
-			&msg.SourceMessageID,
-			&msg.ConversationID,
-			&msg.SourceConversationID,
-			&msg.Subject,
-			&msg.Snippet,
-			&msg.FromEmail,
-			&msg.FromName,
-			&sentAt,
-			&msg.SizeEstimate,
-			&msg.HasAttachments,
-			&msg.AttachmentCount,
-			&deletedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan search result: %w", err)
-		}
-		if sentAt.Valid {
-			msg.SentAt = sentAt.Time
-		}
-		if deletedAt.Valid {
-			msg.DeletedAt = &deletedAt.Time
-		}
-		results = append(results, msg)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate search results: %w", err)
 	}
 
 	// Fetch labels for results
