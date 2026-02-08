@@ -376,21 +376,119 @@ def parse_claude_response(response: str) -> list[dict] | None:
         return None
 
 
-def delete_old_bot_comments(pr) -> int:
-    """Delete previous security review bot comments to keep noise down."""
+# Stable HTML comment marker embedded in every bot comment for reliable cleanup.
+_BOT_MARKER = "<!-- msgvault-security-bot -->"
+
+
+def delete_old_bot_comments(pr, exclude_ids: set[int] | None = None) -> int:
+    """Delete previous security review bot comments to keep noise down.
+
+    Cleans up both issue comments (current consolidated format) and
+    inline review comments (legacy per-finding format) left by the bot.
+
+    Args:
+        pr: GitHub PR object.
+        exclude_ids: Set of comment IDs to skip (e.g. just-posted comments).
+    """
+    if exclude_ids is None:
+        exclude_ids = set()
     deleted = 0
+
+    # Clean up issue comments (consolidated format + legacy marker)
     for comment in pr.get_issue_comments():
-        if (
-            comment.user.login == "github-actions[bot]"
-            and "Powered by Claude" in comment.body
-            and "Security Review:" in comment.body
+        if comment.id in exclude_ids:
+            continue
+        if comment.user.login == "github-actions[bot]" and (
+            _BOT_MARKER in comment.body
+            or ("Powered by Claude" in comment.body and "Security Review" in comment.body)
         ):
             try:
                 comment.delete()
                 deleted += 1
             except Exception as e:
-                print(f"Warning: Failed to delete old comment: {e}", file=sys.stderr)
+                print(f"Warning: Failed to delete old issue comment: {e}", file=sys.stderr)
+
+    # Clean up inline review comments (legacy per-finding format)
+    try:
+        for comment in pr.get_review_comments():
+            if comment.id in exclude_ids:
+                continue
+            if comment.user.login == "github-actions[bot]" and (
+                _BOT_MARKER in comment.body or "Powered by Claude" in comment.body
+            ):
+                try:
+                    comment.delete()
+                    deleted += 1
+                except Exception as e:
+                    print(f"Warning: Failed to delete old review comment: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"Warning: Failed to enumerate review comments: {e}", file=sys.stderr)
+
     return deleted
+
+
+def _post_comment_safe(pr, body: str) -> list[int]:
+    """Post a comment, splitting into multiple comments if the body exceeds GitHub's size limit.
+
+    GitHub issue comments have a ~65,536 character limit. If the body exceeds
+    MAX_COMMENT_SIZE, we split findings across multiple comments.
+
+    Returns a list of created comment IDs.
+    """
+    MAX_COMMENT_SIZE = 60000  # Leave headroom below GitHub's 65,536 char limit
+
+    if len(body) <= MAX_COMMENT_SIZE:
+        result = pr.create_issue_comment(body)
+        return [result.id] if hasattr(result, "id") else []
+
+    # Split at section boundaries (---) to keep findings intact
+    sections = body.split("\n\n---\n\n")
+    chunks: list[str] = []
+    current = ""
+
+    for i, section in enumerate(sections):
+        separator = "" if i == 0 else "\n\n---\n\n"
+        candidate = current + separator + section if current else section
+        if len(candidate) > MAX_COMMENT_SIZE and current:
+            # Flush current chunk
+            current += f"\n\n---\n*(Continued in next comment...)*\n{_BOT_MARKER}"
+            chunks.append(current)
+            current = f"{_BOT_MARKER}\n## Security Review (continued)\n\n{section}"
+        else:
+            current = candidate
+
+    if current:
+        chunks.append(current)
+
+    # Hard-wrap fallback: if any single chunk still exceeds the limit, split it
+    continuation_footer = f"\n\n---\n*(Continued in next comment...)*\n{_BOT_MARKER}"
+    continuation_header = f"{_BOT_MARKER}\n## Security Review (continued)\n\n"
+    header_len = len(continuation_header)
+    # Reserve space for footer/header overhead
+    effective_limit = MAX_COMMENT_SIZE - len(continuation_footer)
+    # Minimum chars to consume per iteration to guarantee progress
+    min_cut = max(effective_limit // 2, 1000)
+
+    final_chunks: list[str] = []
+    for chunk in chunks:
+        while len(chunk) > MAX_COMMENT_SIZE:
+            # Cut at last newline before effective limit to avoid splitting mid-line
+            cut = chunk[:effective_limit].rfind("\n")
+            if cut < min_cut:
+                cut = effective_limit  # No good newline found, hard cut
+            final_chunks.append(chunk[:cut] + continuation_footer)
+            remainder = chunk[cut:].lstrip("\n")
+            chunk = continuation_header + remainder
+        final_chunks.append(chunk)
+
+    created_ids: list[int] = []
+    for chunk_body in final_chunks:
+        result = pr.create_issue_comment(chunk_body)
+        if hasattr(result, "id"):
+            created_ids.append(result.id)
+
+    print(f"Split oversized comment into {len(final_chunks)} comment(s)")
+    return created_ids
 
 
 def post_review_comments(issues: list[dict]) -> None:
@@ -398,11 +496,6 @@ def post_review_comments(issues: list[dict]) -> None:
     g = Github(os.environ["GITHUB_TOKEN"])
     repo = g.get_repo(os.environ["REPO_NAME"])
     pr = repo.get_pull(int(os.environ["PR_NUMBER"]))
-
-    # Clean up old bot comments so we never accumulate noise
-    deleted = delete_old_bot_comments(pr)
-    if deleted:
-        print(f"Deleted {deleted} old bot comment(s)")
 
     severity_emoji = {"high": "\U0001f6a8", "medium": "\u26a0\ufe0f", "low": "\u2139\ufe0f"}
 
@@ -415,7 +508,8 @@ def post_review_comments(issues: list[dict]) -> None:
         if low_count > 0:
             extra = f"\n\n**Note:** {low_count} low severity issue(s) were found but omitted to reduce noise."
 
-        body = f"""## Security Review: No High/Medium Issues Found
+        body = f"""{_BOT_MARKER}
+## Security Review: No High/Medium Issues Found
 
 Claude's automated security review did not identify any high or medium severity security concerns in this PR.{extra}
 
@@ -450,7 +544,8 @@ Claude's automated security review did not identify any high or medium severity 
         if low_count > 0:
             extra = f"\n\n**Note:** {low_count} low severity issue(s) were omitted to reduce noise."
 
-        body = f"""## Security Review: {len(actionable)} High/Medium Issue{"s" if len(actionable) != 1 else ""} Found
+        body = f"""{_BOT_MARKER}
+## Security Review: {len(actionable)} High/Medium Issue{"s" if len(actionable) != 1 else ""} Found
 
 Claude's automated security review identified potential security concerns. Please review each finding below.{extra}
 
@@ -462,8 +557,15 @@ Claude's automated security review identified potential security concerns. Pleas
 *Powered by Claude 4.5 Sonnet — this is an automated review, false positives are possible.*
 """
 
-    pr.create_issue_comment(body)
-    print(f"Posted 1 consolidated comment ({len(actionable)} findings, {low_count} low omitted)")
+    # Post new comment first, then clean up old ones on success
+    new_ids = _post_comment_safe(pr, body)
+    print(f"Posted comment ({len(actionable)} findings, {low_count} low omitted)")
+
+    # Clean up old bot comments only after new comment is successfully posted,
+    # excluding newly created comment IDs to avoid self-deletion
+    deleted = delete_old_bot_comments(pr, exclude_ids=set(new_ids))
+    if deleted:
+        print(f"Deleted {deleted} old bot comment(s)")
 
 
 def post_analysis_failed_comment() -> None:
@@ -472,10 +574,8 @@ def post_analysis_failed_comment() -> None:
     repo = g.get_repo(os.environ["REPO_NAME"])
     pr = repo.get_pull(int(os.environ["PR_NUMBER"]))
 
-    # Clean up old bot comments first
-    delete_old_bot_comments(pr)
-
-    summary = """## Security Review: Analysis Failed
+    summary = f"""{_BOT_MARKER}
+## Security Review: Analysis Failed
 
 Claude's automated security review failed to produce valid output. This PR has **not** been reviewed for security issues.
 
@@ -484,7 +584,11 @@ Claude's automated security review failed to produce valid output. This PR has *
 ---
 *Powered by Claude 4.5 Sonnet*
 """
-    pr.create_issue_comment(summary)
+    # Post new comment first, then clean up old ones on success
+    result = pr.create_issue_comment(summary)
+    new_ids = {result.id} if hasattr(result, "id") else set()
+
+    delete_old_bot_comments(pr, exclude_ids=new_ids)
 
 
 def main() -> None:
