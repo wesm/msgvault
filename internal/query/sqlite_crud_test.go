@@ -3,6 +3,7 @@ package query
 import (
 	"testing"
 
+	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/testutil/dbtest"
 )
 
@@ -413,6 +414,43 @@ func TestWithAttachmentsOnlyStats(t *testing.T) {
 	}
 	if attStats.AttachmentCount == 0 {
 		t.Error("expected non-zero attachment count for messages with attachments")
+	}
+}
+
+func TestHideDeletedFromSourceSearchFast(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Mark message 1 as deleted
+	env.MarkDeletedByID(1)
+
+	// Use an empty query (matches all messages)
+	q := &search.Query{}
+
+	// SearchFast without filter: all 5 messages
+	all, err := env.Engine.SearchFast(env.Ctx, q, MessageFilter{}, 100, 0)
+	if err != nil {
+		t.Fatalf("SearchFast: %v", err)
+	}
+	if len(all) != 5 {
+		t.Errorf("SearchFast without filter: expected 5, got %d", len(all))
+	}
+
+	// SearchFast with HideDeletedFromSource: 4 messages
+	hidden, err := env.Engine.SearchFast(env.Ctx, q, MessageFilter{HideDeletedFromSource: true}, 100, 0)
+	if err != nil {
+		t.Fatalf("SearchFast(hide-deleted): %v", err)
+	}
+	if len(hidden) != 4 {
+		t.Errorf("SearchFast with hide-deleted: expected 4, got %d", len(hidden))
+	}
+
+	// SearchFastCount must agree
+	count, err := env.Engine.SearchFastCount(env.Ctx, q, MessageFilter{HideDeletedFromSource: true})
+	if err != nil {
+		t.Fatalf("SearchFastCount(hide-deleted): %v", err)
+	}
+	if count != 4 {
+		t.Errorf("SearchFastCount with hide-deleted: expected 4, got %d", count)
 	}
 }
 

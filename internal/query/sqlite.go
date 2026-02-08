@@ -1441,9 +1441,99 @@ func (e *SQLiteEngine) SearchFast(ctx context.Context, q *search.Query, filter M
 	// Merge filter context into query - always AND with existing filters
 	mergedQuery := MergeFilterIntoQuery(q, filter)
 
-	// For SQLite, use the existing Search which has FTS5
-	// and add contextual filtering through the merged query
-	return e.Search(ctx, mergedQuery, limit, offset)
+	conditions, args, joins, ftsJoin := e.buildSearchQueryParts(ctx, mergedQuery)
+
+	// Apply filter fields that MergeFilterIntoQuery cannot express via search.Query
+	if filter.HideDeletedFromSource {
+		conditions = append(conditions, "m.deleted_from_source_at IS NULL")
+	}
+
+	if limit == 0 {
+		limit = 100
+	}
+
+	whereClause := strings.Join(conditions, " AND ")
+	if whereClause == "" {
+		whereClause = "1=1"
+	}
+
+	query := fmt.Sprintf(`
+		SELECT DISTINCT
+			m.id,
+			m.source_message_id,
+			m.conversation_id,
+			COALESCE(conv.source_conversation_id, ''),
+			COALESCE(m.subject, ''),
+			COALESCE(m.snippet, ''),
+			COALESCE(p_sender.email_address, ''),
+			COALESCE(p_sender.display_name, ''),
+			m.sent_at,
+			COALESCE(m.size_estimate, 0),
+			m.has_attachments,
+			m.attachment_count,
+			m.deleted_from_source_at
+		FROM messages m
+		LEFT JOIN message_recipients mr_sender ON mr_sender.message_id = m.id AND mr_sender.recipient_type = 'from'
+		LEFT JOIN participants p_sender ON p_sender.id = mr_sender.participant_id
+		LEFT JOIN conversations conv ON conv.id = m.conversation_id
+		%s
+		%s
+		WHERE %s
+		ORDER BY m.sent_at DESC
+		LIMIT ? OFFSET ?
+	`, ftsJoin, strings.Join(joins, "\n"), whereClause)
+
+	args = append(args, limit, offset)
+
+	rows, err := e.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("search fast: %w", err)
+	}
+	defer rows.Close()
+
+	var results []MessageSummary
+	for rows.Next() {
+		var msg MessageSummary
+		var sentAt sql.NullTime
+		var deletedAt sql.NullTime
+		if err := rows.Scan(
+			&msg.ID,
+			&msg.SourceMessageID,
+			&msg.ConversationID,
+			&msg.SourceConversationID,
+			&msg.Subject,
+			&msg.Snippet,
+			&msg.FromEmail,
+			&msg.FromName,
+			&sentAt,
+			&msg.SizeEstimate,
+			&msg.HasAttachments,
+			&msg.AttachmentCount,
+			&deletedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan search result: %w", err)
+		}
+		if sentAt.Valid {
+			msg.SentAt = sentAt.Time
+		}
+		if deletedAt.Valid {
+			msg.DeletedAt = &deletedAt.Time
+		}
+		results = append(results, msg)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate search results: %w", err)
+	}
+
+	// Fetch labels for results
+	if len(results) > 0 {
+		if err := e.fetchLabelsForMessages(ctx, results); err != nil {
+			return nil, fmt.Errorf("fetch labels: %w", err)
+		}
+	}
+
+	return results, nil
 }
 
 // MergeFilterIntoQuery combines a MessageFilter context with a search.Query.
@@ -1503,12 +1593,17 @@ func MergeFilterIntoQuery(q *search.Query, filter MessageFilter) *search.Query {
 }
 
 // SearchFastCount returns the total count of messages matching a search query.
-// Uses the same query logic as Search to ensure consistent counts.
+// Uses the same query logic as SearchFast to ensure consistent counts.
 func (e *SQLiteEngine) SearchFastCount(ctx context.Context, q *search.Query, filter MessageFilter) (int64, error) {
 	mergedQuery := MergeFilterIntoQuery(q, filter)
 
-	// Build query using same logic as Search for consistency
+	// Build query using same logic as SearchFast for consistency
 	conditions, args, joins, ftsJoin := e.buildSearchQueryParts(ctx, mergedQuery)
+
+	// Apply filter fields that MergeFilterIntoQuery cannot express via search.Query
+	if filter.HideDeletedFromSource {
+		conditions = append(conditions, "m.deleted_from_source_at IS NULL")
+	}
 
 	whereClause := strings.Join(conditions, " AND ")
 	if whereClause == "" {

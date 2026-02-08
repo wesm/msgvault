@@ -967,7 +967,12 @@ func (m Model) handleFilterToggleKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Close modal and reload data with new filter settings
 		m.modal = modalNone
 		m.loading = true
+
+		// Keep drillFilter in sync with global toggles so drill-down
+		// results reflect the latest filter state.
 		if m.level == levelMessageList {
+			m.drillFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
+			m.drillFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
 			m.loadRequestID++
 			return m, tea.Batch(m.loadMessages(), m.loadStats())
 		}
