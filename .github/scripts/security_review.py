@@ -377,20 +377,77 @@ def parse_claude_response(response: str) -> list[dict] | None:
 
 
 def delete_old_bot_comments(pr) -> int:
-    """Delete previous security review bot comments to keep noise down."""
+    """Delete previous security review bot comments to keep noise down.
+
+    Cleans up both issue comments (current consolidated format) and
+    inline review comments (legacy per-finding format) left by the bot.
+    """
     deleted = 0
+
+    # Clean up issue comments (consolidated format)
     for comment in pr.get_issue_comments():
         if (
             comment.user.login == "github-actions[bot]"
             and "Powered by Claude" in comment.body
-            and "Security Review:" in comment.body
+            and "Security Review" in comment.body
         ):
             try:
                 comment.delete()
                 deleted += 1
             except Exception as e:
-                print(f"Warning: Failed to delete old comment: {e}", file=sys.stderr)
+                print(f"Warning: Failed to delete old issue comment: {e}", file=sys.stderr)
+
+    # Clean up inline review comments (legacy per-finding format)
+    try:
+        for comment in pr.get_review_comments():
+            if (
+                comment.user.login == "github-actions[bot]"
+                and "Powered by Claude" in comment.body
+            ):
+                try:
+                    comment.delete()
+                    deleted += 1
+                except Exception as e:
+                    print(f"Warning: Failed to delete old review comment: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"Warning: Failed to enumerate review comments: {e}", file=sys.stderr)
+
     return deleted
+
+
+def _post_comment_safe(pr, body: str) -> None:
+    """Post a comment, splitting into multiple comments if the body exceeds GitHub's size limit.
+
+    GitHub issue comments have a ~65,536 character limit. If the body exceeds
+    MAX_COMMENT_SIZE, we split findings across multiple comments.
+    """
+    MAX_COMMENT_SIZE = 60000  # Leave headroom below GitHub's 65,536 char limit
+
+    if len(body) <= MAX_COMMENT_SIZE:
+        pr.create_issue_comment(body)
+        return
+
+    # Split at section boundaries (---) to keep findings intact
+    sections = body.split("\n\n---\n\n")
+    comments: list[str] = []
+    current = ""
+
+    for i, section in enumerate(sections):
+        separator = "" if i == 0 else "\n\n---\n\n"
+        if current and len(current) + len(separator) + len(section) > MAX_COMMENT_SIZE:
+            current += "\n\n---\n*(Continued in next comment...)*"
+            comments.append(current)
+            current = f"## Security Review (continued)\n\n{section}"
+        else:
+            current += separator + section
+
+    if current:
+        comments.append(current)
+
+    for comment_body in comments:
+        pr.create_issue_comment(comment_body)
+
+    print(f"Split oversized comment into {len(comments)} comment(s)")
 
 
 def post_review_comments(issues: list[dict]) -> None:
@@ -398,11 +455,6 @@ def post_review_comments(issues: list[dict]) -> None:
     g = Github(os.environ["GITHUB_TOKEN"])
     repo = g.get_repo(os.environ["REPO_NAME"])
     pr = repo.get_pull(int(os.environ["PR_NUMBER"]))
-
-    # Clean up old bot comments so we never accumulate noise
-    deleted = delete_old_bot_comments(pr)
-    if deleted:
-        print(f"Deleted {deleted} old bot comment(s)")
 
     severity_emoji = {"high": "\U0001f6a8", "medium": "\u26a0\ufe0f", "low": "\u2139\ufe0f"}
 
@@ -462,8 +514,14 @@ Claude's automated security review identified potential security concerns. Pleas
 *Powered by Claude 4.5 Sonnet — this is an automated review, false positives are possible.*
 """
 
-    pr.create_issue_comment(body)
-    print(f"Posted 1 consolidated comment ({len(actionable)} findings, {low_count} low omitted)")
+    # Post new comment first, then clean up old ones on success
+    _post_comment_safe(pr, body)
+    print(f"Posted comment ({len(actionable)} findings, {low_count} low omitted)")
+
+    # Clean up old bot comments only after new comment is successfully posted
+    deleted = delete_old_bot_comments(pr)
+    if deleted:
+        print(f"Deleted {deleted} old bot comment(s)")
 
 
 def post_analysis_failed_comment() -> None:
@@ -471,9 +529,6 @@ def post_analysis_failed_comment() -> None:
     g = Github(os.environ["GITHUB_TOKEN"])
     repo = g.get_repo(os.environ["REPO_NAME"])
     pr = repo.get_pull(int(os.environ["PR_NUMBER"]))
-
-    # Clean up old bot comments first
-    delete_old_bot_comments(pr)
 
     summary = """## Security Review: Analysis Failed
 
@@ -484,7 +539,10 @@ Claude's automated security review failed to produce valid output. This PR has *
 ---
 *Powered by Claude 4.5 Sonnet*
 """
+    # Post new comment first, then clean up old ones on success
     pr.create_issue_comment(summary)
+
+    delete_old_bot_comments(pr)
 
 
 def main() -> None:
