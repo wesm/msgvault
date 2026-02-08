@@ -134,14 +134,14 @@ func cacheNeedsBuild(dbPath, analyticsDir string) (bool, string) {
 	messagesDir := filepath.Join(analyticsDir, "messages")
 	stateFile := filepath.Join(analyticsDir, "_last_sync.json")
 
-	// Check if cache directory exists with parquet files
-	if !query.HasParquetData(analyticsDir) {
-		return true, "no cache exists"
-	}
+	hasParquetData := query.HasParquetData(analyticsDir)
 
 	// Load last sync state
 	data, err := os.ReadFile(stateFile)
 	if err != nil {
+		if !hasParquetData {
+			return true, "no cache exists"
+		}
 		return true, "no sync state found"
 	}
 
@@ -167,6 +167,17 @@ func cacheNeedsBuild(dbPath, analyticsDir string) (bool, string) {
 	if err != nil {
 		// Can't query - force rebuild to be safe
 		return true, "cannot verify cache status"
+	}
+
+	// Zero-message accounts never produce message parquet files, so
+	// HasParquetData returns false even after a successful cache build.
+	// If sync state and DB both agree there are 0 messages, no build needed.
+	if maxID == 0 && state.LastMessageID == 0 {
+		return false, ""
+	}
+
+	if !hasParquetData {
+		return true, "no cache exists"
 	}
 
 	if maxID > state.LastMessageID {

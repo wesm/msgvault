@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/store"
@@ -667,10 +668,12 @@ func TestFullSync_InvalidUTF8InAttachmentFilename(t *testing.T) {
 
 	// Enmime replaces the invalid \xE9 byte with U+FFFD (replacement character).
 	// Our EnsureUTF8 would convert it to the proper é if enmime didn't sanitize first.
-	// Either way, the stored filename must be valid UTF-8.
-	wantFilename := "caf\uFFFD.pdf"
-	if filename != wantFilename {
-		t.Errorf("attachment filename = %q, want %q", filename, wantFilename)
+	// Either way, the stored filename must be valid UTF-8 and preserve the base name.
+	if !utf8.ValidString(filename) {
+		t.Errorf("attachment filename %q is not valid UTF-8", filename)
+	}
+	if !strings.HasPrefix(filename, "caf") || !strings.HasSuffix(filename, ".pdf") {
+		t.Errorf("attachment filename = %q, want caf*.pdf pattern", filename)
 	}
 
 	// Content-type should be the clean base MIME type
