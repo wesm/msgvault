@@ -3,6 +3,7 @@ package dataset
 import (
 	"os"
 	"path/filepath"
+        "runtime"
 	"testing"
 )
 
@@ -141,6 +142,12 @@ func TestDatabaseSize(t *testing.T) {
 }
 
 func TestReplaceSymlink(t *testing.T) {
+	// Discussion of options for this test in Windows
+	// https://github.com/wesm/msgvault/pull/101#issuecomment-3867402422
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on Windows")
+	}
+
 	dir := t.TempDir()
 
 	// Create two target directories
