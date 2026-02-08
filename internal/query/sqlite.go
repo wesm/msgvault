@@ -1339,6 +1339,11 @@ func (e *SQLiteEngine) buildSearchQueryParts(ctx context.Context, q *search.Quer
 		args = append(args, *q.AccountID)
 	}
 
+	// Hide-deleted filter
+	if q.HideDeleted {
+		conditions = append(conditions, "m.deleted_from_source_at IS NULL")
+	}
+
 	return conditions, args, joins, ftsJoin
 }
 
@@ -1347,20 +1352,11 @@ func (e *SQLiteEngine) Search(ctx context.Context, q *search.Query, limit, offse
 	return e.executeSearchQuery(ctx, conditions, args, joins, ftsJoin, limit, offset)
 }
 
-// SearchFast searches using the same FTS5 path as Search but additionally
-// applies MessageFilter fields (e.g. HideDeletedFromSource) that cannot be
-// expressed through search.Query alone.
+// SearchFast searches using the same FTS5 path as Search but merges
+// MessageFilter context into the query (drill-down filters, hide-deleted, etc.).
 func (e *SQLiteEngine) SearchFast(ctx context.Context, q *search.Query, filter MessageFilter, limit, offset int) ([]MessageSummary, error) {
-	// Merge filter context into query - always AND with existing filters
 	mergedQuery := MergeFilterIntoQuery(q, filter)
-
 	conditions, args, joins, ftsJoin := e.buildSearchQueryParts(ctx, mergedQuery)
-
-	// Apply filter fields that MergeFilterIntoQuery cannot express via search.Query
-	if filter.HideDeletedFromSource {
-		conditions = append(conditions, "m.deleted_from_source_at IS NULL")
-	}
-
 	return e.executeSearchQuery(ctx, conditions, args, joins, ftsJoin, limit, offset)
 }
 
@@ -1508,6 +1504,11 @@ func MergeFilterIntoQuery(q *search.Query, filter MessageFilter) *search.Query {
 		merged.FromAddrs = append(merged.FromAddrs, "@"+filter.Domain)
 	}
 
+	// Hide-deleted filter
+	if filter.HideDeletedFromSource {
+		merged.HideDeleted = true
+	}
+
 	return &merged
 }
 
@@ -1515,14 +1516,7 @@ func MergeFilterIntoQuery(q *search.Query, filter MessageFilter) *search.Query {
 // Uses the same query logic as SearchFast to ensure consistent counts.
 func (e *SQLiteEngine) SearchFastCount(ctx context.Context, q *search.Query, filter MessageFilter) (int64, error) {
 	mergedQuery := MergeFilterIntoQuery(q, filter)
-
-	// Build query using same logic as SearchFast for consistency
 	conditions, args, joins, ftsJoin := e.buildSearchQueryParts(ctx, mergedQuery)
-
-	// Apply filter fields that MergeFilterIntoQuery cannot express via search.Query
-	if filter.HideDeletedFromSource {
-		conditions = append(conditions, "m.deleted_from_source_at IS NULL")
-	}
 
 	whereClause := strings.Join(conditions, " AND ")
 	if whereClause == "" {

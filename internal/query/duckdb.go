@@ -1535,6 +1535,11 @@ func (e *DuckDBEngine) Search(ctx context.Context, q *search.Query, limit, offse
 		args = append(args, *q.AccountID)
 	}
 
+	// Hide-deleted filter
+	if q.HideDeleted {
+		conditions = append(conditions, "m.deleted_from_source_at IS NULL")
+	}
+
 	if limit == 0 {
 		limit = 100
 	}
