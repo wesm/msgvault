@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"golang.org/x/oauth2"
 )
 
 // Gmail API error reason constants for tests.
@@ -291,6 +289,7 @@ func TestIsRateLimitError(t *testing.T) {
 type logRecord struct {
 	Level   slog.Level
 	Message string
+	Attrs   map[string]string // key-value pairs from log attributes
 }
 
 // testLogHandler captures slog records for test assertions.
@@ -303,7 +302,12 @@ func (h *testLogHandler) Enabled(_ context.Context, _ slog.Level) bool { return 
 func (h *testLogHandler) Handle(_ context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.records = append(h.records, logRecord{Level: r.Level, Message: r.Message})
+	rec := logRecord{Level: r.Level, Message: r.Message, Attrs: make(map[string]string)}
+	r.Attrs(func(a slog.Attr) bool {
+		rec.Attrs[a.Key] = a.Value.String()
+		return true
+	})
+	h.records = append(h.records, rec)
 	return nil
 }
 func (h *testLogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
@@ -377,41 +381,30 @@ func TestGetMessagesRawBatch_LogLevels(t *testing.T) {
 		t.Error("expected msg_err to return nil (logged), got non-nil")
 	}
 
-	// Check log levels
+	// Check log levels per message ID.
+	// msg_404 must produce ONLY a debug log (no warn), and msg_err must produce ONLY a warn log.
 	records := handler.getRecords()
 
-	var debugMsgs, warnMsgs []string
+	var foundDebug404, foundWarnErr bool
 	for _, r := range records {
-		switch r.Level {
-		case slog.LevelDebug:
-			debugMsgs = append(debugMsgs, r.Message)
-		case slog.LevelWarn:
-			warnMsgs = append(warnMsgs, r.Message)
-		}
-	}
-
-	// 404 should produce a debug log "message deleted before fetch"
-	foundDebug404 := false
-	for _, msg := range debugMsgs {
-		if msg == "message deleted before fetch" {
+		id := r.Attrs["id"]
+		switch {
+		case id == "msg_404" && r.Level == slog.LevelDebug && r.Message == "message deleted before fetch":
 			foundDebug404 = true
-			break
+		case id == "msg_404" && r.Level == slog.LevelWarn:
+			t.Errorf("msg_404 should not produce a warn log, got: %q", r.Message)
+		case id == "msg_err" && r.Level == slog.LevelWarn && r.Message == "failed to fetch message":
+			foundWarnErr = true
+		case id == "msg_err" && r.Level == slog.LevelDebug:
+			t.Errorf("msg_err should not produce a debug log, got: %q", r.Message)
 		}
-	}
-	if !foundDebug404 {
-		t.Errorf("expected debug log for 404, got debug messages: %v", debugMsgs)
 	}
 
-	// Non-404 errors should produce a warn log "failed to fetch message"
-	foundWarn500 := false
-	for _, msg := range warnMsgs {
-		if msg == "failed to fetch message" {
-			foundWarn500 = true
-			break
-		}
+	if !foundDebug404 {
+		t.Errorf("expected debug log for msg_404 with message %q, got records: %v", "message deleted before fetch", records)
 	}
-	if !foundWarn500 {
-		t.Errorf("expected warn log for non-404 error, got warn messages: %v", warnMsgs)
+	if !foundWarnErr {
+		t.Errorf("expected warn log for msg_err with message %q, got records: %v", "failed to fetch message", records)
 	}
 }
 
@@ -426,13 +419,4 @@ func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	req.URL.Scheme = "http"
 	req.URL.Host = strings.TrimPrefix(t.base, "http://")
 	return t.wrapped.RoundTrip(req)
-}
-
-// staticTokenSource is a trivial oauth2.TokenSource for tests.
-var _ oauth2.TokenSource = staticTokenSource{}
-
-type staticTokenSource struct{}
-
-func (s staticTokenSource) Token() (*oauth2.Token, error) {
-	return &oauth2.Token{AccessToken: "test-token"}, nil
 }
