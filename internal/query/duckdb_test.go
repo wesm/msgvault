@@ -475,6 +475,44 @@ func TestDuckDBEngine_DeletedMessagesIncluded(t *testing.T) {
 	}
 }
 
+// TestDuckDBEngine_SearchHideDeleted verifies that Search (deep FTS path)
+// respects search.Query.HideDeleted via the sqliteEngine delegation.
+func TestDuckDBEngine_SearchHideDeleted(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Mark message 1 as deleted
+	_, err := env.DB.Exec("UPDATE messages SET deleted_from_source_at = datetime('now') WHERE id = 1")
+	if err != nil {
+		t.Fatalf("mark deleted: %v", err)
+	}
+
+	engine, err := NewDuckDBEngine("", "", env.DB)
+	if err != nil {
+		t.Fatalf("NewDuckDBEngine: %v", err)
+	}
+	t.Cleanup(func() { engine.Close() })
+
+	ctx := context.Background()
+
+	// Search without HideDeleted: all 5 messages
+	all, err := engine.Search(ctx, &search.Query{}, 100, 0)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(all) != 5 {
+		t.Errorf("Search without HideDeleted: expected 5, got %d", len(all))
+	}
+
+	// Search with HideDeleted: 4 messages
+	hidden, err := engine.Search(ctx, &search.Query{HideDeleted: true}, 100, 0)
+	if err != nil {
+		t.Fatalf("Search(HideDeleted): %v", err)
+	}
+	if len(hidden) != 4 {
+		t.Errorf("Search with HideDeleted: expected 4, got %d", len(hidden))
+	}
+}
+
 // TestDuckDBEngine_AggregateByRecipient verifies that recipient aggregation
 // includes both to and cc recipients using list_concat.
 func TestDuckDBEngine_AggregateByRecipient(t *testing.T) {
