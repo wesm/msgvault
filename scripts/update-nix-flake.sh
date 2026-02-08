@@ -57,8 +57,9 @@ CORRECT_HASH=""
 BUILD_OUTPUT=$(nix build 2>&1 || true)
 CORRECT_HASH=$(echo "$BUILD_OUTPUT" | sed -n 's/.*got:[[:space:]]*\(sha256-[A-Za-z0-9+/=]*\).*/\1/p' | head -1)
 
-if [ -z "$CORRECT_HASH" ]; then
-    echo "Error: Could not extract vendorHash from nix build output:" >&2
+# Validate: must be sha256- followed by exactly 44 base64 characters
+if [ -z "$CORRECT_HASH" ] || ! echo "$CORRECT_HASH" | grep -qE '^sha256-[A-Za-z0-9+/]{43}=$'; then
+    echo "Error: Could not extract valid vendorHash from nix build output:" >&2
     echo "$BUILD_OUTPUT" >&2
     git checkout -- flake.nix
     git checkout -
