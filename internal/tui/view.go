@@ -163,9 +163,12 @@ func (m Model) buildTitleBar() string {
 		}
 	}
 
-	// Attachment filter indicator
-	if m.attachmentFilter {
+	// Filter indicators
+	if m.filters.attachmentsOnly {
 		accountStr += " [Attachments]"
+	}
+	if m.filters.hideDeletedFromSource {
+		accountStr += " [Hide Deleted]"
 	}
 
 	// Update notification (right-aligned on title bar)
@@ -1165,7 +1168,7 @@ var rawHelpLines = []string{
 	"Other",
 	"  /           Search",
 	"  A           Select account",
-	"  f           Filter by attachments",
+	"  f           Filter (attachments, deleted)",
 	"  e           Export attachments (in message view)",
 	"  q           Quit",
 	"",
@@ -1239,24 +1242,34 @@ func (m Model) renderAccountSelectorModal() string {
 	return sb.String()
 }
 
-// renderAttachmentFilterModal renders the attachment filter modal content.
-func (m Model) renderAttachmentFilterModal() string {
+// renderFilterModal renders the filter toggle modal content with checkboxes.
+func (m Model) renderFilterModal() string {
 	var sb strings.Builder
 	sb.WriteString(modalTitleStyle.Render("Filter Messages"))
 	sb.WriteString("\n\n")
-	// All Messages option
-	indicator := "○"
-	if m.modalCursor == 0 {
-		indicator = "●"
+
+	type filterOption struct {
+		label   string
+		checked bool
 	}
-	sb.WriteString(fmt.Sprintf(" %s All Messages\n", indicator))
-	// With Attachments option
-	indicator = "○"
-	if m.modalCursor == 1 {
-		indicator = "●"
+	options := []filterOption{
+		{"Only with attachments", m.filters.attachmentsOnly},
+		{"Hide deleted from source", m.filters.hideDeletedFromSource},
 	}
-	sb.WriteString(fmt.Sprintf(" %s With Attachments\n", indicator))
-	sb.WriteString("\n[↑/↓] Navigate  [Enter] Select  [Esc] Cancel")
+
+	for i, opt := range options {
+		cursor := "  "
+		if m.modalCursor == i {
+			cursor = "▶ "
+		}
+		checkbox := "[ ]"
+		if opt.checked {
+			checkbox = "[x]"
+		}
+		sb.WriteString(fmt.Sprintf("%s%s %s\n", cursor, checkbox, opt.label))
+	}
+
+	sb.WriteString("\n[↑/↓] Navigate  [Enter/Space] Toggle  [Esc] Apply & Close")
 	return sb.String()
 }
 
@@ -1340,8 +1353,8 @@ func (m Model) overlayModal(background string) string {
 		modalContent = m.renderQuitConfirmModal()
 	case modalAccountSelector:
 		modalContent = m.renderAccountSelectorModal()
-	case modalAttachmentFilter:
-		modalContent = m.renderAttachmentFilterModal()
+	case modalFilterToggle:
+		modalContent = m.renderFilterModal()
 	case modalHelp:
 		modalContent = m.renderHelpModal()
 	case modalExportAttachments:

@@ -416,6 +416,30 @@ func TestWithAttachmentsOnlyStats(t *testing.T) {
 	}
 }
 
+func TestHideDeletedFromSourceStats(t *testing.T) {
+	env := newTestEnv(t)
+
+	allStats := env.MustGetTotalStats(StatsOptions{})
+	if allStats.MessageCount != 5 {
+		t.Errorf("expected 5 total messages, got %d", allStats.MessageCount)
+	}
+
+	// Mark message 1 as deleted
+	env.MarkDeletedByID(1)
+
+	// Without HideDeletedFromSource: still 5
+	stats := env.MustGetTotalStats(StatsOptions{})
+	if stats.MessageCount != 5 {
+		t.Errorf("expected 5 messages (deleted included), got %d", stats.MessageCount)
+	}
+
+	// With HideDeletedFromSource: 4
+	hiddenStats := env.MustGetTotalStats(StatsOptions{HideDeletedFromSource: true})
+	if hiddenStats.MessageCount != 4 {
+		t.Errorf("expected 4 messages (deleted hidden), got %d", hiddenStats.MessageCount)
+	}
+}
+
 func TestDeletedMessagesIncludedWithFlag(t *testing.T) {
 	env := newTestEnv(t)
 

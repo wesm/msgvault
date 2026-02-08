@@ -42,7 +42,8 @@ func (m Model) handleInlineSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			spinCmd := m.startSpinner()
 			m.searchFilter = m.drillFilter
 			m.searchFilter.SourceID = m.accountFilter
-			m.searchFilter.WithAttachmentsOnly = m.attachmentFilter
+			m.searchFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
+			m.searchFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
 			m.searchRequestID++
 			return m, tea.Batch(spinCmd, m.loadSearch(query))
 		}
@@ -144,7 +145,7 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Attachment filter
 	case "f":
-		m.openAttachmentFilter()
+		m.openFilterModal()
 		return m, nil
 
 	// Search - activate inline search bar
@@ -367,7 +368,7 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Attachment filter
 	case "f":
-		m.openAttachmentFilter()
+		m.openFilterModal()
 		return m, nil
 
 	// Search - activate inline search bar
@@ -874,8 +875,8 @@ func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleQuitConfirmKeys(msg)
 	case modalAccountSelector:
 		return m.handleAccountSelectorKeys(msg)
-	case modalAttachmentFilter:
-		return m.handleAttachmentFilterKeys(msg)
+	case modalFilterToggle:
+		return m.handleFilterToggleKeys(msg)
 	case modalExportAttachments:
 		return m.handleExportAttachmentsKeys(msg)
 	case modalExportResult:
@@ -944,7 +945,7 @@ func (m Model) handleAccountSelectorKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleAttachmentFilterKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleFilterToggleKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
 		if m.modalCursor > 0 {
@@ -954,8 +955,16 @@ func (m Model) handleAttachmentFilterKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.modalCursor < 1 {
 			m.modalCursor++
 		}
-	case "enter":
-		m.attachmentFilter = (m.modalCursor == 1)
+	case "enter", " ":
+		// Toggle the checkbox at current cursor
+		switch m.modalCursor {
+		case 0:
+			m.filters.attachmentsOnly = !m.filters.attachmentsOnly
+		case 1:
+			m.filters.hideDeletedFromSource = !m.filters.hideDeletedFromSource
+		}
+	case "esc":
+		// Close modal and reload data with new filter settings
 		m.modal = modalNone
 		m.loading = true
 		if m.level == levelMessageList {
@@ -964,8 +973,6 @@ func (m Model) handleAttachmentFilterKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.aggregateRequestID++
 		return m, tea.Batch(m.loadData(), m.loadStats())
-	case "esc":
-		m.modal = modalNone
 	}
 	return m, nil
 }
@@ -1133,9 +1140,10 @@ func (m Model) enterDrillDown(row query.AggregateRow) (tea.Model, tea.Cmd) {
 		// Top-level: create fresh drill filter
 		m.drillViewType = m.viewType
 		m.drillFilter = query.MessageFilter{
-			SourceID:            m.accountFilter,
-			WithAttachmentsOnly: m.attachmentFilter,
-			TimeRange:           query.TimeRange{Granularity: m.timeGranularity},
+			SourceID:              m.accountFilter,
+			WithAttachmentsOnly:   m.filters.attachmentsOnly,
+			HideDeletedFromSource: m.filters.hideDeletedFromSource,
+			TimeRange:             query.TimeRange{Granularity: m.timeGranularity},
 		}
 	}
 
@@ -1189,13 +1197,9 @@ func (m *Model) openAccountSelector() {
 	}
 }
 
-func (m *Model) openAttachmentFilter() {
-	m.modal = modalAttachmentFilter
-	if m.attachmentFilter {
-		m.modalCursor = 1 // "With Attachments"
-	} else {
-		m.modalCursor = 0 // "All Messages"
-	}
+func (m *Model) openFilterModal() {
+	m.modal = modalFilterToggle
+	m.modalCursor = 0
 }
 
 // exitInlineSearchMode resets inline search UI state without changing filter state.
@@ -1240,7 +1244,8 @@ func (m Model) commitInlineSearch() (tea.Model, tea.Cmd) {
 	if m.level == levelMessageList {
 		m.searchFilter = m.drillFilter
 		m.searchFilter.SourceID = m.accountFilter
-		m.searchFilter.WithAttachmentsOnly = m.attachmentFilter
+		m.searchFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
+		m.searchFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
 		m.searchRequestID++
 		m.loading = true
 		spinCmd := m.startSpinner()

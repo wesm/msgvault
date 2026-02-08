@@ -214,7 +214,8 @@ type MessageFilter struct {
 	Before *time.Time
 
 	// Content filter
-	WithAttachmentsOnly bool // only return messages with attachments
+	WithAttachmentsOnly   bool // only return messages with attachments
+	HideDeletedFromSource bool // exclude messages where deleted_from_source_at IS NOT NULL
 
 	// Pagination
 	Pagination Pagination
@@ -299,7 +300,8 @@ type AggregateOptions struct {
 	TimeGranularity TimeGranularity
 
 	// Filter options
-	WithAttachmentsOnly bool
+	WithAttachmentsOnly   bool
+	HideDeletedFromSource bool
 
 	// Text search filter (filters aggregates to only include messages matching search)
 	SearchQuery string
@@ -325,8 +327,9 @@ type AccountInfo struct {
 
 // StatsOptions configures a stats query.
 type StatsOptions struct {
-	SourceID            *int64   // nil means all accounts
-	WithAttachmentsOnly bool     // only count messages with attachments
-	SearchQuery         string   // when set, stats reflect only messages matching this search
-	GroupBy             ViewType // when set, search filters on this view's key columns instead of subject+sender
+	SourceID              *int64   // nil means all accounts
+	WithAttachmentsOnly   bool     // only count messages with attachments
+	HideDeletedFromSource bool     // exclude messages where deleted_from_source_at IS NOT NULL
+	SearchQuery           string   // when set, stats reflect only messages matching this search
+	GroupBy               ViewType // when set, search filters on this view's key columns instead of subject+sender
 }

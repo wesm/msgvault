@@ -60,7 +60,7 @@ const (
 	modalDeleteConfirm
 	modalDeleteResult
 	modalAccountSelector
-	modalAttachmentFilter
+	modalFilterToggle
 	modalExportAttachments
 	modalExportResult
 	modalQuitConfirm
@@ -116,8 +116,11 @@ type Model struct {
 	// Account filter (nil = all accounts)
 	accountFilter *int64
 
-	// Attachment filter (true = show only messages with attachments)
-	attachmentFilter bool
+	// Content filters
+	filters struct {
+		attachmentsOnly       bool // show only messages with attachments
+		hideDeletedFromSource bool // exclude messages deleted from source
+	}
 
 	// Pagination config
 	pageSize int // Rows visible per page
@@ -289,13 +292,14 @@ func (m Model) loadData() tea.Cmd {
 	return safeCmdWithPanic(
 		func() tea.Msg {
 			opts := query.AggregateOptions{
-				SourceID:            m.accountFilter,
-				SortField:           m.sortField,
-				SortDirection:       m.sortDirection,
-				Limit:               m.aggregateLimit,
-				TimeGranularity:     m.timeGranularity,
-				WithAttachmentsOnly: m.attachmentFilter,
-				SearchQuery:         m.searchQuery,
+				SourceID:              m.accountFilter,
+				SortField:             m.sortField,
+				SortDirection:         m.sortDirection,
+				Limit:                 m.aggregateLimit,
+				TimeGranularity:       m.timeGranularity,
+				WithAttachmentsOnly:   m.filters.attachmentsOnly,
+				HideDeletedFromSource: m.filters.hideDeletedFromSource,
+				SearchQuery:           m.searchQuery,
 			}
 
 			ctx := context.Background()
@@ -315,10 +319,11 @@ func (m Model) loadData() tea.Cmd {
 			var filteredStats *query.TotalStats
 			if err == nil && opts.SearchQuery != "" {
 				statsOpts := query.StatsOptions{
-					SourceID:            m.accountFilter,
-					WithAttachmentsOnly: m.attachmentFilter,
-					SearchQuery:         opts.SearchQuery,
-					GroupBy:             m.viewType,
+					SourceID:              m.accountFilter,
+					WithAttachmentsOnly:   m.filters.attachmentsOnly,
+					HideDeletedFromSource: m.filters.hideDeletedFromSource,
+					SearchQuery:           opts.SearchQuery,
+					GroupBy:               m.viewType,
 				}
 				filteredStats, _ = m.engine.GetTotalStats(ctx, statsOpts)
 			}
@@ -336,8 +341,9 @@ func (m Model) loadStats() tea.Cmd {
 	return safeCmdWithPanic(
 		func() tea.Msg {
 			opts := query.StatsOptions{
-				SourceID:            m.accountFilter,
-				WithAttachmentsOnly: m.attachmentFilter,
+				SourceID:              m.accountFilter,
+				WithAttachmentsOnly:   m.filters.attachmentsOnly,
+				HideDeletedFromSource: m.filters.hideDeletedFromSource,
 			}
 			stats, err := m.engine.GetTotalStats(context.Background(), opts)
 			return statsLoadedMsg{stats: stats, err: err}
@@ -484,10 +490,11 @@ func (m Model) loadSearchWithOffset(queryStr string, offset int, appendResults b
 				// on the initial page load so the header metrics are accurate.
 				if err == nil && !appendResults {
 					statsOpts := query.StatsOptions{
-						SourceID:            m.searchFilter.SourceID,
-						WithAttachmentsOnly: m.searchFilter.WithAttachmentsOnly,
-						SearchQuery:         queryStr,
-						GroupBy:             m.viewType,
+						SourceID:              m.searchFilter.SourceID,
+						WithAttachmentsOnly:   m.searchFilter.WithAttachmentsOnly,
+						HideDeletedFromSource: m.searchFilter.HideDeletedFromSource,
+						SearchQuery:           queryStr,
+						GroupBy:               m.viewType,
 					}
 					stats, _ = m.engine.GetTotalStats(ctx, statsOpts)
 				}
@@ -523,7 +530,8 @@ func (m Model) buildMessageFilter() query.MessageFilter {
 	filter.SourceID = m.accountFilter
 	filter.Sorting.Field = m.msgSortField
 	filter.Sorting.Direction = m.msgSortDirection
-	filter.WithAttachmentsOnly = m.attachmentFilter
+	filter.WithAttachmentsOnly = m.filters.attachmentsOnly
+	filter.HideDeletedFromSource = m.filters.hideDeletedFromSource
 
 	// If not showing all messages and no drill filter, apply simple filter
 	if !m.allMessages && !m.hasDrillFilter() {
@@ -1033,7 +1041,8 @@ func (m Model) handleSearchDebounce(msg searchDebounceMsg) (tea.Model, tea.Cmd) 
 		// Message list: use search engine for live results
 		m.searchFilter = m.drillFilter
 		m.searchFilter.SourceID = m.accountFilter
-		m.searchFilter.WithAttachmentsOnly = m.attachmentFilter
+		m.searchFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
+		m.searchFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
 		m.searchRequestID++
 		if msg.query == "" {
 			// Empty query: reload unfiltered messages
@@ -1236,7 +1245,7 @@ func (m Model) selectionCount() int {
 
 // openAccountSelector opens the account selector modal with cursor at current selection.
 
-// openAttachmentFilter opens the attachment filter modal with cursor at current selection.
+// openFilterModal opens the filter toggle modal.
 
 // activateInlineSearch activates the inline search bar with fast search mode.
 

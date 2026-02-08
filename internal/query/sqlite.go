@@ -197,6 +197,9 @@ func optsToFilterConditions(opts AggregateOptions, prefix string) ([]string, []i
 	if opts.WithAttachmentsOnly {
 		conditions = append(conditions, prefix+"has_attachments = 1")
 	}
+	if opts.HideDeletedFromSource {
+		conditions = append(conditions, prefix+"deleted_from_source_at IS NULL")
+	}
 
 	return conditions, args
 }
@@ -269,6 +272,9 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 
 	if filter.WithAttachmentsOnly {
 		conditions = append(conditions, prefix+"has_attachments = 1")
+	}
+	if filter.HideDeletedFromSource {
+		conditions = append(conditions, prefix+"deleted_from_source_at IS NULL")
 	}
 
 	// Sender filter
@@ -921,6 +927,9 @@ func (e *SQLiteEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 	if opts.WithAttachmentsOnly {
 		conditions = append(conditions, "m.has_attachments = 1")
 	}
+	if opts.HideDeletedFromSource {
+		conditions = append(conditions, "m.deleted_from_source_at IS NULL")
+	}
 	// Merge search conditions
 	conditions = append(conditions, searchConditions...)
 	args = append(args, searchArgs...)
@@ -1540,10 +1549,11 @@ func (e *SQLiteEngine) SearchFastWithStats(ctx context.Context, q *search.Query,
 	}
 
 	statsOpts := StatsOptions{
-		SourceID:            filter.SourceID,
-		WithAttachmentsOnly: filter.WithAttachmentsOnly,
-		SearchQuery:         queryStr,
-		GroupBy:             statsGroupBy,
+		SourceID:              filter.SourceID,
+		WithAttachmentsOnly:   filter.WithAttachmentsOnly,
+		HideDeletedFromSource: filter.HideDeletedFromSource,
+		SearchQuery:           queryStr,
+		GroupBy:               statsGroupBy,
 	}
 	stats, _ := e.GetTotalStats(ctx, statsOpts)
 
