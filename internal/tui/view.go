@@ -1269,7 +1269,7 @@ func (m Model) renderFilterModal() string {
 		sb.WriteString(fmt.Sprintf("%s%s %s\n", cursor, checkbox, opt.label))
 	}
 
-	sb.WriteString("\n[↑/↓] Navigate  [Enter/Space] Toggle  [Esc] Apply & Close")
+	sb.WriteString("\n[↑/↓] Navigate  [Space/x] Toggle  [Enter/Esc] Apply")
 	return sb.String()
 }
 

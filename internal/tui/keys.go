@@ -958,7 +958,7 @@ func (m Model) handleFilterToggleKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.modalCursor < filterOptionCount-1 {
 			m.modalCursor++
 		}
-	case "enter", " ":
+	case " ", "x":
 		// Toggle the checkbox at current cursor
 		switch m.modalCursor {
 		case 0:
@@ -966,8 +966,8 @@ func (m Model) handleFilterToggleKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 1:
 			m.filters.hideDeletedFromSource = !m.filters.hideDeletedFromSource
 		}
-	case "esc":
-		// Close modal and reload data with new filter settings
+	case "enter", "esc":
+		// Apply filters: close modal and reload data
 		m.modal = modalNone
 		m.loading = true
 

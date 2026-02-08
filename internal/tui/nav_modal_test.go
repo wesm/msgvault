@@ -133,18 +133,18 @@ func TestFilterToggleModal(t *testing.T) {
 		t.Errorf("expected modalCursor = 0, got %d", m.modalCursor)
 	}
 
-	// Enter toggles checkbox at cursor 0 (attachments only) — modal stays open
-	m, _ = applyModalKey(t, m, keyEnter())
+	// Space toggles checkbox at cursor 0 (attachments only) — modal stays open
+	m, _ = applyModalKey(t, m, key(' '))
 
 	if m.modal != modalFilterToggle {
-		t.Errorf("expected modal to stay open after Enter, got %v", m.modal)
+		t.Errorf("expected modal to stay open after Space, got %v", m.modal)
 	}
 	if !m.filters.attachmentsOnly {
 		t.Error("expected attachmentsOnly = true after toggling")
 	}
 
-	// Toggle again to uncheck
-	m, _ = applyModalKey(t, m, keyEnter())
+	// Toggle again with 'x' to uncheck
+	m, _ = applyModalKey(t, m, key('x'))
 	if m.filters.attachmentsOnly {
 		t.Error("expected attachmentsOnly = false after second toggle")
 	}
@@ -155,18 +155,28 @@ func TestFilterToggleModal(t *testing.T) {
 		t.Errorf("expected modalCursor = 1, got %d", m.modalCursor)
 	}
 
-	// Space also toggles
+	// Space toggles
 	m, _ = applyModalKey(t, m, key(' '))
 	if !m.filters.hideDeletedFromSource {
 		t.Error("expected hideDeletedFromSource = true after Space toggle")
 	}
 
-	// Esc closes modal and triggers reload
+	// Enter applies and closes modal
 	var cmd tea.Cmd
-	m, cmd = applyModalKey(t, m, keyEsc())
+	m, cmd = applyModalKey(t, m, keyEnter())
 
 	if m.modal != modalNone {
-		t.Errorf("expected modalNone after Esc, got %v", m.modal)
+		t.Errorf("expected modalNone after Enter, got %v", m.modal)
+	}
+	if cmd == nil {
+		t.Error("expected command to reload data after Enter")
+	}
+
+	// Esc also applies and closes
+	m2 := applyAggregateKey(t, model, key('f'))
+	m2, cmd = applyModalKey(t, m2, keyEsc())
+	if m2.modal != modalNone {
+		t.Errorf("expected modalNone after Esc, got %v", m2.modal)
 	}
 	if cmd == nil {
 		t.Error("expected command to reload data after Esc")
@@ -183,15 +193,15 @@ func TestFilterToggleInMessageList(t *testing.T) {
 		t.Errorf("expected modalFilterToggle, got %v", m.modal)
 	}
 
-	// Toggle "Only with attachments"
-	m, _ = applyModalKey(t, m, keyEnter())
+	// Space toggles "Only with attachments"
+	m, _ = applyModalKey(t, m, key(' '))
 	if !m.filters.attachmentsOnly {
 		t.Error("expected attachmentsOnly = true")
 	}
 
-	// Esc closes and reloads
+	// Enter applies and closes
 	var cmd tea.Cmd
-	m, cmd = applyModalKey(t, m, keyEsc())
+	m, cmd = applyModalKey(t, m, keyEnter())
 	if m.modal != modalNone {
 		t.Errorf("expected modalNone, got %v", m.modal)
 	}
@@ -227,10 +237,10 @@ func TestFilterToggleInDrillDown(t *testing.T) {
 		t.Fatalf("expected modalFilterToggle, got %v", m.modal)
 	}
 
-	// Toggle both filters off
-	m, _ = applyModalKey(t, m, keyEnter()) // cursor 0: toggle attachmentsOnly off
-	m, _ = applyModalKey(t, m, key('j'))   // move to cursor 1
-	m, _ = applyModalKey(t, m, keyEnter()) // toggle hideDeletedFromSource off
+	// Toggle both filters off using space/x
+	m, _ = applyModalKey(t, m, key(' ')) // cursor 0: toggle attachmentsOnly off
+	m, _ = applyModalKey(t, m, key('j')) // move to cursor 1
+	m, _ = applyModalKey(t, m, key('x')) // toggle hideDeletedFromSource off
 
 	if m.filters.attachmentsOnly {
 		t.Error("expected attachmentsOnly = false after toggle")
