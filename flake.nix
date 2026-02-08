@@ -31,7 +31,7 @@
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           packages = with pkgs; [
-            go_1_25
+            go
             golangci-lint
             gcc
           ];
