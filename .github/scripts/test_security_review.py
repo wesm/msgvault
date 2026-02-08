@@ -90,6 +90,11 @@ class TestPostCommentSafe(unittest.TestCase):
             f"Expected >= 2 comments, got {len(pr.live_comments)}"
         )
         assert len(ids) >= 2
+        # Each chunk must respect the 60K size limit
+        for c in pr.live_comments:
+            assert len(c.body) <= 60000, (
+                f"Chunk exceeds 60K limit: {len(c.body)} chars"
+            )
 
     def test_split_comments_contain_continuation_notice(self):
         pr = FakePR()
@@ -123,6 +128,11 @@ class TestPostCommentSafe(unittest.TestCase):
         # Reassembled content should contain all original characters
         total_len = sum(len(c.body) for c in pr.live_comments)
         assert total_len > 130000  # Original content plus continuation markers
+        # Each chunk must respect the 60K size limit
+        for c in pr.live_comments:
+            assert len(c.body) <= 60000, (
+                f"Hard-wrapped chunk exceeds 60K limit: {len(c.body)} chars"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -409,9 +419,12 @@ class TestIntegrationPostThenDelete(unittest.TestCase):
         assert old_comment.deleted, "Old bot comment should have been deleted"
         live = pr.live_comments
         assert len(live) >= 2, f"Expected >= 2 live comments (split), got {len(live)}"
-        # All live comments should contain the bot marker
+        # All live comments should contain the bot marker and respect size limit
         for c in live:
             assert _BOT_MARKER in c.body
+            assert len(c.body) <= 60000, (
+                f"Split chunk exceeds 60K limit: {len(c.body)} chars"
+            )
 
     @patch.dict("os.environ", _FAKE_ENV)
     @patch("security_review.Github")
