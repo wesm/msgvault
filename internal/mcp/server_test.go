@@ -769,3 +769,94 @@ func TestLimitArgClamping(t *testing.T) {
 		})
 	}
 }
+
+func TestAccountFilter(t *testing.T) {
+	eng := &querytest.MockEngine{
+		Accounts: []query.AccountInfo{
+			{ID: 1, Identifier: "alice@gmail.com"},
+			{ID: 2, Identifier: "bob@gmail.com"},
+		},
+		SearchFastResults: []query.MessageSummary{
+			testutil.NewMessageSummary(1).WithSubject("Test").WithFromEmail("alice@gmail.com").Build(),
+		},
+		ListResults: []query.MessageSummary{
+			testutil.NewMessageSummary(2).WithSubject("List Test").WithFromEmail("bob@gmail.com").Build(),
+		},
+		AggregateRows: []query.AggregateRow{
+			{Key: "alice@gmail.com", Count: 100},
+		},
+	}
+	h := newTestHandlers(eng)
+
+	t.Run("search with valid account", func(t *testing.T) {
+		msgs := runTool[[]query.MessageSummary](t, "search_messages", h.searchMessages, map[string]any{
+			"query":   "test",
+			"account": "alice@gmail.com",
+		})
+		if len(msgs) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(msgs))
+		}
+	})
+
+	t.Run("search with invalid account", func(t *testing.T) {
+		r := runToolExpectError(t, "search_messages", h.searchMessages, map[string]any{
+			"query":   "test",
+			"account": "unknown@gmail.com",
+		})
+		txt := resultText(t, r)
+		if !strings.Contains(txt, "account not found") {
+			t.Fatalf("expected 'account not found' error, got: %s", txt)
+		}
+	})
+
+	t.Run("list with valid account", func(t *testing.T) {
+		msgs := runTool[[]query.MessageSummary](t, "list_messages", h.listMessages, map[string]any{
+			"account": "bob@gmail.com",
+		})
+		if len(msgs) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(msgs))
+		}
+	})
+
+	t.Run("list with invalid account", func(t *testing.T) {
+		r := runToolExpectError(t, "list_messages", h.listMessages, map[string]any{
+			"account": "unknown@gmail.com",
+		})
+		txt := resultText(t, r)
+		if !strings.Contains(txt, "account not found") {
+			t.Fatalf("expected 'account not found' error, got: %s", txt)
+		}
+	})
+
+	t.Run("aggregate with valid account", func(t *testing.T) {
+		rows := runTool[[]query.AggregateRow](t, "aggregate", h.aggregate, map[string]any{
+			"group_by": "sender",
+			"account":  "alice@gmail.com",
+		})
+		if len(rows) != 1 {
+			t.Fatalf("expected 1 row, got %d", len(rows))
+		}
+	})
+
+	t.Run("aggregate with invalid account", func(t *testing.T) {
+		r := runToolExpectError(t, "aggregate", h.aggregate, map[string]any{
+			"group_by": "sender",
+			"account":  "unknown@gmail.com",
+		})
+		txt := resultText(t, r)
+		if !strings.Contains(txt, "account not found") {
+			t.Fatalf("expected 'account not found' error, got: %s", txt)
+		}
+	})
+
+	t.Run("empty account means no filter", func(t *testing.T) {
+		// Empty string should not filter - return all results
+		msgs := runTool[[]query.MessageSummary](t, "search_messages", h.searchMessages, map[string]any{
+			"query":   "test",
+			"account": "",
+		})
+		if len(msgs) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(msgs))
+		}
+	})
+}

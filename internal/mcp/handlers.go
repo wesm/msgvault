@@ -25,6 +25,24 @@ type handlers struct {
 	attachmentsDir string
 }
 
+// getAccountID looks up a source ID by email address.
+// Returns nil if account is empty (no filter), or an error if not found.
+func (h *handlers) getAccountID(ctx context.Context, account string) (*int64, error) {
+	if account == "" {
+		return nil, nil
+	}
+	accounts, err := h.engine.ListAccounts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list accounts: %w", err)
+	}
+	for _, acc := range accounts {
+		if acc.Identifier == account {
+			return &acc.ID, nil
+		}
+	}
+	return nil, fmt.Errorf("account not found: %s", account)
+}
+
 // getIDArg extracts a required positive integer ID from the arguments map.
 func getIDArg(args map[string]any, key string) (int64, error) {
 	v, ok := args[key].(float64)
@@ -94,10 +112,20 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 	limit := limitArg(args, "limit", 20)
 	offset := limitArg(args, "offset", 0)
 
+	// Look up account filter
+	account, _ := args["account"].(string)
+	sourceID, err := h.getAccountID(ctx, account)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
 	q := search.Parse(queryStr)
+	q.AccountID = sourceID
+
+	filter := query.MessageFilter{SourceID: sourceID}
 
 	// Try fast search first (metadata only), fall back to full FTS.
-	results, err := h.engine.SearchFast(ctx, q, query.MessageFilter{}, limit, offset)
+	results, err := h.engine.SearchFast(ctx, q, filter, limit, offset)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 	}
@@ -276,7 +304,15 @@ func (h *handlers) exportAttachment(ctx context.Context, req mcp.CallToolRequest
 func (h *handlers) listMessages(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 
+	// Look up account filter
+	account, _ := args["account"].(string)
+	sourceID, err := h.getAccountID(ctx, account)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
 	filter := query.MessageFilter{
+		SourceID: sourceID,
 		Pagination: query.Pagination{
 			Limit:  limitArg(args, "limit", 20),
 			Offset: limitArg(args, "offset", 0),
@@ -295,7 +331,6 @@ func (h *handlers) listMessages(ctx context.Context, req mcp.CallToolRequest) (*
 	if v, ok := args["has_attachment"].(bool); ok && v {
 		filter.WithAttachmentsOnly = true
 	}
-	var err error
 	if filter.After, err = getDateArg(args, "after"); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -341,11 +376,18 @@ func (h *handlers) aggregate(ctx context.Context, req mcp.CallToolRequest) (*mcp
 		return mcp.NewToolResultError("group_by parameter is required"), nil
 	}
 
-	opts := query.AggregateOptions{
-		Limit: limitArg(args, "limit", 50),
+	// Look up account filter
+	account, _ := args["account"].(string)
+	sourceID, err := h.getAccountID(ctx, account)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	var err error
+	opts := query.AggregateOptions{
+		SourceID: sourceID,
+		Limit:    limitArg(args, "limit", 50),
+	}
+
 	if opts.After, err = getDateArg(args, "after"); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}

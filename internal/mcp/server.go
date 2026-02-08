@@ -46,6 +46,12 @@ func withBefore() mcp.ToolOption {
 	)
 }
 
+func withAccount() mcp.ToolOption {
+	return mcp.WithString("account",
+		mcp.Description("Filter by account email address (use get_stats to list available accounts)"),
+	)
+}
+
 // Serve creates an MCP server with email archive tools and serves over stdio.
 // It blocks until stdin is closed or the context is cancelled.
 func Serve(ctx context.Context, engine query.Engine, attachmentsDir string) error {
@@ -77,6 +83,7 @@ func searchMessagesTool() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("Gmail-style search query (e.g. 'from:alice subject:meeting after:2024-01-01')"),
 		),
+		withAccount(),
 		withLimit("20"),
 		withOffset(),
 	)
@@ -121,6 +128,7 @@ func listMessagesTool() mcp.Tool {
 	return mcp.NewTool(ToolListMessages,
 		mcp.WithDescription("List messages with optional filters. Returns message summaries sorted by date."),
 		mcp.WithReadOnlyHintAnnotation(true),
+		withAccount(),
 		mcp.WithString("from",
 			mcp.Description("Filter by sender email address"),
 		),
@@ -156,6 +164,7 @@ func aggregateTool() mcp.Tool {
 			mcp.Description("Dimension to group by"),
 			mcp.Enum("sender", "recipient", "domain", "label", "time"),
 		),
+		withAccount(),
 		withLimit("50"),
 		withAfter(),
 		withBefore(),
