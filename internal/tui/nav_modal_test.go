@@ -117,74 +117,158 @@ func TestOpenAccountSelector(t *testing.T) {
 }
 
 // =============================================================================
-// Attachment Filter Modal Tests
+// Filter Toggle Modal Tests
 // =============================================================================
 
-func TestAttachmentFilterModal(t *testing.T) {
+func TestFilterToggleModal(t *testing.T) {
 	model := NewBuilder().WithPageSize(10).WithSize(100, 20).Build()
 
 	// Press 'f' to open filter modal
 	m := applyAggregateKey(t, model, key('f'))
 
-	if m.modal != modalAttachmentFilter {
-		t.Errorf("expected modalAttachmentFilter, got %v", m.modal)
+	if m.modal != modalFilterToggle {
+		t.Errorf("expected modalFilterToggle, got %v", m.modal)
 	}
 	if m.modalCursor != 0 {
-		t.Errorf("expected modalCursor = 0 (All Messages), got %d", m.modalCursor)
+		t.Errorf("expected modalCursor = 0, got %d", m.modalCursor)
 	}
 
-	// Navigate down to "With Attachments"
+	// Space toggles checkbox at cursor 0 (attachments only) — modal stays open
+	m, _ = applyModalKey(t, m, key(' '))
+
+	if m.modal != modalFilterToggle {
+		t.Errorf("expected modal to stay open after Space, got %v", m.modal)
+	}
+	if !m.filters.attachmentsOnly {
+		t.Error("expected attachmentsOnly = true after toggling")
+	}
+
+	// Toggle again with 'x' to uncheck
+	m, _ = applyModalKey(t, m, key('x'))
+	if m.filters.attachmentsOnly {
+		t.Error("expected attachmentsOnly = false after second toggle")
+	}
+
+	// Navigate down to "Hide deleted from source"
 	m, _ = applyModalKey(t, m, key('j'))
 	if m.modalCursor != 1 {
 		t.Errorf("expected modalCursor = 1, got %d", m.modalCursor)
 	}
 
-	// Select "With Attachments"
-	m, _ = applyModalKey(t, m, keyEnter())
+	// Space toggles
+	m, _ = applyModalKey(t, m, key(' '))
+	if !m.filters.hideDeletedFromSource {
+		t.Error("expected hideDeletedFromSource = true after Space toggle")
+	}
+
+	// Enter applies and closes modal
+	var cmd tea.Cmd
+	m, cmd = applyModalKey(t, m, keyEnter())
 
 	if m.modal != modalNone {
-		t.Errorf("expected modalNone after selection, got %v", m.modal)
+		t.Errorf("expected modalNone after Enter, got %v", m.modal)
 	}
-	if !m.attachmentFilter {
-		t.Error("expected attachmentFilter = true")
+	if cmd == nil {
+		t.Error("expected command to reload data after Enter")
+	}
+
+	// Esc also applies and closes
+	m2 := applyAggregateKey(t, model, key('f'))
+	m2, cmd = applyModalKey(t, m2, keyEsc())
+	if m2.modal != modalNone {
+		t.Errorf("expected modalNone after Esc, got %v", m2.modal)
+	}
+	if cmd == nil {
+		t.Error("expected command to reload data after Esc")
 	}
 }
 
-func TestAttachmentFilterInMessageList(t *testing.T) {
+func TestFilterToggleInMessageList(t *testing.T) {
 	model := NewBuilder().WithLevel(levelMessageList).WithPageSize(10).WithSize(100, 20).Build()
 
 	// Press 'f' to open filter modal in message list
 	m := applyMessageListKey(t, model, key('f'))
 
-	if m.modal != modalAttachmentFilter {
-		t.Errorf("expected modalAttachmentFilter, got %v", m.modal)
+	if m.modal != modalFilterToggle {
+		t.Errorf("expected modalFilterToggle, got %v", m.modal)
 	}
 
-	// Select "With Attachments" and verify reload is triggered
-	m.modalCursor = 1
+	// Space toggles "Only with attachments"
+	m, _ = applyModalKey(t, m, key(' '))
+	if !m.filters.attachmentsOnly {
+		t.Error("expected attachmentsOnly = true")
+	}
+
+	// Enter applies and closes
 	var cmd tea.Cmd
 	m, cmd = applyModalKey(t, m, keyEnter())
-
-	if !m.attachmentFilter {
-		t.Error("expected attachmentFilter = true")
+	if m.modal != modalNone {
+		t.Errorf("expected modalNone, got %v", m.modal)
 	}
 	if cmd == nil {
 		t.Error("expected command to reload messages")
 	}
 }
 
-func TestOpenAttachmentFilter(t *testing.T) {
+func TestOpenFilterModal(t *testing.T) {
 	m := NewBuilder().Build()
 
-	m.attachmentFilter = false
-	m.openAttachmentFilter()
+	m.openFilterModal()
+	assertModal(t, m, modalFilterToggle)
 	if m.modalCursor != 0 {
-		t.Errorf("expected modalCursor 0 for no filter, got %d", m.modalCursor)
+		t.Errorf("expected modalCursor 0, got %d", m.modalCursor)
+	}
+}
+
+func TestFilterToggleInDrillDown(t *testing.T) {
+	// Simulate being in a sub-aggregate drill-down with filters initially on.
+	model := NewBuilder().WithLevel(levelDrillDown).WithPageSize(10).WithSize(100, 20).Build()
+	model.filters.attachmentsOnly = true
+	model.filters.hideDeletedFromSource = true
+	model.drillFilter = query.MessageFilter{
+		Sender:                "alice@example.com",
+		WithAttachmentsOnly:   true,
+		HideDeletedFromSource: true,
 	}
 
-	m.attachmentFilter = true
-	m.openAttachmentFilter()
-	if m.modalCursor != 1 {
-		t.Errorf("expected modalCursor 1 for attachment filter, got %d", m.modalCursor)
+	// Open filter modal
+	m := applyAggregateKey(t, model, key('f'))
+	if m.modal != modalFilterToggle {
+		t.Fatalf("expected modalFilterToggle, got %v", m.modal)
+	}
+
+	// Toggle both filters off using space/x
+	m, _ = applyModalKey(t, m, key(' ')) // cursor 0: toggle attachmentsOnly off
+	m, _ = applyModalKey(t, m, key('j')) // move to cursor 1
+	m, _ = applyModalKey(t, m, key('x')) // toggle hideDeletedFromSource off
+
+	if m.filters.attachmentsOnly {
+		t.Error("expected attachmentsOnly = false after toggle")
+	}
+	if m.filters.hideDeletedFromSource {
+		t.Error("expected hideDeletedFromSource = false after toggle")
+	}
+
+	// Close modal — drillFilter must be resynced
+	m, cmd := applyModalKey(t, m, keyEsc())
+
+	if m.modal != modalNone {
+		t.Errorf("expected modalNone, got %v", m.modal)
+	}
+	if cmd == nil {
+		t.Error("expected command to reload data after Esc")
+	}
+
+	// Verify drillFilter was resynced with the updated global toggles
+	if m.drillFilter.WithAttachmentsOnly {
+		t.Error("expected drillFilter.WithAttachmentsOnly = false after resync")
+	}
+	if m.drillFilter.HideDeletedFromSource {
+		t.Error("expected drillFilter.HideDeletedFromSource = false after resync")
+	}
+
+	// Non-toggle fields should be preserved
+	if m.drillFilter.Sender != "alice@example.com" {
+		t.Errorf("expected drillFilter.Sender preserved, got %q", m.drillFilter.Sender)
 	}
 }

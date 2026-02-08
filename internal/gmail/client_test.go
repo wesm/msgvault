@@ -1,10 +1,15 @@
 package gmail
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -278,4 +283,140 @@ func TestIsRateLimitError(t *testing.T) {
 			}
 		})
 	}
+}
+
+// logRecord holds a captured log entry for test assertions.
+type logRecord struct {
+	Level   slog.Level
+	Message string
+	Attrs   map[string]string // key-value pairs from log attributes
+}
+
+// testLogHandler captures slog records for test assertions.
+type testLogHandler struct {
+	mu      sync.Mutex
+	records []logRecord
+}
+
+func (h *testLogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *testLogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	rec := logRecord{Level: r.Level, Message: r.Message, Attrs: make(map[string]string)}
+	r.Attrs(func(a slog.Attr) bool {
+		rec.Attrs[a.Key] = a.Value.String()
+		return true
+	})
+	h.records = append(h.records, rec)
+	return nil
+}
+func (h *testLogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *testLogHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *testLogHandler) getRecords() []logRecord {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]logRecord, len(h.records))
+	copy(out, h.records)
+	return out
+}
+
+func TestGetMessagesRawBatch_LogLevels(t *testing.T) {
+	// Set up a test HTTP server that returns different responses per message ID.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/messages/msg_ok"):
+			raw := base64.RawURLEncoding.EncodeToString([]byte("MIME-Version: 1.0\r\n\r\ntest"))
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":           "msg_ok",
+				"threadId":     "thread_ok",
+				"labelIds":     []string{"INBOX"},
+				"internalDate": "1704067200000",
+				"sizeEstimate": 100,
+				"raw":          raw,
+			})
+		case strings.Contains(r.URL.Path, "/messages/msg_404"):
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write(NewGmailError(404).WithMessage("Not Found").Build())
+		case strings.Contains(r.URL.Path, "/messages/msg_err"):
+			// 401 is a non-retryable error — returned immediately as a generic error.
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"code":401,"message":"Unauthorized"}}`))
+		}
+	}))
+	defer srv.Close()
+
+	// Override baseURL for test — we need to create a client that hits our test server.
+	// Since baseURL is a const, create the client with a custom HTTP transport that
+	// redirects requests to the test server.
+	transport := &rewriteTransport{base: srv.URL, wrapped: http.DefaultTransport}
+	httpClient := &http.Client{Transport: transport}
+
+	handler := &testLogHandler{}
+	logger := slog.New(handler)
+
+	client := &Client{
+		httpClient:  httpClient,
+		userID:      "me",
+		concurrency: 2,
+		logger:      logger,
+		rateLimiter: NewRateLimiter(1000), // High QPS to avoid rate limit delays
+	}
+
+	ctx := context.Background()
+	results, err := client.GetMessagesRawBatch(ctx, []string{"msg_ok", "msg_404", "msg_err"})
+	if err != nil {
+		t.Fatalf("GetMessagesRawBatch() error = %v", err)
+	}
+
+	// msg_ok should succeed
+	if results[0] == nil {
+		t.Error("expected msg_ok to return a result, got nil")
+	}
+	// msg_404 and msg_err should be nil (errors logged, not returned)
+	if results[1] != nil {
+		t.Error("expected msg_404 to return nil (logged), got non-nil")
+	}
+	if results[2] != nil {
+		t.Error("expected msg_err to return nil (logged), got non-nil")
+	}
+
+	// Check log levels per message ID.
+	// msg_404 must produce ONLY a debug log (no warn), and msg_err must produce ONLY a warn log.
+	records := handler.getRecords()
+
+	var foundDebug404, foundWarnErr bool
+	for _, r := range records {
+		id := r.Attrs["id"]
+		switch {
+		case id == "msg_404" && r.Level == slog.LevelDebug && r.Message == "message deleted before fetch":
+			foundDebug404 = true
+		case id == "msg_404" && r.Level == slog.LevelWarn:
+			t.Errorf("msg_404 should not produce a warn log, got: %q", r.Message)
+		case id == "msg_err" && r.Level == slog.LevelWarn && r.Message == "failed to fetch message":
+			foundWarnErr = true
+		case id == "msg_err" && r.Level == slog.LevelDebug:
+			t.Errorf("msg_err should not produce a debug log, got: %q", r.Message)
+		}
+	}
+
+	if !foundDebug404 {
+		t.Errorf("expected debug log for msg_404 with message %q, got records: %v", "message deleted before fetch", records)
+	}
+	if !foundWarnErr {
+		t.Errorf("expected warn log for msg_err with message %q, got records: %v", "failed to fetch message", records)
+	}
+}
+
+// rewriteTransport rewrites requests from the Gmail API baseURL to a test server URL.
+type rewriteTransport struct {
+	base    string // test server URL
+	wrapped http.RoundTripper
+}
+
+func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Rewrite the URL to point at our test server
+	req.URL.Scheme = "http"
+	req.URL.Host = strings.TrimPrefix(t.base, "http://")
+	return t.wrapped.RoundTrip(req)
 }

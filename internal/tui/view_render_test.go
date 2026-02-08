@@ -350,7 +350,7 @@ func TestHeaderDisplay(t *testing.T) {
 			name: "shows attachment filter indicator",
 			setup: func() Model {
 				m := NewBuilder().WithSize(100, 20).Build()
-				m.attachmentFilter = true
+				m.filters.attachmentsOnly = true
 				return m
 			},
 			line:         0,

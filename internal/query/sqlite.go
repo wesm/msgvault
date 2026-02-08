@@ -197,6 +197,9 @@ func optsToFilterConditions(opts AggregateOptions, prefix string) ([]string, []i
 	if opts.WithAttachmentsOnly {
 		conditions = append(conditions, prefix+"has_attachments = 1")
 	}
+	if opts.HideDeletedFromSource {
+		conditions = append(conditions, prefix+"deleted_from_source_at IS NULL")
+	}
 
 	return conditions, args
 }
@@ -269,6 +272,9 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 
 	if filter.WithAttachmentsOnly {
 		conditions = append(conditions, prefix+"has_attachments = 1")
+	}
+	if filter.HideDeletedFromSource {
+		conditions = append(conditions, prefix+"deleted_from_source_at IS NULL")
 	}
 
 	// Sender filter
@@ -921,6 +927,9 @@ func (e *SQLiteEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 	if opts.WithAttachmentsOnly {
 		conditions = append(conditions, "m.has_attachments = 1")
 	}
+	if opts.HideDeletedFromSource {
+		conditions = append(conditions, "m.deleted_from_source_at IS NULL")
+	}
 	// Merge search conditions
 	conditions = append(conditions, searchConditions...)
 	args = append(args, searchArgs...)
@@ -1330,12 +1339,30 @@ func (e *SQLiteEngine) buildSearchQueryParts(ctx context.Context, q *search.Quer
 		args = append(args, *q.AccountID)
 	}
 
+	// Hide-deleted filter
+	if q.HideDeleted {
+		conditions = append(conditions, "m.deleted_from_source_at IS NULL")
+	}
+
 	return conditions, args, joins, ftsJoin
 }
 
 func (e *SQLiteEngine) Search(ctx context.Context, q *search.Query, limit, offset int) ([]MessageSummary, error) {
 	conditions, args, joins, ftsJoin := e.buildSearchQueryParts(ctx, q)
+	return e.executeSearchQuery(ctx, conditions, args, joins, ftsJoin, limit, offset)
+}
 
+// SearchFast searches using the same FTS5 path as Search but merges
+// MessageFilter context into the query (drill-down filters, hide-deleted, etc.).
+func (e *SQLiteEngine) SearchFast(ctx context.Context, q *search.Query, filter MessageFilter, limit, offset int) ([]MessageSummary, error) {
+	mergedQuery := MergeFilterIntoQuery(q, filter)
+	conditions, args, joins, ftsJoin := e.buildSearchQueryParts(ctx, mergedQuery)
+	return e.executeSearchQuery(ctx, conditions, args, joins, ftsJoin, limit, offset)
+}
+
+// executeSearchQuery runs a search query built from conditions/joins and returns
+// paginated MessageSummary results. Shared by Search and SearchFast.
+func (e *SQLiteEngine) executeSearchQuery(ctx context.Context, conditions []string, args []interface{}, joins []string, ftsJoin string, limit, offset int) ([]MessageSummary, error) {
 	if limit == 0 {
 		limit = 100
 	}
@@ -1424,19 +1451,6 @@ func (e *SQLiteEngine) Search(ctx context.Context, q *search.Query, limit, offse
 	return results, nil
 }
 
-// SearchFast searches message metadata only (no body text).
-// For SQLite, this falls back to regular Search since FTS5 is fast enough
-// and provides better results than metadata-only search.
-// The filter parameter is applied to narrow the search scope.
-func (e *SQLiteEngine) SearchFast(ctx context.Context, q *search.Query, filter MessageFilter, limit, offset int) ([]MessageSummary, error) {
-	// Merge filter context into query - always AND with existing filters
-	mergedQuery := MergeFilterIntoQuery(q, filter)
-
-	// For SQLite, use the existing Search which has FTS5
-	// and add contextual filtering through the merged query
-	return e.Search(ctx, mergedQuery, limit, offset)
-}
-
 // MergeFilterIntoQuery combines a MessageFilter context with a search.Query.
 // Context filters are appended to existing query filters.
 //
@@ -1490,15 +1504,18 @@ func MergeFilterIntoQuery(q *search.Query, filter MessageFilter) *search.Query {
 		merged.FromAddrs = append(merged.FromAddrs, "@"+filter.Domain)
 	}
 
+	// Hide-deleted filter
+	if filter.HideDeletedFromSource {
+		merged.HideDeleted = true
+	}
+
 	return &merged
 }
 
 // SearchFastCount returns the total count of messages matching a search query.
-// Uses the same query logic as Search to ensure consistent counts.
+// Uses the same query logic as SearchFast to ensure consistent counts.
 func (e *SQLiteEngine) SearchFastCount(ctx context.Context, q *search.Query, filter MessageFilter) (int64, error) {
 	mergedQuery := MergeFilterIntoQuery(q, filter)
-
-	// Build query using same logic as Search for consistency
 	conditions, args, joins, ftsJoin := e.buildSearchQueryParts(ctx, mergedQuery)
 
 	whereClause := strings.Join(conditions, " AND ")
@@ -1540,10 +1557,11 @@ func (e *SQLiteEngine) SearchFastWithStats(ctx context.Context, q *search.Query,
 	}
 
 	statsOpts := StatsOptions{
-		SourceID:            filter.SourceID,
-		WithAttachmentsOnly: filter.WithAttachmentsOnly,
-		SearchQuery:         queryStr,
-		GroupBy:             statsGroupBy,
+		SourceID:              filter.SourceID,
+		WithAttachmentsOnly:   filter.WithAttachmentsOnly,
+		HideDeletedFromSource: filter.HideDeletedFromSource,
+		SearchQuery:           queryStr,
+		GroupBy:               statsGroupBy,
 	}
 	stats, _ := e.GetTotalStats(ctx, statsOpts)
 

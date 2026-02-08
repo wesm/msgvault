@@ -393,3 +393,36 @@ func TestMergeFilterIntoQuery_SliceAliasingMutation(t *testing.T) {
 		t.Errorf("Original FromAddrs[0] was changed: got %q, want original@example.com", q.FromAddrs[0])
 	}
 }
+
+func TestSearch_HideDeleted(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Mark message 1 as deleted
+	env.MarkDeletedByID(1)
+
+	// Search without HideDeleted: all messages returned
+	q := &search.Query{}
+	all := env.MustSearch(q, 100, 0)
+	if len(all) != 5 {
+		t.Errorf("Search without HideDeleted: expected 5, got %d", len(all))
+	}
+
+	// Search with HideDeleted: deleted message excluded
+	q = &search.Query{HideDeleted: true}
+	filtered := env.MustSearch(q, 100, 0)
+	if len(filtered) != 4 {
+		t.Errorf("Search with HideDeleted: expected 4, got %d", len(filtered))
+	}
+
+	// MergeFilterIntoQuery carries HideDeletedFromSource → HideDeleted
+	baseQ := &search.Query{}
+	filter := MessageFilter{HideDeletedFromSource: true}
+	merged := MergeFilterIntoQuery(baseQ, filter)
+	if !merged.HideDeleted {
+		t.Error("MergeFilterIntoQuery should set HideDeleted from HideDeletedFromSource")
+	}
+	results := env.MustSearch(merged, 100, 0)
+	if len(results) != 4 {
+		t.Errorf("Search via merged query: expected 4, got %d", len(results))
+	}
+}

@@ -23,6 +23,7 @@ type Query struct {
 	LargerThan    *int64     // larger: filter (bytes)
 	SmallerThan   *int64     // smaller: filter (bytes)
 	AccountID     *int64     // in: account filter
+	HideDeleted   bool       // exclude messages where deleted_from_source_at IS NOT NULL
 }
 
 // IsEmpty returns true if the query has no search criteria.

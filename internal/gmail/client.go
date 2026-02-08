@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -444,8 +445,15 @@ func (c *Client) GetMessagesRawBatch(ctx context.Context, messageIDs []string) (
 
 			msg, err := c.GetMessageRaw(ctx, id)
 			if err != nil {
-				// Log but don't fail the batch - allow partial results
-				c.logger.Warn("failed to fetch message", "id", id, "error", err)
+				// Log but don't fail the batch - allow partial results.
+				// 404s are expected (message deleted between history scan and fetch),
+				// so log at debug level to avoid noise during incremental sync.
+				var nfe *NotFoundError
+				if errors.As(err, &nfe) {
+					c.logger.Debug("message deleted before fetch", "id", id)
+				} else {
+					c.logger.Warn("failed to fetch message", "id", id, "error", err)
+				}
 				return nil
 			}
 

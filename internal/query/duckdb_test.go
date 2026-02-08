@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/marcboeker/go-duckdb"
 	_ "github.com/mattn/go-sqlite3"
@@ -471,6 +472,44 @@ func TestDuckDBEngine_DeletedMessagesIncluded(t *testing.T) {
 	}
 	if msg == nil {
 		t.Error("expected message 2, got nil")
+	}
+}
+
+// TestDuckDBEngine_SearchHideDeleted verifies that Search (deep FTS path)
+// respects search.Query.HideDeleted via the sqliteEngine delegation.
+func TestDuckDBEngine_SearchHideDeleted(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Mark message 1 as deleted
+	_, err := env.DB.Exec("UPDATE messages SET deleted_from_source_at = datetime('now') WHERE id = 1")
+	if err != nil {
+		t.Fatalf("mark deleted: %v", err)
+	}
+
+	engine, err := NewDuckDBEngine("", "", env.DB)
+	if err != nil {
+		t.Fatalf("NewDuckDBEngine: %v", err)
+	}
+	t.Cleanup(func() { engine.Close() })
+
+	ctx := context.Background()
+
+	// Search without HideDeleted: all 5 messages
+	all, err := engine.Search(ctx, &search.Query{}, 100, 0)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(all) != 5 {
+		t.Errorf("Search without HideDeleted: expected 5, got %d", len(all))
+	}
+
+	// Search with HideDeleted: 4 messages
+	hidden, err := engine.Search(ctx, &search.Query{HideDeleted: true}, 100, 0)
+	if err != nil {
+		t.Fatalf("Search(HideDeleted): %v", err)
+	}
+	if len(hidden) != 4 {
+		t.Errorf("Search with HideDeleted: expected 4, got %d", len(hidden))
 	}
 }
 
@@ -2993,5 +3032,130 @@ func TestSearchFastWithStats_CacheInvalidatedOnNewSearch(t *testing.T) {
 	// Results should differ (different search terms).
 	if result1.TotalCount == result2.TotalCount && result1.TotalCount > 0 {
 		t.Log("warning: both searches returned same count — test data may not differentiate them")
+	}
+}
+
+// TestDuckDBEngine_HideDeletedFromSource verifies that HideDeletedFromSource
+// filters out deleted messages in aggregates, SubAggregate, search, and stats.
+func TestDuckDBEngine_HideDeletedFromSource(t *testing.T) {
+	now := time.Now()
+	b := NewTestDataBuilder(t)
+	b.AddSource("test@gmail.com")
+	b.AddParticipant("alice@example.com", "example.com", "Alice")
+	b.AddParticipant("bob@company.org", "company.org", "Bob")
+
+	// msg1: deleted, msg2+msg3: not deleted
+	msg1 := b.AddMessage(MessageOpt{Subject: "Deleted msg", SentAt: makeDate(2024, 1, 15), SizeEstimate: 1000, DeletedAt: &now})
+	msg2 := b.AddMessage(MessageOpt{Subject: "Active msg", SentAt: makeDate(2024, 1, 16), SizeEstimate: 2000})
+	msg3 := b.AddMessage(MessageOpt{Subject: "Another active", SentAt: makeDate(2024, 2, 1), SizeEstimate: 1500})
+
+	b.AddFrom(msg1, 1, "Alice")
+	b.AddTo(msg1, 2, "Bob")
+	b.AddFrom(msg2, 1, "Alice")
+	b.AddTo(msg2, 2, "Bob")
+	b.AddFrom(msg3, 2, "Bob")
+	b.AddTo(msg3, 1, "Alice")
+
+	inbox := b.AddLabel("INBOX")
+	b.AddMessageLabel(msg1, inbox)
+	b.AddMessageLabel(msg2, inbox)
+	b.AddMessageLabel(msg3, inbox)
+
+	engine := b.BuildEngine()
+	ctx := context.Background()
+
+	// Aggregate without filter: all 3 messages counted
+	opts := DefaultAggregateOptions()
+	rows, err := engine.Aggregate(ctx, ViewSenders, opts)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	total := int64(0)
+	for _, r := range rows {
+		total += r.Count
+	}
+	if total != 3 {
+		t.Errorf("aggregate without filter: expected 3 total, got %d", total)
+	}
+
+	// Aggregate with HideDeletedFromSource: only 2 messages
+	opts.HideDeletedFromSource = true
+	rows, err = engine.Aggregate(ctx, ViewSenders, opts)
+	if err != nil {
+		t.Fatalf("Aggregate(hide-deleted): %v", err)
+	}
+	total = 0
+	for _, r := range rows {
+		total += r.Count
+	}
+	if total != 2 {
+		t.Errorf("aggregate with hide-deleted: expected 2 total, got %d", total)
+	}
+
+	// SubAggregate without filter: all 3
+	filter := MessageFilter{Sender: "alice@example.com"}
+	subRows, err := engine.SubAggregate(ctx, filter, ViewLabels, DefaultAggregateOptions())
+	if err != nil {
+		t.Fatalf("SubAggregate: %v", err)
+	}
+	if len(subRows) == 0 {
+		t.Fatal("SubAggregate returned no rows")
+	}
+	if subRows[0].Count != 2 {
+		t.Errorf("SubAggregate without filter: expected 2 for alice, got %d", subRows[0].Count)
+	}
+
+	// SubAggregate with HideDeletedFromSource: only 1 (msg1 excluded)
+	filter.HideDeletedFromSource = true
+	subRows, err = engine.SubAggregate(ctx, filter, ViewLabels, DefaultAggregateOptions())
+	if err != nil {
+		t.Fatalf("SubAggregate(hide-deleted): %v", err)
+	}
+	if len(subRows) == 0 {
+		t.Fatal("SubAggregate(hide-deleted) returned no rows")
+	}
+	if subRows[0].Count != 1 {
+		t.Errorf("SubAggregate with hide-deleted: expected 1 for alice, got %d", subRows[0].Count)
+	}
+
+	// SearchFast without filter: all 3 (search term "active" matches all subjects
+	// via case-insensitive match: "Deleted msg" doesn't match, so use broader term)
+	q := search.Parse("") // empty query matches all
+	results, err := engine.SearchFast(ctx, q, MessageFilter{}, 100, 0)
+	if err != nil {
+		t.Fatalf("SearchFast: %v", err)
+	}
+	if len(results) != 3 {
+		t.Errorf("SearchFast without filter: expected 3, got %d", len(results))
+	}
+
+	// SearchFast with HideDeletedFromSource: only 2
+	results, err = engine.SearchFast(ctx, q, MessageFilter{HideDeletedFromSource: true}, 100, 0)
+	if err != nil {
+		t.Fatalf("SearchFast(hide-deleted): %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("SearchFast with hide-deleted: expected 2, got %d", len(results))
+	}
+
+	// SearchFastCount consistency
+	count, err := engine.SearchFastCount(ctx, q, MessageFilter{HideDeletedFromSource: true})
+	if err != nil {
+		t.Fatalf("SearchFastCount(hide-deleted): %v", err)
+	}
+	if count != 2 {
+		t.Errorf("SearchFastCount with hide-deleted: expected 2, got %d", count)
+	}
+
+	// GetTotalStats with HideDeletedFromSource
+	stats, err := engine.GetTotalStats(ctx, StatsOptions{HideDeletedFromSource: true})
+	if err != nil {
+		t.Fatalf("GetTotalStats(hide-deleted): %v", err)
+	}
+	if stats == nil {
+		t.Fatal("GetTotalStats returned nil")
+	}
+	if stats.MessageCount != 2 {
+		t.Errorf("GetTotalStats with hide-deleted: expected 2 messages, got %d", stats.MessageCount)
 	}
 }

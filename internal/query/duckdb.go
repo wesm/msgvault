@@ -462,6 +462,9 @@ func (e *DuckDBEngine) buildWhereClause(opts AggregateOptions, keyColumns ...str
 	if opts.WithAttachmentsOnly {
 		conditions = append(conditions, "msg.has_attachments = 1")
 	}
+	if opts.HideDeletedFromSource {
+		conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
+	}
 
 	// Text search filter for aggregates - filter on view's key columns
 	searchConds, searchArgs := e.buildAggregateSearchConditions(opts.SearchQuery, keyColumns...)
@@ -666,6 +669,9 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 	if filter.WithAttachmentsOnly {
 		conditions = append(conditions, "msg.has_attachments = true")
 	}
+	if filter.HideDeletedFromSource {
+		conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
+	}
 
 	// Sender filter - use EXISTS subquery (becomes semi-join)
 	if filter.Sender != "" {
@@ -828,6 +834,9 @@ func (e *DuckDBEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 	if opts.WithAttachmentsOnly {
 		where += " AND msg.has_attachments = true"
 	}
+	if opts.HideDeletedFromSource {
+		where += " AND msg.deleted_from_source_at IS NULL"
+	}
 
 	// Add search query conditions using the view's key columns
 	searchConds, searchArgs := e.buildAggregateSearchConditions(opts.SearchQuery, def.keyColumns...)
@@ -887,6 +896,9 @@ func (e *DuckDBEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 
 	if opts.WithAttachmentsOnly {
 		conditions = append(conditions, "msg.has_attachments = 1")
+	}
+	if opts.HideDeletedFromSource {
+		conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
 	}
 
 	// Search filter — uses EXISTS subqueries so no row multiplication.
@@ -1521,6 +1533,11 @@ func (e *DuckDBEngine) Search(ctx context.Context, q *search.Query, limit, offse
 	if q.AccountID != nil {
 		conditions = append(conditions, "m.source_id = ?")
 		args = append(args, *q.AccountID)
+	}
+
+	// Hide-deleted filter
+	if q.HideDeleted {
+		conditions = append(conditions, "m.deleted_from_source_at IS NULL")
 	}
 
 	if limit == 0 {
@@ -2232,6 +2249,9 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 	}
 	if filter.WithAttachmentsOnly {
 		conditions = append(conditions, "msg.has_attachments = true")
+	}
+	if filter.HideDeletedFromSource {
+		conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
 	}
 	if filter.Sender != "" {
 		conditions = append(conditions, "ms.from_email = ?")

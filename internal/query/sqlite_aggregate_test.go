@@ -317,6 +317,69 @@ func TestSubAggregateIncludesDeletedMessages(t *testing.T) {
 	}
 }
 
+func TestHideDeletedFromSourceAggregate(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Before deletion: all 5 messages visible
+	opts := DefaultAggregateOptions()
+	allRows, err := env.Engine.Aggregate(env.Ctx, ViewSenders, opts)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	var totalBefore int64
+	for _, r := range allRows {
+		totalBefore += r.Count
+	}
+	if totalBefore != 5 {
+		t.Fatalf("expected 5 total messages before deletion, got %d", totalBefore)
+	}
+
+	// Mark message 1 as deleted
+	env.MarkDeletedByID(1)
+
+	// Without HideDeletedFromSource: deleted messages still included
+	rows, err := env.Engine.Aggregate(env.Ctx, ViewSenders, opts)
+	if err != nil {
+		t.Fatalf("Aggregate (no hide): %v", err)
+	}
+	var totalWithDeleted int64
+	for _, r := range rows {
+		totalWithDeleted += r.Count
+	}
+	if totalWithDeleted != 5 {
+		t.Errorf("expected 5 messages (deleted included), got %d", totalWithDeleted)
+	}
+
+	// With HideDeletedFromSource: deleted messages excluded
+	opts.HideDeletedFromSource = true
+	rows, err = env.Engine.Aggregate(env.Ctx, ViewSenders, opts)
+	if err != nil {
+		t.Fatalf("Aggregate (hide deleted): %v", err)
+	}
+	var totalHidden int64
+	for _, r := range rows {
+		totalHidden += r.Count
+	}
+	if totalHidden != 4 {
+		t.Errorf("expected 4 messages (deleted hidden), got %d", totalHidden)
+	}
+
+	// SubAggregate with HideDeletedFromSource
+	filter := MessageFilter{Sender: "alice@example.com", HideDeletedFromSource: true}
+	subRows, err := env.Engine.SubAggregate(env.Ctx, filter, ViewRecipients, DefaultAggregateOptions())
+	if err != nil {
+		t.Fatalf("SubAggregate (hide deleted): %v", err)
+	}
+	var subTotal int64
+	for _, r := range subRows {
+		subTotal += r.Count
+	}
+	// alice has 3 messages, but message 1 is deleted, so 2 should remain
+	if subTotal != 2 {
+		t.Errorf("expected 2 messages for alice (deleted hidden), got %d", subTotal)
+	}
+}
+
 func TestSubAggregateByTime(t *testing.T) {
 	env := newTestEnv(t)
 
