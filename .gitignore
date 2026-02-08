@@ -36,3 +36,6 @@ __pycache__/
 *.swp
 *.swo
 .projects/
+
+# Claude Code
+.claude/

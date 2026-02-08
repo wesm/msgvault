@@ -1518,6 +1518,174 @@ func TestBuildCache_ZeroMessagesNoRepeatedRebuilds(t *testing.T) {
 	}
 }
 
+// writeSyncState writes a _last_sync.json file to the analytics directory.
+func writeSyncState(t *testing.T, analyticsDir string, lastMessageID int64) {
+	t.Helper()
+	if err := os.MkdirAll(analyticsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll analytics: %v", err)
+	}
+	state := syncState{LastMessageID: lastMessageID, LastSyncAt: time.Now()}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal sync state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(analyticsDir, "_last_sync.json"), data, 0644); err != nil {
+		t.Fatalf("write sync state: %v", err)
+	}
+}
+
+// createFakeParquet creates fake parquet files for all required directories
+// to simulate a complete existing cache.
+func createFakeParquet(t *testing.T, analyticsDir string) {
+	t.Helper()
+	// Messages use hive-partitioned layout
+	msgDir := filepath.Join(analyticsDir, "messages", "year=2024")
+	if err := os.MkdirAll(msgDir, 0755); err != nil {
+		t.Fatalf("MkdirAll messages: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(msgDir, "data.parquet"), []byte("fake"), 0644); err != nil {
+		t.Fatalf("write messages parquet: %v", err)
+	}
+	// Other required tables use flat layout
+	for _, dir := range []string{"sources", "participants", "message_recipients", "labels", "message_labels", "attachments", "conversations"} {
+		d := filepath.Join(analyticsDir, dir)
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatalf("MkdirAll %s: %v", dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "data.parquet"), []byte("fake"), 0644); err != nil {
+			t.Fatalf("write %s parquet: %v", dir, err)
+		}
+	}
+}
+
+func TestCacheNeedsBuild(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, dbPath, analyticsDir string)
+		wantBuild  bool
+		wantReason string
+	}{
+		{
+			name: "ZeroMessages_ZeroState_NoRebuild",
+			setup: func(t *testing.T, dbPath, analyticsDir string) {
+				// DB has 0 messages, state says 0 — no rebuild needed
+				writeSyncState(t, analyticsDir, 0)
+			},
+			wantBuild: false,
+		},
+		{
+			name: "NoStateFile_NoParquet_NeedsBuild",
+			setup: func(t *testing.T, dbPath, analyticsDir string) {
+				// No _last_sync.json, no parquet files — fresh install
+			},
+			wantBuild:  true,
+			wantReason: "no cache exists",
+		},
+		{
+			name: "NoStateFile_HasParquet_NeedsBuild",
+			setup: func(t *testing.T, dbPath, analyticsDir string) {
+				// Parquet exists but no state file — corrupt/legacy state
+				createFakeParquet(t, analyticsDir)
+			},
+			wantBuild:  true,
+			wantReason: "no sync state found",
+		},
+		{
+			name: "NewMessages_NeedsBuild",
+			setup: func(t *testing.T, dbPath, analyticsDir string) {
+				// DB has messages beyond what state recorded
+				db, err := sql.Open("sqlite3", dbPath)
+				if err != nil {
+					t.Fatalf("open db: %v", err)
+				}
+				defer db.Close()
+				_, err = db.Exec(`INSERT INTO messages (id, source_id, source_message_id, sent_at) VALUES (10, 1, 'msg10', datetime('now'))`)
+				if err != nil {
+					t.Fatalf("insert message: %v", err)
+				}
+				writeSyncState(t, analyticsDir, 5)
+				createFakeParquet(t, analyticsDir)
+			},
+			wantBuild:  true,
+			wantReason: "5 new messages",
+		},
+		{
+			name: "UpToDate_NoRebuild",
+			setup: func(t *testing.T, dbPath, analyticsDir string) {
+				// DB maxID matches state — cache is current
+				db, err := sql.Open("sqlite3", dbPath)
+				if err != nil {
+					t.Fatalf("open db: %v", err)
+				}
+				defer db.Close()
+				_, err = db.Exec(`INSERT INTO messages (id, source_id, source_message_id, sent_at) VALUES (10, 1, 'msg10', datetime('now'))`)
+				if err != nil {
+					t.Fatalf("insert message: %v", err)
+				}
+				writeSyncState(t, analyticsDir, 10)
+				createFakeParquet(t, analyticsDir)
+			},
+			wantBuild: false,
+		},
+		{
+			name: "HasState_EmptyParquetDir_NeedsBuild",
+			setup: func(t *testing.T, dbPath, analyticsDir string) {
+				// State file exists, DB has messages, but parquet dir is empty
+				db, err := sql.Open("sqlite3", dbPath)
+				if err != nil {
+					t.Fatalf("open db: %v", err)
+				}
+				defer db.Close()
+				_, err = db.Exec(`INSERT INTO messages (id, source_id, source_message_id, sent_at) VALUES (5, 1, 'msg5', datetime('now'))`)
+				if err != nil {
+					t.Fatalf("insert message: %v", err)
+				}
+				writeSyncState(t, analyticsDir, 5)
+				// No parquet files created — HasParquetData returns false
+			},
+			wantBuild:  true,
+			wantReason: "no cache exists",
+		},
+		{
+			name: "DeletedMessages_Excluded",
+			setup: func(t *testing.T, dbPath, analyticsDir string) {
+				// All messages are soft-deleted — maxID should be 0
+				db, err := sql.Open("sqlite3", dbPath)
+				if err != nil {
+					t.Fatalf("open db: %v", err)
+				}
+				defer db.Close()
+				_, err = db.Exec(`INSERT INTO messages (id, source_id, source_message_id, sent_at, deleted_from_source_at) VALUES (10, 1, 'msg10', datetime('now'), datetime('now'))`)
+				if err != nil {
+					t.Fatalf("insert message: %v", err)
+				}
+				writeSyncState(t, analyticsDir, 0)
+			},
+			wantBuild: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir, cleanup := setupTestSQLiteEmpty(t)
+			defer cleanup()
+
+			dbPath := filepath.Join(tmpDir, "test.db")
+			analyticsDir := filepath.Join(tmpDir, "analytics")
+
+			tt.setup(t, dbPath, analyticsDir)
+
+			gotBuild, gotReason := cacheNeedsBuild(dbPath, analyticsDir)
+			if gotBuild != tt.wantBuild {
+				t.Errorf("cacheNeedsBuild() build = %v, want %v (reason: %q)", gotBuild, tt.wantBuild, gotReason)
+			}
+			if tt.wantReason != "" && gotReason != tt.wantReason {
+				t.Errorf("cacheNeedsBuild() reason = %q, want %q", gotReason, tt.wantReason)
+			}
+		})
+	}
+}
+
 // BenchmarkBuildCacheIncremental benchmarks incremental export performance.
 func BenchmarkBuildCacheIncremental(b *testing.B) {
 	tmpDir, err := os.MkdirTemp("", "msgvault-bench-incr-*")
