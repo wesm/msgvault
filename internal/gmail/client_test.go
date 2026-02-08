@@ -1,11 +1,18 @@
 package gmail
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+
+	"golang.org/x/oauth2"
 )
 
 // Gmail API error reason constants for tests.
@@ -278,4 +285,154 @@ func TestIsRateLimitError(t *testing.T) {
 			}
 		})
 	}
+}
+
+// logRecord holds a captured log entry for test assertions.
+type logRecord struct {
+	Level   slog.Level
+	Message string
+}
+
+// testLogHandler captures slog records for test assertions.
+type testLogHandler struct {
+	mu      sync.Mutex
+	records []logRecord
+}
+
+func (h *testLogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *testLogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, logRecord{Level: r.Level, Message: r.Message})
+	return nil
+}
+func (h *testLogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *testLogHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *testLogHandler) getRecords() []logRecord {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]logRecord, len(h.records))
+	copy(out, h.records)
+	return out
+}
+
+func TestGetMessagesRawBatch_LogLevels(t *testing.T) {
+	// Set up a test HTTP server that returns different responses per message ID.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/messages/msg_ok"):
+			raw := base64.RawURLEncoding.EncodeToString([]byte("MIME-Version: 1.0\r\n\r\ntest"))
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":           "msg_ok",
+				"threadId":     "thread_ok",
+				"labelIds":     []string{"INBOX"},
+				"internalDate": "1704067200000",
+				"sizeEstimate": 100,
+				"raw":          raw,
+			})
+		case strings.Contains(r.URL.Path, "/messages/msg_404"):
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write(NewGmailError(404).WithMessage("Not Found").Build())
+		case strings.Contains(r.URL.Path, "/messages/msg_err"):
+			// 401 is a non-retryable error — returned immediately as a generic error.
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"code":401,"message":"Unauthorized"}}`))
+		}
+	}))
+	defer srv.Close()
+
+	// Override baseURL for test — we need to create a client that hits our test server.
+	// Since baseURL is a const, create the client with a custom HTTP transport that
+	// redirects requests to the test server.
+	transport := &rewriteTransport{base: srv.URL, wrapped: http.DefaultTransport}
+	httpClient := &http.Client{Transport: transport}
+
+	handler := &testLogHandler{}
+	logger := slog.New(handler)
+
+	client := &Client{
+		httpClient:  httpClient,
+		userID:      "me",
+		concurrency: 2,
+		logger:      logger,
+		rateLimiter: NewRateLimiter(1000), // High QPS to avoid rate limit delays
+	}
+
+	ctx := context.Background()
+	results, err := client.GetMessagesRawBatch(ctx, []string{"msg_ok", "msg_404", "msg_err"})
+	if err != nil {
+		t.Fatalf("GetMessagesRawBatch() error = %v", err)
+	}
+
+	// msg_ok should succeed
+	if results[0] == nil {
+		t.Error("expected msg_ok to return a result, got nil")
+	}
+	// msg_404 and msg_err should be nil (errors logged, not returned)
+	if results[1] != nil {
+		t.Error("expected msg_404 to return nil (logged), got non-nil")
+	}
+	if results[2] != nil {
+		t.Error("expected msg_err to return nil (logged), got non-nil")
+	}
+
+	// Check log levels
+	records := handler.getRecords()
+
+	var debugMsgs, warnMsgs []string
+	for _, r := range records {
+		switch r.Level {
+		case slog.LevelDebug:
+			debugMsgs = append(debugMsgs, r.Message)
+		case slog.LevelWarn:
+			warnMsgs = append(warnMsgs, r.Message)
+		}
+	}
+
+	// 404 should produce a debug log "message deleted before fetch"
+	foundDebug404 := false
+	for _, msg := range debugMsgs {
+		if msg == "message deleted before fetch" {
+			foundDebug404 = true
+			break
+		}
+	}
+	if !foundDebug404 {
+		t.Errorf("expected debug log for 404, got debug messages: %v", debugMsgs)
+	}
+
+	// Non-404 errors should produce a warn log "failed to fetch message"
+	foundWarn500 := false
+	for _, msg := range warnMsgs {
+		if msg == "failed to fetch message" {
+			foundWarn500 = true
+			break
+		}
+	}
+	if !foundWarn500 {
+		t.Errorf("expected warn log for non-404 error, got warn messages: %v", warnMsgs)
+	}
+}
+
+// rewriteTransport rewrites requests from the Gmail API baseURL to a test server URL.
+type rewriteTransport struct {
+	base    string // test server URL
+	wrapped http.RoundTripper
+}
+
+func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Rewrite the URL to point at our test server
+	req.URL.Scheme = "http"
+	req.URL.Host = strings.TrimPrefix(t.base, "http://")
+	return t.wrapped.RoundTrip(req)
+}
+
+// staticTokenSource is a trivial oauth2.TokenSource for tests.
+var _ oauth2.TokenSource = staticTokenSource{}
+
+type staticTokenSource struct{}
+
+func (s staticTokenSource) Token() (*oauth2.Token, error) {
+	return &oauth2.Token{AccessToken: "test-token"}, nil
 }
