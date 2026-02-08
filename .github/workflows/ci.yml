@@ -55,12 +55,7 @@ jobs:
           path: msgvault.exe
 
   nix-build:
-    # Only run on pushes and PRs from the same repo (not forks) to prevent
-    # arbitrary code execution via malicious flake.nix changes.
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
