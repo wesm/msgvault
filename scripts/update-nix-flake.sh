@@ -40,6 +40,11 @@ git checkout -b "$BRANCH" origin/main
 if [ -n "$VERSION_TAG" ]; then
     # Strip leading 'v' if present
     VERSION="${VERSION_TAG#v}"
+    # Validate semver format to prevent sed injection
+    if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        echo "Error: Version must be in format X.Y.Z (e.g., 0.2.0), got: $VERSION" >&2
+        exit 1
+    fi
     echo "==> Updating version to $VERSION..."
     sed -i.bak -E "s/version = \"[^\"]+\"/version = \"$VERSION\"/" flake.nix
     rm -f flake.nix.bak
