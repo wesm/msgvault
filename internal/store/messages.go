@@ -404,6 +404,36 @@ func (s *Store) ReplaceMessageLabels(messageID int64, labelIDs []int64) error {
 	})
 }
 
+// AddMessageLabels adds labels to a message without removing existing ones.
+// Uses INSERT OR IGNORE to skip labels that already exist.
+func (s *Store) AddMessageLabels(messageID int64, labelIDs []int64) error {
+	if len(labelIDs) == 0 {
+		return nil
+	}
+	return s.withTx(func(tx *sql.Tx) error {
+		return insertInChunks(tx, len(labelIDs), 2,
+			"INSERT OR IGNORE INTO message_labels (message_id, label_id) VALUES ",
+			func(start, end int) ([]string, []interface{}) {
+				values := make([]string, end-start)
+				args := make([]interface{}, 0, (end-start)*2)
+				for i := start; i < end; i++ {
+					values[i-start] = "(?, ?)"
+					args = append(args, messageID, labelIDs[i])
+				}
+				return values, args
+			})
+	})
+}
+
+// RemoveMessageLabels removes specific labels from a message.
+func (s *Store) RemoveMessageLabels(messageID int64, labelIDs []int64) error {
+	if len(labelIDs) == 0 {
+		return nil
+	}
+	return execInChunks(s.db, labelIDs, []interface{}{messageID},
+		`DELETE FROM message_labels WHERE message_id = ? AND label_id IN (%s)`)
+}
+
 // MarkMessageDeleted marks a message as deleted from the source.
 func (s *Store) MarkMessageDeleted(sourceID int64, sourceMessageID string) error {
 	_, err := s.db.Exec(`
@@ -412,6 +442,15 @@ func (s *Store) MarkMessageDeleted(sourceID int64, sourceMessageID string) error
 		WHERE source_id = ? AND source_message_id = ?
 	`, sourceID, sourceMessageID)
 	return err
+}
+
+// MarkMessagesDeletedBatch marks multiple messages as deleted from the source in a single transaction.
+func (s *Store) MarkMessagesDeletedBatch(sourceID int64, sourceMessageIDs []string) error {
+	if len(sourceMessageIDs) == 0 {
+		return nil
+	}
+	return execInChunks(s.db, sourceMessageIDs, []interface{}{sourceID},
+		`UPDATE messages SET deleted_from_source_at = datetime('now') WHERE source_id = ? AND source_message_id IN (%s)`)
 }
 
 // MarkMessageDeletedByGmailID marks a message as deleted by its Gmail ID.

@@ -92,6 +92,12 @@ func (m *MockAPI) ListLabels(ctx context.Context) ([]*Label, error) {
 		return []*Label{
 			{ID: "INBOX", Name: "INBOX", Type: "system"},
 			{ID: "SENT", Name: "SENT", Type: "system"},
+			{ID: "STARRED", Name: "STARRED", Type: "system"},
+			{ID: "TRASH", Name: "TRASH", Type: "system"},
+			{ID: "UNREAD", Name: "UNREAD", Type: "system"},
+			{ID: "IMPORTANT", Name: "IMPORTANT", Type: "system"},
+			{ID: "SPAM", Name: "SPAM", Type: "system"},
+			{ID: "DRAFT", Name: "DRAFT", Type: "system"},
 		}, nil
 	}
 	return m.Labels, nil

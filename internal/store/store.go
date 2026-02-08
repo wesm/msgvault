@@ -166,6 +166,35 @@ func insertInChunks(tx *sql.Tx, totalRows int, valuesPerRow int, queryPrefix str
 	return nil
 }
 
+// execInChunks executes a parameterized DELETE/UPDATE with an IN-clause in chunks
+// to stay within SQLite's parameter limit. queryTemplate must contain a single %s
+// placeholder for the comma-separated "?" list. The prefix args are prepended before
+// each chunk's args (e.g., a message_id filter).
+func execInChunks[T any](db *sql.DB, ids []T, prefixArgs []interface{}, queryTemplate string) error {
+	const chunkSize = 500
+	for i := 0; i < len(ids); i += chunkSize {
+		end := i + chunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[i:end]
+
+		placeholders := make([]string, len(chunk))
+		args := make([]interface{}, 0, len(prefixArgs)+len(chunk))
+		args = append(args, prefixArgs...)
+		for j, id := range chunk {
+			placeholders[j] = "?"
+			args = append(args, id)
+		}
+
+		query := fmt.Sprintf(queryTemplate, strings.Join(placeholders, ","))
+		if _, err := db.Exec(query, args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Rebind converts a query with ? placeholders to the appropriate format
 // for the current database driver. Currently SQLite-only (no conversion needed).
 // When PostgreSQL support is added, this will convert ? to $1, $2, etc.

@@ -318,6 +318,42 @@ func assertDateFallback(t *testing.T, st *store.Store, sourceMessageID, wantDate
 	}
 }
 
+// assertMessageHasLabel checks that a message has a specific label (by source_label_id).
+func assertMessageHasLabel(t *testing.T, st *store.Store, sourceMessageID, sourceLabelID string) {
+	t.Helper()
+	var count int
+	err := st.DB().QueryRow(`
+		SELECT COUNT(*) FROM message_labels ml
+		JOIN messages m ON ml.message_id = m.id
+		JOIN labels l ON ml.label_id = l.id
+		WHERE m.source_message_id = ? AND l.source_label_id = ?
+	`, sourceMessageID, sourceLabelID).Scan(&count)
+	if err != nil {
+		t.Fatalf("assertMessageHasLabel(%s, %s): %v", sourceMessageID, sourceLabelID, err)
+	}
+	if count == 0 {
+		t.Errorf("message %s should have label %s", sourceMessageID, sourceLabelID)
+	}
+}
+
+// assertMessageNotHasLabel checks that a message does NOT have a specific label.
+func assertMessageNotHasLabel(t *testing.T, st *store.Store, sourceMessageID, sourceLabelID string) {
+	t.Helper()
+	var count int
+	err := st.DB().QueryRow(`
+		SELECT COUNT(*) FROM message_labels ml
+		JOIN messages m ON ml.message_id = m.id
+		JOIN labels l ON ml.label_id = l.id
+		WHERE m.source_message_id = ? AND l.source_label_id = ?
+	`, sourceMessageID, sourceLabelID).Scan(&count)
+	if err != nil {
+		t.Fatalf("assertMessageNotHasLabel(%s, %s): %v", sourceMessageID, sourceLabelID, err)
+	}
+	if count != 0 {
+		t.Errorf("message %s should NOT have label %s", sourceMessageID, sourceLabelID)
+	}
+}
+
 // History event builders — construct gmail.HistoryRecord values succinctly.
 
 func historyAdded(id string) gmail.HistoryRecord {

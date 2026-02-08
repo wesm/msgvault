@@ -1096,3 +1096,117 @@ func TestStore_ReplaceMessageLabels_LargeBatch(t *testing.T) {
 
 	f.AssertLabelCount(msgID, 250)
 }
+
+func TestStore_AddMessageLabels(t *testing.T) {
+	f := storetest.New(t)
+
+	msgID := f.CreateMessage("msg-add-labels")
+	labels := f.EnsureLabels(map[string]string{
+		"INBOX":   "Inbox",
+		"STARRED": "Starred",
+		"SENT":    "Sent",
+		"TRASH":   "Trash",
+	}, "system")
+
+	// Start with INBOX
+	err := f.Store.ReplaceMessageLabels(msgID, []int64{labels["INBOX"]})
+	testutil.MustNoErr(t, err, "ReplaceMessageLabels(INBOX)")
+	f.AssertLabelCount(msgID, 1)
+
+	// Add STARRED — should go from 1 to 2
+	err = f.Store.AddMessageLabels(msgID, []int64{labels["STARRED"]})
+	testutil.MustNoErr(t, err, "AddMessageLabels(STARRED)")
+	f.AssertLabelCount(msgID, 2)
+
+	// Add INBOX again — should be a no-op (INSERT OR IGNORE)
+	err = f.Store.AddMessageLabels(msgID, []int64{labels["INBOX"]})
+	testutil.MustNoErr(t, err, "AddMessageLabels(INBOX duplicate)")
+	f.AssertLabelCount(msgID, 2)
+
+	// Add multiple labels at once, including one that already exists
+	err = f.Store.AddMessageLabels(msgID, []int64{labels["SENT"], labels["TRASH"], labels["STARRED"]})
+	testutil.MustNoErr(t, err, "AddMessageLabels(SENT, TRASH, STARRED)")
+	f.AssertLabelCount(msgID, 4)
+
+	// Empty list is a no-op
+	err = f.Store.AddMessageLabels(msgID, []int64{})
+	testutil.MustNoErr(t, err, "AddMessageLabels(empty)")
+	f.AssertLabelCount(msgID, 4)
+}
+
+func TestStore_RemoveMessageLabels(t *testing.T) {
+	f := storetest.New(t)
+
+	msgID := f.CreateMessage("msg-remove-labels")
+	labels := f.EnsureLabels(map[string]string{
+		"INBOX":   "Inbox",
+		"STARRED": "Starred",
+		"SENT":    "Sent",
+		"TRASH":   "Trash",
+	}, "system")
+
+	// Start with all 4 labels
+	err := f.Store.ReplaceMessageLabels(msgID, []int64{labels["INBOX"], labels["STARRED"], labels["SENT"], labels["TRASH"]})
+	testutil.MustNoErr(t, err, "ReplaceMessageLabels")
+	f.AssertLabelCount(msgID, 4)
+
+	// Remove STARRED — should go from 4 to 3
+	err = f.Store.RemoveMessageLabels(msgID, []int64{labels["STARRED"]})
+	testutil.MustNoErr(t, err, "RemoveMessageLabels(STARRED)")
+	f.AssertLabelCount(msgID, 3)
+
+	// Remove STARRED again — should be a no-op (already removed)
+	err = f.Store.RemoveMessageLabels(msgID, []int64{labels["STARRED"]})
+	testutil.MustNoErr(t, err, "RemoveMessageLabels(STARRED again)")
+	f.AssertLabelCount(msgID, 3)
+
+	// Remove multiple including INBOX and SENT
+	err = f.Store.RemoveMessageLabels(msgID, []int64{labels["INBOX"], labels["SENT"]})
+	testutil.MustNoErr(t, err, "RemoveMessageLabels(INBOX, SENT)")
+	f.AssertLabelCount(msgID, 1)
+
+	// Verify the remaining label is TRASH
+	labelID := f.GetSingleLabelID(msgID)
+	if labelID != labels["TRASH"] {
+		t.Errorf("remaining label_id = %d, want %d (TRASH)", labelID, labels["TRASH"])
+	}
+
+	// Empty list is a no-op
+	err = f.Store.RemoveMessageLabels(msgID, []int64{})
+	testutil.MustNoErr(t, err, "RemoveMessageLabels(empty)")
+	f.AssertLabelCount(msgID, 1)
+}
+
+func TestStore_MarkMessagesDeletedBatch(t *testing.T) {
+	f := storetest.New(t)
+
+	// Create several messages
+	msgIDs := []string{"batch-del-1", "batch-del-2", "batch-del-3", "batch-del-4"}
+	internalIDs := make(map[string]int64)
+	for _, id := range msgIDs {
+		internalIDs[id] = f.CreateMessage(id)
+	}
+
+	// Verify none are deleted
+	for _, id := range msgIDs {
+		f.AssertMessageNotDeleted(internalIDs[id])
+	}
+
+	// Batch delete first two
+	err := f.Store.MarkMessagesDeletedBatch(f.Source.ID, []string{"batch-del-1", "batch-del-2"})
+	testutil.MustNoErr(t, err, "MarkMessagesDeletedBatch")
+
+	// First two should be deleted, last two should not
+	f.AssertMessageDeleted(internalIDs["batch-del-1"])
+	f.AssertMessageDeleted(internalIDs["batch-del-2"])
+	f.AssertMessageNotDeleted(internalIDs["batch-del-3"])
+	f.AssertMessageNotDeleted(internalIDs["batch-del-4"])
+
+	// Batch with non-existent IDs should not error
+	err = f.Store.MarkMessagesDeletedBatch(f.Source.ID, []string{"nonexistent-1", "nonexistent-2"})
+	testutil.MustNoErr(t, err, "MarkMessagesDeletedBatch(nonexistent)")
+
+	// Empty list is a no-op
+	err = f.Store.MarkMessagesDeletedBatch(f.Source.ID, []string{})
+	testutil.MustNoErr(t, err, "MarkMessagesDeletedBatch(empty)")
+}

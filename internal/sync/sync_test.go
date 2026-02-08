@@ -355,12 +355,24 @@ func TestIncrementalSyncWithLabelAdded(t *testing.T) {
 
 	runFullSync(t, env)
 
+	// Record call count after full sync
+	callsAfterFull := len(env.Mock.GetMessageCalls)
+
 	// Now simulate label addition via incremental
 	env.SetHistory(12350, historyLabelAdded("msg1", "STARRED"))
-	env.Mock.Messages["msg1"].LabelIDs = []string{"INBOX", "STARRED"}
 
 	summary := runIncrementalSync(t, env)
 	assertSummary(t, summary, WantSummary{Found: intPtr(1)})
+
+	// No additional GetMessageRaw calls should have been made for the existing message
+	callsAfterIncr := len(env.Mock.GetMessageCalls)
+	if callsAfterIncr != callsAfterFull {
+		t.Errorf("expected 0 GetMessageRaw calls during incremental, got %d (full: %d, after: %d)",
+			callsAfterIncr-callsAfterFull, callsAfterFull, callsAfterIncr)
+	}
+
+	// Verify the label was actually added in the database
+	assertMessageHasLabel(t, env.Store, "msg1", "STARRED")
 }
 
 func TestIncrementalSyncWithLabelRemoved(t *testing.T) {
@@ -371,12 +383,29 @@ func TestIncrementalSyncWithLabelRemoved(t *testing.T) {
 
 	runFullSync(t, env)
 
+	// Verify STARRED exists after full sync
+	assertMessageHasLabel(t, env.Store, "msg1", "STARRED")
+
+	// Record call count after full sync
+	callsAfterFull := len(env.Mock.GetMessageCalls)
+
 	// Now simulate label removal via incremental
 	env.SetHistory(12350, historyLabelRemoved("msg1", "STARRED"))
-	env.Mock.Messages["msg1"].LabelIDs = []string{"INBOX"}
 
 	summary := runIncrementalSync(t, env)
 	assertSummary(t, summary, WantSummary{Found: intPtr(1)})
+
+	// No additional GetMessageRaw calls should have been made
+	callsAfterIncr := len(env.Mock.GetMessageCalls)
+	if callsAfterIncr != callsAfterFull {
+		t.Errorf("expected 0 GetMessageRaw calls during incremental, got %d",
+			callsAfterIncr-callsAfterFull)
+	}
+
+	// Verify the label was actually removed in the database
+	assertMessageNotHasLabel(t, env.Store, "msg1", "STARRED")
+	// INBOX should still be there
+	assertMessageHasLabel(t, env.Store, "msg1", "INBOX")
 }
 
 func TestIncrementalSyncLabelAddedToNewMessage(t *testing.T) {
@@ -1284,4 +1313,131 @@ func TestAttachmentFilePermissions(t *testing.T) {
 			t.Errorf("attachment file permissions = %04o, want %04o", got, want)
 		}
 	}
+}
+
+// TestIncrementalSyncLabelAddAndRemoveOnExisting verifies that adding and removing
+// labels on the same existing message in a single history page applies correctly
+// and makes NO API calls to re-fetch the message.
+func TestIncrementalSyncLabelAddAndRemoveOnExisting(t *testing.T) {
+	env := newTestEnv(t)
+	env.Mock.Profile.MessagesTotal = 1
+	env.Mock.Profile.HistoryID = 12340
+	env.Mock.AddMessage("msg1", testMIME(), []string{"INBOX", "STARRED"})
+
+	runFullSync(t, env)
+
+	// Verify starting labels
+	assertMessageHasLabel(t, env.Store, "msg1", "INBOX")
+	assertMessageHasLabel(t, env.Store, "msg1", "STARRED")
+
+	callsAfterFull := len(env.Mock.GetMessageCalls)
+
+	// Simulate: TRASH added + INBOX removed (what Gmail does for delete)
+	env.SetHistory(12350,
+		historyLabelAdded("msg1", "TRASH"),
+		historyLabelRemoved("msg1", "INBOX"),
+	)
+
+	summary := runIncrementalSync(t, env)
+	assertSummary(t, summary, WantSummary{Found: intPtr(2)})
+
+	// Zero additional API calls
+	callsAfterIncr := len(env.Mock.GetMessageCalls)
+	if callsAfterIncr != callsAfterFull {
+		t.Errorf("expected 0 GetMessageRaw calls during incremental, got %d",
+			callsAfterIncr-callsAfterFull)
+	}
+
+	// Verify label state: TRASH and STARRED remain, INBOX removed
+	assertMessageHasLabel(t, env.Store, "msg1", "TRASH")
+	assertMessageHasLabel(t, env.Store, "msg1", "STARRED")
+	assertMessageNotHasLabel(t, env.Store, "msg1", "INBOX")
+}
+
+// TestIncrementalSyncBatchDeletions verifies that multiple deletions in a single
+// history page are applied in batch.
+func TestIncrementalSyncBatchDeletions(t *testing.T) {
+	env := newTestEnv(t)
+	seedMessages(env, 4, 12340, "msg1", "msg2", "msg3", "msg4")
+
+	runFullSync(t, env)
+	assertMessageCount(t, env.Store, 4)
+
+	// Delete 3 messages in a single history page
+	env.SetHistory(12350,
+		historyDeleted("msg1"),
+		historyDeleted("msg2"),
+		historyDeleted("msg4"),
+	)
+
+	summary := runIncrementalSync(t, env)
+	assertSummary(t, summary, WantSummary{Found: intPtr(3)})
+
+	assertDeletedFromSource(t, env.Store, "msg1", true)
+	assertDeletedFromSource(t, env.Store, "msg2", true)
+	assertDeletedFromSource(t, env.Store, "msg3", false)
+	assertDeletedFromSource(t, env.Store, "msg4", true)
+}
+
+// TestIncrementalSyncBatchNewMessages verifies that multiple new messages in a
+// single history page are fetched via GetMessagesRawBatch (not one at a time).
+func TestIncrementalSyncBatchNewMessages(t *testing.T) {
+	env := newTestEnv(t)
+	env.CreateSourceWithHistory(t, "12340")
+
+	env.Mock.Profile.MessagesTotal = 5
+	env.Mock.Profile.HistoryID = 12350
+	for i := 1; i <= 5; i++ {
+		id := fmt.Sprintf("new-%d", i)
+		env.Mock.AddMessage(id, testMIME(), []string{"INBOX"})
+	}
+
+	env.SetHistory(12350,
+		historyAdded("new-1"),
+		historyAdded("new-2"),
+		historyAdded("new-3"),
+		historyAdded("new-4"),
+		historyAdded("new-5"),
+	)
+
+	summary := runIncrementalSync(t, env)
+	assertSummary(t, summary, WantSummary{Added: intPtr(5)})
+	assertMessageCount(t, env.Store, 5)
+}
+
+// TestIncrementalSyncMixedOperations tests a history page with adds, deletes,
+// and label changes all at once.
+func TestIncrementalSyncMixedOperations(t *testing.T) {
+	env := newTestEnv(t)
+	seedMessages(env, 2, 12340, "existing-1", "existing-2")
+
+	runFullSync(t, env)
+	assertMessageCount(t, env.Store, 2)
+
+	callsAfterFull := len(env.Mock.GetMessageCalls)
+
+	// Add new messages to mock
+	env.Mock.AddMessage("new-1", testMIME(), []string{"INBOX"})
+
+	// Mixed history: add a new msg, delete an existing msg, change labels on another
+	env.SetHistory(12350,
+		historyAdded("new-1"),
+		historyDeleted("existing-1"),
+		historyLabelAdded("existing-2", "STARRED"),
+	)
+
+	summary := runIncrementalSync(t, env)
+	assertSummary(t, summary, WantSummary{Found: intPtr(3), Added: intPtr(1)})
+
+	// 1 new message fetched (batch), 0 for label change on existing
+	callsAfterIncr := len(env.Mock.GetMessageCalls)
+	// GetMessagesRawBatch calls GetMessageRaw internally in MockAPI, so 1 call for new-1
+	newCalls := callsAfterIncr - callsAfterFull
+	if newCalls != 1 {
+		t.Errorf("expected 1 GetMessageRaw call for new message, got %d", newCalls)
+	}
+
+	assertDeletedFromSource(t, env.Store, "existing-1", true)
+	assertMessageHasLabel(t, env.Store, "existing-2", "STARRED")
+	assertMessageCount(t, env.Store, 3) // 2 original (1 deleted but still counted) + 1 new
 }
