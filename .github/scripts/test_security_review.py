@@ -141,14 +141,13 @@ class TestPostCommentSafe(unittest.TestCase):
 
 
 class TestDeleteOldBotComments(unittest.TestCase):
-    """Tests for delete_old_bot_comments (issue + review comment cleanup)."""
+    """Tests for delete_old_bot_comments (issue comment cleanup)."""
 
     def test_deletes_matching_issue_comments(self):
         pr = MagicMock()
         bot_comment = FakeComment("github-actions[bot]", "## Security Review: blah\n*Powered by Claude*")
         other_comment = FakeComment("someuser", "LGTM")
         pr.get_issue_comments.return_value = [bot_comment, other_comment]
-        pr.get_review_comments.return_value = []
 
         deleted = delete_old_bot_comments(pr)
 
@@ -161,29 +160,16 @@ class TestDeleteOldBotComments(unittest.TestCase):
         pr = MagicMock()
         marked_comment = FakeComment("github-actions[bot]", f"{_BOT_MARKER}\n## Security Review (continued)\nsome text")
         pr.get_issue_comments.return_value = [marked_comment]
-        pr.get_review_comments.return_value = []
 
         deleted = delete_old_bot_comments(pr)
 
         assert deleted == 1
         assert marked_comment.deleted
 
-    def test_deletes_legacy_inline_review_comments(self):
-        pr = MagicMock()
-        pr.get_issue_comments.return_value = []
-        inline_comment = FakeComment("github-actions[bot]", "Finding: SQL injection\n*Powered by Claude*")
-        pr.get_review_comments.return_value = [inline_comment]
-
-        deleted = delete_old_bot_comments(pr)
-
-        assert deleted == 1
-        assert inline_comment.deleted
-
     def test_skips_non_bot_comments(self):
         pr = MagicMock()
         human_comment = FakeComment("developer", "Security Review looks good\nPowered by Claude")
         pr.get_issue_comments.return_value = [human_comment]
-        pr.get_review_comments.return_value = []
 
         deleted = delete_old_bot_comments(pr)
 
@@ -196,7 +182,6 @@ class TestDeleteOldBotComments(unittest.TestCase):
         new_comment = FakeComment("github-actions[bot]", f"{_BOT_MARKER}\n## Security Review: pass", comment_id=999)
         old_comment = FakeComment("github-actions[bot]", f"{_BOT_MARKER}\n## Security Review: old", comment_id=100)
         pr.get_issue_comments.return_value = [new_comment, old_comment]
-        pr.get_review_comments.return_value = []
 
         deleted = delete_old_bot_comments(pr, exclude_ids={999})
 
@@ -204,20 +189,11 @@ class TestDeleteOldBotComments(unittest.TestCase):
         assert not new_comment.deleted
         assert old_comment.deleted
 
-    def test_handles_review_comment_api_failure(self):
-        pr = MagicMock()
-        pr.get_issue_comments.return_value = []
-        pr.get_review_comments.side_effect = Exception("API error")
-
-        deleted = delete_old_bot_comments(pr)
-        assert deleted == 0
-
     def test_handles_delete_failure_gracefully(self):
         pr = MagicMock()
         bot_comment = FakeComment("github-actions[bot]", "## Security Review: x\n*Powered by Claude*")
         bot_comment.delete = MagicMock(side_effect=Exception("403 Forbidden"))
         pr.get_issue_comments.return_value = [bot_comment]
-        pr.get_review_comments.return_value = []
 
         deleted = delete_old_bot_comments(pr)
         assert deleted == 0

@@ -381,10 +381,7 @@ _BOT_MARKER = "<!-- msgvault-security-bot -->"
 
 
 def delete_old_bot_comments(pr, exclude_ids: set[int] | None = None) -> int:
-    """Delete previous security review bot comments to keep noise down.
-
-    Cleans up both issue comments (current consolidated format) and
-    inline review comments (legacy per-finding format) left by the bot.
+    """Delete previous security review bot issue comments to keep noise down.
 
     Args:
         pr: GitHub PR object.
@@ -394,7 +391,6 @@ def delete_old_bot_comments(pr, exclude_ids: set[int] | None = None) -> int:
         exclude_ids = set()
     deleted = 0
 
-    # Clean up issue comments (consolidated format + legacy marker)
     for comment in pr.get_issue_comments():
         if comment.id in exclude_ids:
             continue
@@ -407,22 +403,6 @@ def delete_old_bot_comments(pr, exclude_ids: set[int] | None = None) -> int:
                 deleted += 1
             except Exception as e:
                 print(f"Warning: Failed to delete old issue comment: {e}", file=sys.stderr)
-
-    # Clean up inline review comments (legacy per-finding format)
-    try:
-        for comment in pr.get_review_comments():
-            if comment.id in exclude_ids:
-                continue
-            if comment.user.login == "github-actions[bot]" and (
-                _BOT_MARKER in comment.body or "Powered by Claude" in comment.body
-            ):
-                try:
-                    comment.delete()
-                    deleted += 1
-                except Exception as e:
-                    print(f"Warning: Failed to delete old review comment: {e}", file=sys.stderr)
-    except Exception as e:
-        print(f"Warning: Failed to enumerate review comments: {e}", file=sys.stderr)
 
     return deleted
 
