@@ -505,14 +505,16 @@ func isTTY() bool {
 
 // CLIDeletionProgress reports deletion progress to the terminal.
 type CLIDeletionProgress struct {
-	total     int
-	startTime time.Time
-	lastPrint time.Time
-	tty       bool
+	total        int
+	resumeOffset int // messages already processed before this run
+	startTime    time.Time
+	lastPrint    time.Time
+	tty          bool
 }
 
 func (p *CLIDeletionProgress) OnStart(total, alreadyProcessed int) {
 	p.total = total
+	p.resumeOffset = alreadyProcessed
 	p.startTime = time.Now()
 	p.lastPrint = time.Time{} // Force first print
 	p.tty = isTTY()
@@ -542,8 +544,9 @@ func (p *CLIDeletionProgress) OnProgress(processed, succeeded, failed int) {
 	bar := p.progressBar(pct, 30)
 
 	var eta string
-	if processed > 0 && processed < p.total {
-		remaining := time.Duration(float64(elapsed) / float64(processed) * float64(p.total-processed))
+	processedThisRun := processed - p.resumeOffset
+	if processedThisRun > 0 && processed < p.total {
+		remaining := time.Duration(float64(elapsed) / float64(processedThisRun) * float64(p.total-processed))
 		eta = p.formatDuration(remaining) + " remaining"
 	} else if processed >= p.total {
 		eta = p.formatDuration(elapsed) + " elapsed"
