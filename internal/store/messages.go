@@ -465,6 +465,17 @@ func (s *Store) MarkMessageDeletedByGmailID(permanent bool, gmailID string) erro
 	return err
 }
 
+// MarkMessagesDeletedByGmailIDBatch marks multiple messages as deleted by their Gmail IDs
+// in batched UPDATE statements. Much faster than individual MarkMessageDeletedByGmailID calls
+// because it issues one UPDATE per chunk instead of one per message.
+func (s *Store) MarkMessagesDeletedByGmailIDBatch(gmailIDs []string) error {
+	if len(gmailIDs) == 0 {
+		return nil
+	}
+	return execInChunks(s.db, gmailIDs, nil,
+		`UPDATE messages SET deleted_from_source_at = datetime('now') WHERE source_message_id IN (%s)`)
+}
+
 // CountMessagesForSource returns the count of messages for a specific source (account).
 func (s *Store) CountMessagesForSource(sourceID int64) (int64, error) {
 	var count int64

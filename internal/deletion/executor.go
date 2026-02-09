@@ -383,11 +383,9 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 			}
 		} else {
 			succeeded += len(batch)
-			// Mark all as deleted in DB
-			for _, gmailID := range batch {
-				if markErr := e.store.MarkMessageDeletedByGmailID(true, gmailID); markErr != nil {
-					e.logger.Warn("failed to mark message as deleted in DB", "gmail_id", gmailID, "error", markErr)
-				}
+			// Mark all as deleted in DB using batch update
+			if markErr := e.store.MarkMessagesDeletedByGmailIDBatch(batch); markErr != nil {
+				e.logger.Warn("failed to mark batch as deleted in DB", "count", len(batch), "error", markErr)
 			}
 		}
 

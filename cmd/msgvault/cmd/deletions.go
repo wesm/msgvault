@@ -352,6 +352,11 @@ Examples:
 		}
 		defer s.Close()
 
+		// Ensure schema is up to date (creates new indexes, etc.)
+		if err := s.InitSchema(); err != nil {
+			return fmt.Errorf("init schema: %w", err)
+		}
+
 		// Set up context with cancellation
 		ctx, cancel := context.WithCancel(cmd.Context())
 		defer cancel()
