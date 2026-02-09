@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+	"github.com/wesm/msgvault/tools/devdata/dataset"
 )
 
 var homeFlag string
@@ -53,10 +54,34 @@ func msgvaultPath() (string, error) {
 }
 
 // datasetPath returns the path to ~/.msgvault-<name>.
+// It validates the dataset name to prevent path traversal, even for
+// hardcoded names like "gold", so no caller can bypass validation.
 func datasetPath(name string) (string, error) {
+	if err := dataset.ValidateDatasetName(name); err != nil {
+		return "", err
+	}
 	h, err := homeDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(h, ".msgvault-"+name), nil
+}
+
+// formatSize formats a byte count as a human-readable string.
+func formatSize(bytes int64) string {
+	const (
+		kb = 1024
+		mb = 1024 * kb
+		gb = 1024 * mb
+	)
+	switch {
+	case bytes >= gb:
+		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(gb))
+	case bytes >= mb:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(mb))
+	case bytes >= kb:
+		return fmt.Sprintf("%.1f KB", float64(bytes)/float64(kb))
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
 }

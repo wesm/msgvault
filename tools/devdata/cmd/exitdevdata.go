@@ -49,6 +49,12 @@ func runExitDevData(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%s not found; cannot restore without gold copy", goldPath)
 	}
 
+	// Save the current symlink target so we can restore it on failure.
+	originalTarget, err := os.Readlink(path)
+	if err != nil {
+		return fmt.Errorf("read symlink target %s: %w", path, err)
+	}
+
 	// Lstat guard + remove: re-verify symlink immediately before os.Remove
 	// to prevent accidental deletion of a real directory via race condition.
 	if info, err := os.Lstat(path); err != nil {
@@ -62,8 +68,9 @@ func runExitDevData(cmd *cobra.Command, args []string) error {
 
 	// Restore gold to original location
 	if err := os.Rename(goldPath, path); err != nil {
-		// Try to recreate symlink on failure
-		_ = os.Symlink(goldPath, path)
+		// Try to recreate the symlink with its original target (not
+		// necessarily gold) so the user's active dataset is preserved.
+		_ = os.Symlink(originalTarget, path)
 		return fmt.Errorf("rename %s to %s: %w", goldPath, path, err)
 	}
 

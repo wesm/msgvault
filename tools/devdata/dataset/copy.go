@@ -27,8 +27,21 @@ type CopyResult struct {
 // CopySubset copies rowCount most recent messages (and all referenced data) from
 // srcDBPath into a new database in dstDir. The destination schema is initialized
 // using the embedded store schema.
+//
+// Security: CopySubset validates srcDBPath for control characters and
+// canonicalizes it before use in SQL, but does NOT perform path-traversal
+// checks (e.g. verifying that srcDBPath or dstDir are within the home
+// directory). Callers must validate path containment before calling this
+// function — see newdata.go's runNewData for the expected validation pattern.
 func CopySubset(srcDBPath, dstDir string, rowCount int) (*CopyResult, error) {
 	start := time.Now()
+
+	// Reject if destination already contains a database — overwriting an
+	// existing dataset could corrupt it (InitSchema may partially modify it).
+	dstDBPath := filepath.Join(dstDir, "msgvault.db")
+	if _, err := os.Stat(dstDBPath); err == nil {
+		return nil, fmt.Errorf("destination database already exists: %s", dstDBPath)
+	}
 
 	// Track whether we created the directory so cleanup only removes what we made.
 	createdDir := false
@@ -47,8 +60,6 @@ func CopySubset(srcDBPath, dstDir string, rowCount int) (*CopyResult, error) {
 			_ = os.RemoveAll(dstDir)
 		}
 	}
-
-	dstDBPath := filepath.Join(dstDir, "msgvault.db")
 
 	// Phase 1: Create destination DB with schema using store.Open + InitSchema
 	st, err := store.Open(dstDBPath)
@@ -166,8 +177,15 @@ func CopySubset(srcDBPath, dstDir string, rowCount int) (*CopyResult, error) {
 		return nil, fmt.Errorf("update conversation counts: %w", err)
 	}
 
-	// Populate FTS5 index (ignore errors - FTS5 may not be available)
-	_ = populateFTS(db)
+	// Populate FTS5 index. If the messages_fts table doesn't exist (FTS5
+	// extension not available), that's expected and safe to ignore. Other
+	// errors (e.g. corrupt data, encoding issues) are logged as warnings.
+	if ftsErr := populateFTS(db); ftsErr != nil {
+		errMsg := ftsErr.Error()
+		if !strings.Contains(errMsg, "no such table") && !strings.Contains(errMsg, "messages_fts") {
+			fmt.Fprintf(os.Stderr, "devdata: warning: FTS index population failed: %v\n", ftsErr)
+		}
+	}
 
 	// Detach source
 	if _, err := db.Exec("DETACH DATABASE src"); err != nil {
@@ -360,20 +378,41 @@ func isSafeFilename(filename string) bool {
 
 // CopyFileIfExists copies a single file from src to dst.
 // Returns nil if the source file does not exist.
-// Both paths must be absolute. containDir is the root directory that src
-// must resolve within after symlink resolution (e.g. the dataset root).
-// This prevents a symlink in the source dataset from reading files outside
-// the dataset.
-func CopyFileIfExists(src, dst, containDir string) error {
+// Both paths must be absolute. srcContainDir is the root directory that src
+// must resolve within after symlink resolution (e.g. the source dataset root).
+// dstContainDir is the root directory that dst must be within (e.g. the
+// destination dataset root). Both checks prevent symlink escapes.
+func CopyFileIfExists(src, dst, srcContainDir, dstContainDir string) error {
 	// Validate paths are absolute
 	if !filepath.IsAbs(src) || !filepath.IsAbs(dst) {
 		return fmt.Errorf("paths must be absolute: src=%q, dst=%q", src, dst)
 	}
-	if !filepath.IsAbs(containDir) {
-		return fmt.Errorf("containDir must be absolute: %q", containDir)
+	if !filepath.IsAbs(srcContainDir) {
+		return fmt.Errorf("srcContainDir must be absolute: %q", srcContainDir)
+	}
+	if !filepath.IsAbs(dstContainDir) {
+		return fmt.Errorf("dstContainDir must be absolute: %q", dstContainDir)
 	}
 
-	// Resolve symlinks in src and verify containment within containDir.
+	// Verify destination is within dstContainDir.
+	// Resolve the parent directory of dst (which must exist) to handle
+	// filesystem symlinks (e.g. macOS /var -> /private/var).
+	dstParent := filepath.Dir(dst)
+	resolvedDstParent, err := filepath.EvalSymlinks(dstParent)
+	if err != nil {
+		return fmt.Errorf("resolve destination parent directory %s: %w", dstParent, err)
+	}
+	resolvedDst := filepath.Join(resolvedDstParent, filepath.Base(dst))
+	resolvedDstContainDir, err := filepath.EvalSymlinks(dstContainDir)
+	if err != nil {
+		return fmt.Errorf("resolve destination contain directory %s: %w", dstContainDir, err)
+	}
+	dstRel, err := filepath.Rel(resolvedDstContainDir, resolvedDst)
+	if err != nil || !isSafeFilename(dstRel) {
+		return fmt.Errorf("destination file %s is outside %s", dst, dstContainDir)
+	}
+
+	// Resolve symlinks in src and verify containment within srcContainDir.
 	resolvedSrc, err := filepath.EvalSymlinks(src)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -381,13 +420,13 @@ func CopyFileIfExists(src, dst, containDir string) error {
 		}
 		return fmt.Errorf("resolve source file %s: %w", src, err)
 	}
-	resolvedContainDir, err := filepath.EvalSymlinks(containDir)
+	resolvedSrcContainDir, err := filepath.EvalSymlinks(srcContainDir)
 	if err != nil {
-		return fmt.Errorf("resolve contain directory %s: %w", containDir, err)
+		return fmt.Errorf("resolve source contain directory %s: %w", srcContainDir, err)
 	}
-	rel, err := filepath.Rel(resolvedContainDir, resolvedSrc)
-	if err != nil || !isSafeFilename(rel) {
-		return fmt.Errorf("source file %s resolves outside %s (symlink escape)", src, containDir)
+	srcRel, err := filepath.Rel(resolvedSrcContainDir, resolvedSrc)
+	if err != nil || !isSafeFilename(srcRel) {
+		return fmt.Errorf("source file %s resolves outside %s (symlink escape)", src, srcContainDir)
 	}
 
 	srcFile, err := os.Open(resolvedSrc)

@@ -135,7 +135,7 @@ func runNewData(cmd *cobra.Command, args []string) error {
 	// Copy config.toml if present
 	srcConfig := filepath.Join(srcDir, "config.toml")
 	dstConfig := filepath.Join(dstDir, "config.toml")
-	if err := dataset.CopyFileIfExists(srcConfig, dstConfig, srcDir); err != nil {
+	if err := dataset.CopyFileIfExists(srcConfig, dstConfig, srcDir, dstDir); err != nil {
 		fmt.Fprintf(os.Stderr, "devdata: warning: could not copy config.toml: %v\n", err)
 	}
 
@@ -152,22 +152,4 @@ func runNewData(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
-}
-
-func formatSize(bytes int64) string {
-	const (
-		kb = 1024
-		mb = 1024 * kb
-		gb = 1024 * mb
-	)
-	switch {
-	case bytes >= gb:
-		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(gb))
-	case bytes >= mb:
-		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(mb))
-	case bytes >= kb:
-		return fmt.Sprintf("%.1f KB", float64(bytes)/float64(kb))
-	default:
-		return fmt.Sprintf("%d B", bytes)
-	}
 }

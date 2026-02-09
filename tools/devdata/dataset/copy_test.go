@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -316,7 +317,7 @@ func TestCopySubset_ConversationCounts(t *testing.T) {
 	}
 }
 
-func TestCopySubset_DestinationExists(t *testing.T) {
+func TestCopySubset_DestinationEmptyDir(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := filepath.Join(t.TempDir(), "dst")
 
@@ -330,7 +331,7 @@ func TestCopySubset_DestinationExists(t *testing.T) {
 
 	result, err := CopySubset(srcDB, dstDir, 5)
 	if err != nil {
-		t.Fatalf("CopySubset with pre-existing dir: %v", err)
+		t.Fatalf("CopySubset with pre-existing empty dir: %v", err)
 	}
 
 	if result.Messages != 5 {
@@ -340,6 +341,29 @@ func TestCopySubset_DestinationExists(t *testing.T) {
 	// Verify database was actually created
 	if _, err := os.Stat(filepath.Join(dstDir, "msgvault.db")); err != nil {
 		t.Errorf("msgvault.db not created in pre-existing directory: %v", err)
+	}
+}
+
+func TestCopySubset_DestinationDBExists(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := filepath.Join(t.TempDir(), "dst")
+
+	srcDB := createTestSourceDB(t, srcDir, 5)
+
+	// Create destination directory with an existing database file.
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dstDir, "msgvault.db"), []byte("existing"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := CopySubset(srcDB, dstDir, 5)
+	if err == nil {
+		t.Fatal("CopySubset should fail when destination database already exists")
+	}
+	if !strings.Contains(err.Error(), "destination database already exists") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 
@@ -395,7 +419,7 @@ func TestCopyFileIfExists(t *testing.T) {
 	}
 
 	dstFile := filepath.Join(dir, "dst-config.toml")
-	if err := CopyFileIfExists(srcFile, dstFile, dir); err != nil {
+	if err := CopyFileIfExists(srcFile, dstFile, dir, dir); err != nil {
 		t.Fatalf("CopyFileIfExists: %v", err)
 	}
 
@@ -408,12 +432,12 @@ func TestCopyFileIfExists(t *testing.T) {
 	}
 
 	// Test with non-existent file (should not error)
-	if err := CopyFileIfExists(filepath.Join(dir, "nonexistent"), filepath.Join(dir, "out"), dir); err != nil {
+	if err := CopyFileIfExists(filepath.Join(dir, "nonexistent"), filepath.Join(dir, "out"), dir, dir); err != nil {
 		t.Fatalf("CopyFileIfExists for missing file: %v", err)
 	}
 
 	// Test with relative paths (should error)
-	if err := CopyFileIfExists("relative/path", filepath.Join(dir, "out"), dir); err == nil {
+	if err := CopyFileIfExists("relative/path", filepath.Join(dir, "out"), dir, dir); err == nil {
 		t.Error("expected error for relative source path")
 	}
 }
@@ -435,8 +459,9 @@ func TestCopyFileIfExists_SymlinkEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dstFile := filepath.Join(t.TempDir(), "out.txt")
-	err := CopyFileIfExists(symlinkPath, dstFile, datasetDir)
+	dstDir := t.TempDir()
+	dstFile := filepath.Join(dstDir, "out.txt")
+	err := CopyFileIfExists(symlinkPath, dstFile, datasetDir, dstDir)
 	if err == nil {
 		t.Error("expected error for symlink escaping containDir")
 	}
