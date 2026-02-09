@@ -25,7 +25,7 @@ type trackingProgress struct {
 	finalFail   int
 }
 
-func (p *trackingProgress) OnStart(total int) {
+func (p *trackingProgress) OnStart(total, alreadyProcessed int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.startTotal = total
@@ -311,7 +311,7 @@ func (c *TestContext) AssertManifestLastProcessedIndex(id string, want int) {
 func TestNullProgress(t *testing.T) {
 	// NullProgress should not panic
 	p := NullProgress{}
-	p.OnStart(10)
+	p.OnStart(10, 0)
 	p.OnProgress(5, 4, 1)
 	p.OnComplete(9, 1)
 }
@@ -898,7 +898,7 @@ func TestExecutor_ExecuteBatch_RetryScopeErrorAfterPartialSuccess(t *testing.T) 
 func TestNullProgress_AllMethods(t *testing.T) {
 	p := NullProgress{}
 	// These are no-ops but we need to call them for coverage
-	p.OnStart(100)
+	p.OnStart(100, 0)
 	p.OnProgress(50, 40, 10)
 	p.OnComplete(90, 10)
 	// If we get here without panic, the test passes

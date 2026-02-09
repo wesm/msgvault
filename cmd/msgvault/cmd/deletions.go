@@ -511,13 +511,13 @@ type CLIDeletionProgress struct {
 	tty       bool
 }
 
-func (p *CLIDeletionProgress) OnStart(total int) {
+func (p *CLIDeletionProgress) OnStart(total, alreadyProcessed int) {
 	p.total = total
 	p.startTime = time.Now()
 	p.lastPrint = time.Time{} // Force first print
 	p.tty = isTTY()
 	// Show initial progress immediately so it doesn't look like it's hanging
-	p.OnProgress(0, 0, 0)
+	p.OnProgress(alreadyProcessed, 0, 0)
 }
 
 func (p *CLIDeletionProgress) formatDuration(d time.Duration) string {
