@@ -1069,6 +1069,37 @@ func TestExecutor_OnStartAlreadyProcessed(t *testing.T) {
 	}
 }
 
+// TestExecutor_OnStartRetryDoesNotShow100Percent verifies that when resuming
+// with retry IDs and LastProcessedIndex == total, progress shows succeeded
+// count (not startIndex) to avoid a misleading 100% display.
+func TestExecutor_OnStartRetryDoesNotShow100Percent(t *testing.T) {
+	tc := NewTestContext(t)
+
+	ids := msgIDs(10)
+	manifest := NewManifest("retry progress", ids)
+	manifest.Status = StatusInProgress
+	manifest.Execution = &Execution{
+		StartedAt:          time.Now().Add(-time.Hour),
+		Method:             MethodDelete,
+		Succeeded:          7,
+		Failed:             3,
+		FailedIDs:          []string{"msg7", "msg8", "msg9"},
+		LastProcessedIndex: 10, // all processed, but 3 failed
+	}
+	if err := tc.Mgr.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+
+	if err := tc.ExecuteBatch(manifest.ID); err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+
+	// Should show 7 (succeeded), not 10 (startIndex == total)
+	if tc.Progress.startProcessed != 7 {
+		t.Errorf("OnStart alreadyProcessed = %d, want 7 (succeeded, not startIndex)", tc.Progress.startProcessed)
+	}
+}
+
 // TestNullProgress_AllMethods exercises all NullProgress methods for coverage.
 func TestNullProgress_AllMethods(t *testing.T) {
 	p := NullProgress{}

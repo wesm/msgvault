@@ -316,7 +316,13 @@ func (e *Executor) ExecuteBatch(ctx context.Context, manifestID string) error {
 		"retry_ids", len(retryIDs),
 	)
 
-	e.progress.OnStart(len(manifest.GmailIDs), startIndex)
+	// When retries are pending, report succeeded count (not startIndex)
+	// to avoid showing 100% while retry work is still running.
+	alreadyProcessed := startIndex
+	if len(retryIDs) > 0 {
+		alreadyProcessed = succeeded
+	}
+	e.progress.OnStart(len(manifest.GmailIDs), alreadyProcessed)
 
 	var failedIDs []string
 
