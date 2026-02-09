@@ -468,12 +468,48 @@ func (s *Store) MarkMessageDeletedByGmailID(permanent bool, gmailID string) erro
 // MarkMessagesDeletedByGmailIDBatch marks multiple messages as deleted by their Gmail IDs
 // in batched UPDATE statements. Much faster than individual MarkMessageDeletedByGmailID calls
 // because it issues one UPDATE per chunk instead of one per message.
+//
+// Uses best-effort semantics: if a chunk fails, it falls back to individual updates
+// for that chunk and continues with remaining chunks. Returns the first error encountered
+// (if any) after processing all IDs.
 func (s *Store) MarkMessagesDeletedByGmailIDBatch(gmailIDs []string) error {
 	if len(gmailIDs) == 0 {
 		return nil
 	}
-	return execInChunks(s.db, gmailIDs, nil,
-		`UPDATE messages SET deleted_from_source_at = datetime('now') WHERE source_message_id IN (%s)`)
+
+	const chunkSize = 500
+	var firstErr error
+
+	for i := 0; i < len(gmailIDs); i += chunkSize {
+		end := i + chunkSize
+		if end > len(gmailIDs) {
+			end = len(gmailIDs)
+		}
+		chunk := gmailIDs[i:end]
+
+		placeholders := make([]string, len(chunk))
+		args := make([]interface{}, len(chunk))
+		for j, id := range chunk {
+			placeholders[j] = "?"
+			args[j] = id
+		}
+
+		query := fmt.Sprintf(
+			`UPDATE messages SET deleted_from_source_at = datetime('now') WHERE source_message_id IN (%s)`,
+			strings.Join(placeholders, ","))
+
+		if _, err := s.db.Exec(query, args...); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			// Fall back to individual updates for this chunk
+			for _, id := range chunk {
+				s.MarkMessageDeletedByGmailID(false, id) //nolint:errcheck // best-effort
+			}
+		}
+	}
+
+	return firstErr
 }
 
 // CountMessagesForSource returns the count of messages for a specific source (account).

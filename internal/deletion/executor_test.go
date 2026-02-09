@@ -12,23 +12,26 @@ import (
 	"time"
 
 	"github.com/wesm/msgvault/internal/gmail"
+	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/testutil"
 )
 
 // trackingProgress records progress events for testing
 type trackingProgress struct {
-	mu          sync.Mutex
-	startTotal  int
-	progressLog []struct{ processed, succeeded, failed int }
-	completed   bool
-	finalSucc   int
-	finalFail   int
+	mu             sync.Mutex
+	startTotal     int
+	startProcessed int
+	progressLog    []struct{ processed, succeeded, failed int }
+	completed      bool
+	finalSucc      int
+	finalFail      int
 }
 
 func (p *trackingProgress) OnStart(total, alreadyProcessed int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.startTotal = total
+	p.startProcessed = alreadyProcessed
 }
 
 func (p *trackingProgress) OnProgress(processed, succeeded, failed int) {
@@ -48,6 +51,7 @@ func (p *trackingProgress) OnComplete(succeeded, failed int) {
 // TestContext encapsulates common test dependencies for executor tests.
 type TestContext struct {
 	Mgr      *Manager
+	Store    *store.Store
 	MockAPI  *gmail.DeletionMockAPI
 	Exec     *Executor
 	Progress *trackingProgress
@@ -64,14 +68,15 @@ func NewTestContext(t *testing.T) *TestContext {
 		t.Fatalf("NewManager() error = %v", err)
 	}
 
-	store := testutil.NewTestStore(t)
+	st := testutil.NewTestStore(t)
 	mockAPI := gmail.NewDeletionMockAPI()
 	progress := &trackingProgress{}
 
-	exec := NewExecutor(mgr, store, mockAPI).WithProgress(progress)
+	exec := NewExecutor(mgr, st, mockAPI).WithProgress(progress)
 
 	return &TestContext{
 		Mgr:      mgr,
+		Store:    st,
 		MockAPI:  mockAPI,
 		Exec:     exec,
 		Progress: progress,
@@ -891,6 +896,176 @@ func TestExecutor_ExecuteBatch_RetryScopeErrorAfterPartialSuccess(t *testing.T) 
 	}
 	if m.Execution.FailedIDs[0] != "msg3" || m.Execution.FailedIDs[1] != "msg4" {
 		t.Errorf("FailedIDs = %v, want [msg3, msg4]", m.Execution.FailedIDs)
+	}
+}
+
+// SeedMessages creates messages in the DB with source_message_id matching the
+// executor's msgIDs convention (msg0, msg1, ...).
+func (c *TestContext) SeedMessages(gmailIDs []string) {
+	c.t.Helper()
+	source, err := c.Store.GetOrCreateSource("gmail", "test@example.com")
+	if err != nil {
+		c.t.Fatalf("GetOrCreateSource: %v", err)
+	}
+	convID, err := c.Store.EnsureConversation(source.ID, "thread-1", "Thread")
+	if err != nil {
+		c.t.Fatalf("EnsureConversation: %v", err)
+	}
+	for _, id := range gmailIDs {
+		if _, err := c.Store.UpsertMessage(&store.Message{
+			ConversationID:  convID,
+			SourceID:        source.ID,
+			SourceMessageID: id,
+			MessageType:     "email",
+			SizeEstimate:    100,
+		}); err != nil {
+			c.t.Fatalf("UpsertMessage(%s): %v", id, err)
+		}
+	}
+}
+
+// CountDeleted returns the count of messages with deleted_from_source_at set.
+func (c *TestContext) CountDeleted() int {
+	c.t.Helper()
+	var count int
+	err := c.Store.DB().QueryRow(
+		`SELECT COUNT(*) FROM messages WHERE deleted_from_source_at IS NOT NULL`,
+	).Scan(&count)
+	if err != nil {
+		c.t.Fatalf("CountDeleted: %v", err)
+	}
+	return count
+}
+
+// TestExecutor_ExecuteBatch_MarksDBRows verifies that successful batch
+// deletion actually marks messages as deleted in the database.
+func TestExecutor_ExecuteBatch_MarksDBRows(t *testing.T) {
+	tc := NewTestContext(t)
+
+	ids := msgIDs(5)
+	tc.SeedMessages(ids)
+	manifest := tc.CreateManifest("db-mark-test", ids)
+
+	if err := tc.ExecuteBatch(manifest.ID); err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+
+	if got := tc.CountDeleted(); got != 5 {
+		t.Errorf("deleted count = %d, want 5", got)
+	}
+}
+
+// TestExecutor_ExecuteBatch_CancelDuringRetry verifies that cancellation
+// during the retry-failed-IDs loop checkpoints unattempted retry IDs.
+func TestExecutor_ExecuteBatch_CancelDuringRetry(t *testing.T) {
+	tc := NewTestContext(t)
+
+	ids := msgIDs(5)
+	manifest := NewManifest("cancel retry", ids)
+	manifest.Status = StatusInProgress
+	manifest.Execution = &Execution{
+		StartedAt:          time.Now().Add(-time.Hour),
+		Method:             MethodDelete,
+		Succeeded:          0,
+		Failed:             5,
+		FailedIDs:          ids,
+		LastProcessedIndex: 5,
+	}
+	if err := tc.Mgr.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+
+	execCtx, cancel := context.WithCancel(context.Background())
+	callCount := 0
+	tc.MockAPI.BeforeDelete = func(id string) error {
+		callCount++
+		if callCount >= 2 {
+			cancel()
+		}
+		return nil
+	}
+
+	err := tc.Exec.ExecuteBatch(execCtx, manifest.ID)
+	if err != context.Canceled {
+		t.Fatalf("ExecuteBatch error = %v, want context.Canceled", err)
+	}
+
+	// Load checkpoint
+	m, _, err := tc.Mgr.GetManifest(manifest.ID)
+	if err != nil {
+		t.Fatalf("GetManifest: %v", err)
+	}
+
+	// The unattempted retry IDs should be preserved in the checkpoint
+	if len(m.Execution.FailedIDs) < 3 {
+		t.Errorf("FailedIDs = %d, want >= 3 (unattempted retry IDs preserved)", len(m.Execution.FailedIDs))
+	}
+}
+
+// TestExecutor_ExecuteBatch_CancelDuringFallback verifies that cancellation
+// during the fallback individual-delete loop checkpoints correctly.
+func TestExecutor_ExecuteBatch_CancelDuringFallback(t *testing.T) {
+	tc := NewTestContext(t)
+
+	ids := msgIDs(5)
+	manifest := tc.CreateManifest("cancel fallback", ids)
+
+	// Force batch delete to fail so it falls back to individual
+	tc.SimulateBatchDeleteError()
+
+	execCtx, cancel := context.WithCancel(context.Background())
+	callCount := 0
+	tc.MockAPI.BeforeDelete = func(id string) error {
+		callCount++
+		if callCount >= 3 {
+			cancel()
+		}
+		return nil
+	}
+
+	err := tc.Exec.ExecuteBatch(execCtx, manifest.ID)
+	if err != context.Canceled {
+		t.Fatalf("ExecuteBatch error = %v, want context.Canceled", err)
+	}
+
+	// Should have processed some messages before cancellation
+	m, _, err := tc.Mgr.GetManifest(manifest.ID)
+	if err != nil {
+		t.Fatalf("GetManifest: %v", err)
+	}
+	if m.Execution.Succeeded < 2 {
+		t.Errorf("Succeeded = %d, want >= 2 (processed before cancel)", m.Execution.Succeeded)
+	}
+}
+
+// TestExecutor_OnStartAlreadyProcessed verifies that OnStart receives the
+// correct alreadyProcessed value when resuming.
+func TestExecutor_OnStartAlreadyProcessed(t *testing.T) {
+	tc := NewTestContext(t)
+
+	ids := msgIDs(10)
+	manifest := NewManifest("resume progress", ids)
+	manifest.Status = StatusInProgress
+	manifest.Execution = &Execution{
+		StartedAt:          time.Now().Add(-time.Hour),
+		Method:             MethodDelete,
+		Succeeded:          5,
+		Failed:             0,
+		LastProcessedIndex: 5,
+	}
+	if err := tc.Mgr.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+
+	if err := tc.ExecuteBatch(manifest.ID); err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+
+	if tc.Progress.startProcessed != 5 {
+		t.Errorf("OnStart alreadyProcessed = %d, want 5", tc.Progress.startProcessed)
+	}
+	if tc.Progress.startTotal != 10 {
+		t.Errorf("OnStart total = %d, want 10", tc.Progress.startTotal)
 	}
 }
 

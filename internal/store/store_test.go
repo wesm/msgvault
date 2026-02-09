@@ -521,6 +521,37 @@ func TestStore_MarkMessageDeletedByGmailID(t *testing.T) {
 	testutil.MustNoErr(t, err, "MarkMessageDeletedByGmailID(nonexistent)")
 }
 
+func TestStore_MarkMessagesDeletedByGmailIDBatch(t *testing.T) {
+	f := storetest.New(t)
+
+	// Create 600+ messages to exercise multi-chunk behavior (chunkSize=500)
+	const count = 600
+	ids := make([]string, count)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("batch-del-%d", i)
+		f.CreateMessage(ids[i])
+	}
+
+	// Mark all as deleted in one batch call
+	err := f.Store.MarkMessagesDeletedByGmailIDBatch(ids)
+	testutil.MustNoErr(t, err, "MarkMessagesDeletedByGmailIDBatch")
+
+	// Verify all are marked deleted
+	var deletedCount int
+	err = f.Store.DB().QueryRow(
+		`SELECT COUNT(*) FROM messages WHERE deleted_from_source_at IS NOT NULL`,
+	).Scan(&deletedCount)
+	testutil.MustNoErr(t, err, "count deleted")
+
+	if deletedCount != count {
+		t.Errorf("deleted count = %d, want %d", deletedCount, count)
+	}
+
+	// Empty batch should be a no-op
+	err = f.Store.MarkMessagesDeletedByGmailIDBatch(nil)
+	testutil.MustNoErr(t, err, "MarkMessagesDeletedByGmailIDBatch(nil)")
+}
+
 func TestStore_GetMessageRaw_NotFound(t *testing.T) {
 	f := storetest.New(t)
 
