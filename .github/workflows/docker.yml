@@ -1,0 +1,116 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/docker.yml'
+      - 'go.mod'
+      - 'go.sum'
+      - '**/*.go'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@53851d14592bedcffcf25ea515637cff71ef929a # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@6524bf65af31da8d45b59e8c27de4bd072b392f5 # v3
+
+      - name: Log in to Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # latest tag for main branch
+            type=raw,value=latest,enable={{is_default_branch}}
+            # version tags (v1.2.3 -> 1.2.3, v1.2.3 -> 1.2, v1.2.3 -> 1)
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            # sha tag for traceability
+            type=sha,prefix=sha-
+
+      - name: Prepare build args
+        id: build_args
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="dev-$(echo $GITHUB_SHA | cut -c1-8)"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "commit=$(echo $GITHUB_SHA | cut -c1-8)" >> $GITHUB_OUTPUT
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+
+      - name: Build and push
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.build_args.outputs.version }}
+            COMMIT=${{ steps.build_args.outputs.commit }}
+            BUILD_DATE=${{ steps.build_args.outputs.build_date }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test image (amd64)
+        if: github.event_name == 'pull_request'
+        run: |
+          # Build single-arch for testing
+          docker buildx build \
+            --platform linux/amd64 \
+            --load \
+            --tag msgvault:test \
+            --build-arg VERSION=test \
+            --build-arg COMMIT=$(echo $GITHUB_SHA | cut -c1-8) \
+            --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+            .
+
+          # Smoke test: version command
+          echo "--- Version test ---"
+          docker run --rm msgvault:test version
+
+          # Smoke test: help command
+          echo "--- Help test ---"
+          docker run --rm msgvault:test --help
+
+          # Smoke test: init-db (creates database)
+          echo "--- Init DB test ---"
+          docker run --rm -v /tmp/msgvault-test:/data msgvault:test init-db
+          test -f /tmp/msgvault-test/msgvault.db || { echo "FATAL: database not created"; exit 1; }
+          echo "Database created successfully"
+
+          # Cleanup
+          rm -rf /tmp/msgvault-test
