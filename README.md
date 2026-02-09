@@ -51,6 +51,15 @@ cd msgvault
 make install
 ```
 
+**Conda-Forge:**
+
+You can install msgvault [from conda-forge](https://prefix.dev/channels/conda-forge/packages/msgvault) using Pixi or Conda:
+
+```bash
+pixi global install msgvault
+conda install -c conda-forge msgvault
+```
+
 ## Quick Start
 
 > **Prerequisites:** You need a Google Cloud OAuth credential before adding an account.
