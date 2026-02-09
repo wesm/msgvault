@@ -8,8 +8,15 @@ Deploy msgvault on Docker for NAS devices (Synology, QNAP), Raspberry Pi, or any
 # Pull the image
 docker pull ghcr.io/wesm/msgvault:latest
 
-# Create data directory
+# Create data directory and config
 mkdir -p ./data
+
+# Create minimal config for network access
+cat > ./data/config.toml << 'EOF'
+[server]
+bind_addr = "0.0.0.0"
+api_key = "changeme"  # Replace with: openssl rand -hex 32
+EOF
 
 # Run the daemon
 docker run -d \
@@ -19,6 +26,8 @@ docker run -d \
   -e TZ=America/New_York \
   ghcr.io/wesm/msgvault:latest serve
 ```
+
+> **Note:** The `api_key` is required when binding to `0.0.0.0`. Without a config file, the server binds to `127.0.0.1` (loopback only inside the container), making the port mapping ineffective.
 
 ## Image Tags
 

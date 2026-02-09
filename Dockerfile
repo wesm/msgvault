@@ -35,11 +35,12 @@ RUN CGO_ENABLED=1 go build \
 # Runtime stage
 FROM debian:bookworm-slim
 
-# Install runtime dependencies
+# Install runtime dependencies (libstdc++6 required for CGO/DuckDB)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
     wget \
+    libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
@@ -48,8 +49,9 @@ RUN useradd -m -u 1000 -s /bin/sh msgvault
 # Copy binary from builder
 COPY --from=builder /msgvault /usr/local/bin/msgvault
 
-# Set up data directory
+# Set up data directory with correct ownership
 ENV MSGVAULT_HOME=/data
+RUN mkdir -p /data && chown msgvault:msgvault /data
 VOLUME /data
 
 # Switch to non-root user

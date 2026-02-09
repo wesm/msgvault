@@ -108,6 +108,7 @@ jobs:
 
           # Smoke test: init-db (creates database)
           echo "--- Init DB test ---"
+          mkdir -p /tmp/msgvault-test && chmod 777 /tmp/msgvault-test
           docker run --rm -v /tmp/msgvault-test:/data msgvault:test init-db
           test -f /tmp/msgvault-test/msgvault.db || { echo "FATAL: database not created"; exit 1; }
           echo "Database created successfully"
