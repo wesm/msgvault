@@ -109,7 +109,11 @@ func ReplaceSymlink(linkPath, target string) error {
 		}
 
 		// Rename failed - fall back to remove+create (non-atomic but verified safe above)
-		_ = os.Remove(tmpPath) // Clean up temp symlink
+		// Clean up temp symlink; if cleanup fails with a real error, report it
+		// to avoid leaving orphaned temp symlinks on disk.
+		if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("cleanup temp symlink %s: %w", tmpPath, err)
+		}
 		if err := os.Remove(linkPath); err != nil {
 			return fmt.Errorf("remove existing symlink %s: %w", linkPath, err)
 		}

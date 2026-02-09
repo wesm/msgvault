@@ -5,6 +5,7 @@ package dataset
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -69,7 +70,7 @@ func TestReplaceSymlink_Windows_ErrorCases(t *testing.T) {
 		if err == nil {
 			t.Fatal("ReplaceSymlink should reject regular file")
 		}
-		if !contains(err.Error(), "not a symlink") {
+		if !strings.Contains(err.Error(), "not a symlink") {
 			t.Errorf("error = %q, should mention 'not a symlink'", err)
 		}
 	})
@@ -81,18 +82,4 @@ func TestReplaceSymlink_Windows_ErrorCases(t *testing.T) {
 			t.Fatal("ReplaceSymlink should fail for nonexistent path")
 		}
 	})
-}
-
-// contains checks if s contains substr.
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && findSubstring(s, substr))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

@@ -3,10 +3,9 @@
 package oauth
 
 import (
-	"encoding/json"
 	"log/slog"
 	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/oauth2"
@@ -96,7 +95,7 @@ func TestSaveToken_Windows_ErrorHandling(t *testing.T) {
 	}
 
 	// Error should mention "remove existing token file" (our custom error wrapping)
-	if !contains(err.Error(), "remove existing token file") {
+	if !strings.Contains(err.Error(), "remove existing token file") {
 		t.Errorf("error = %q, should mention 'remove existing token file'", err)
 	}
 }
@@ -130,14 +129,4 @@ func TestSaveToken_Windows_InitialSave(t *testing.T) {
 	if loaded.AccessToken != "initial-token" {
 		t.Errorf("token = %q, want %q", loaded.AccessToken, "initial-token")
 	}
-}
-
-// contains checks if s contains substr.
-func contains(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
