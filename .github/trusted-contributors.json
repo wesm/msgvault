@@ -1,6 +1,0 @@
-{
-  "trusted_github_usernames": [
-    "dependabot[bot]"
-  ],
-  "description": "GitHub usernames of trusted bots who bypass automated security review"
-}

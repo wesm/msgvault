@@ -2,16 +2,12 @@
 #
 # This is a security measure to prevent unauthorized changes to:
 # - GitHub Actions workflows (could steal secrets)
-# - Security review bot scripts
-# - Trusted contributors configuration
 # - Go module dependencies (supply chain entry point)
 
-# All GitHub Actions workflows and scripts require owner approval
+# All GitHub Actions workflows require owner approval
 .github/workflows/** @wesm
-.github/scripts/** @wesm
 
 # Security-critical configuration
-.github/trusted-contributors.json @wesm
 .github/CODEOWNERS @wesm
 .github/dependabot.yml @wesm
 
