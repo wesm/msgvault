@@ -11,12 +11,14 @@ docker pull ghcr.io/wesm/msgvault:latest
 # Create data directory and config
 mkdir -p ./data
 
-# Create minimal config for network access
-cat > ./data/config.toml << 'EOF'
+# Generate API key and create config
+API_KEY=$(openssl rand -hex 32)
+cat > ./data/config.toml << EOF
 [server]
 bind_addr = "0.0.0.0"
-api_key = "changeme"  # Replace with: openssl rand -hex 32
+api_key = "$API_KEY"
 EOF
+echo "Your API key: $API_KEY"
 
 # Run the daemon
 docker run -d \

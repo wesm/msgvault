@@ -28,6 +28,12 @@ tokens/
 attachments/
 analytics/
 
+# Sensitive config files (prevent secrets in build context)
+config.toml
+client_secret*.json
+*.pem
+*.key
+
 # Documentation
 *.md
 !go.mod
