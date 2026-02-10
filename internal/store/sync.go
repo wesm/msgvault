@@ -425,7 +425,7 @@ func (s *Store) ResetSourceDataWithProgress(sourceID int64, progress ResetProgre
 	if _, err := s.db.Exec("PRAGMA foreign_keys = OFF"); err != nil {
 		return 0, fmt.Errorf("disable foreign keys: %w", err)
 	}
-	defer s.db.Exec("PRAGMA foreign_keys = ON") // Re-enable on exit
+	defer func() { _, _ = s.db.Exec("PRAGMA foreign_keys = ON") }() // Re-enable on exit
 
 	var deletedMessages int64
 
