@@ -384,3 +384,59 @@ func (s *Store) GetSourceByIdentifier(identifier string) (*Source, error) {
 
 	return source, nil
 }
+
+// ResetSourceData deletes all synced data for a source while keeping the source
+// entry itself. This allows a clean re-sync from Gmail without losing the account
+// configuration. Returns the number of messages deleted.
+func (s *Store) ResetSourceData(sourceID int64) (int64, error) {
+	var messagesDeleted int64
+
+	err := s.withTx(func(tx *sql.Tx) error {
+		// Count messages before deletion
+		row := tx.QueryRow("SELECT COUNT(*) FROM messages WHERE source_id = ?", sourceID)
+		if err := row.Scan(&messagesDeleted); err != nil {
+			return fmt.Errorf("count messages: %w", err)
+		}
+
+		// Delete messages (cascades to: message_bodies, message_raw, message_recipients,
+		// message_labels, attachments, reactions via ON DELETE CASCADE)
+		if _, err := tx.Exec("DELETE FROM messages WHERE source_id = ?", sourceID); err != nil {
+			return fmt.Errorf("delete messages: %w", err)
+		}
+
+		// Delete conversations (ON DELETE CASCADE handles conversation_participants)
+		if _, err := tx.Exec("DELETE FROM conversations WHERE source_id = ?", sourceID); err != nil {
+			return fmt.Errorf("delete conversations: %w", err)
+		}
+
+		// Delete source-specific labels
+		if _, err := tx.Exec("DELETE FROM labels WHERE source_id = ?", sourceID); err != nil {
+			return fmt.Errorf("delete labels: %w", err)
+		}
+
+		// Delete sync history
+		if _, err := tx.Exec("DELETE FROM sync_runs WHERE source_id = ?", sourceID); err != nil {
+			return fmt.Errorf("delete sync_runs: %w", err)
+		}
+		if _, err := tx.Exec("DELETE FROM sync_checkpoints WHERE source_id = ?", sourceID); err != nil {
+			return fmt.Errorf("delete sync_checkpoints: %w", err)
+		}
+
+		// Reset the source's sync cursor so next sync starts fresh
+		if _, err := tx.Exec(`
+			UPDATE sources
+			SET sync_cursor = NULL, last_sync_at = NULL, updated_at = datetime('now')
+			WHERE id = ?
+		`, sourceID); err != nil {
+			return fmt.Errorf("reset source: %w", err)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return 0, err
+	}
+
+	return messagesDeleted, nil
+}
