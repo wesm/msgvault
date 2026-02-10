@@ -385,58 +385,235 @@ func (s *Store) GetSourceByIdentifier(identifier string) (*Source, error) {
 	return source, nil
 }
 
+// ResetProgress reports progress during a reset operation.
+type ResetProgress struct {
+	Phase           string // "counting", "message_bodies", "message_raw", etc.
+	TotalMessages   int64  // Total messages to delete
+	DeletedMessages int64  // Messages deleted so far
+	CurrentTable    string // Table currently being processed
+	RowsInBatch     int64  // Rows deleted in this batch
+}
+
+// ResetProgressFunc is called periodically during reset to report progress.
+type ResetProgressFunc func(p ResetProgress)
+
 // ResetSourceData deletes all synced data for a source while keeping the source
 // entry itself. This allows a clean re-sync from Gmail without losing the account
 // configuration. Returns the number of messages deleted.
 func (s *Store) ResetSourceData(sourceID int64) (int64, error) {
-	var messagesDeleted int64
+	return s.ResetSourceDataWithProgress(sourceID, nil)
+}
 
-	err := s.withTx(func(tx *sql.Tx) error {
-		// Count messages before deletion
-		row := tx.QueryRow("SELECT COUNT(*) FROM messages WHERE source_id = ?", sourceID)
-		if err := row.Scan(&messagesDeleted); err != nil {
-			return fmt.Errorf("count messages: %w", err)
-		}
+// ResetSourceDataWithProgress is like ResetSourceData but reports progress via callback.
+// Uses batched deletes with FK checks disabled for much better performance.
+func (s *Store) ResetSourceDataWithProgress(sourceID int64, progress ResetProgressFunc) (int64, error) {
+	if progress == nil {
+		progress = func(ResetProgress) {} // no-op
+	}
 
-		// Delete messages (cascades to: message_bodies, message_raw, message_recipients,
-		// message_labels, attachments, reactions via ON DELETE CASCADE)
-		if _, err := tx.Exec("DELETE FROM messages WHERE source_id = ?", sourceID); err != nil {
-			return fmt.Errorf("delete messages: %w", err)
-		}
+	const batchSize = 5000
 
-		// Delete conversations (ON DELETE CASCADE handles conversation_participants)
-		if _, err := tx.Exec("DELETE FROM conversations WHERE source_id = ?", sourceID); err != nil {
-			return fmt.Errorf("delete conversations: %w", err)
-		}
+	// Count messages first
+	var totalMessages int64
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM messages WHERE source_id = ?", sourceID).Scan(&totalMessages); err != nil {
+		return 0, fmt.Errorf("count messages: %w", err)
+	}
 
-		// Delete source-specific labels
-		if _, err := tx.Exec("DELETE FROM labels WHERE source_id = ?", sourceID); err != nil {
-			return fmt.Errorf("delete labels: %w", err)
-		}
+	progress(ResetProgress{Phase: "counting", TotalMessages: totalMessages})
 
-		// Delete sync history
-		if _, err := tx.Exec("DELETE FROM sync_runs WHERE source_id = ?", sourceID); err != nil {
-			return fmt.Errorf("delete sync_runs: %w", err)
-		}
-		if _, err := tx.Exec("DELETE FROM sync_checkpoints WHERE source_id = ?", sourceID); err != nil {
-			return fmt.Errorf("delete sync_checkpoints: %w", err)
-		}
+	// Disable foreign keys for bulk delete performance
+	if _, err := s.db.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		return 0, fmt.Errorf("disable foreign keys: %w", err)
+	}
+	defer s.db.Exec("PRAGMA foreign_keys = ON") // Re-enable on exit
 
-		// Reset the source's sync cursor so next sync starts fresh
-		if _, err := tx.Exec(`
-			UPDATE sources
-			SET sync_cursor = NULL, last_sync_at = NULL, updated_at = datetime('now')
-			WHERE id = ?
-		`, sourceID); err != nil {
-			return fmt.Errorf("reset source: %w", err)
-		}
+	var deletedMessages int64
 
-		return nil
-	})
+	// Delete child tables explicitly (avoiding CASCADE overhead)
+	// Order: children before parents
 
-	if err != nil {
+	// 1. Delete from message_bodies in batches
+	if err := s.deleteChildTableBatched("message_bodies", "message_id", sourceID, batchSize, func(rows int64) {
+		progress(ResetProgress{
+			Phase:           "deleting",
+			TotalMessages:   totalMessages,
+			DeletedMessages: deletedMessages,
+			CurrentTable:    "message_bodies",
+			RowsInBatch:     rows,
+		})
+	}); err != nil {
 		return 0, err
 	}
 
-	return messagesDeleted, nil
+	// 2. Delete from message_raw in batches
+	if err := s.deleteChildTableBatched("message_raw", "message_id", sourceID, batchSize, func(rows int64) {
+		progress(ResetProgress{
+			Phase:           "deleting",
+			TotalMessages:   totalMessages,
+			DeletedMessages: deletedMessages,
+			CurrentTable:    "message_raw",
+			RowsInBatch:     rows,
+		})
+	}); err != nil {
+		return 0, err
+	}
+
+	// 3. Delete from message_recipients in batches
+	if err := s.deleteChildTableBatched("message_recipients", "message_id", sourceID, batchSize, func(rows int64) {
+		progress(ResetProgress{
+			Phase:           "deleting",
+			TotalMessages:   totalMessages,
+			DeletedMessages: deletedMessages,
+			CurrentTable:    "message_recipients",
+			RowsInBatch:     rows,
+		})
+	}); err != nil {
+		return 0, err
+	}
+
+	// 4. Delete from message_labels in batches
+	if err := s.deleteChildTableBatched("message_labels", "message_id", sourceID, batchSize, func(rows int64) {
+		progress(ResetProgress{
+			Phase:           "deleting",
+			TotalMessages:   totalMessages,
+			DeletedMessages: deletedMessages,
+			CurrentTable:    "message_labels",
+			RowsInBatch:     rows,
+		})
+	}); err != nil {
+		return 0, err
+	}
+
+	// 5. Delete from attachments in batches
+	if err := s.deleteChildTableBatched("attachments", "message_id", sourceID, batchSize, func(rows int64) {
+		progress(ResetProgress{
+			Phase:           "deleting",
+			TotalMessages:   totalMessages,
+			DeletedMessages: deletedMessages,
+			CurrentTable:    "attachments",
+			RowsInBatch:     rows,
+		})
+	}); err != nil {
+		return 0, err
+	}
+
+	// 6. Delete from reactions in batches
+	if err := s.deleteChildTableBatched("reactions", "message_id", sourceID, batchSize, func(rows int64) {
+		progress(ResetProgress{
+			Phase:           "deleting",
+			TotalMessages:   totalMessages,
+			DeletedMessages: deletedMessages,
+			CurrentTable:    "reactions",
+			RowsInBatch:     rows,
+		})
+	}); err != nil {
+		return 0, err
+	}
+
+	// 7. Delete messages in batches (parent table)
+	for {
+		result, err := s.db.Exec(`
+			DELETE FROM messages WHERE id IN (
+				SELECT id FROM messages WHERE source_id = ? LIMIT ?
+			)
+		`, sourceID, batchSize)
+		if err != nil {
+			return deletedMessages, fmt.Errorf("delete messages batch: %w", err)
+		}
+
+		rows, _ := result.RowsAffected()
+		if rows == 0 {
+			break
+		}
+		deletedMessages += rows
+
+		progress(ResetProgress{
+			Phase:           "deleting",
+			TotalMessages:   totalMessages,
+			DeletedMessages: deletedMessages,
+			CurrentTable:    "messages",
+			RowsInBatch:     rows,
+		})
+	}
+
+	// 8. Delete conversation_participants (child of conversations)
+	if _, err := s.db.Exec(`
+		DELETE FROM conversation_participants WHERE conversation_id IN (
+			SELECT id FROM conversations WHERE source_id = ?
+		)
+	`, sourceID); err != nil {
+		return deletedMessages, fmt.Errorf("delete conversation_participants: %w", err)
+	}
+
+	// 9. Delete conversations
+	if _, err := s.db.Exec("DELETE FROM conversations WHERE source_id = ?", sourceID); err != nil {
+		return deletedMessages, fmt.Errorf("delete conversations: %w", err)
+	}
+
+	progress(ResetProgress{
+		Phase:           "deleting",
+		TotalMessages:   totalMessages,
+		DeletedMessages: deletedMessages,
+		CurrentTable:    "conversations",
+	})
+
+	// 10. Delete labels
+	if _, err := s.db.Exec("DELETE FROM labels WHERE source_id = ?", sourceID); err != nil {
+		return deletedMessages, fmt.Errorf("delete labels: %w", err)
+	}
+
+	// 11. Delete sync history
+	if _, err := s.db.Exec("DELETE FROM sync_runs WHERE source_id = ?", sourceID); err != nil {
+		return deletedMessages, fmt.Errorf("delete sync_runs: %w", err)
+	}
+	if _, err := s.db.Exec("DELETE FROM sync_checkpoints WHERE source_id = ?", sourceID); err != nil {
+		return deletedMessages, fmt.Errorf("delete sync_checkpoints: %w", err)
+	}
+
+	// 12. Reset the source's sync cursor
+	if _, err := s.db.Exec(`
+		UPDATE sources
+		SET sync_cursor = NULL, last_sync_at = NULL, updated_at = datetime('now')
+		WHERE id = ?
+	`, sourceID); err != nil {
+		return deletedMessages, fmt.Errorf("reset source: %w", err)
+	}
+
+	// Re-enable foreign keys
+	if _, err := s.db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		return deletedMessages, fmt.Errorf("re-enable foreign keys: %w", err)
+	}
+
+	progress(ResetProgress{
+		Phase:           "complete",
+		TotalMessages:   totalMessages,
+		DeletedMessages: deletedMessages,
+	})
+
+	return deletedMessages, nil
+}
+
+// deleteChildTableBatched deletes rows from a child table in batches.
+// The child table must have a column that references messages.id.
+func (s *Store) deleteChildTableBatched(table, fkColumn string, sourceID int64, batchSize int, onBatch func(rows int64)) error {
+	// Use a subquery to find message IDs for this source
+	query := fmt.Sprintf(`
+		DELETE FROM %s WHERE %s IN (
+			SELECT id FROM messages WHERE source_id = ? LIMIT ?
+		)
+	`, table, fkColumn)
+
+	for {
+		result, err := s.db.Exec(query, sourceID, batchSize)
+		if err != nil {
+			return fmt.Errorf("delete from %s: %w", table, err)
+		}
+
+		rows, _ := result.RowsAffected()
+		if rows == 0 {
+			break
+		}
+		onBatch(rows)
+	}
+	return nil
 }

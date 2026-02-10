@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "msgvault-dev": {
+      "command": "/Users/robelkin/Code/msgvault/msgvault",
+      "args": ["mcp"],
+      "env": {
+        "MSGVAULT_HOME": "/Users/robelkin/msgvault-dev"
+      }
+    },
+    "msgvault-prod": {
+      "command": "/Users/robelkin/Code/msgvault/msgvault",
+      "args": ["mcp"],
+      "env": {
+        "MSGVAULT_HOME": "/Users/robelkin/.msgvault"
+      }
+    }
+  }
+}

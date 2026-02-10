@@ -168,14 +168,42 @@ Examples:
 				fmt.Println()
 			}
 
-			// Perform the clean with progress
-			fmt.Print("Deleting messages...")
-			deleted, err := s.ResetSourceData(source.ID)
+			// Perform the clean with progress reporting
+			fmt.Println("Deleting local data...")
+			lastTable := ""
+			lastPrint := time.Now()
+			deleted, err := s.ResetSourceDataWithProgress(source.ID, func(p store.ResetProgress) {
+				// Throttle output to avoid spamming
+				if time.Since(lastPrint) < 500*time.Millisecond && p.Phase != "complete" {
+					return
+				}
+				lastPrint = time.Now()
+
+				switch p.Phase {
+				case "counting":
+					fmt.Printf("  Found %d messages to delete\n", p.TotalMessages)
+				case "deleting":
+					if p.CurrentTable != lastTable {
+						if lastTable != "" {
+							fmt.Println(" done")
+						}
+						fmt.Printf("  Cleaning %s...", p.CurrentTable)
+						lastTable = p.CurrentTable
+					}
+					if p.CurrentTable == "messages" {
+						pct := float64(p.DeletedMessages) / float64(p.TotalMessages) * 100
+						fmt.Printf("\r  Cleaning messages... %d/%d (%.1f%%)   ", p.DeletedMessages, p.TotalMessages, pct)
+					}
+				case "complete":
+					if lastTable != "" {
+						fmt.Println(" done")
+					}
+				}
+			})
 			if err != nil {
-				fmt.Println(" failed")
+				fmt.Println("\nClean failed:", err)
 				return fmt.Errorf("reset account data: %w", err)
 			}
-			fmt.Println(" done")
 			fmt.Printf("Deleted %d messages from local database.\n\n", deleted)
 		}
 
