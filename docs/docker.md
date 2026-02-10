@@ -139,6 +139,44 @@ docker exec msgvault msgvault sync you@gmail.com --limit 10
 docker logs msgvault
 ```
 
+### Alternative: Token Export (Recommended)
+
+If the device flow doesn't work (Google's device flow doesn't support all Gmail API scopes for some OAuth configurations), you can authenticate on your local machine and export the token to your NAS.
+
+**On your local machine** (with a browser):
+
+```bash
+# 1. Install msgvault locally or run from source
+go install github.com/wesm/msgvault@latest
+
+# 2. Authenticate via browser
+msgvault add-account you@gmail.com
+
+# 3. Export token to your NAS
+msgvault export-token you@gmail.com \
+  --to http://nas-ip:8080 \
+  --api-key YOUR_API_KEY
+```
+
+The token is uploaded securely via the API and saved to `/data/tokens/` on the NAS.
+
+**Then on your NAS**, add the account to `config.toml`:
+
+```toml
+[[accounts]]
+email = "you@gmail.com"
+schedule = "0 2 * * *"
+enabled = true
+```
+
+Restart the container or trigger a sync:
+
+```bash
+docker-compose restart
+# Or:
+curl -X POST -H "X-API-Key: YOUR_KEY" http://nas-ip:8080/api/v1/sync/you@gmail.com
+```
+
 ### Troubleshooting OAuth
 
 | Error | Cause | Solution |
@@ -148,6 +186,7 @@ docker logs msgvault
 | "Access blocked: msgvault has not completed the Google verification process" | Using personal OAuth app | Click **Advanced** → **Go to msgvault (unsafe)** |
 | "Quota exceeded" | Gmail API rate limits | Wait 24 hours, then retry |
 | "Network error" / timeout | Container can't reach Google | Check DNS, proxy settings, firewall |
+| "Device flow scope error" | Gmail API scopes not supported | Use **Token Export** workflow instead |
 
 ---
 
