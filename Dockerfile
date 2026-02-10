@@ -1,5 +1,6 @@
 # Build stage
-FROM golang:1.25-bookworm AS builder
+# Pin by digest for reproducibility; update periodically
+FROM golang:1.25-bookworm@sha256:38342f3e7a504bf1efad858c18e771f84b66dc0b363add7a57c9a0bbb6cf7b12 AS builder
 
 # Install build dependencies for CGO (SQLite, DuckDB)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -22,6 +23,7 @@ ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
 
+# Note: Module path must match go.mod (github.com/wesm/msgvault)
 RUN CGO_ENABLED=1 go build \
     -tags fts5 \
     -trimpath \
@@ -33,7 +35,7 @@ RUN CGO_ENABLED=1 go build \
     ./cmd/msgvault
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:98f4b71de414932439ac6ac690d7060df1f27161073c5036a7553723881bffbe
 
 # Install runtime dependencies (libstdc++6 required for CGO/DuckDB)
 RUN apt-get update && apt-get install -y --no-install-recommends \
