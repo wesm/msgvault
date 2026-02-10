@@ -113,6 +113,9 @@ func (s *Server) setupRouter() chi.Router {
 
 		// Scheduler status
 		r.Get("/scheduler/status", s.handleSchedulerStatus)
+
+		// Token upload for headless OAuth
+		r.Post("/auth/token/{email}", s.handleUploadToken)
 	})
 
 	return r

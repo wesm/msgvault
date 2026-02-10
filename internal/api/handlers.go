@@ -1,13 +1,21 @@
 package api
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/wesm/msgvault/internal/fileutil"
 	"github.com/wesm/msgvault/internal/store"
+	"golang.org/x/oauth2"
 )
 
 // StatsResponse represents the archive statistics.
@@ -358,4 +366,125 @@ func (s *Server) handleSchedulerStatus(w http.ResponseWriter, r *http.Request) {
 		Running:  s.scheduler.IsRunning(),
 		Accounts: statuses,
 	})
+}
+
+// tokenFile represents the on-disk token format (matches oauth package).
+type tokenFile struct {
+	oauth2.Token
+	Scopes []string `json:"scopes,omitempty"`
+}
+
+// handleUploadToken accepts a token from a remote client and saves it.
+// POST /api/v1/auth/token/{email}
+func (s *Server) handleUploadToken(w http.ResponseWriter, r *http.Request) {
+	email := chi.URLParam(r, "email")
+	if email == "" {
+		writeError(w, http.StatusBadRequest, "missing_email", "Email address is required")
+		return
+	}
+
+	// Validate email format (basic check)
+	if !strings.Contains(email, "@") || !strings.Contains(email, ".") {
+		writeError(w, http.StatusBadRequest, "invalid_email", "Invalid email format")
+		return
+	}
+
+	// Read and validate token JSON
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read_error", "Failed to read request body")
+		return
+	}
+
+	var tf tokenFile
+	if err := json.Unmarshal(body, &tf); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "Invalid token JSON: "+err.Error())
+		return
+	}
+
+	// Validate token has required fields
+	if tf.RefreshToken == "" {
+		writeError(w, http.StatusBadRequest, "invalid_token", "Token must include refresh_token")
+		return
+	}
+
+	// Get tokens directory from config
+	tokensDir := s.cfg.TokensDir()
+
+	// Create tokens directory if needed
+	if err := fileutil.SecureMkdirAll(tokensDir, 0700); err != nil {
+		s.logger.Error("failed to create tokens directory", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create tokens directory")
+		return
+	}
+
+	// Sanitize email for filename
+	tokenPath := sanitizeTokenPath(tokensDir, email)
+
+	// Marshal token back to JSON (normalized)
+	data, err := json.MarshalIndent(tf, "", "  ")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to serialize token")
+		return
+	}
+
+	// Atomic write via temp file
+	tmpFile, err := os.CreateTemp(tokensDir, ".token-*.tmp")
+	if err != nil {
+		s.logger.Error("failed to create temp file", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save token")
+		return
+	}
+	tmpPath := tmpFile.Name()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to write token")
+		return
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to close token file")
+		return
+	}
+	if err := fileutil.SecureChmod(tmpPath, 0600); err != nil {
+		os.Remove(tmpPath)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to set token permissions")
+		return
+	}
+	if err := os.Rename(tmpPath, tokenPath); err != nil {
+		os.Remove(tmpPath)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save token")
+		return
+	}
+
+	s.logger.Info("token uploaded via API", "email", email)
+	writeJSON(w, http.StatusCreated, map[string]string{
+		"status":  "created",
+		"message": "Token saved for " + email,
+	})
+}
+
+// sanitizeTokenPath returns a safe file path for the token.
+func sanitizeTokenPath(tokensDir, email string) string {
+	// Remove dangerous characters
+	safe := strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == '\x00' {
+			return -1
+		}
+		return r
+	}, email)
+
+	// Build path and verify it's within tokensDir
+	path := filepath.Join(tokensDir, safe+".json")
+	cleanPath := filepath.Clean(path)
+	cleanTokensDir := filepath.Clean(tokensDir)
+
+	// If path escapes tokensDir, use hash-based fallback
+	if !strings.HasPrefix(cleanPath, cleanTokensDir+string(os.PathSeparator)) {
+		return filepath.Join(tokensDir, fmt.Sprintf("%x.json", sha256.Sum256([]byte(email))))
+	}
+
+	return cleanPath
 }
