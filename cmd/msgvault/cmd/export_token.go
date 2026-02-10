@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,11 +68,11 @@ func runExportToken(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to read token: %w", err)
 	}
 
-	// Build request URL
-	url := strings.TrimSuffix(exportTokenTo, "/") + "/api/v1/auth/token/" + email
+	// Build request URL (escape email for path safety)
+	reqURL := strings.TrimSuffix(exportTokenTo, "/") + "/api/v1/auth/token/" + url.PathEscape(email)
 
 	// Create request
-	req, err := http.NewRequest("POST", url, bytes.NewReader(tokenData))
+	req, err := http.NewRequest("POST", reqURL, bytes.NewReader(tokenData))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
