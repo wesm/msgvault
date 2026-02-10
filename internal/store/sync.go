@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -412,6 +413,7 @@ func (s *Store) ResetSourceDataWithProgress(sourceID int64, progress ResetProgre
 	}
 
 	const batchSize = 5000
+	ctx := context.Background()
 
 	// Count messages first
 	var totalMessages int64
@@ -421,98 +423,83 @@ func (s *Store) ResetSourceDataWithProgress(sourceID int64, progress ResetProgre
 
 	progress(ResetProgress{Phase: "counting", TotalMessages: totalMessages})
 
-	// Disable foreign keys for bulk delete performance
-	if _, err := s.db.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+	// Use a dedicated connection to ensure PRAGMA applies to all our operations.
+	// This is critical because *sql.DB is a connection pool - without this,
+	// PRAGMA foreign_keys = OFF might run on a different connection than deletes.
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("acquire connection: %w", err)
+	}
+	defer conn.Close()
+
+	// Disable foreign keys for bulk delete performance on this connection
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
 		return 0, fmt.Errorf("disable foreign keys: %w", err)
 	}
-	defer func() { _, _ = s.db.Exec("PRAGMA foreign_keys = ON") }() // Re-enable on exit
+
+	// Helper to delete from a child table in batches.
+	// Uses rowid-based deletion to ensure each batch finds actual rows to delete.
+	deleteChildBatched := func(table, fkColumn string, onProgress func()) error {
+		// Query selects child table rowids by joining to messages filtered by source.
+		// This ensures each iteration finds actual existing child rows.
+		query := fmt.Sprintf(`
+			DELETE FROM %s WHERE rowid IN (
+				SELECT %s.rowid FROM %s
+				JOIN messages ON messages.id = %s.%s
+				WHERE messages.source_id = ?
+				LIMIT ?
+			)
+		`, table, table, table, table, fkColumn)
+
+		for {
+			result, err := conn.ExecContext(ctx, query, sourceID, batchSize)
+			if err != nil {
+				return fmt.Errorf("delete from %s: %w", table, err)
+			}
+			rows, _ := result.RowsAffected()
+			if rows == 0 {
+				break
+			}
+			onProgress()
+		}
+		return nil
+	}
 
 	var deletedMessages int64
 
 	// Delete child tables explicitly (avoiding CASCADE overhead)
 	// Order: children before parents
 
-	// 1. Delete from message_bodies in batches
-	if err := s.deleteChildTableBatched("message_bodies", "message_id", sourceID, batchSize, func(rows int64) {
-		progress(ResetProgress{
-			Phase:           "deleting",
-			TotalMessages:   totalMessages,
-			DeletedMessages: deletedMessages,
-			CurrentTable:    "message_bodies",
-			RowsInBatch:     rows,
-		})
-	}); err != nil {
-		return 0, err
+	// Child tables of messages
+	childTables := []struct {
+		table    string
+		fkColumn string
+	}{
+		{"message_bodies", "message_id"},
+		{"message_raw", "message_id"},
+		{"message_recipients", "message_id"},
+		{"message_labels", "message_id"},
+		{"attachments", "message_id"},
+		{"reactions", "message_id"},
 	}
 
-	// 2. Delete from message_raw in batches
-	if err := s.deleteChildTableBatched("message_raw", "message_id", sourceID, batchSize, func(rows int64) {
-		progress(ResetProgress{
-			Phase:           "deleting",
-			TotalMessages:   totalMessages,
-			DeletedMessages: deletedMessages,
-			CurrentTable:    "message_raw",
-			RowsInBatch:     rows,
-		})
-	}); err != nil {
-		return 0, err
+	for _, ct := range childTables {
+		tableName := ct.table
+		if err := deleteChildBatched(ct.table, ct.fkColumn, func() {
+			progress(ResetProgress{
+				Phase:           "deleting",
+				TotalMessages:   totalMessages,
+				DeletedMessages: deletedMessages,
+				CurrentTable:    tableName,
+			})
+		}); err != nil {
+			return 0, err
+		}
 	}
 
-	// 3. Delete from message_recipients in batches
-	if err := s.deleteChildTableBatched("message_recipients", "message_id", sourceID, batchSize, func(rows int64) {
-		progress(ResetProgress{
-			Phase:           "deleting",
-			TotalMessages:   totalMessages,
-			DeletedMessages: deletedMessages,
-			CurrentTable:    "message_recipients",
-			RowsInBatch:     rows,
-		})
-	}); err != nil {
-		return 0, err
-	}
-
-	// 4. Delete from message_labels in batches
-	if err := s.deleteChildTableBatched("message_labels", "message_id", sourceID, batchSize, func(rows int64) {
-		progress(ResetProgress{
-			Phase:           "deleting",
-			TotalMessages:   totalMessages,
-			DeletedMessages: deletedMessages,
-			CurrentTable:    "message_labels",
-			RowsInBatch:     rows,
-		})
-	}); err != nil {
-		return 0, err
-	}
-
-	// 5. Delete from attachments in batches
-	if err := s.deleteChildTableBatched("attachments", "message_id", sourceID, batchSize, func(rows int64) {
-		progress(ResetProgress{
-			Phase:           "deleting",
-			TotalMessages:   totalMessages,
-			DeletedMessages: deletedMessages,
-			CurrentTable:    "attachments",
-			RowsInBatch:     rows,
-		})
-	}); err != nil {
-		return 0, err
-	}
-
-	// 6. Delete from reactions in batches
-	if err := s.deleteChildTableBatched("reactions", "message_id", sourceID, batchSize, func(rows int64) {
-		progress(ResetProgress{
-			Phase:           "deleting",
-			TotalMessages:   totalMessages,
-			DeletedMessages: deletedMessages,
-			CurrentTable:    "reactions",
-			RowsInBatch:     rows,
-		})
-	}); err != nil {
-		return 0, err
-	}
-
-	// 7. Delete messages in batches (parent table)
+	// Delete messages in batches (parent table)
 	for {
-		result, err := s.db.Exec(`
+		result, err := conn.ExecContext(ctx, `
 			DELETE FROM messages WHERE id IN (
 				SELECT id FROM messages WHERE source_id = ? LIMIT ?
 			)
@@ -536,8 +523,8 @@ func (s *Store) ResetSourceDataWithProgress(sourceID int64, progress ResetProgre
 		})
 	}
 
-	// 8. Delete conversation_participants (child of conversations)
-	if _, err := s.db.Exec(`
+	// Delete conversation_participants (child of conversations)
+	if _, err := conn.ExecContext(ctx, `
 		DELETE FROM conversation_participants WHERE conversation_id IN (
 			SELECT id FROM conversations WHERE source_id = ?
 		)
@@ -545,8 +532,8 @@ func (s *Store) ResetSourceDataWithProgress(sourceID int64, progress ResetProgre
 		return deletedMessages, fmt.Errorf("delete conversation_participants: %w", err)
 	}
 
-	// 9. Delete conversations
-	if _, err := s.db.Exec("DELETE FROM conversations WHERE source_id = ?", sourceID); err != nil {
+	// Delete conversations
+	if _, err := conn.ExecContext(ctx, "DELETE FROM conversations WHERE source_id = ?", sourceID); err != nil {
 		return deletedMessages, fmt.Errorf("delete conversations: %w", err)
 	}
 
@@ -557,21 +544,21 @@ func (s *Store) ResetSourceDataWithProgress(sourceID int64, progress ResetProgre
 		CurrentTable:    "conversations",
 	})
 
-	// 10. Delete labels
-	if _, err := s.db.Exec("DELETE FROM labels WHERE source_id = ?", sourceID); err != nil {
+	// Delete labels
+	if _, err := conn.ExecContext(ctx, "DELETE FROM labels WHERE source_id = ?", sourceID); err != nil {
 		return deletedMessages, fmt.Errorf("delete labels: %w", err)
 	}
 
-	// 11. Delete sync history
-	if _, err := s.db.Exec("DELETE FROM sync_runs WHERE source_id = ?", sourceID); err != nil {
+	// Delete sync history
+	if _, err := conn.ExecContext(ctx, "DELETE FROM sync_runs WHERE source_id = ?", sourceID); err != nil {
 		return deletedMessages, fmt.Errorf("delete sync_runs: %w", err)
 	}
-	if _, err := s.db.Exec("DELETE FROM sync_checkpoints WHERE source_id = ?", sourceID); err != nil {
+	if _, err := conn.ExecContext(ctx, "DELETE FROM sync_checkpoints WHERE source_id = ?", sourceID); err != nil {
 		return deletedMessages, fmt.Errorf("delete sync_checkpoints: %w", err)
 	}
 
-	// 12. Reset the source's sync cursor
-	if _, err := s.db.Exec(`
+	// Reset the source's sync cursor
+	if _, err := conn.ExecContext(ctx, `
 		UPDATE sources
 		SET sync_cursor = NULL, last_sync_at = NULL, updated_at = datetime('now')
 		WHERE id = ?
@@ -579,8 +566,8 @@ func (s *Store) ResetSourceDataWithProgress(sourceID int64, progress ResetProgre
 		return deletedMessages, fmt.Errorf("reset source: %w", err)
 	}
 
-	// Re-enable foreign keys
-	if _, err := s.db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+	// Re-enable foreign keys on this connection before returning it to pool
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
 		return deletedMessages, fmt.Errorf("re-enable foreign keys: %w", err)
 	}
 
@@ -591,29 +578,4 @@ func (s *Store) ResetSourceDataWithProgress(sourceID int64, progress ResetProgre
 	})
 
 	return deletedMessages, nil
-}
-
-// deleteChildTableBatched deletes rows from a child table in batches.
-// The child table must have a column that references messages.id.
-func (s *Store) deleteChildTableBatched(table, fkColumn string, sourceID int64, batchSize int, onBatch func(rows int64)) error {
-	// Use a subquery to find message IDs for this source
-	query := fmt.Sprintf(`
-		DELETE FROM %s WHERE %s IN (
-			SELECT id FROM messages WHERE source_id = ? LIMIT ?
-		)
-	`, table, fkColumn)
-
-	for {
-		result, err := s.db.Exec(query, sourceID, batchSize)
-		if err != nil {
-			return fmt.Errorf("delete from %s: %w", table, err)
-		}
-
-		rows, _ := result.RowsAffected()
-		if rows == 0 {
-			break
-		}
-		onBatch(rows)
-	}
-	return nil
 }
