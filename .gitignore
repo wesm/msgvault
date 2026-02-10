@@ -39,3 +39,4 @@ __pycache__/
 
 # Claude Code
 .claude/
+.mcp.json
