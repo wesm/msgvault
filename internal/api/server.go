@@ -109,6 +109,7 @@ func (s *Server) setupRouter() chi.Router {
 
 		// Accounts and sync
 		r.Get("/accounts", s.handleListAccounts)
+		r.Post("/accounts", s.handleAddAccount)
 		r.Post("/sync/{account}", s.handleTriggerSync)
 
 		// Scheduler status

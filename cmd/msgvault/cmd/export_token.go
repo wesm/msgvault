@@ -126,6 +126,35 @@ func runExportToken(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Token uploaded successfully for %s\n", email)
 
+	// Add account to remote config via API
+	fmt.Printf("Adding account to remote config...\n")
+	accountURL := strings.TrimSuffix(exportTokenTo, "/") + "/api/v1/accounts"
+	accountBody := fmt.Sprintf(`{"email":%q,"schedule":"0 2 * * *","enabled":true}`, email)
+
+	accountReq, err := http.NewRequest("POST", accountURL, strings.NewReader(accountBody))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Could not create account request: %v\n", err)
+	} else {
+		accountReq.Header.Set("Content-Type", "application/json")
+		accountReq.Header.Set("X-API-Key", exportTokenAPIKey)
+
+		accountResp, err := http.DefaultClient.Do(accountReq)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Could not add account to remote config: %v\n", err)
+		} else {
+			accountRespBody, _ := io.ReadAll(accountResp.Body)
+			accountResp.Body.Close()
+
+			if accountResp.StatusCode == http.StatusCreated {
+				fmt.Printf("Account added to remote config\n")
+			} else if accountResp.StatusCode == http.StatusOK {
+				fmt.Printf("Account already configured on remote\n")
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: Could not add account (HTTP %d): %s\n", accountResp.StatusCode, string(accountRespBody))
+			}
+		}
+	}
+
 	// Save remote config for future use (if not already saved)
 	if cfg.Remote.URL != exportTokenTo || cfg.Remote.APIKey != exportTokenAPIKey {
 		cfg.Remote.URL = exportTokenTo
@@ -137,14 +166,9 @@ func runExportToken(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	fmt.Println("\nNext steps on the remote server:")
-	fmt.Printf("  1. Add account to config.toml:\n")
-	fmt.Printf("     [[accounts]]\n")
-	fmt.Printf("     email = %q\n", email)
-	fmt.Printf("     schedule = \"0 2 * * *\"\n")
-	fmt.Printf("     enabled = true\n")
-	fmt.Printf("\n  2. Restart the container or trigger sync:\n")
-	fmt.Printf("     curl -X POST -H 'X-API-Key: ...' %s/api/v1/sync/%s\n", exportTokenTo, email)
+	fmt.Println("\nSetup complete! The remote server will sync daily at 2am.")
+	fmt.Printf("To trigger an immediate sync:\n")
+	fmt.Printf("  curl -X POST -H 'X-API-Key: ...' %s/api/v1/sync/%s\n", exportTokenTo, email)
 
 	return nil
 }
