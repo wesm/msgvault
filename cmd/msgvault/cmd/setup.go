@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -173,15 +174,30 @@ func setupRemoteServer(reader *bufio.Reader, oauthSecretsPath string) (string, s
 		return "", "", nil
 	}
 
-	// Get URL
-	fmt.Print("Remote URL (e.g., http://nas:8080): ")
-	url, _ := reader.ReadString('\n')
-	url = strings.TrimSpace(url)
+	// Get hostname/IP
+	fmt.Print("Remote hostname or IP (e.g., nas, 192.168.1.100): ")
+	host, _ := reader.ReadString('\n')
+	host = strings.TrimSpace(host)
 
-	if url == "" {
+	if host == "" {
 		fmt.Println("Skipping remote server configuration.")
 		return "", "", nil
 	}
+
+	// Get port
+	fmt.Print("Port [8080]: ")
+	portStr, _ := reader.ReadString('\n')
+	portStr = strings.TrimSpace(portStr)
+	port := 8080
+	if portStr != "" {
+		if p, err := strconv.Atoi(portStr); err == nil && p > 0 && p < 65536 {
+			port = p
+		} else {
+			fmt.Println("Invalid port, using default 8080")
+		}
+	}
+
+	url := fmt.Sprintf("http://%s:%d", host, port)
 
 	// Auto-generate API key
 	apiKey, err := generateAPIKey()
@@ -192,7 +208,7 @@ func setupRemoteServer(reader *bufio.Reader, oauthSecretsPath string) (string, s
 
 	// Create NAS deployment bundle
 	bundleDir := filepath.Join(cfg.HomeDir, "nas-bundle")
-	if err := createNASBundle(bundleDir, apiKey, oauthSecretsPath); err != nil {
+	if err := createNASBundle(bundleDir, apiKey, oauthSecretsPath, port); err != nil {
 		fmt.Printf("Warning: Could not create NAS bundle: %v\n", err)
 	} else {
 		fmt.Printf("\nNAS deployment files created in: %s\n", bundleDir)
@@ -217,7 +233,7 @@ func generateAPIKey() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-func createNASBundle(bundleDir, apiKey, oauthSecretsPath string) error {
+func createNASBundle(bundleDir, apiKey, oauthSecretsPath string, port int) error {
 	// Create bundle directory
 	if err := os.MkdirAll(bundleDir, 0700); err != nil {
 		return fmt.Errorf("create bundle dir: %w", err)
@@ -235,7 +251,8 @@ client_secrets = "/data/client_secret.json"
 [sync]
 rate_limit_qps = 5
 
-# Add your accounts here after exporting tokens:
+# Accounts will be added automatically when you export tokens.
+# You can also add them manually:
 # [[accounts]]
 # email = "you@gmail.com"
 # schedule = "0 2 * * *"
@@ -256,7 +273,7 @@ rate_limit_qps = 5
 	}
 
 	// Create docker-compose.yml
-	dockerCompose := `version: "3.8"
+	dockerCompose := fmt.Sprintf(`version: "3.8"
 
 services:
   msgvault:
@@ -265,7 +282,7 @@ services:
     user: root  # Required for Synology NAS ACLs
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "%d:8080"
     volumes:
       - ./:/data
     environment:
@@ -278,7 +295,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-`
+`, port)
 
 	composePath := filepath.Join(bundleDir, "docker-compose.yml")
 	if err := os.WriteFile(composePath, []byte(dockerCompose), 0644); err != nil {
