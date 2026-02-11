@@ -105,38 +105,22 @@ func setupOAuthSecrets(reader *bufio.Reader) (string, error) {
 		}
 	}
 
-	// Try to find existing client_secret*.json files
-	candidates := findClientSecrets()
-	if len(candidates) > 0 {
-		fmt.Println("\nFound OAuth credentials:")
-		for i, path := range candidates {
-			fmt.Printf("  [%d] %s\n", i+1, path)
-		}
-		fmt.Println("  [0] Enter path manually")
-		fmt.Println()
-
-		choice := promptChoice(reader, "Select option", 0, len(candidates))
-		if choice > 0 {
-			return candidates[choice-1], nil
-		}
-	} else {
-		fmt.Println("\nNo client_secret*.json files found in common locations.")
-		fmt.Println()
-		fmt.Println("To get OAuth credentials:")
-		fmt.Println("  1. Go to https://console.cloud.google.com/apis/credentials")
-		fmt.Println("  2. Create OAuth client ID (Desktop app)")
-		fmt.Println("  3. Download JSON and save as client_secret.json")
-		fmt.Println()
-	}
+	fmt.Println()
+	fmt.Println("You need a Google Cloud OAuth credential (client_secret.json).")
+	fmt.Println()
+	fmt.Println("To get one:")
+	fmt.Println("  1. Go to https://console.cloud.google.com/apis/credentials")
+	fmt.Println("  2. Create OAuth client ID (Desktop app)")
+	fmt.Println("  3. Download the JSON file")
+	fmt.Println()
 
 	// Prompt for path
-	fmt.Print("Enter path to client_secret.json (or press Enter to skip): ")
+	fmt.Print("Path to client_secret.json: ")
 	path, _ := reader.ReadString('\n')
 	path = strings.TrimSpace(path)
 
 	if path == "" {
-		fmt.Println("Skipping OAuth configuration. You can add it later to config.toml.")
-		return "", nil
+		return "", fmt.Errorf("OAuth credentials path is required")
 	}
 
 	// Expand ~ in path
@@ -150,7 +134,7 @@ func setupOAuthSecrets(reader *bufio.Reader) (string, error) {
 		return "", fmt.Errorf("file not found: %s", path)
 	}
 
-	fmt.Printf("Using OAuth credentials: %s\n", path)
+	fmt.Printf("Using: %s\n", path)
 	return path, nil
 }
 
@@ -326,50 +310,9 @@ func copyFile(src, dst string) error {
 	return os.Chmod(dst, 0600)
 }
 
-func findClientSecrets() []string {
-	var found []string
-	home, _ := os.UserHomeDir()
-
-	patterns := []string{
-		filepath.Join(home, "Downloads", "client_secret*.json"),
-		"client_secret*.json",
-		filepath.Join(cfg.HomeDir, "client_secret*.json"),
-	}
-
-	seen := make(map[string]bool)
-	for _, pattern := range patterns {
-		matches, _ := filepath.Glob(pattern)
-		for _, m := range matches {
-			abs, _ := filepath.Abs(m)
-			if !seen[abs] {
-				seen[abs] = true
-				found = append(found, abs)
-			}
-		}
-	}
-
-	return found
-}
-
 func promptYesNo(reader *bufio.Reader, prompt string) bool {
 	fmt.Printf("%s [Y/n]: ", prompt)
 	response, _ := reader.ReadString('\n')
 	response = strings.ToLower(strings.TrimSpace(response))
 	return response == "" || response == "y" || response == "yes"
-}
-
-func promptChoice(reader *bufio.Reader, prompt string, min, max int) int {
-	for {
-		fmt.Printf("%s [%d-%d]: ", prompt, min, max)
-		response, _ := reader.ReadString('\n')
-		response = strings.TrimSpace(response)
-
-		var choice int
-		if _, err := fmt.Sscanf(response, "%d", &choice); err == nil {
-			if choice >= min && choice <= max {
-				return choice
-			}
-		}
-		fmt.Printf("Please enter a number between %d and %d\n", min, max)
-	}
 }
