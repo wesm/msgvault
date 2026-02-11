@@ -460,6 +460,19 @@ class MessageQuery:
         return len(affected_ids)
 
     # ------------------------------------------------------------------
+    # Data export
+    # ------------------------------------------------------------------
+
+    def to_dataframe(self):
+        """Convert query results to a pandas DataFrame.
+
+        Requires pandas: pip install 'msgvault-sdk[pandas]'
+        """
+        from msgvault_sdk.dataframe import query_to_dataframe
+
+        return query_to_dataframe(self)
+
+    # ------------------------------------------------------------------
     # Grouping (delegates to GroupedQuery)
     # ------------------------------------------------------------------
 
@@ -633,6 +646,15 @@ class GroupedQuery:
                 _query=self._base,
                 _field=self._field,
             )
+
+    def to_dataframe(self):
+        """Convert grouped results to a pandas DataFrame.
+
+        Requires pandas: pip install 'msgvault-sdk[pandas]'
+        """
+        from msgvault_sdk.dataframe import groups_to_dataframe
+
+        return groups_to_dataframe(self)
 
     def __repr__(self) -> str:
         return f"GroupedQuery(field={self._field!r}, sort={self._sort_field})"
