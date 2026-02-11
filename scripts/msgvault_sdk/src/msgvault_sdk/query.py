@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterator
 
+from msgvault_sdk.changelog import ChangeLog
+from msgvault_sdk.errors import VaultReadOnlyError
 from msgvault_sdk.models import Message
 
 # Column list used in all message SELECT queries
@@ -51,7 +53,7 @@ class MessageQuery:
 
     __slots__ = (
         "_conn", "_filters", "_sort", "_limit_val", "_offset_val",
-        "_include_deleted",
+        "_include_deleted", "_changelog", "_writable",
     )
 
     def __init__(
@@ -62,6 +64,8 @@ class MessageQuery:
         limit: int | None = None,
         offset: int | None = None,
         include_deleted: bool = False,
+        changelog: ChangeLog | None = None,
+        writable: bool = False,
     ) -> None:
         self._conn = conn
         self._filters = filters
@@ -69,6 +73,8 @@ class MessageQuery:
         self._limit_val = limit
         self._offset_val = offset
         self._include_deleted = include_deleted
+        self._changelog = changelog
+        self._writable = writable
 
     def _clone(self, **overrides: Any) -> MessageQuery:
         """Return a copy with selected fields overridden."""
@@ -79,6 +85,8 @@ class MessageQuery:
             limit=overrides.get("limit", self._limit_val),
             offset=overrides.get("offset", self._offset_val),
             include_deleted=overrides.get("include_deleted", self._include_deleted),
+            changelog=overrides.get("changelog", self._changelog),
+            writable=overrides.get("writable", self._writable),
         )
 
     # ------------------------------------------------------------------
@@ -338,6 +346,110 @@ class MessageQuery:
             parts.append(f"limit={self._limit_val}")
         parts_str = ", ".join(parts)
         return f"{parts_str})"
+
+    # ------------------------------------------------------------------
+    # Mutations (require writable vault)
+    # ------------------------------------------------------------------
+
+    def _check_writable(self) -> None:
+        if not self._writable:
+            raise VaultReadOnlyError()
+
+    def delete(self) -> int:
+        """Soft-delete all matching messages. Returns count affected."""
+        self._check_writable()
+        ids = self.message_ids()
+        if not ids:
+            return 0
+
+        self._changelog._record(
+            "delete", ids,
+            details=None,
+            undo_data=None,
+        )
+
+        placeholders = ",".join("?" for _ in ids)
+        self._conn.execute(
+            f"UPDATE messages SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+            f"WHERE id IN ({placeholders}) AND deleted_at IS NULL",
+            ids,
+        )
+        self._conn.commit()
+        return len(ids)
+
+    def add_label(self, name: str) -> int:
+        """Add a label to all matching messages. Returns count affected."""
+        self._check_writable()
+        ids = self.message_ids()
+        if not ids:
+            return 0
+
+        # Get or create the label
+        row = self._conn.execute(
+            "SELECT id FROM labels WHERE name = ?", (name,)
+        ).fetchone()
+        if row:
+            label_id = row[0]
+        else:
+            cursor = self._conn.execute(
+                "INSERT INTO labels (name, label_type) VALUES (?, 'user')",
+                (name,),
+            )
+            label_id = cursor.lastrowid
+
+        self._changelog._record(
+            "label_add", ids,
+            details={"label": name, "label_id": label_id},
+            undo_data=None,
+        )
+
+        self._conn.executemany(
+            "INSERT OR IGNORE INTO message_labels (message_id, label_id) "
+            "VALUES (?, ?)",
+            [(mid, label_id) for mid in ids],
+        )
+        self._conn.commit()
+        return len(ids)
+
+    def remove_label(self, name: str) -> int:
+        """Remove a label from all matching messages. Returns count affected."""
+        self._check_writable()
+        ids = self.message_ids()
+        if not ids:
+            return 0
+
+        row = self._conn.execute(
+            "SELECT id FROM labels WHERE name = ?", (name,)
+        ).fetchone()
+        if row is None:
+            return 0
+        label_id = row[0]
+
+        # Find which messages actually have this label
+        placeholders = ",".join("?" for _ in ids)
+        affected_rows = self._conn.execute(
+            f"SELECT message_id FROM message_labels "
+            f"WHERE label_id = ? AND message_id IN ({placeholders})",
+            [label_id, *ids],
+        ).fetchall()
+        affected_ids = [r[0] for r in affected_rows]
+        if not affected_ids:
+            return 0
+
+        self._changelog._record(
+            "label_remove", affected_ids,
+            details={"label": name},
+            undo_data={"label_id": label_id},
+        )
+
+        placeholders = ",".join("?" for _ in affected_ids)
+        self._conn.execute(
+            f"DELETE FROM message_labels "
+            f"WHERE label_id = ? AND message_id IN ({placeholders})",
+            [label_id, *affected_ids],
+        )
+        self._conn.commit()
+        return len(affected_ids)
 
     # ------------------------------------------------------------------
     # Grouping (delegates to GroupedQuery)
