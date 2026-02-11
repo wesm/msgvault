@@ -104,7 +104,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if count == 0 {
-		return fmt.Errorf("no accounts could be scheduled")
+		logger.Warn("no accounts scheduled - upload tokens via API and add accounts to config.toml")
 	}
 
 	// Set up signal handling for graceful shutdown
