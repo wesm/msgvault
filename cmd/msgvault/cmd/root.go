@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/config"
@@ -88,8 +89,48 @@ To use msgvault, you need a Google Cloud OAuth credential:
 }
 
 // errOAuthNotConfigured returns a helpful error when OAuth client secrets are missing.
+// It also searches for client_secret*.json files in common locations.
 func errOAuthNotConfigured() error {
+	// Check common locations for client_secret*.json
+	hint := tryFindClientSecrets()
+	if hint != "" {
+		return fmt.Errorf("OAuth client secrets not configured.%s", hint)
+	}
 	return fmt.Errorf("OAuth client secrets not configured.%s", oauthSetupHint())
+}
+
+// tryFindClientSecrets looks for client_secret*.json in common locations
+// and returns a hint if found.
+func tryFindClientSecrets() string {
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(home, "Downloads", "client_secret*.json"),
+		"client_secret*.json",
+	}
+	if cfg != nil {
+		candidates = append(candidates, filepath.Join(cfg.HomeDir, "client_secret*.json"))
+	}
+
+	for _, pattern := range candidates {
+		matches, _ := filepath.Glob(pattern)
+		if len(matches) > 0 {
+			configPath := "<config file>"
+			if cfg != nil {
+				configPath = cfg.ConfigFilePath()
+			}
+			return fmt.Sprintf(`
+
+Found OAuth credentials at: %s
+
+To use this file, add to %s:
+  [oauth]
+  client_secrets = %q
+
+Or copy the file to your msgvault home directory:
+  cp %q ~/.msgvault/client_secret.json`, matches[0], configPath, matches[0], matches[0])
+		}
+	}
+	return ""
 }
 
 // wrapOAuthError wraps an oauth/client-secrets error with setup instructions

@@ -27,9 +27,14 @@ func TestErrOAuthNotConfigured(t *testing.T) {
 		t.Errorf("error message missing 'not configured': %q", msg)
 	}
 
-	// Should contain setup URL
-	if !strings.Contains(msg, "https://msgvault.io/guides/oauth-setup/") {
-		t.Errorf("error message missing setup URL: %q", msg)
+	// Should contain either:
+	// 1. A "Found OAuth credentials" hint (if client_secret*.json exists on this machine)
+	// 2. The setup URL (if no credentials found)
+	hasFoundHint := strings.Contains(msg, "Found OAuth credentials at:")
+	hasSetupURL := strings.Contains(msg, "https://msgvault.io/guides/oauth-setup/")
+
+	if !hasFoundHint && !hasSetupURL {
+		t.Errorf("error message missing both 'Found OAuth credentials' hint and setup URL: %q", msg)
 	}
 
 	// Should contain config file instructions (either "config.toml" or "<config file>" placeholder)

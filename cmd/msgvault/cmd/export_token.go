@@ -27,9 +27,18 @@ This command reads your local token and uploads it to a remote msgvault
 instance via the API. Use this to set up msgvault on a NAS or server
 without a browser.
 
+Environment variables:
+  MSGVAULT_REMOTE_URL      Remote server URL (alternative to --to)
+  MSGVAULT_REMOTE_API_KEY  API key (alternative to --api-key)
+
 Examples:
   # Export token to NAS
   msgvault export-token user@gmail.com --to http://nas:8080 --api-key YOUR_KEY
+
+  # Using environment variables
+  export MSGVAULT_REMOTE_URL=http://nas:8080
+  export MSGVAULT_REMOTE_API_KEY=your-key
+  msgvault export-token user@gmail.com
 
   # With Tailscale
   msgvault export-token user@gmail.com --to http://homebase.tail49367.ts.net:8080 --api-key KEY`,
@@ -38,15 +47,36 @@ Examples:
 }
 
 func init() {
-	exportTokenCmd.Flags().StringVar(&exportTokenTo, "to", "", "Remote msgvault URL (required)")
-	exportTokenCmd.Flags().StringVar(&exportTokenAPIKey, "api-key", "", "API key for remote server (required)")
-	exportTokenCmd.MarkFlagRequired("to")
-	exportTokenCmd.MarkFlagRequired("api-key")
+	exportTokenCmd.Flags().StringVar(&exportTokenTo, "to", "", "Remote msgvault URL (or MSGVAULT_REMOTE_URL env var)")
+	exportTokenCmd.Flags().StringVar(&exportTokenAPIKey, "api-key", "", "API key (or MSGVAULT_REMOTE_API_KEY env var)")
 	rootCmd.AddCommand(exportTokenCmd)
 }
 
 func runExportToken(cmd *cobra.Command, args []string) error {
 	email := args[0]
+
+	// Resolution order: flag > env var > config file
+	if exportTokenTo == "" {
+		exportTokenTo = os.Getenv("MSGVAULT_REMOTE_URL")
+	}
+	if exportTokenTo == "" {
+		exportTokenTo = cfg.Remote.URL
+	}
+
+	if exportTokenAPIKey == "" {
+		exportTokenAPIKey = os.Getenv("MSGVAULT_REMOTE_API_KEY")
+	}
+	if exportTokenAPIKey == "" {
+		exportTokenAPIKey = cfg.Remote.APIKey
+	}
+
+	// Validate required values
+	if exportTokenTo == "" {
+		return fmt.Errorf("remote URL required: use --to flag, MSGVAULT_REMOTE_URL env var, or [remote] url in config.toml")
+	}
+	if exportTokenAPIKey == "" {
+		return fmt.Errorf("API key required: use --api-key flag, MSGVAULT_REMOTE_API_KEY env var, or [remote] api_key in config.toml")
+	}
 
 	// Validate email format
 	if !strings.Contains(email, "@") {
@@ -95,6 +125,18 @@ func runExportToken(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Token uploaded successfully for %s\n", email)
+
+	// Save remote config for future use (if not already saved)
+	if cfg.Remote.URL != exportTokenTo || cfg.Remote.APIKey != exportTokenAPIKey {
+		cfg.Remote.URL = exportTokenTo
+		cfg.Remote.APIKey = exportTokenAPIKey
+		if err := cfg.Save(); err != nil {
+			fmt.Fprintf(os.Stderr, "Note: Could not save remote config: %v\n", err)
+		} else {
+			fmt.Printf("Remote server saved to %s (future exports won't need --to/--api-key)\n", cfg.ConfigFilePath())
+		}
+	}
+
 	fmt.Println("\nNext steps on the remote server:")
 	fmt.Printf("  1. Add account to config.toml:\n")
 	fmt.Printf("     [[accounts]]\n")

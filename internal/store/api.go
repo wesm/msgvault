@@ -206,7 +206,8 @@ func (s *Store) SearchMessages(query string, offset, limit int) ([]APIMessage, i
 	}
 	defer rows.Close()
 
-	messages, ids, err := scanMessageRows(rows)
+	// Use FTS-specific scanner that handles string dates
+	messages, ids, err := scanMessageRowsFTS(rows)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -320,6 +321,47 @@ func scanMessageRows(rows *sql.Rows) ([]APIMessage, []int64, error) {
 		return nil, nil, fmt.Errorf("iterate messages: %w", err)
 	}
 	return messages, ids, nil
+}
+
+// scanMessageRowsFTS scans message rows from FTS5 queries where dates may be strings.
+// FTS5 virtual table joins can return datetime columns as strings instead of time.Time.
+func scanMessageRowsFTS(rows *sql.Rows) ([]APIMessage, []int64, error) {
+	var messages []APIMessage
+	var ids []int64
+	for rows.Next() {
+		var m APIMessage
+		var sentAtStr sql.NullString
+		err := rows.Scan(&m.ID, &m.Subject, &m.From, &sentAtStr, &m.Snippet, &m.HasAttachments, &m.SizeEstimate)
+		if err != nil {
+			return nil, nil, err
+		}
+		if sentAtStr.Valid && sentAtStr.String != "" {
+			m.SentAt = parseSQLiteTime(sentAtStr.String)
+		}
+		messages = append(messages, m)
+		ids = append(ids, m.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterate messages: %w", err)
+	}
+	return messages, ids, nil
+}
+
+// parseSQLiteTime parses a datetime string from SQLite into time.Time.
+func parseSQLiteTime(s string) time.Time {
+	layouts := []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05Z",
+		"2006-01-02T15:04:05-07:00",
+		time.RFC3339,
+		time.RFC3339Nano,
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
 
 // batchPopulate batch-loads recipients and labels for a slice of messages.

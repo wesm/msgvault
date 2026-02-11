@@ -60,6 +60,13 @@ type AccountSchedule struct {
 	Enabled  bool   `toml:"enabled"`  // Whether scheduled sync is active
 }
 
+// RemoteConfig holds configuration for a remote msgvault server.
+// Used by export-token to remember the NAS/server destination.
+type RemoteConfig struct {
+	URL    string `toml:"url"`     // Remote server URL (e.g., http://nas:8080)
+	APIKey string `toml:"api_key"` // API key for authentication
+}
+
 // Config represents the msgvault configuration.
 type Config struct {
 	Data     DataConfig        `toml:"data"`
@@ -67,6 +74,7 @@ type Config struct {
 	Sync     SyncConfig        `toml:"sync"`
 	Chat     ChatConfig        `toml:"chat"`
 	Server   ServerConfig      `toml:"server"`
+	Remote   RemoteConfig      `toml:"remote"`
 	Accounts []AccountSchedule `toml:"accounts"`
 
 	// Computed paths (not from config file)
@@ -232,6 +240,35 @@ func (c *Config) ConfigFilePath() string {
 		return c.configPath
 	}
 	return filepath.Join(c.HomeDir, "config.toml")
+}
+
+// Save writes the current configuration to disk.
+// Creates the config file if it doesn't exist, or updates it if it does.
+// Empty sections are omitted from the output.
+func (c *Config) Save() error {
+	path := c.ConfigFilePath()
+
+	// Ensure home directory exists
+	if err := c.EnsureHomeDir(); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create config file: %w", err)
+	}
+	defer f.Close()
+
+	// Secure file permissions (config may contain API keys)
+	if err := fileutil.SecureChmod(path, 0600); err != nil {
+		slog.Warn("failed to secure config file permissions", "path", path, "err", err)
+	}
+
+	if err := toml.NewEncoder(f).Encode(c); err != nil {
+		return fmt.Errorf("encode config: %w", err)
+	}
+
+	return nil
 }
 
 // ScheduledAccounts returns accounts with scheduling enabled.

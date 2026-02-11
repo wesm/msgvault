@@ -416,7 +416,20 @@ Critical files to backup:
 1. Install **Container Manager** (Docker) package from Package Center
 2. Create a shared folder for data (e.g., `/volume1/docker/msgvault`)
 3. Use Container Manager UI or SSH to run docker-compose
-4. Set folder permissions: container runs as UID 1000
+
+**Important: Synology ACL Permissions**
+
+Synology uses ACLs (Access Control Lists) that can override standard Unix permissions. The default container user (UID 1000) may not have write access even if you set folder permissions.
+
+**Solution:** Add `user: root` to your docker-compose.yml:
+
+```yaml
+services:
+  msgvault:
+    image: ghcr.io/wesm/msgvault:latest
+    user: root  # Required for Synology ACLs
+    # ... rest of config
+```
 
 **Via SSH:**
 ```bash
@@ -511,3 +524,114 @@ View health check history:
 ```bash
 docker inspect --format='{{json .State.Health}}' msgvault | jq
 ```
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| `unable to open database file` | Database doesn't exist | Run `msgvault init-db` first, or the `serve` command auto-creates it |
+| `permission denied` on Synology | ACLs override Unix permissions | Add `user: root` to docker-compose.yml |
+| `OAuth client secrets not configured` | Missing config.toml | Run `msgvault setup` or create config manually |
+| Token export fails | Missing --to or --api-key | Use flags, env vars (`MSGVAULT_REMOTE_URL`), or run `msgvault setup` |
+| Search API returns 500 | Bug in older versions | Upgrade to latest image |
+
+### Local Setup Issues
+
+**"OAuth client secrets not configured"**
+
+msgvault needs Google OAuth credentials. Run the setup wizard:
+
+```bash
+msgvault setup
+```
+
+Or manually create `~/.msgvault/config.toml`:
+
+```toml
+[oauth]
+client_secrets = "/path/to/client_secret.json"
+```
+
+**Token export requires flags every time**
+
+After a successful export, msgvault saves the remote server config. For the first export:
+
+```bash
+# First time: provide flags
+msgvault export-token you@gmail.com --to http://nas:8080 --api-key KEY
+
+# Subsequent exports: no flags needed
+msgvault export-token another@gmail.com
+```
+
+Or use environment variables:
+
+```bash
+export MSGVAULT_REMOTE_URL=http://nas:8080
+export MSGVAULT_REMOTE_API_KEY=your-key
+msgvault export-token you@gmail.com
+```
+
+### Container Issues
+
+**Container won't start**
+
+Check logs:
+
+```bash
+docker logs msgvault
+```
+
+Common causes:
+- Missing `config.toml` with `bind_addr = "0.0.0.0"` and `api_key`
+- Port 8080 already in use
+- Volume mount permissions (see Synology section above)
+
+**Scheduled sync not running**
+
+1. Verify accounts are configured in `config.toml`:
+   ```toml
+   [[accounts]]
+   email = "you@gmail.com"
+   schedule = "0 2 * * *"
+   enabled = true
+   ```
+
+2. Verify token exists:
+   ```bash
+   docker exec msgvault ls -la /data/tokens/
+   ```
+
+3. Check scheduler status:
+   ```bash
+   curl -H "X-API-Key: KEY" http://localhost:8080/api/v1/scheduler/status
+   ```
+
+### Sync Issues
+
+**"No source found for email"**
+
+The account hasn't been added to the database. Run:
+
+```bash
+docker exec msgvault msgvault add-account you@gmail.com --headless
+```
+
+Or if using token export, the token exists but account isn't registered. The `add-account` command will detect the existing token and register the account.
+
+**First sync fails with "incremental sync requires full sync first"**
+
+Run a full sync before scheduled incremental syncs work:
+
+```bash
+docker exec msgvault msgvault sync-full you@gmail.com
+```
+
+### Getting Help
+
+- GitHub Issues: https://github.com/wesm/msgvault/issues
+- Documentation: https://msgvault.io
