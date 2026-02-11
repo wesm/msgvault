@@ -63,10 +63,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return errOAuthNotConfigured()
 	}
 
-	// Check for scheduled accounts
+	// Check for scheduled accounts (warn but don't fail - allows token upload first)
 	scheduled := cfg.ScheduledAccounts()
 	if len(scheduled) == 0 {
-		return fmt.Errorf("no scheduled accounts configured\n\nAdd accounts to config.toml:\n\n  [[accounts]]\n  email = \"you@gmail.com\"\n  schedule = \"0 2 * * *\"\n  enabled = true")
+		logger.Warn("no scheduled accounts configured - server will start but no syncs will run",
+			"hint", "Add accounts to config.toml or upload tokens via API first")
 	}
 
 	// Open database

@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,7 +50,7 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 2: Optionally configure remote NAS
-	remoteURL, remoteAPIKey, err := setupRemoteServer(reader)
+	remoteURL, remoteAPIKey, err := setupRemoteServer(reader, secretsPath)
 	if err != nil {
 		return err
 	}
@@ -150,7 +153,7 @@ func setupOAuthSecrets(reader *bufio.Reader) (string, error) {
 	return path, nil
 }
 
-func setupRemoteServer(reader *bufio.Reader) (string, string, error) {
+func setupRemoteServer(reader *bufio.Reader, oauthSecretsPath string) (string, string, error) {
 	fmt.Println()
 	fmt.Println("Step 2: Remote NAS Server (Optional)")
 	fmt.Println("-------------------------------------")
@@ -161,7 +164,7 @@ func setupRemoteServer(reader *bufio.Reader) (string, string, error) {
 	if cfg.Remote.URL != "" {
 		fmt.Printf("Remote server already configured: %s\n", cfg.Remote.URL)
 		if promptYesNo(reader, "Keep existing configuration?") {
-			return "", "", nil
+			return cfg.Remote.URL, cfg.Remote.APIKey, nil
 		}
 	}
 
@@ -180,16 +183,130 @@ func setupRemoteServer(reader *bufio.Reader) (string, string, error) {
 		return "", "", nil
 	}
 
-	// Get API key
-	fmt.Print("API key: ")
-	apiKey, _ := reader.ReadString('\n')
-	apiKey = strings.TrimSpace(apiKey)
+	// Auto-generate API key
+	apiKey, err := generateAPIKey()
+	if err != nil {
+		return "", "", fmt.Errorf("generate API key: %w", err)
+	}
+	fmt.Printf("\nGenerated API key: %s\n", apiKey)
 
-	if apiKey == "" {
-		fmt.Println("Warning: No API key provided. You'll need to specify it with --api-key.")
+	// Create NAS deployment bundle
+	bundleDir := filepath.Join(cfg.HomeDir, "nas-bundle")
+	if err := createNASBundle(bundleDir, apiKey, oauthSecretsPath); err != nil {
+		fmt.Printf("Warning: Could not create NAS bundle: %v\n", err)
+	} else {
+		fmt.Printf("\nNAS deployment files created in: %s\n", bundleDir)
+		fmt.Println("  - config.toml (ready for NAS)")
+		fmt.Println("  - client_secret.json (copy of OAuth credentials)")
+		fmt.Println("  - docker-compose.yml (ready to deploy)")
+		fmt.Println()
+		fmt.Println("To deploy on your NAS:")
+		fmt.Println("  1. Copy the nas-bundle folder to your NAS")
+		fmt.Printf("  2. scp -r %s nas:/volume1/docker/msgvault\n", bundleDir)
+		fmt.Println("  3. SSH to NAS and run: docker-compose up -d")
 	}
 
 	return url, apiKey, nil
+}
+
+func generateAPIKey() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
+func createNASBundle(bundleDir, apiKey, oauthSecretsPath string) error {
+	// Create bundle directory
+	if err := os.MkdirAll(bundleDir, 0700); err != nil {
+		return fmt.Errorf("create bundle dir: %w", err)
+	}
+
+	// Create NAS config.toml
+	nasConfig := fmt.Sprintf(`[server]
+bind_addr = "0.0.0.0"
+api_port = 8080
+api_key = %q
+
+[oauth]
+client_secrets = "/data/client_secret.json"
+
+[sync]
+rate_limit_qps = 5
+
+# Add your accounts here after exporting tokens:
+# [[accounts]]
+# email = "you@gmail.com"
+# schedule = "0 2 * * *"
+# enabled = true
+`, apiKey)
+
+	configPath := filepath.Join(bundleDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(nasConfig), 0600); err != nil {
+		return fmt.Errorf("write config.toml: %w", err)
+	}
+
+	// Copy client_secret.json if available
+	if oauthSecretsPath != "" {
+		destPath := filepath.Join(bundleDir, "client_secret.json")
+		if err := copyFile(oauthSecretsPath, destPath); err != nil {
+			return fmt.Errorf("copy client_secret.json: %w", err)
+		}
+	}
+
+	// Create docker-compose.yml
+	dockerCompose := `version: "3.8"
+
+services:
+  msgvault:
+    image: ghcr.io/wesm/msgvault:latest
+    container_name: msgvault
+    user: root  # Required for Synology NAS ACLs
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./:/data
+    environment:
+      - TZ=America/Los_Angeles  # Adjust to your timezone
+      - MSGVAULT_HOME=/data
+    command: ["serve"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+`
+
+	composePath := filepath.Join(bundleDir, "docker-compose.yml")
+	if err := os.WriteFile(composePath, []byte(dockerCompose), 0644); err != nil {
+		return fmt.Errorf("write docker-compose.yml: %w", err)
+	}
+
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return err
+	}
+
+	// Secure permissions for credentials
+	return os.Chmod(dst, 0600)
 }
 
 func findClientSecrets() []string {
