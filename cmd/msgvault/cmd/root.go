@@ -13,11 +13,12 @@ import (
 )
 
 var (
-	cfgFile string
-	homeDir string
-	verbose bool
-	cfg     *config.Config
-	logger  *slog.Logger
+	cfgFile  string
+	homeDir  string
+	verbose  bool
+	useLocal bool // Force local database even when remote is configured
+	cfg      *config.Config
+	logger   *slog.Logger
 )
 
 var rootCmd = &cobra.Command{
@@ -146,4 +147,5 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ~/.msgvault/config.toml)")
 	rootCmd.PersistentFlags().StringVar(&homeDir, "home", "", "home directory (overrides MSGVAULT_HOME)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
+	rootCmd.PersistentFlags().BoolVar(&useLocal, "local", false, "force local database (override remote config)")
 }

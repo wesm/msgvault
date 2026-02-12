@@ -25,7 +25,10 @@ var searchCmd = &cobra.Command{
 	Short: "Search messages using Gmail-like query syntax",
 	Long: `Search your email archive using Gmail-like query syntax.
 
-Supported operators:
+Uses remote server if [remote].url is configured, otherwise uses local database.
+Use --local to force local database.
+
+Supported operators (local mode only - remote uses simple text search):
   from:        Sender email address
   to:          Recipient email address
   cc:          CC recipient
@@ -52,48 +55,89 @@ Examples:
 		// Join all args to form the query (allows unquoted multi-term searches)
 		queryStr := strings.Join(args, " ")
 
-		// Parse the query
-		q := search.Parse(queryStr)
-		if q.IsEmpty() {
+		if queryStr == "" {
 			return fmt.Errorf("empty search query")
 		}
 
-		fmt.Fprintf(os.Stderr, "Searching...")
-
-		// Open database
-		dbPath := cfg.DatabaseDSN()
-		s, err := store.Open(dbPath)
-		if err != nil {
-			return fmt.Errorf("open database: %w", err)
-		}
-		defer s.Close()
-
-		// Ensure schema is up to date and FTS index is populated
-		if err := s.InitSchema(); err != nil {
-			return fmt.Errorf("init schema: %w", err)
-		}
-		if err := ensureFTSIndex(s); err != nil {
-			return err
+		// Use remote search if configured
+		if IsRemoteMode() {
+			return runRemoteSearch(queryStr)
 		}
 
-		// Create query engine and execute search
-		engine := query.NewSQLiteEngine(s.DB())
-		results, err := engine.Search(cmd.Context(), q, searchLimit, searchOffset)
-		fmt.Fprintf(os.Stderr, "\r            \r")
-		if err != nil {
-			return query.HintRepairEncoding(fmt.Errorf("search: %w", err))
-		}
-
-		if len(results) == 0 {
-			fmt.Println("No messages found.")
-			return nil
-		}
-
-		if searchJSON {
-			return outputSearchResultsJSON(results)
-		}
-		return outputSearchResultsTable(results)
+		return runLocalSearch(cmd, queryStr)
 	},
+}
+
+// runRemoteSearch performs a search against the remote API.
+func runRemoteSearch(queryStr string) error {
+	fmt.Fprintf(os.Stderr, "Searching %s...", cfg.Remote.URL)
+
+	s, err := OpenRemoteStore()
+	if err != nil {
+		return fmt.Errorf("connect to remote: %w", err)
+	}
+	defer s.Close()
+
+	results, total, err := s.SearchMessages(queryStr, searchOffset, searchLimit)
+	fmt.Fprintf(os.Stderr, "\r                                                      \r")
+	if err != nil {
+		return fmt.Errorf("search: %w", err)
+	}
+
+	if len(results) == 0 {
+		fmt.Println("No messages found.")
+		return nil
+	}
+
+	if searchJSON {
+		return outputRemoteSearchResultsJSON(results, total)
+	}
+	return outputRemoteSearchResultsTable(results, total)
+}
+
+// runLocalSearch performs a search against the local database.
+func runLocalSearch(cmd *cobra.Command, queryStr string) error {
+	// Parse the query
+	q := search.Parse(queryStr)
+	if q.IsEmpty() {
+		return fmt.Errorf("empty search query")
+	}
+
+	fmt.Fprintf(os.Stderr, "Searching...")
+
+	// Open database
+	dbPath := cfg.DatabaseDSN()
+	s, err := store.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer s.Close()
+
+	// Ensure schema is up to date and FTS index is populated
+	if err := s.InitSchema(); err != nil {
+		return fmt.Errorf("init schema: %w", err)
+	}
+	if err := ensureFTSIndex(s); err != nil {
+		return err
+	}
+
+	// Create query engine and execute search
+	engine := query.NewSQLiteEngine(s.DB())
+	results, err := engine.Search(cmd.Context(), q, searchLimit, searchOffset)
+	fmt.Fprintf(os.Stderr, "\r            \r")
+	if err != nil {
+		return query.HintRepairEncoding(fmt.Errorf("search: %w", err))
+	}
+
+	if len(results) == 0 {
+		fmt.Println("No messages found.")
+		return nil
+	}
+
+	if searchJSON {
+		return outputSearchResultsJSON(results)
+	}
+	return outputSearchResultsTable(results)
 }
 
 func outputSearchResultsTable(results []query.MessageSummary) error {
@@ -112,6 +156,34 @@ func outputSearchResultsTable(results []query.MessageSummary) error {
 	w.Flush()
 	fmt.Printf("\nShowing %d results\n", len(results))
 	return nil
+}
+
+func outputRemoteSearchResultsTable(results []store.APIMessage, total int64) error {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tDATE\tFROM\tSUBJECT\tSIZE")
+	fmt.Fprintln(w, "──\t────\t────\t───────\t────")
+
+	for _, msg := range results {
+		date := msg.SentAt.Format("2006-01-02")
+		from := truncate(msg.From, 30)
+		subject := truncate(msg.Subject, 50)
+		size := formatSize(msg.SizeEstimate)
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", msg.ID, date, from, subject, size)
+	}
+
+	w.Flush()
+	fmt.Printf("\nShowing %d of %d results\n", len(results), total)
+	return nil
+}
+
+func outputRemoteSearchResultsJSON(results []store.APIMessage, total int64) error {
+	output := map[string]interface{}{
+		"total":   total,
+		"results": results,
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(output)
 }
 
 func outputSearchResultsJSON(results []query.MessageSummary) error {

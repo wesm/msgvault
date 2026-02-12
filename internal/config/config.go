@@ -63,8 +63,9 @@ type AccountSchedule struct {
 // RemoteConfig holds configuration for a remote msgvault server.
 // Used by export-token to remember the NAS/server destination.
 type RemoteConfig struct {
-	URL    string `toml:"url"`     // Remote server URL (e.g., http://nas:8080)
-	APIKey string `toml:"api_key"` // API key for authentication
+	URL           string `toml:"url"`            // Remote server URL (e.g., http://nas:8080)
+	APIKey        string `toml:"api_key"`        // API key for authentication
+	AllowInsecure bool   `toml:"allow_insecure"` // Allow HTTP (insecure) for trusted networks
 }
 
 // Config represents the msgvault configuration.
