@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,13 +10,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	exportTokenTo     string
-	exportTokenAPIKey string
+	exportTokenTo       string
+	exportTokenAPIKey   string
+	exportAllowInsecure bool
 )
 
 var exportTokenCmd = &cobra.Command{
@@ -27,21 +30,24 @@ This command reads your local token and uploads it to a remote msgvault
 instance via the API. Use this to set up msgvault on a NAS or server
 without a browser.
 
+SECURITY: HTTPS is required by default to protect OAuth tokens in transit.
+Use --allow-insecure only for trusted local networks (e.g., Tailscale).
+
 Environment variables:
   MSGVAULT_REMOTE_URL      Remote server URL (alternative to --to)
   MSGVAULT_REMOTE_API_KEY  API key (alternative to --api-key)
 
 Examples:
-  # Export token to NAS
-  msgvault export-token user@gmail.com --to http://nas:8080 --api-key YOUR_KEY
+  # Export token to NAS over HTTPS
+  msgvault export-token user@gmail.com --to https://nas:8080 --api-key YOUR_KEY
 
   # Using environment variables
-  export MSGVAULT_REMOTE_URL=http://nas:8080
+  export MSGVAULT_REMOTE_URL=https://nas:8080
   export MSGVAULT_REMOTE_API_KEY=your-key
   msgvault export-token user@gmail.com
 
-  # With Tailscale
-  msgvault export-token user@gmail.com --to http://homebase.tail49367.ts.net:8080 --api-key KEY`,
+  # With Tailscale (trusted network, HTTP allowed)
+  msgvault export-token user@gmail.com --to http://homebase.tail49367.ts.net:8080 --api-key KEY --allow-insecure`,
 	Args: cobra.ExactArgs(1),
 	RunE: runExportToken,
 }
@@ -49,6 +55,7 @@ Examples:
 func init() {
 	exportTokenCmd.Flags().StringVar(&exportTokenTo, "to", "", "Remote msgvault URL (or MSGVAULT_REMOTE_URL env var)")
 	exportTokenCmd.Flags().StringVar(&exportTokenAPIKey, "api-key", "", "API key (or MSGVAULT_REMOTE_API_KEY env var)")
+	exportTokenCmd.Flags().BoolVar(&exportAllowInsecure, "allow-insecure", false, "Allow HTTP (insecure) connections for trusted networks")
 	rootCmd.AddCommand(exportTokenCmd)
 }
 
@@ -78,14 +85,35 @@ func runExportToken(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("API key required: use --api-key flag, MSGVAULT_REMOTE_API_KEY env var, or [remote] api_key in config.toml")
 	}
 
-	// Validate email format
-	if !strings.Contains(email, "@") {
-		return fmt.Errorf("invalid email format: %s", email)
+	// Parse and validate URL
+	parsedURL, err := url.Parse(exportTokenTo)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
 	}
 
-	// Find token file
+	// Enforce HTTPS unless --allow-insecure is set
+	if parsedURL.Scheme == "http" && !exportAllowInsecure {
+		return fmt.Errorf("HTTPS required for security (OAuth tokens contain sensitive credentials)\n\n" +
+			"Options:\n" +
+			"  1. Use HTTPS: --to https://nas:8080\n" +
+			"  2. For trusted networks (e.g., Tailscale): --allow-insecure")
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return fmt.Errorf("URL scheme must be http or https, got: %s", parsedURL.Scheme)
+	}
+
+	// Validate email format (strict validation to prevent path traversal)
+	if !strings.Contains(email, "@") || !strings.Contains(email, ".") {
+		return fmt.Errorf("invalid email format: %s", email)
+	}
+	// Reject path traversal characters
+	if strings.ContainsAny(email, "/\\..") || strings.Contains(email, "..") {
+		return fmt.Errorf("invalid email format: contains path characters")
+	}
+
+	// Find token file using sanitized path
 	tokensDir := cfg.TokensDir()
-	tokenPath := filepath.Join(tokensDir, email+".json")
+	tokenPath := sanitizeExportTokenPath(tokensDir, email)
 
 	// Check if token exists
 	if _, err := os.Stat(tokenPath); os.IsNotExist(err) {
@@ -109,9 +137,17 @@ func runExportToken(cmd *cobra.Command, args []string) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", exportTokenAPIKey)
 
+	// Create HTTP client with timeout
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
 	// Send request
 	fmt.Printf("Uploading token to %s...\n", exportTokenTo)
-	resp, err := http.DefaultClient.Do(req)
+	if parsedURL.Scheme == "http" {
+		fmt.Fprintf(os.Stderr, "WARNING: Sending credentials over insecure HTTP connection\n")
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to connect to remote server: %w", err)
 	}
@@ -138,7 +174,7 @@ func runExportToken(cmd *cobra.Command, args []string) error {
 		accountReq.Header.Set("Content-Type", "application/json")
 		accountReq.Header.Set("X-API-Key", exportTokenAPIKey)
 
-		accountResp, err := http.DefaultClient.Do(accountReq)
+		accountResp, err := httpClient.Do(accountReq)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Could not add account to remote config: %v\n", err)
 		} else {
@@ -171,4 +207,28 @@ func runExportToken(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  curl -X POST -H 'X-API-Key: ...' %s/api/v1/sync/%s\n", exportTokenTo, email)
 
 	return nil
+}
+
+// sanitizeExportTokenPath returns a safe file path for the token.
+// Matches the server-side sanitizeTokenPath function in handlers.go.
+func sanitizeExportTokenPath(tokensDir, email string) string {
+	// Remove dangerous characters
+	safe := strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == '\x00' {
+			return -1
+		}
+		return r
+	}, email)
+
+	// Build path and verify it's within tokensDir
+	path := filepath.Join(tokensDir, safe+".json")
+	cleanPath := filepath.Clean(path)
+	cleanTokensDir := filepath.Clean(tokensDir)
+
+	// If path escapes tokensDir, use hash-based fallback
+	if !strings.HasPrefix(cleanPath, cleanTokensDir+string(os.PathSeparator)) {
+		return filepath.Join(tokensDir, fmt.Sprintf("%x.json", sha256.Sum256([]byte(email))))
+	}
+
+	return cleanPath
 }

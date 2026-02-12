@@ -399,7 +399,8 @@ func (s *Server) handleUploadToken(w http.ResponseWriter, r *http.Request) {
 
 	var tf tokenFile
 	if err := json.Unmarshal(body, &tf); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", "Invalid token JSON: "+err.Error())
+		s.logger.Warn("invalid token JSON", "error", err)
+		writeError(w, http.StatusBadRequest, "invalid_json", "Invalid token JSON format")
 		return
 	}
 
@@ -502,7 +503,8 @@ type AddAccountRequest struct {
 func (s *Server) handleAddAccount(w http.ResponseWriter, r *http.Request) {
 	var req AddAccountRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", "Invalid request JSON: "+err.Error())
+		s.logger.Warn("invalid account request JSON", "error", err)
+		writeError(w, http.StatusBadRequest, "invalid_json", "Invalid request JSON format")
 		return
 	}
 
@@ -547,7 +549,7 @@ func (s *Server) handleAddAccount(w http.ResponseWriter, r *http.Request) {
 	// Save config
 	if err := s.cfg.Save(); err != nil {
 		s.logger.Error("failed to save config", "error", err)
-		writeError(w, http.StatusInternalServerError, "save_error", "Failed to save config: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "save_error", "Failed to save configuration")
 		return
 	}
 
