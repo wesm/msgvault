@@ -421,16 +421,9 @@ func (m Model) aggregateTableView() string {
 	var infoContent string
 	isLoading := m.loading || m.inlineSearchLoading || m.searchLoadingMore
 	if m.inlineSearchActive {
-		modeTag := "[Fast]"
-		if m.searchMode == searchModeDeep {
-			modeTag = "[Deep]"
-		}
-		infoContent = modeTag + "/" + m.searchInput.View()
+		infoContent = "/" + m.searchInput.View()
 	} else if m.searchQuery != "" {
 		infoContent = fmt.Sprintf(" Search: %q", m.searchQuery)
-		if m.searchMode == searchModeDeep {
-			infoContent += " [Deep]"
-		}
 	}
 	sb.WriteString(m.renderInfoLine(infoContent, isLoading))
 

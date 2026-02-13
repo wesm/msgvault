@@ -783,7 +783,13 @@ func (m Model) handleDataLoaded(msg dataLoadedMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.err = nil // Clear any previous error
+	m.err = nil
+	if m.modal == modalError {
+		m.modal = modalNone
+	}
+	if m.modal == modalError {
+		m.modal = modalNone
+	}
 	m.rows = msg.rows
 	// Only reset position on fresh loads, not when restoring from breadcrumb
 	if !m.restorePosition {
@@ -861,7 +867,10 @@ func (m Model) handleMessagesLoaded(msg messagesLoadedMsg) (tea.Model, tea.Cmd) 
 		m.modalResult = m.err.Error()
 		m.restorePosition = false // Clear flag on error to prevent stale state
 	} else {
-		m.err = nil // Clear any previous error
+		m.err = nil
+		if m.modal == modalError {
+			m.modal = modalNone
+		}
 		if msg.append {
 			// Append paginated results to existing list
 			m.messages = append(m.messages, msg.messages...)
@@ -898,7 +907,10 @@ func (m Model) handleMessageDetailLoaded(msg messageDetailLoadedMsg) (tea.Model,
 		m.modal = modalError
 		m.modalResult = m.err.Error()
 	} else {
-		m.err = nil // Clear any previous error
+		m.err = nil
+		if m.modal == modalError {
+			m.modal = modalNone
+		}
 		m.messageDetail = msg.detail
 		m.detailScroll = 0
 		m.pendingDetailSubject = "" // Clear pending subject
@@ -948,7 +960,10 @@ func (m Model) handleSearchResults(msg searchResultsMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.err = nil // Clear any previous error
+	m.err = nil
+	if m.modal == modalError {
+		m.modal = modalNone
+	}
 	if msg.append {
 		m.appendSearchResults(msg)
 	} else {

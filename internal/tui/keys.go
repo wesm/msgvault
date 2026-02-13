@@ -22,7 +22,12 @@ func (m Model) handleInlineSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "tab":
-		// Toggle search mode between Fast and Deep
+		// Toggle search mode — only meaningful at message list level
+		// where Fast (Parquet metadata) and Deep (FTS5 body) differ.
+		// At aggregate level, both modes run the same query.
+		if m.level != levelMessageList {
+			return m, nil
+		}
 		if m.searchMode == searchModeFast {
 			m.searchMode = searchModeDeep
 			m.searchInput.Placeholder = "search (Tab: fast)"
@@ -30,24 +35,17 @@ func (m Model) handleInlineSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchMode = searchModeFast
 			m.searchInput.Placeholder = "search (Tab: deep)"
 		}
-		// Invalidate any pending debounce timers from old mode
 		m.inlineSearchDebounce++
-		// Re-trigger search immediately with new mode (no debounce for explicit mode toggle)
 		if query := m.searchInput.Value(); query != "" {
 			m.searchQuery = query
 			m.inlineSearchLoading = true
 			spinCmd := m.startSpinner()
-			if m.level == levelMessageList {
-				m.searchFilter = m.drillFilter
-				m.searchFilter.SourceID = m.accountFilter
-				m.searchFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
-				m.searchFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
-				m.searchRequestID++
-				return m, tea.Batch(spinCmd, m.loadSearch(query))
-			}
-			// Aggregate views: reload aggregates with search filter
-			m.aggregateRequestID++
-			return m, tea.Batch(spinCmd, m.loadData())
+			m.searchFilter = m.drillFilter
+			m.searchFilter.SourceID = m.accountFilter
+			m.searchFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
+			m.searchFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
+			m.searchRequestID++
+			return m, tea.Batch(spinCmd, m.loadSearch(query))
 		}
 		return m, nil
 
@@ -152,7 +150,7 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Search - activate inline search bar
 	case "/":
-		return m, m.activateInlineSearch("search (Tab: deep)")
+		return m, m.activateInlineSearch("search")
 
 	// Selection
 	case " ": // Space to toggle selection
