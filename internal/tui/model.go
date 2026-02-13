@@ -65,6 +65,7 @@ const (
 	modalExportResult
 	modalQuitConfirm
 	modalHelp
+	modalError
 )
 
 // searchModeKind represents the search mode (fast metadata vs deep body search).
@@ -776,6 +777,8 @@ func (m Model) handleDataLoaded(msg dataLoadedMsg) (tea.Model, tea.Cmd) {
 	m.inlineSearchLoading = false
 	if msg.err != nil {
 		m.err = query.HintRepairEncoding(msg.err)
+		m.modal = modalError
+		m.modalResult = m.err.Error()
 		m.restorePosition = false // Clear flag on error to prevent stale state
 		return m, nil
 	}
@@ -854,6 +857,8 @@ func (m Model) handleMessagesLoaded(msg messagesLoadedMsg) (tea.Model, tea.Cmd) 
 	m.msgListLoadingMore = false
 	if msg.err != nil {
 		m.err = query.HintRepairEncoding(msg.err)
+		m.modal = modalError
+		m.modalResult = m.err.Error()
 		m.restorePosition = false // Clear flag on error to prevent stale state
 	} else {
 		m.err = nil // Clear any previous error
@@ -890,6 +895,8 @@ func (m Model) handleMessageDetailLoaded(msg messageDetailLoadedMsg) (tea.Model,
 	m.loading = false
 	if msg.err != nil {
 		m.err = query.HintRepairEncoding(msg.err)
+		m.modal = modalError
+		m.modalResult = m.err.Error()
 	} else {
 		m.err = nil // Clear any previous error
 		m.messageDetail = msg.detail
@@ -910,6 +917,8 @@ func (m Model) handleThreadMessagesLoaded(msg threadMessagesLoadedMsg) (tea.Mode
 	m.loading = false
 	if msg.err != nil {
 		m.err = query.HintRepairEncoding(msg.err)
+		m.modal = modalError
+		m.modalResult = m.err.Error()
 	} else {
 		m.err = nil
 		m.threadMessages = msg.messages
@@ -934,6 +943,8 @@ func (m Model) handleSearchResults(msg searchResultsMsg) (tea.Model, tea.Cmd) {
 	m.searchLoadingMore = false
 	if msg.err != nil {
 		m.err = query.HintRepairEncoding(msg.err)
+		m.modal = modalError
+		m.modalResult = m.err.Error()
 		return m, nil
 	}
 

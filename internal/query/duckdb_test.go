@@ -1857,7 +1857,7 @@ func TestBuildWhereClause_SearchOperators(t *testing.T) {
 		{
 			name:        "label operator",
 			searchQuery: "label:INBOX",
-			wantClauses: []string{"l_label.name = ?"}, // Exact match, consistent with SearchFast
+			wantClauses: []string{"l_label.name ILIKE ? ESCAPE"}, // Case-insensitive match
 		},
 		{
 			name:        "combined operators",
@@ -1931,8 +1931,8 @@ func TestAggregateBySender_WithSearchQuery(t *testing.T) {
 			wantSenders: []string{"alice@example.com", "bob@company.org"}, // msg2 (alice) and msg4 (bob)
 		},
 		{
-			name:        "label search filter",
-			searchQuery: "label:Work",
+			name:        "label search filter (case-insensitive)",
+			searchQuery: "label:work",
 			wantSenders: []string{"alice@example.com", "bob@company.org"}, // msg1 (alice) and msg4 (bob)
 		},
 	}

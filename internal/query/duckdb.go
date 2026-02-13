@@ -324,15 +324,15 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyCol
 		args = append(args, subjPattern)
 	}
 
-	// label: filter - exact match (consistent with SearchFast)
+	// label: filter - case-insensitive match
 	for _, label := range q.Labels {
 		conditions = append(conditions, `EXISTS (
 			SELECT 1 FROM ml ml_label
 			JOIN lbl l_label ON l_label.id = ml_label.label_id
 			WHERE ml_label.message_id = msg.id
-			  AND l_label.name = ?
+			  AND l_label.name ILIKE ? ESCAPE '\'
 		)`)
-		args = append(args, label)
+		args = append(args, escapeILIKE(label))
 	}
 
 	// has:attachment filter
@@ -769,15 +769,15 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 		)`)
 	}
 
-	// Label filter - use EXISTS subquery (becomes semi-join)
+	// Label filter - case-insensitive EXISTS subquery (becomes semi-join)
 	if filter.Label != "" {
 		conditions = append(conditions, `EXISTS (
 			SELECT 1 FROM ml
 			JOIN lbl ON lbl.id = ml.label_id
 			WHERE ml.message_id = msg.id
-			  AND lbl.name = ?
+			  AND lbl.name ILIKE ? ESCAPE '\'
 		)`)
-		args = append(args, filter.Label)
+		args = append(args, escapeILIKE(filter.Label))
 	} else if filter.MatchesEmpty(ViewLabels) {
 		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM ml WHERE ml.message_id = msg.id)")
 	}
@@ -2330,15 +2330,15 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 		}
 	}
 
-	// Label filter - use EXISTS subquery
+	// Label filter - case-insensitive EXISTS subquery
 	if len(q.Labels) > 0 {
 		for _, label := range q.Labels {
 			conditions = append(conditions, `EXISTS (
 				SELECT 1 FROM ml
 				JOIN lbl ON lbl.id = ml.label_id
-				WHERE ml.message_id = msg.id AND lbl.name = ?
+				WHERE ml.message_id = msg.id AND lbl.name ILIKE ? ESCAPE '\'
 			)`)
-			args = append(args, label)
+			args = append(args, escapeILIKE(label))
 		}
 	}
 

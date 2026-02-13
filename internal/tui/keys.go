@@ -881,6 +881,8 @@ func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleExportAttachmentsKeys(msg)
 	case modalExportResult:
 		return m.handleExportResultKeys()
+	case modalError:
+		return m.handleErrorKeys()
 	case modalHelp:
 		return m.handleHelpKeys(msg)
 	}
@@ -1026,6 +1028,14 @@ func (m Model) handleExportResultKeys() (tea.Model, tea.Cmd) {
 	// Any key closes the result modal
 	m.modal = modalNone
 	m.modalResult = ""
+	return m, nil
+}
+
+func (m Model) handleErrorKeys() (tea.Model, tea.Cmd) {
+	// Any key dismisses the error modal
+	m.modal = modalNone
+	m.modalResult = ""
+	m.err = nil
 	return m, nil
 }
 
