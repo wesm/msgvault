@@ -97,14 +97,14 @@ func TestInlineSearchTabToggle(t *testing.T) {
 			wantRequestIDIncrement:  false,
 		},
 		{
-			name:                    "no effect at aggregate level",
+			name:                    "toggle to deep at aggregate level",
 			level:                   levelAggregates,
 			initialMode:             searchModeFast,
 			query:                   "test query",
-			wantMode:                searchModeFast, // unchanged
-			wantCmd:                 false,
-			wantInlineSearchLoading: false,
-			wantRequestIDIncrement:  false,
+			wantMode:                searchModeDeep,
+			wantCmd:                 true,
+			wantInlineSearchLoading: true,
+			wantRequestIDIncrement:  true,
 		},
 	}
 
