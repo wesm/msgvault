@@ -551,14 +551,16 @@ func (s *Server) handleAddAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Add account to config
-	s.cfg.Accounts = append(s.cfg.Accounts, config.AccountSchedule{
+	newAccount := config.AccountSchedule{
 		Email:    req.Email,
 		Schedule: req.Schedule,
 		Enabled:  req.Enabled,
-	})
+	}
+	s.cfg.Accounts = append(s.cfg.Accounts, newAccount)
 
-	// Save config
+	// Save config; rollback in-memory state on failure
 	if err := s.cfg.Save(); err != nil {
+		s.cfg.Accounts = s.cfg.Accounts[:len(s.cfg.Accounts)-1]
 		s.cfgMu.Unlock()
 		s.logger.Error("failed to save config", "error", err)
 		writeError(w, http.StatusInternalServerError, "save_error", "Failed to save configuration")
