@@ -328,7 +328,7 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyCol
 	for _, label := range q.Labels {
 		conditions = append(conditions, `EXISTS (
 			SELECT 1 FROM ml ml_label
-			JOIN l l_label ON l_label.id = ml_label.label_id
+			JOIN lbl l_label ON l_label.id = ml_label.label_id
 			WHERE ml_label.message_id = msg.id
 			  AND l_label.name = ?
 		)`)

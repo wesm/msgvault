@@ -1930,6 +1930,11 @@ func TestAggregateBySender_WithSearchQuery(t *testing.T) {
 			searchQuery: "has:attachment",
 			wantSenders: []string{"alice@example.com", "bob@company.org"}, // msg2 (alice) and msg4 (bob)
 		},
+		{
+			name:        "label search filter",
+			searchQuery: "label:Work",
+			wantSenders: []string{"alice@example.com", "bob@company.org"}, // msg1 (alice) and msg4 (bob)
+		},
 	}
 
 	for _, tt := range tests {
