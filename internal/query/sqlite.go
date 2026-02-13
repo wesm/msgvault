@@ -377,13 +377,13 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		conditions = append(conditions, "(p_filter_from.domain IS NULL OR p_filter_from.domain = '')")
 	}
 
-	// Label filter
+	// Label filter - case-insensitive exact match
 	if filter.Label != "" {
 		joins = append(joins, `
 			JOIN message_labels ml_filter ON ml_filter.message_id = m.id
 			JOIN labels l_filter ON l_filter.id = ml_filter.label_id
 		`)
-		conditions = append(conditions, "l_filter.name = ?")
+		conditions = append(conditions, "LOWER(l_filter.name) = LOWER(?)")
 		args = append(args, filter.Label)
 	} else if filter.MatchesEmpty(ViewLabels) {
 		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM message_labels ml WHERE ml.message_id = m.id)")
@@ -1107,7 +1107,7 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 			JOIN message_labels ml ON ml.message_id = m.id
 			JOIN labels l ON l.id = ml.label_id
 		`)
-		conditions = append(conditions, "l.name = ?")
+		conditions = append(conditions, "LOWER(l.name) = LOWER(?)")
 		args = append(args, filter.Label)
 	}
 
@@ -1257,18 +1257,18 @@ func (e *SQLiteEngine) buildSearchQueryParts(ctx context.Context, q *search.Quer
 		conditions = append(conditions, fmt.Sprintf("LOWER(p_bcc.email_address) IN (%s)", strings.Join(placeholders, ",")))
 	}
 
-	// Label filter
+	// Label filter - case-insensitive substring match
 	if len(q.Labels) > 0 {
 		joins = append(joins, `
 			JOIN message_labels ml ON ml.message_id = m.id
 			JOIN labels l ON l.id = ml.label_id
 		`)
-		placeholders := make([]string, len(q.Labels))
-		for i, label := range q.Labels {
-			placeholders[i] = "?"
-			args = append(args, label)
+		var labelConds []string
+		for _, label := range q.Labels {
+			labelConds = append(labelConds, "LOWER(l.name) LIKE LOWER(?)")
+			args = append(args, "%"+label+"%")
 		}
-		conditions = append(conditions, fmt.Sprintf("l.name IN (%s)", strings.Join(placeholders, ",")))
+		conditions = append(conditions, "("+strings.Join(labelConds, " AND ")+")")
 	}
 
 	// Subject filter

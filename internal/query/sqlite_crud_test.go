@@ -149,6 +149,11 @@ func TestListMessages_Filters(t *testing.T) {
 			wantCount: 2,
 		},
 		{
+			name:      "Filter by label case-insensitive",
+			filter:    MessageFilter{Label: "work"},
+			wantCount: 2,
+		},
+		{
 			name:      "Filter by sender name",
 			filter:    MessageFilter{SenderName: "Alice Smith"},
 			wantCount: 3,
