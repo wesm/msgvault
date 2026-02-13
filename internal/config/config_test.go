@@ -844,3 +844,145 @@ func TestNewDefaultConfig(t *testing.T) {
 		t.Errorf("Sync.RateLimitQPS = %d, want 5", cfg.Sync.RateLimitQPS)
 	}
 }
+
+func TestSaveAndLoad_RoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := NewDefaultConfig()
+	cfg.HomeDir = tmpDir
+	cfg.OAuth.ClientSecrets = "/path/to/secrets.json"
+	cfg.Sync.RateLimitQPS = 10
+	cfg.Server.APIPort = 9090
+	cfg.Server.APIKey = "my-server-key"
+	cfg.Remote.URL = "http://nas:8080"
+	cfg.Remote.APIKey = "my-remote-key"
+	cfg.Remote.AllowInsecure = true
+	cfg.Accounts = []AccountSchedule{
+		{Email: "user@gmail.com", Schedule: "0 2 * * *", Enabled: true},
+	}
+
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	// Load it back
+	loaded, err := Load(cfg.ConfigFilePath(), "")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	// Verify all fields survived the round trip
+	if loaded.OAuth.ClientSecrets != cfg.OAuth.ClientSecrets {
+		t.Errorf("OAuth.ClientSecrets = %q, want %q",
+			loaded.OAuth.ClientSecrets, cfg.OAuth.ClientSecrets)
+	}
+	if loaded.Sync.RateLimitQPS != 10 {
+		t.Errorf("Sync.RateLimitQPS = %d, want 10", loaded.Sync.RateLimitQPS)
+	}
+	if loaded.Server.APIPort != 9090 {
+		t.Errorf("Server.APIPort = %d, want 9090", loaded.Server.APIPort)
+	}
+	if loaded.Server.APIKey != "my-server-key" {
+		t.Errorf("Server.APIKey = %q, want my-server-key", loaded.Server.APIKey)
+	}
+	if loaded.Remote.URL != "http://nas:8080" {
+		t.Errorf("Remote.URL = %q, want http://nas:8080", loaded.Remote.URL)
+	}
+	if loaded.Remote.APIKey != "my-remote-key" {
+		t.Errorf("Remote.APIKey = %q, want my-remote-key", loaded.Remote.APIKey)
+	}
+	if !loaded.Remote.AllowInsecure {
+		t.Error("Remote.AllowInsecure = false, want true")
+	}
+	if len(loaded.Accounts) != 1 {
+		t.Fatalf("len(Accounts) = %d, want 1", len(loaded.Accounts))
+	}
+	if loaded.Accounts[0].Email != "user@gmail.com" {
+		t.Errorf("Accounts[0].Email = %q, want user@gmail.com",
+			loaded.Accounts[0].Email)
+	}
+}
+
+func TestSave_CreatesFileWithSecurePermissions(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := NewDefaultConfig()
+	cfg.HomeDir = tmpDir
+
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	info, err := os.Stat(cfg.ConfigFilePath())
+	if err != nil {
+		t.Fatalf("Stat config: %v", err)
+	}
+
+	// Should have no group/other permissions (0600 or stricter)
+	if info.Mode().Perm()&0077 != 0 {
+		t.Errorf("config perm = %04o, want no group/other access",
+			info.Mode().Perm())
+	}
+}
+
+func TestSave_OverwritesExisting(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Save initial config
+	cfg := NewDefaultConfig()
+	cfg.HomeDir = tmpDir
+	cfg.Sync.RateLimitQPS = 5
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("first Save() error = %v", err)
+	}
+
+	// Update and save again
+	cfg.Sync.RateLimitQPS = 42
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("second Save() error = %v", err)
+	}
+
+	// Load and verify the update took effect
+	loaded, err := Load(cfg.ConfigFilePath(), "")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.Sync.RateLimitQPS != 42 {
+		t.Errorf("Sync.RateLimitQPS = %d, want 42", loaded.Sync.RateLimitQPS)
+	}
+}
+
+func TestSave_AllowInsecureRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Save with AllowInsecure = false (default)
+	cfg := NewDefaultConfig()
+	cfg.HomeDir = tmpDir
+	cfg.Remote.URL = "https://nas:8080"
+	cfg.Remote.APIKey = "key"
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := Load(cfg.ConfigFilePath(), "")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.Remote.AllowInsecure {
+		t.Error("AllowInsecure should be false when not set")
+	}
+
+	// Now save with AllowInsecure = true
+	cfg.Remote.AllowInsecure = true
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err = Load(cfg.ConfigFilePath(), "")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !loaded.Remote.AllowInsecure {
+		t.Error("AllowInsecure should be true after saving with true")
+	}
+}
