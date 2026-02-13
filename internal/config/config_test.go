@@ -926,6 +926,35 @@ func TestSave_CreatesFileWithSecurePermissions(t *testing.T) {
 	}
 }
 
+func TestSave_TightensWeakPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix file permissions not supported on Windows")
+	}
+
+	tmpDir := t.TempDir()
+	cfg := NewDefaultConfig()
+	cfg.HomeDir = tmpDir
+
+	// Pre-create config file with overly permissive mode
+	path := cfg.ConfigFilePath()
+	if err := os.WriteFile(path, []byte(""), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if info.Mode().Perm()&0077 != 0 {
+		t.Errorf("Save should tighten perms: got %04o, want 0600",
+			info.Mode().Perm())
+	}
+}
+
 func TestSave_OverwritesExisting(t *testing.T) {
 	tmpDir := t.TempDir()
 
