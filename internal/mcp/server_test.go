@@ -860,3 +860,194 @@ func TestAccountFilter(t *testing.T) {
 		}
 	})
 }
+
+// stageDeletionResponse matches the JSON response from stageDeletion.
+type stageDeletionResponse struct {
+	BatchID      string `json:"batch_id"`
+	MessageCount int    `json:"message_count"`
+	Status       string `json:"status"`
+	NextStep     string `json:"next_step"`
+}
+
+func TestStageDeletion(t *testing.T) {
+	eng := &querytest.MockEngine{
+		Accounts: []query.AccountInfo{
+			{ID: 1, Identifier: "alice@gmail.com"},
+		},
+		SearchFastResults: []query.MessageSummary{
+			testutil.NewMessageSummary(1).
+				WithSubject("Newsletter").
+				WithFromEmail("news@example.com").
+				WithSourceMessageID("gmail-001").
+				Build(),
+			testutil.NewMessageSummary(2).
+				WithSubject("Promo").
+				WithFromEmail("promo@example.com").
+				WithSourceMessageID("gmail-002").
+				Build(),
+		},
+		GmailIDs: []string{"gmail-010", "gmail-011"},
+	}
+
+	t.Run("query-based staging", func(t *testing.T) {
+		dataDir := t.TempDir()
+		h := &handlers{engine: eng, dataDir: dataDir}
+
+		resp := runTool[stageDeletionResponse](
+			t, "stage_deletion", h.stageDeletion,
+			map[string]any{"query": "from:news"},
+		)
+		if resp.MessageCount != 2 {
+			t.Fatalf("expected 2 messages, got %d", resp.MessageCount)
+		}
+		if resp.Status != "pending" {
+			t.Fatalf("expected pending status, got %s", resp.Status)
+		}
+		if resp.BatchID == "" {
+			t.Fatal("expected non-empty batch_id")
+		}
+	})
+
+	t.Run("structured filter staging", func(t *testing.T) {
+		dataDir := t.TempDir()
+		h := &handlers{engine: eng, dataDir: dataDir}
+
+		resp := runTool[stageDeletionResponse](
+			t, "stage_deletion", h.stageDeletion,
+			map[string]any{"from": "news@example.com"},
+		)
+		if resp.MessageCount != 2 {
+			t.Fatalf("expected 2 messages, got %d", resp.MessageCount)
+		}
+	})
+
+	t.Run("whitespace-only query rejected", func(t *testing.T) {
+		dataDir := t.TempDir()
+		h := &handlers{engine: eng, dataDir: dataDir}
+
+		r := runToolExpectError(
+			t, "stage_deletion", h.stageDeletion,
+			map[string]any{"query": "   "},
+		)
+		txt := resultText(t, r)
+		if !strings.Contains(txt, "must provide") {
+			t.Fatalf("expected validation error, got: %s", txt)
+		}
+	})
+
+	t.Run("query and filters rejected", func(t *testing.T) {
+		dataDir := t.TempDir()
+		h := &handlers{engine: eng, dataDir: dataDir}
+
+		r := runToolExpectError(
+			t, "stage_deletion", h.stageDeletion,
+			map[string]any{
+				"query": "from:alice",
+				"from":  "alice@example.com",
+			},
+		)
+		txt := resultText(t, r)
+		if !strings.Contains(txt, "not both") {
+			t.Fatalf("expected mutual exclusion error, got: %s", txt)
+		}
+	})
+
+	t.Run("no filters rejected", func(t *testing.T) {
+		dataDir := t.TempDir()
+		h := &handlers{engine: eng, dataDir: dataDir}
+
+		r := runToolExpectError(
+			t, "stage_deletion", h.stageDeletion,
+			map[string]any{},
+		)
+		txt := resultText(t, r)
+		if !strings.Contains(txt, "must provide") {
+			t.Fatalf("expected validation error, got: %s", txt)
+		}
+	})
+
+	t.Run("no matches returns error", func(t *testing.T) {
+		dataDir := t.TempDir()
+		emptyEng := &querytest.MockEngine{
+			SearchFastResults: nil,
+			GmailIDs:          nil,
+		}
+		h := &handlers{engine: emptyEng, dataDir: dataDir}
+
+		r := runToolExpectError(
+			t, "stage_deletion", h.stageDeletion,
+			map[string]any{"from": "nobody@example.com"},
+		)
+		txt := resultText(t, r)
+		if !strings.Contains(txt, "no messages match") {
+			t.Fatalf("expected no-match error, got: %s", txt)
+		}
+	})
+
+	t.Run("account filter propagated", func(t *testing.T) {
+		dataDir := t.TempDir()
+		var capturedFilter query.MessageFilter
+		eng := &querytest.MockEngine{
+			Accounts: []query.AccountInfo{
+				{ID: 1, Identifier: "alice@gmail.com"},
+			},
+			GetGmailIDsByFilterFunc: func(_ context.Context, f query.MessageFilter) ([]string, error) {
+				capturedFilter = f
+				return []string{"gmail-100"}, nil
+			},
+		}
+		h := &handlers{engine: eng, dataDir: dataDir}
+
+		runTool[stageDeletionResponse](
+			t, "stage_deletion", h.stageDeletion,
+			map[string]any{
+				"account": "alice@gmail.com",
+				"from":    "news@example.com",
+			},
+		)
+		if capturedFilter.SourceID == nil {
+			t.Fatal("expected SourceID to be set")
+		}
+		if *capturedFilter.SourceID != 1 {
+			t.Fatalf("expected SourceID 1, got %d", *capturedFilter.SourceID)
+		}
+	})
+
+	t.Run("invalid account rejected", func(t *testing.T) {
+		dataDir := t.TempDir()
+		h := &handlers{engine: eng, dataDir: dataDir}
+
+		r := runToolExpectError(
+			t, "stage_deletion", h.stageDeletion,
+			map[string]any{
+				"account": "unknown@gmail.com",
+				"from":    "news@example.com",
+			},
+		)
+		txt := resultText(t, r)
+		if !strings.Contains(txt, "account not found") {
+			t.Fatalf("expected account error, got: %s", txt)
+		}
+	})
+
+	t.Run("structured filter limit enforced", func(t *testing.T) {
+		dataDir := t.TempDir()
+		var capturedFilter query.MessageFilter
+		eng := &querytest.MockEngine{
+			GetGmailIDsByFilterFunc: func(_ context.Context, f query.MessageFilter) ([]string, error) {
+				capturedFilter = f
+				return []string{"gmail-200"}, nil
+			},
+		}
+		h := &handlers{engine: eng, dataDir: dataDir}
+
+		runTool[stageDeletionResponse](
+			t, "stage_deletion", h.stageDeletion,
+			map[string]any{"domain": "example.com"},
+		)
+		if capturedFilter.Pagination.Limit != maxStageDeletionResults {
+			t.Fatalf("expected limit %d, got %d",
+				maxStageDeletionResults, capturedFilter.Pagination.Limit)
+		}
+	})
+}

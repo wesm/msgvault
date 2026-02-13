@@ -1754,6 +1754,7 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 		SELECT msg.source_message_id
 		FROM msg
 		WHERE %s
+		ORDER BY msg.sent_at DESC
 	`, e.parquetCTEs(), strings.Join(conditions, " AND "))
 
 	// Only add LIMIT if explicitly set (0 means no limit)
