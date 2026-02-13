@@ -177,6 +177,7 @@ func aggregateTool() mcp.Tool {
 func stageDeletionTool() mcp.Tool {
 	return mcp.NewTool(ToolStageDeletion,
 		mcp.WithDescription("Stage messages for deletion. Use EITHER 'query' (Gmail-style search) OR structured filters (from, domain, label, etc.), not both. Does NOT delete immediately - run 'msgvault delete-staged' CLI command to execute staged deletions."),
+		withAccount(),
 		mcp.WithString("query",
 			mcp.Description("Gmail-style search query (e.g. 'from:linkedin subject:job alert'). Cannot be combined with structured filters."),
 		),

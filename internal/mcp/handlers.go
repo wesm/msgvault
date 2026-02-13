@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -449,9 +450,17 @@ const maxStageDeletionResults = 100000
 func (h *handlers) stageDeletion(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 
+	// Look up account filter
+	account, _ := args["account"].(string)
+	sourceID, err := h.getAccountID(ctx, account)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
 	// Check for query vs structured filters
-	queryStr, hasQuery := args["query"].(string)
-	hasQuery = hasQuery && queryStr != ""
+	queryStr, _ := args["query"].(string)
+	queryStr = strings.TrimSpace(queryStr)
+	hasQuery := queryStr != ""
 
 	// Check for any structured filter
 	fromStr, _ := args["from"].(string)
@@ -484,9 +493,11 @@ func (h *handlers) stageDeletion(ctx context.Context, req mcp.CallToolRequest) (
 	if hasQuery {
 		// Query-based search
 		q := search.Parse(queryStr)
+		q.AccountID = sourceID
 
 		// Try fast search first
-		results, err := h.engine.SearchFast(ctx, q, query.MessageFilter{}, maxStageDeletionResults, 0)
+		filter := query.MessageFilter{SourceID: sourceID}
+		results, err := h.engine.SearchFast(ctx, q, filter, maxStageDeletionResults, 0)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 		}
@@ -509,12 +520,16 @@ func (h *handlers) stageDeletion(ctx context.Context, req mcp.CallToolRequest) (
 	} else {
 		// Structured filter
 		filter := query.MessageFilter{
+			SourceID:            sourceID,
 			Sender:              fromStr,
 			Domain:              domainStr,
 			Label:               labelStr,
 			WithAttachmentsOnly: hasAttachment,
 			After:               afterDate,
 			Before:              beforeDate,
+			Pagination: query.Pagination{
+				Limit: maxStageDeletionResults,
+			},
 		}
 
 		var err error
@@ -543,7 +558,7 @@ func (h *handlers) stageDeletion(ctx context.Context, req mcp.CallToolRequest) (
 		if beforeDate != nil {
 			parts = append(parts, fmt.Sprintf("before:%s", beforeDate.Format("2006-01-02")))
 		}
-		description = fmt.Sprintf("filter: %s", joinParts(parts, " "))
+		description = fmt.Sprintf("filter: %s", strings.Join(parts, " "))
 		if len(description) > 50 {
 			description = description[:50]
 		}
@@ -564,6 +579,7 @@ func (h *handlers) stageDeletion(ctx context.Context, req mcp.CallToolRequest) (
 	manifest.CreatedBy = "mcp"
 
 	// Set filter metadata for execution
+	manifest.Filters.Account = account
 	if fromStr != "" {
 		manifest.Filters.Senders = []string{fromStr}
 	}
@@ -597,16 +613,4 @@ func (h *handlers) stageDeletion(ctx context.Context, req mcp.CallToolRequest) (
 	}
 
 	return jsonResult(resp)
-}
-
-// joinParts joins strings with a separator.
-func joinParts(parts []string, sep string) string {
-	if len(parts) == 0 {
-		return ""
-	}
-	result := parts[0]
-	for _, p := range parts[1:] {
-		result += sep + p
-	}
-	return result
 }
