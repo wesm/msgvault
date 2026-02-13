@@ -63,10 +63,14 @@ var operators = map[string]operatorFn{
 		q.SubjectTerms = append(q.SubjectTerms, v)
 	},
 	"label": func(q *Query, v string, _ time.Time) {
-		q.Labels = append(q.Labels, v)
+		if v = strings.TrimSpace(v); v != "" {
+			q.Labels = append(q.Labels, v)
+		}
 	},
 	"l": func(q *Query, v string, _ time.Time) {
-		q.Labels = append(q.Labels, v)
+		if v = strings.TrimSpace(v); v != "" {
+			q.Labels = append(q.Labels, v)
+		}
 	},
 	"has": func(q *Query, v string, _ time.Time) {
 		if low := strings.ToLower(v); low == "attachment" || low == "attachments" {

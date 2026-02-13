@@ -57,14 +57,15 @@ func TestSearchResultsStale(t *testing.T) {
 // TestInlineSearchTabToggle verifies Tab key behavior across different search states.
 func TestInlineSearchTabToggle(t *testing.T) {
 	tests := []struct {
-		name                    string
-		level                   viewLevel
-		initialMode             searchModeKind
-		query                   string
-		wantMode                searchModeKind
-		wantCmd                 bool
-		wantInlineSearchLoading bool
-		wantRequestIDIncrement  bool
+		name                     string
+		level                    viewLevel
+		initialMode              searchModeKind
+		query                    string
+		wantMode                 searchModeKind
+		wantCmd                  bool
+		wantInlineSearchLoading  bool
+		wantSearchIDIncrement    bool
+		wantAggregateIDIncrement bool
 	}{
 		{
 			name:                    "toggle fast to deep at message list",
@@ -74,7 +75,7 @@ func TestInlineSearchTabToggle(t *testing.T) {
 			wantMode:                searchModeDeep,
 			wantCmd:                 true,
 			wantInlineSearchLoading: true,
-			wantRequestIDIncrement:  true,
+			wantSearchIDIncrement:   true,
 		},
 		{
 			name:                    "toggle deep to fast at message list",
@@ -84,7 +85,7 @@ func TestInlineSearchTabToggle(t *testing.T) {
 			wantMode:                searchModeFast,
 			wantCmd:                 true,
 			wantInlineSearchLoading: true,
-			wantRequestIDIncrement:  true,
+			wantSearchIDIncrement:   true,
 		},
 		{
 			name:                    "no search with empty query",
@@ -94,17 +95,14 @@ func TestInlineSearchTabToggle(t *testing.T) {
 			wantMode:                searchModeDeep,
 			wantCmd:                 false,
 			wantInlineSearchLoading: false,
-			wantRequestIDIncrement:  false,
 		},
 		{
-			name:                    "no effect at aggregate level",
-			level:                   levelAggregates,
-			initialMode:             searchModeFast,
-			query:                   "test query",
-			wantMode:                searchModeFast, // unchanged
-			wantCmd:                 false,
-			wantInlineSearchLoading: false,
-			wantRequestIDIncrement:  false,
+			name:        "no-op at aggregate level",
+			level:       levelAggregates,
+			initialMode: searchModeFast,
+			query:       "test query",
+			wantMode:    searchModeFast,
+			wantCmd:     false,
 		},
 	}
 
@@ -114,7 +112,8 @@ func TestInlineSearchTabToggle(t *testing.T) {
 				WithLevel(tt.level).
 				WithActiveSearch(tt.query, tt.initialMode).
 				Build()
-			initialRequestID := model.searchRequestID
+			initialSearchID := model.searchRequestID
+			initialAggregateID := model.aggregateRequestID
 
 			m, cmd := applyInlineSearchKey(t, model, keyTab())
 
@@ -122,16 +121,28 @@ func TestInlineSearchTabToggle(t *testing.T) {
 			assertCmd(t, cmd, tt.wantCmd)
 
 			if m.inlineSearchLoading != tt.wantInlineSearchLoading {
-				t.Errorf("expected inlineSearchLoading=%v, got %v", tt.wantInlineSearchLoading, m.inlineSearchLoading)
+				t.Errorf("expected inlineSearchLoading=%v, got %v",
+					tt.wantInlineSearchLoading, m.inlineSearchLoading)
 			}
 
-			if tt.wantRequestIDIncrement {
-				if m.searchRequestID != initialRequestID+1 {
-					t.Errorf("expected searchRequestID to increment by 1 (from %d to %d), got %d",
-						initialRequestID, initialRequestID+1, m.searchRequestID)
+			if tt.wantSearchIDIncrement {
+				if m.searchRequestID != initialSearchID+1 {
+					t.Errorf("searchRequestID: want %d, got %d",
+						initialSearchID+1, m.searchRequestID)
 				}
-			} else if m.searchRequestID != initialRequestID {
-				t.Errorf("expected searchRequestID to remain %d, got %d", initialRequestID, m.searchRequestID)
+			} else if m.searchRequestID != initialSearchID {
+				t.Errorf("searchRequestID should not change: want %d, got %d",
+					initialSearchID, m.searchRequestID)
+			}
+
+			if tt.wantAggregateIDIncrement {
+				if m.aggregateRequestID != initialAggregateID+1 {
+					t.Errorf("aggregateRequestID: want %d, got %d",
+						initialAggregateID+1, m.aggregateRequestID)
+				}
+			} else if m.aggregateRequestID != initialAggregateID {
+				t.Errorf("aggregateRequestID should not change: want %d, got %d",
+					initialAggregateID, m.aggregateRequestID)
 			}
 		})
 	}
@@ -969,32 +980,27 @@ func TestHeaderViewShowsFilteredStatsOnSearch(t *testing.T) {
 	}
 }
 
-// TestDrillDownWithSearchQueryClearsSearch verifies that drilling down from a
-// filtered aggregate clears the search query (layered search: each level independent).
-func TestDrillDownWithSearchQueryClearsSearch(t *testing.T) {
+// TestDrillDownWithSearchQueryPreservesSearch verifies that drilling down from a
+// filtered aggregate preserves the search query so the message list is filtered.
+func TestDrillDownWithSearchQueryPreservesSearch(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
 	model.level = levelAggregates
 	model.searchQuery = "important" // Active search filter
 	model.cursor = 0                // alice@example.com
 
-	// Capture initial request IDs to verify exact increments
-	initialLoadRequestID := model.loadRequestID
 	initialSearchRequestID := model.searchRequestID
 
 	// Press Enter to drill down
 	m, cmd := applyAggregateKeyWithCmd(t, model, keyEnter())
 
 	assertLevel(t, m, levelMessageList)
-	assertSearchQuery(t, m, "")
-	assertCmd(t, cmd, true) // Should return command to load messages
+	assertSearchQuery(t, m, "important") // Search preserved
+	assertCmd(t, cmd, true)
 
-	if m.loadRequestID != initialLoadRequestID+1 {
-		t.Errorf("expected loadRequestID to increment by 1 (from %d to %d), got %d",
-			initialLoadRequestID, initialLoadRequestID+1, m.loadRequestID)
-	}
-	if m.searchRequestID != initialSearchRequestID+1 {
-		t.Errorf("expected searchRequestID to increment by 1 (from %d to %d), got %d",
-			initialSearchRequestID, initialSearchRequestID+1, m.searchRequestID)
+	// Should use loadSearch (searchRequestID incremented twice: invalidate + new search)
+	if m.searchRequestID != initialSearchRequestID+2 {
+		t.Errorf("expected searchRequestID to increment by 2 (from %d to %d), got %d",
+			initialSearchRequestID, initialSearchRequestID+2, m.searchRequestID)
 	}
 }
 
@@ -1025,9 +1031,9 @@ func TestDrillDownWithoutSearchQueryUsesLoadMessages(t *testing.T) {
 	}
 }
 
-// TestSubAggregateDrillDownWithSearchQueryClearsSearch verifies drill-down from
-// sub-aggregate also clears the search query (layered search).
-func TestSubAggregateDrillDownWithSearchQueryClearsSearch(t *testing.T) {
+// TestSubAggregateDrillDownWithSearchQueryPreservesSearch verifies drill-down from
+// sub-aggregate preserves the search query.
+func TestSubAggregateDrillDownWithSearchQueryPreservesSearch(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
 	model.level = levelDrillDown
 	model.searchQuery = "urgent"
@@ -1036,53 +1042,49 @@ func TestSubAggregateDrillDownWithSearchQueryClearsSearch(t *testing.T) {
 	model.viewType = query.ViewLabels
 	model.cursor = 0
 
-	// Capture initial request IDs to verify exact increments
-	initialLoadRequestID := model.loadRequestID
 	initialSearchRequestID := model.searchRequestID
 
 	m, cmd := applyAggregateKeyWithCmd(t, model, keyEnter())
 
 	assertLevel(t, m, levelMessageList)
-	assertSearchQuery(t, m, "")
-	assertCmd(t, cmd, true) // Should return command to load messages
+	assertSearchQuery(t, m, "urgent") // Search preserved
+	assertCmd(t, cmd, true)
 
-	if m.loadRequestID != initialLoadRequestID+1 {
-		t.Errorf("expected loadRequestID to increment by 1 (from %d to %d), got %d",
-			initialLoadRequestID, initialLoadRequestID+1, m.loadRequestID)
-	}
-	if m.searchRequestID != initialSearchRequestID+1 {
-		t.Errorf("expected searchRequestID to increment by 1 (from %d to %d), got %d",
-			initialSearchRequestID, initialSearchRequestID+1, m.searchRequestID)
+	if m.searchRequestID != initialSearchRequestID+2 {
+		t.Errorf("expected searchRequestID to increment by 2 (from %d to %d), got %d",
+			initialSearchRequestID, initialSearchRequestID+2, m.searchRequestID)
 	}
 }
 
 // TestDrillDownSearchBreadcrumbRoundTrip verifies that searching at aggregate level,
-// drilling down (which clears search), then pressing Esc restores the original search.
+// drilling down (which preserves search), then pressing Esc restores the aggregate view
+// with the search still in place. Inherited search should not require two Esc presses.
 func TestDrillDownSearchBreadcrumbRoundTrip(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
 	model.level = levelAggregates
 	model.searchQuery = "important"
 	model.cursor = 0
 
-	// Drill down — search should be cleared
+	// Drill down — search should persist
 	m := applyAggregateKey(t, model, keyEnter())
 
-	assertSearchQuery(t, m, "")
+	assertSearchQuery(t, m, "important")
 	assertLevel(t, m, levelMessageList)
 
 	// Populate messages so Esc handler works
 	m.messages = []query.MessageSummary{{ID: 1}}
 
-	// Esc back — should restore outer search from breadcrumb
+	// Single Esc goes back to aggregate with search restored from breadcrumb.
+	// Inherited search (no preSearchMessages snapshot) does not get cleared.
 	m2 := applyMessageListKey(t, m, keyEsc())
 
 	assertLevel(t, m2, levelAggregates)
 	assertSearchQuery(t, m2, "important")
 }
 
-// TestDrillDownClearsHighlightTerms verifies that highlightTerms produces no
-// highlighting after drill-down (since searchQuery is empty).
-func TestDrillDownClearsHighlightTerms(t *testing.T) {
+// TestDrillDownPreservesSearchQuery verifies that searchQuery persists
+// after drill-down so highlighting and filtering remain active.
+func TestDrillDownPreservesSearchQuery(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
 	model.level = levelAggregates
 	model.searchQuery = "alice"
@@ -1090,12 +1092,7 @@ func TestDrillDownClearsHighlightTerms(t *testing.T) {
 
 	m := applyAggregateKey(t, model, keyEnter())
 
-	// highlightTerms with empty searchQuery should return text unchanged
-	text := "alice@example.com"
-	result := highlightTerms(text, m.searchQuery)
-	if result != text {
-		t.Errorf("expected no highlighting after drill-down, got %q", result)
-	}
+	assertSearchQuery(t, m, "alice")
 }
 
 // TestSubAggregateDrillDownSearchBreadcrumbRoundTrip verifies the breadcrumb
@@ -1109,16 +1106,78 @@ func TestSubAggregateDrillDownSearchBreadcrumbRoundTrip(t *testing.T) {
 	model.viewType = query.ViewLabels
 	model.cursor = 0
 
-	// Drill down to message list — search should be cleared
+	// Drill down to message list — search should persist
 	m := applyAggregateKey(t, model, keyEnter())
 
-	assertSearchQuery(t, m, "")
+	assertSearchQuery(t, m, "urgent")
 
-	// Populate messages and go back
+	// Single Esc navigates back (inherited search, no snapshot)
 	m.messages = []query.MessageSummary{{ID: 1}}
 	m2 := applyMessageListKey(t, m, keyEsc())
 
 	assertSearchQuery(t, m2, "urgent")
+	assertLevel(t, m2, levelDrillDown)
+}
+
+// TestEscBehaviorInheritedVsLocalSearch verifies that Esc at message list level
+// distinguishes inherited search (from aggregate drill-down) from locally-initiated
+// search. Inherited search: single Esc goes back. Local search: first Esc clears
+// search, second Esc goes back.
+func TestEscBehaviorInheritedVsLocalSearch(t *testing.T) {
+	t.Run("inherited search: single Esc goes back", func(t *testing.T) {
+		model := newTestModelWithRows(testAggregateRows)
+		model.level = levelAggregates
+		model.searchQuery = "avro"
+		model.cursor = 0
+
+		// Drill down — search inherited, no preSearchMessages snapshot
+		m := applyAggregateKey(t, model, keyEnter())
+		m.messages = []query.MessageSummary{{ID: 1}, {ID: 2}}
+
+		if m.preSearchMessages != nil {
+			t.Fatal("inherited search should not have preSearchMessages")
+		}
+
+		// Single Esc goes back to aggregate with search intact
+		m2 := applyMessageListKey(t, m, keyEsc())
+		assertLevel(t, m2, levelAggregates)
+		assertSearchQuery(t, m2, "avro")
+	})
+
+	t.Run("local search: two-step Esc", func(t *testing.T) {
+		model := newTestModelWithRows(testAggregateRows)
+		model.level = levelAggregates
+		model.cursor = 0
+
+		// Drill down without search
+		m := applyAggregateKey(t, model, keyEnter())
+		m.messages = []query.MessageSummary{{ID: 1}, {ID: 2}, {ID: 3}}
+		m.loading = false
+
+		// User initiates search locally — snapshot is created
+		cmd := m.activateInlineSearch("search")
+		assertCmd(t, cmd, true)
+		m.inlineSearchActive = false
+		m.searchQuery = "test"
+		m.messages = []query.MessageSummary{{ID: 99}}
+
+		if m.preSearchMessages == nil {
+			t.Fatal("local search should have preSearchMessages")
+		}
+
+		// First Esc clears the local search, restores pre-search messages
+		m2 := applyMessageListKey(t, m, keyEsc())
+		assertLevel(t, m2, levelMessageList)
+		assertSearchQuery(t, m2, "")
+		if len(m2.messages) != 3 {
+			t.Errorf("expected 3 pre-search messages restored, got %d",
+				len(m2.messages))
+		}
+
+		// Second Esc goes back to aggregate
+		m3 := applyMessageListKey(t, m2, keyEsc())
+		assertLevel(t, m3, levelAggregates)
+	})
 }
 
 // TestStaleSearchResponseIgnoredAfterDrillDown verifies that a search response
@@ -1150,6 +1209,108 @@ func TestStaleSearchResponseIgnoredAfterDrillDown(t *testing.T) {
 	}
 	if m2.messages[0].ID != 100 {
 		t.Errorf("expected message ID 100 (original), got %d", m2.messages[0].ID)
+	}
+}
+
+// TestStaleSearchIgnoredAfterInheritedEsc verifies that after pressing Esc to
+// go back from an inherited-search message list, in-flight search responses
+// are ignored because searchRequestID was incremented.
+func TestStaleSearchIgnoredAfterInheritedEsc(t *testing.T) {
+	model := newTestModelWithRows(testAggregateRows)
+	model.level = levelAggregates
+	model.searchQuery = "avro"
+	model.cursor = 0
+
+	// Drill down with inherited search
+	m := applyAggregateKey(t, model, keyEnter())
+	m.messages = []query.MessageSummary{{ID: 1}}
+
+	// Capture the search request ID that the in-flight search carries
+	inflightRequestID := m.searchRequestID
+
+	// Esc back to aggregate
+	m2 := applyMessageListKey(t, m, keyEsc())
+	assertLevel(t, m2, levelAggregates)
+
+	// Stale search response arrives with the old request ID
+	m3 := applySearchResults(t, m2, inflightRequestID,
+		[]query.MessageSummary{{ID: 999}}, 0)
+
+	// Must be ignored — level and rows unchanged
+	assertLevel(t, m3, levelAggregates)
+	if len(m3.messages) == 1 && m3.messages[0].ID == 999 {
+		t.Error("stale search response should have been ignored")
+	}
+}
+
+// TestAKeyWithActiveSearchUsesLoadSearch verifies that pressing "a" at
+// aggregate level with an active search query uses loadSearch (not
+// loadMessages) and invalidates stale loadMessages responses.
+func TestAKeyWithActiveSearchUsesLoadSearch(t *testing.T) {
+	model := newTestModelWithRows(testAggregateRows)
+	model.level = levelAggregates
+	model.searchQuery = "important"
+	model.cursor = 0
+
+	initialSearchID := model.searchRequestID
+	initialLoadID := model.loadRequestID
+
+	m, cmd := applyAggregateKeyWithCmd(t, model, key('a'))
+
+	assertLevel(t, m, levelMessageList)
+	assertSearchQuery(t, m, "important")
+	assertCmd(t, cmd, true)
+
+	// searchRequestID should increment (invalidate + new search)
+	if m.searchRequestID <= initialSearchID {
+		t.Errorf("expected searchRequestID > %d, got %d",
+			initialSearchID, m.searchRequestID)
+	}
+	// loadRequestID should also increment to invalidate stale loads
+	if m.loadRequestID <= initialLoadID {
+		t.Errorf("expected loadRequestID > %d, got %d",
+			initialLoadID, m.loadRequestID)
+	}
+}
+
+// TestInheritedSearchLocalReSearchSnapshots verifies that pressing /
+// from a message list with inherited search (no snapshot) creates a
+// snapshot, allowing two-step Esc to restore the inherited results.
+func TestInheritedSearchLocalReSearchSnapshots(t *testing.T) {
+	model := newTestModelWithRows(testAggregateRows)
+	model.level = levelAggregates
+	model.searchQuery = "avro"
+	model.cursor = 0
+
+	// Drill down with inherited search
+	m := applyAggregateKey(t, model, keyEnter())
+	m.messages = []query.MessageSummary{{ID: 1}, {ID: 2}}
+	m.loading = false
+
+	// User presses / to refine search — should snapshot inherited results
+	cmd := m.activateInlineSearch("search")
+	assertCmd(t, cmd, true)
+
+	if m.preSearchMessages == nil {
+		t.Fatal("activateInlineSearch should snapshot inherited results")
+	}
+	if len(m.preSearchMessages) != 2 {
+		t.Errorf("snapshot should have 2 messages, got %d",
+			len(m.preSearchMessages))
+	}
+
+	// Simulate new search committed
+	m.inlineSearchActive = false
+	m.searchQuery = "new query"
+	m.messages = []query.MessageSummary{{ID: 99}}
+
+	// First Esc restores inherited search results
+	m2 := applyMessageListKey(t, m, keyEsc())
+	assertLevel(t, m2, levelMessageList)
+	assertSearchQuery(t, m2, "")
+	if len(m2.messages) != 2 {
+		t.Errorf("expected 2 inherited messages restored, got %d",
+			len(m2.messages))
 	}
 }
 

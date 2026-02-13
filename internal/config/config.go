@@ -243,27 +243,66 @@ func (c *Config) ConfigFilePath() string {
 	return filepath.Join(c.HomeDir, "config.toml")
 }
 
-// Save writes the current configuration to disk.
-// Creates the config file if it doesn't exist, or updates it if it does.
-// Empty sections are omitted from the output.
+// Save writes the current configuration to disk atomically.
+// Uses temp file + rename to prevent partial writes on crash.
+// Enforces 0600 permissions regardless of existing file mode.
 func (c *Config) Save() error {
 	path := c.ConfigFilePath()
+
+	// Resolve symlinks so atomic rename replaces the target, not
+	// the symlink itself. EvalSymlinks fails on dangling symlinks
+	// (target doesn't exist yet), so fall back to Readlink.
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	} else if target, lErr := os.Readlink(path); lErr == nil {
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		path = target
+	}
 
 	// Ensure home directory exists
 	if err := c.EnsureHomeDir(); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".config-*.toml.tmp")
 	if err != nil {
-		return fmt.Errorf("create config file: %w", err)
+		return fmt.Errorf("create temp config file: %w", err)
 	}
-	defer f.Close()
+	tmpPath := tmp.Name()
 
-	if err := toml.NewEncoder(f).Encode(c); err != nil {
+	// Clean up temp file on any failure path
+	success := false
+	defer func() {
+		if !success {
+			tmp.Close()
+			os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(0600); err != nil {
+		return fmt.Errorf("set config file permissions: %w", err)
+	}
+
+	if err := toml.NewEncoder(tmp).Encode(c); err != nil {
 		return fmt.Errorf("encode config: %w", err)
 	}
 
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("sync config file: %w", err)
+	}
+
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close config file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename config file: %w", err)
+	}
+
+	success = true
 	return nil
 }
 

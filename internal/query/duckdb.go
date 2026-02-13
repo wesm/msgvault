@@ -263,32 +263,26 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyCol
 
 	q := search.Parse(searchQuery)
 
-	// Text terms: filter on the view's grouping key columns when provided,
-	// otherwise fall back to subject + sender search.
+	// Text terms: always search subject + sender, plus the view's grouping
+	// key columns when provided (e.g., label name in Labels view).
 	for _, term := range q.TextTerms {
 		termPattern := "%" + escapeILIKE(term) + "%"
-		if len(keyColumns) > 0 {
-			// Filter on the grouping dimension's columns
-			var parts []string
-			for _, col := range keyColumns {
-				parts = append(parts, col+` ILIKE ? ESCAPE '\'`)
-				args = append(args, termPattern)
-			}
-			conditions = append(conditions, "("+strings.Join(parts, " OR ")+")")
-		} else {
-			// Default: search subject and sender (for Senders/Time views)
-			conditions = append(conditions, `(
-				msg.subject ILIKE ? ESCAPE '\' OR
-				EXISTS (
-					SELECT 1 FROM mr mr_search
-					JOIN p p_search ON p_search.id = mr_search.participant_id
-					WHERE mr_search.message_id = msg.id
-					  AND mr_search.recipient_type = 'from'
-					  AND (p_search.email_address ILIKE ? ESCAPE '\' OR p_search.display_name ILIKE ? ESCAPE '\')
-				)
-			)`)
-			args = append(args, termPattern, termPattern, termPattern)
+		var parts []string
+		parts = append(parts, `msg.subject ILIKE ? ESCAPE '\'`)
+		args = append(args, termPattern)
+		parts = append(parts, `EXISTS (
+			SELECT 1 FROM mr mr_search
+			JOIN p p_search ON p_search.id = mr_search.participant_id
+			WHERE mr_search.message_id = msg.id
+			  AND mr_search.recipient_type = 'from'
+			  AND (p_search.email_address ILIKE ? ESCAPE '\' OR p_search.display_name ILIKE ? ESCAPE '\')
+		)`)
+		args = append(args, termPattern, termPattern)
+		for _, col := range keyColumns {
+			parts = append(parts, col+` ILIKE ? ESCAPE '\'`)
+			args = append(args, termPattern)
 		}
+		conditions = append(conditions, "("+strings.Join(parts, " OR ")+")")
 	}
 
 	// from: filter - match sender email
@@ -324,15 +318,38 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyCol
 		args = append(args, subjPattern)
 	}
 
-	// label: filter - exact match (consistent with SearchFast)
-	for _, label := range q.Labels {
-		conditions = append(conditions, `EXISTS (
-			SELECT 1 FROM ml ml_label
-			JOIN l l_label ON l_label.id = ml_label.label_id
-			WHERE ml_label.message_id = msg.id
-			  AND l_label.name = ?
-		)`)
-		args = append(args, label)
+	// label: filter - case-insensitive substring match.
+	// In the Labels aggregate view (keyColumns includes the label column),
+	// filter the grouping column directly so only matching labels appear
+	// in results — not all labels from matching messages.
+	labelKeyCol := ""
+	for _, col := range keyColumns {
+		if strings.HasSuffix(col, ".name") &&
+			strings.HasPrefix(col, "lbl") {
+			labelKeyCol = col
+			break
+		}
+	}
+	if labelKeyCol != "" && len(q.Labels) > 0 {
+		// Labels view: filter the grouped label column directly.
+		// Use OR so label:arrow label:inbox shows both matching labels.
+		var labelParts []string
+		for _, label := range q.Labels {
+			labelParts = append(labelParts, labelKeyCol+` ILIKE ? ESCAPE '\'`)
+			args = append(args, "%"+escapeILIKE(label)+"%")
+		}
+		conditions = append(conditions, "("+strings.Join(labelParts, " OR ")+")")
+	} else {
+		// Non-label views: use EXISTS to filter messages by label.
+		for _, label := range q.Labels {
+			conditions = append(conditions, `EXISTS (
+				SELECT 1 FROM ml ml_label
+				JOIN lbl l_label ON l_label.id = ml_label.label_id
+				WHERE ml_label.message_id = msg.id
+				  AND l_label.name ILIKE ? ESCAPE '\'
+			)`)
+			args = append(args, "%"+escapeILIKE(label)+"%")
+		}
 	}
 
 	// has:attachment filter
@@ -769,15 +786,15 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 		)`)
 	}
 
-	// Label filter - use EXISTS subquery (becomes semi-join)
+	// Label filter - case-insensitive EXISTS subquery (becomes semi-join)
 	if filter.Label != "" {
 		conditions = append(conditions, `EXISTS (
 			SELECT 1 FROM ml
 			JOIN lbl ON lbl.id = ml.label_id
 			WHERE ml.message_id = msg.id
-			  AND lbl.name = ?
+			  AND lbl.name ILIKE ? ESCAPE '\'
 		)`)
-		args = append(args, filter.Label)
+		args = append(args, escapeILIKE(filter.Label))
 	} else if filter.MatchesEmpty(ViewLabels) {
 		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM ml WHERE ml.message_id = msg.id)")
 	}
@@ -1710,9 +1727,9 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 			SELECT 1 FROM ml
 			JOIN lbl ON lbl.id = ml.label_id
 			WHERE ml.message_id = msg.id
-			  AND lbl.name = ?
+			  AND lbl.name ILIKE ? ESCAPE '\'
 		)`)
-		args = append(args, filter.Label)
+		args = append(args, escapeILIKE(filter.Label))
 	}
 
 	if filter.TimeRange.Period != "" {
@@ -2278,9 +2295,9 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 			SELECT 1 FROM ml
 			JOIN lbl ON lbl.id = ml.label_id
 			WHERE ml.message_id = msg.id
-			  AND lbl.name = ?
+			  AND lbl.name ILIKE ? ESCAPE '\'
 		)`)
-		args = append(args, filter.Label)
+		args = append(args, escapeILIKE(filter.Label))
 	}
 	if filter.TimeRange.Period != "" {
 		granularity := inferTimeGranularity(filter.TimeRange.Granularity, filter.TimeRange.Period)
@@ -2330,15 +2347,15 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 		}
 	}
 
-	// Label filter - use EXISTS subquery
+	// Label filter - case-insensitive substring match
 	if len(q.Labels) > 0 {
 		for _, label := range q.Labels {
 			conditions = append(conditions, `EXISTS (
 				SELECT 1 FROM ml
 				JOIN lbl ON lbl.id = ml.label_id
-				WHERE ml.message_id = msg.id AND lbl.name = ?
+				WHERE ml.message_id = msg.id AND lbl.name ILIKE ? ESCAPE '\'
 			)`)
-			args = append(args, label)
+			args = append(args, "%"+escapeILIKE(label)+"%")
 		}
 	}
 

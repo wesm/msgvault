@@ -94,6 +94,7 @@ func (s *Server) setupRouter() chi.Router {
 
 	// Health check (no auth required)
 	r.Get("/health", s.handleHealth)
+	r.Head("/health", s.handleHealth)
 
 	// API routes (auth required)
 	r.Route("/api/v1", func(r chi.Router) {

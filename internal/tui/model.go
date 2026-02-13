@@ -65,6 +65,7 @@ const (
 	modalExportResult
 	modalQuitConfirm
 	modalHelp
+	modalError
 )
 
 // searchModeKind represents the search mode (fast metadata vs deep body search).
@@ -776,11 +777,19 @@ func (m Model) handleDataLoaded(msg dataLoadedMsg) (tea.Model, tea.Cmd) {
 	m.inlineSearchLoading = false
 	if msg.err != nil {
 		m.err = query.HintRepairEncoding(msg.err)
+		m.modal = modalError
+		m.modalResult = m.err.Error()
 		m.restorePosition = false // Clear flag on error to prevent stale state
 		return m, nil
 	}
 
-	m.err = nil // Clear any previous error
+	m.err = nil
+	if m.modal == modalError {
+		m.modal = modalNone
+	}
+	if m.modal == modalError {
+		m.modal = modalNone
+	}
 	m.rows = msg.rows
 	// Only reset position on fresh loads, not when restoring from breadcrumb
 	if !m.restorePosition {
@@ -854,9 +863,14 @@ func (m Model) handleMessagesLoaded(msg messagesLoadedMsg) (tea.Model, tea.Cmd) 
 	m.msgListLoadingMore = false
 	if msg.err != nil {
 		m.err = query.HintRepairEncoding(msg.err)
+		m.modal = modalError
+		m.modalResult = m.err.Error()
 		m.restorePosition = false // Clear flag on error to prevent stale state
 	} else {
-		m.err = nil // Clear any previous error
+		m.err = nil
+		if m.modal == modalError {
+			m.modal = modalNone
+		}
 		if msg.append {
 			// Append paginated results to existing list
 			m.messages = append(m.messages, msg.messages...)
@@ -890,8 +904,13 @@ func (m Model) handleMessageDetailLoaded(msg messageDetailLoadedMsg) (tea.Model,
 	m.loading = false
 	if msg.err != nil {
 		m.err = query.HintRepairEncoding(msg.err)
+		m.modal = modalError
+		m.modalResult = m.err.Error()
 	} else {
-		m.err = nil // Clear any previous error
+		m.err = nil
+		if m.modal == modalError {
+			m.modal = modalNone
+		}
 		m.messageDetail = msg.detail
 		m.detailScroll = 0
 		m.pendingDetailSubject = "" // Clear pending subject
@@ -910,6 +929,8 @@ func (m Model) handleThreadMessagesLoaded(msg threadMessagesLoadedMsg) (tea.Mode
 	m.loading = false
 	if msg.err != nil {
 		m.err = query.HintRepairEncoding(msg.err)
+		m.modal = modalError
+		m.modalResult = m.err.Error()
 	} else {
 		m.err = nil
 		m.threadMessages = msg.messages
@@ -934,10 +955,15 @@ func (m Model) handleSearchResults(msg searchResultsMsg) (tea.Model, tea.Cmd) {
 	m.searchLoadingMore = false
 	if msg.err != nil {
 		m.err = query.HintRepairEncoding(msg.err)
+		m.modal = modalError
+		m.modalResult = m.err.Error()
 		return m, nil
 	}
 
-	m.err = nil // Clear any previous error
+	m.err = nil
+	if m.modal == modalError {
+		m.modal = modalNone
+	}
 	if msg.append {
 		m.appendSearchResults(msg)
 	} else {
@@ -1069,14 +1095,14 @@ func (m Model) handleSpinnerTick() (tea.Model, tea.Cmd) {
 
 // handleKeyPress processes keyboard input.
 func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Handle inline search first (takes priority over modal and view)
-	if m.inlineSearchActive {
-		return m.handleInlineSearchKeys(msg)
-	}
-
-	// Handle modal (takes priority over view)
+	// Handle modal first (error modals must dismiss even during search)
 	if m.modal != modalNone {
 		return m.handleModalKeys(msg)
+	}
+
+	// Handle inline search (takes priority over view)
+	if m.inlineSearchActive {
+		return m.handleInlineSearchKeys(msg)
 	}
 
 	// Handle based on current view level

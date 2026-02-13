@@ -288,11 +288,7 @@ func (m Model) headerView() string {
 
 // aggregateTableView renders the aggregate data table.
 func (m Model) aggregateTableView() string {
-	if m.err != nil {
-		return m.fillScreen(errorStyle.Render(padRight(fmt.Sprintf("Error: %v", m.err), m.width)), 1)
-	}
-
-	if len(m.rows) == 0 && !m.loading {
+	if len(m.rows) == 0 && !m.loading && !m.inlineSearchActive && m.searchQuery == "" && m.err == nil {
 		return m.fillScreen(normalRowStyle.Render(padRight("No data", m.width)), 1)
 	}
 
@@ -404,8 +400,19 @@ func (m Model) aggregateTableView() string {
 		sb.WriteString("\n")
 	}
 
-	// Fill remaining space (minus 1 for notification line)
-	for i := endRow - m.scrollOffset; i < m.pageSize-1; i++ {
+	// Show "No results" indicator when search returned zero matches
+	if len(m.rows) == 0 && !m.loading {
+		sb.WriteString(normalRowStyle.Render(padRight("   No results found", m.width)))
+		sb.WriteString("\n")
+	}
+
+	// Fill remaining space (minus 1 for notification line).
+	// Account for the "No results found" line when rows is empty.
+	dataRows := endRow - m.scrollOffset
+	if len(m.rows) == 0 && !m.loading {
+		dataRows = 1 // the "No results found" row
+	}
+	for i := dataRows; i < m.pageSize-1; i++ {
 		sb.WriteString(normalRowStyle.Render(strings.Repeat(" ", m.width)))
 		sb.WriteString("\n")
 	}
@@ -414,7 +421,6 @@ func (m Model) aggregateTableView() string {
 	var infoContent string
 	isLoading := m.loading || m.inlineSearchLoading || m.searchLoadingMore
 	if m.inlineSearchActive {
-		// At aggregate level, only Fast search is available (no mode tag needed)
 		infoContent = "/" + m.searchInput.View()
 	} else if m.searchQuery != "" {
 		infoContent = fmt.Sprintf(" Search: %q", m.searchQuery)
@@ -431,14 +437,10 @@ func (m Model) aggregateTableView() string {
 
 // messageListView renders the message list.
 func (m Model) messageListView() string {
-	if m.err != nil {
-		return m.fillScreen(errorStyle.Render(padRight(fmt.Sprintf("Error: %v", m.err), m.width)), 1)
-	}
-
 	// Non-search empty state: show simple "No messages" without header/info line.
 	// When a search is active (or search bar is open), fall through to full
 	// rendering so the search bar stays visible and the user can edit their query.
-	if len(m.messages) == 0 && !m.loading && !m.inlineSearchActive && m.searchQuery == "" {
+	if len(m.messages) == 0 && !m.loading && !m.inlineSearchActive && m.searchQuery == "" && m.err == nil {
 		return m.fillScreen(normalRowStyle.Render(padRight("No messages", m.width)), 1)
 	}
 
@@ -724,13 +726,13 @@ func (m Model) fillScreenDetail(content string, usedLines int) string {
 
 // messageDetailView renders the full message.
 func (m Model) messageDetailView() string {
-	if m.err != nil {
-		return m.fillScreenDetail(errorStyle.Render(padRight(fmt.Sprintf("Error loading message: %v", m.err), m.width)), 1)
-	}
-
 	if m.messageDetail == nil {
 		if m.loading {
 			return m.fillScreenDetail(loadingStyle.Render(padRight(m.spinnerIndicator()+" Loading message...", m.width)), 1)
+		}
+		content := m.fillScreenDetail(normalRowStyle.Render(strings.Repeat(" ", m.width)), 1)
+		if m.modal != modalNone {
+			return m.overlayModal(content)
 		}
 		return m.fillScreenDetail(errorStyle.Render(padRight("Message not found (nil detail)", m.width)), 1)
 	}
@@ -810,16 +812,16 @@ func (m Model) messageDetailView() string {
 
 // threadView renders the thread/conversation view.
 func (m Model) threadView() string {
-	if m.err != nil {
-		return m.fillScreen(errorStyle.Render(padRight(fmt.Sprintf("Error: %v", m.err), m.width)), 1)
-	}
-
 	if m.loading && len(m.threadMessages) == 0 {
 		return m.fillScreen(loadingStyle.Render(padRight(m.spinnerIndicator()+" Loading thread...", m.width)), 1)
 	}
 
 	if !m.loading && len(m.threadMessages) == 0 {
-		return m.fillScreen(normalRowStyle.Render(padRight("No messages in thread", m.width)), 1)
+		content := m.fillScreen(normalRowStyle.Render(padRight("No messages in thread", m.width)), 1)
+		if m.modal != modalNone {
+			return m.overlayModal(content)
+		}
+		return content
 	}
 
 	var sb strings.Builder
@@ -1334,6 +1336,13 @@ func (m Model) renderExportAttachmentsModal() string {
 	return sb.String()
 }
 
+// renderErrorModal renders the error modal content.
+func (m Model) renderErrorModal() string {
+	return modalTitleStyle.Render("Error") + "\n\n" +
+		m.modalResult + "\n\n" +
+		"Press any key to dismiss"
+}
+
 // renderExportResultModal renders the export result modal content.
 func (m Model) renderExportResultModal() string {
 	return modalTitleStyle.Render("Export Complete") + "\n\n" +
@@ -1361,6 +1370,8 @@ func (m Model) overlayModal(background string) string {
 		modalContent = m.renderExportAttachmentsModal()
 	case modalExportResult:
 		modalContent = m.renderExportResultModal()
+	case modalError:
+		modalContent = m.renderErrorModal()
 	}
 
 	if modalContent == "" {
