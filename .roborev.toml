@@ -13,4 +13,11 @@ choice — do not flag it as a concern.
 HTTP remote defaults, plaintext key display in interactive CLI,
 enabled=true override on account creation, and page-aligned pagination
 are documented design decisions — see code comments at each site.
+
+This is a single-user personal tool with no privilege separation, no
+setuid, no shared directories, and no multi-tenant access. Do not flag
+symlink-following, local file overwrites, or similar CWE patterns that
+require an attacker with the same privileges as the user — they already
+own everything this tool touches. Auth on loopback-only endpoints with
+no configured API key is also by design.
 """
