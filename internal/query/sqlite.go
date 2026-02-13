@@ -66,6 +66,12 @@ func (e *SQLiteEngine) Close() error {
 	return nil
 }
 
+// escapeSQLiteLike escapes LIKE wildcard characters (%, _, \) with \.
+func escapeSQLiteLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
+
 // aggDimension describes the variable parts of an aggregate query for a given ViewType.
 type aggDimension struct {
 	keyExpr   string // SQL expression for the grouping key
@@ -447,8 +453,9 @@ func (e *SQLiteEngine) Aggregate(ctx context.Context, groupBy ViewType, opts Agg
 		if groupBy == ViewLabels && len(q.Labels) > 0 {
 			for _, label := range q.Labels {
 				conditions = append(conditions,
-					"LOWER(l.name) LIKE LOWER(?)")
-				args = append(args, "%"+label+"%")
+					`LOWER(l.name) LIKE LOWER(?) ESCAPE '\'`)
+				args = append(args,
+					"%"+escapeSQLiteLike(label)+"%")
 			}
 			// Clear labels so buildSearchQueryParts doesn't
 			// add a conflicting label join.
@@ -1293,18 +1300,16 @@ func (e *SQLiteEngine) buildSearchQueryParts(ctx context.Context, q *search.Quer
 		conditions = append(conditions, fmt.Sprintf("LOWER(p_bcc.email_address) IN (%s)", strings.Join(placeholders, ",")))
 	}
 
-	// Label filter - case-insensitive substring match
-	if len(q.Labels) > 0 {
-		joins = append(joins, `
-			JOIN message_labels ml ON ml.message_id = m.id
-			JOIN labels l ON l.id = ml.label_id
-		`)
-		var labelConds []string
-		for _, label := range q.Labels {
-			labelConds = append(labelConds, "LOWER(l.name) LIKE LOWER(?)")
-			args = append(args, "%"+label+"%")
-		}
-		conditions = append(conditions, "("+strings.Join(labelConds, " AND ")+")")
+	// Label filter - case-insensitive substring match using EXISTS
+	// so each label term can match a different row in message_labels.
+	for _, label := range q.Labels {
+		conditions = append(conditions, `EXISTS (
+			SELECT 1 FROM message_labels ml_lbl
+			JOIN labels l_lbl ON l_lbl.id = ml_lbl.label_id
+			WHERE ml_lbl.message_id = m.id
+			  AND LOWER(l_lbl.name) LIKE LOWER(?) ESCAPE '\'
+		)`)
+		args = append(args, "%"+escapeSQLiteLike(label)+"%")
 	}
 
 	// Subject filter
@@ -1490,11 +1495,10 @@ func (e *SQLiteEngine) executeSearchQuery(ctx context.Context, conditions []stri
 // MergeFilterIntoQuery combines a MessageFilter context with a search.Query.
 // Context filters are appended to existing query filters.
 //
-// Note on semantics: Appending to FromAddrs/ToAddrs/Labels produces IN clauses
-// with OR semantics within each dimension. This means if user searches "from:alice"
-// and context has Sender=bob, the result matches alice OR bob. For strict AND
-// intersection, we would need separate WHERE conditions per context filter.
-// Current behavior: context widens the search within other constraints.
+// Note on semantics: Appending to FromAddrs/ToAddrs produces OR semantics
+// within each dimension (IN clause). Labels use per-term EXISTS subqueries
+// with AND semantics (message must have all labels). Context filters widen
+// the search within other constraints.
 func MergeFilterIntoQuery(q *search.Query, filter MessageFilter) *search.Query {
 	// Copy all fields from original query (preserves any future non-slice fields)
 	merged := *q

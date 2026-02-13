@@ -330,7 +330,8 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyCol
 	// in results — not all labels from matching messages.
 	labelKeyCol := ""
 	for _, col := range keyColumns {
-		if col == "lbl.name" {
+		if strings.HasSuffix(col, ".name") &&
+			strings.HasPrefix(col, "lbl") {
 			labelKeyCol = col
 			break
 		}

@@ -1080,14 +1080,14 @@ func (m Model) handleSpinnerTick() (tea.Model, tea.Cmd) {
 
 // handleKeyPress processes keyboard input.
 func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Handle inline search first (takes priority over modal and view)
-	if m.inlineSearchActive {
-		return m.handleInlineSearchKeys(msg)
-	}
-
-	// Handle modal (takes priority over view)
+	// Handle modal first (error modals must dismiss even during search)
 	if m.modal != modalNone {
 		return m.handleModalKeys(msg)
+	}
+
+	// Handle inline search (takes priority over view)
+	if m.inlineSearchActive {
+		return m.handleInlineSearchKeys(msg)
 	}
 
 	// Handle based on current view level

@@ -115,6 +115,24 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestHealthEndpoint_HEAD(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{APIPort: 8080},
+	}
+	sched := newMockScheduler()
+	srv := NewServer(cfg, nil, sched, testLogger())
+
+	req := httptest.NewRequest("HEAD", "/health", nil)
+	w := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("HEAD /health status = %d, want %d",
+			w.Code, http.StatusOK)
+	}
+}
+
 func TestAuthMiddleware(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{

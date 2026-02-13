@@ -186,6 +186,7 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchFilter.SourceID = m.accountFilter
 			m.searchFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
 			m.searchFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
+			m.loadRequestID++ // Invalidate stale loadMessages responses
 			m.searchRequestID++
 			return m, m.loadSearch(m.searchQuery)
 		}
@@ -1203,6 +1204,7 @@ func (m Model) enterDrillDown(row query.AggregateRow) (tea.Model, tea.Cmd) {
 		m.searchFilter.SourceID = m.accountFilter
 		m.searchFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
 		m.searchFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
+		m.loadRequestID++ // Invalidate stale loadMessages responses
 		m.searchRequestID++
 		return m, m.loadSearch(m.searchQuery)
 	}
