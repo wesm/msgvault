@@ -56,7 +56,7 @@ CORS is disabled by default (no origins allowed). To enable CORS for browser-bas
 [server]
 cors_origins = ["http://localhost:3000", "https://myapp.example.com"]
 cors_credentials = false   # Whether to allow credentials
-cors_max_age = 86400       # Preflight cache duration (seconds, default: 86400)
+cors_max_age = 86400       # Preflight cache duration (seconds)
 ```
 
 **Allowed methods:** `GET, POST, PUT, DELETE, OPTIONS`

@@ -29,7 +29,7 @@ type ServerConfig struct {
 	AllowInsecure   bool     `toml:"allow_insecure"`   // Allow unauthenticated non-loopback access
 	CORSOrigins     []string `toml:"cors_origins"`     // Allowed CORS origins (empty = disabled)
 	CORSCredentials bool     `toml:"cors_credentials"` // Allow credentials in CORS
-	CORSMaxAge      int      `toml:"cors_max_age"`     // Preflight cache duration in seconds (default: 86400)
+	CORSMaxAge      int      `toml:"cors_max_age"`     // Preflight cache duration in seconds
 }
 
 // IsLoopback returns true if the bind address is a loopback address.
