@@ -97,6 +97,34 @@ func TestCreateNASBundle_NoSecrets(t *testing.T) {
 	}
 }
 
+func TestCreateNASBundle_ExistingSecretsFallback(t *testing.T) {
+	// Simulate "keep existing OAuth" flow: oauthSecretsPath is empty
+	// but cfg.OAuth.ClientSecrets has a valid path. The effective
+	// secrets path should fall back so the file gets copied.
+	tmpDir := t.TempDir()
+	secretsPath := filepath.Join(tmpDir, "client_secret.json")
+	if err := os.WriteFile(secretsPath, []byte(`{"installed":{}}`), 0600); err != nil {
+		t.Fatalf("write secrets: %v", err)
+	}
+
+	bundleDir := filepath.Join(t.TempDir(), "nas-bundle")
+	// Pass the existing path directly (simulating the fallback logic)
+	err := createNASBundle(bundleDir, "key", secretsPath, 8080)
+	if err != nil {
+		t.Fatalf("createNASBundle error = %v", err)
+	}
+
+	// client_secret.json should be copied
+	copied := filepath.Join(bundleDir, "client_secret.json")
+	data, err := os.ReadFile(copied)
+	if err != nil {
+		t.Fatalf("client_secret.json should exist: %v", err)
+	}
+	if string(data) != `{"installed":{}}` {
+		t.Errorf("copied content = %q, want original", string(data))
+	}
+}
+
 func TestCreateNASBundle_InvalidSecretPath(t *testing.T) {
 	bundleDir := filepath.Join(t.TempDir(), "nas-bundle")
 
