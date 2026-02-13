@@ -536,6 +536,133 @@ func TestHandleUploadTokenMissingEmail(t *testing.T) {
 	}
 }
 
+func TestHandleAddAccount(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "msgvault-test-config-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Server:  config.ServerConfig{APIPort: 8080},
+		HomeDir: tmpDir,
+	}
+	sched := newMockScheduler()
+	srv := NewServer(cfg, nil, sched, testLogger())
+
+	body := `{"email": "new@gmail.com", "schedule": "0 3 * * *"}`
+	req := httptest.NewRequest("POST", "/api/v1/accounts", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	// Verify account was added to config
+	if len(cfg.Accounts) != 1 {
+		t.Fatalf("expected 1 account, got %d", len(cfg.Accounts))
+	}
+	if cfg.Accounts[0].Email != "new@gmail.com" {
+		t.Errorf("email = %q, want 'new@gmail.com'", cfg.Accounts[0].Email)
+	}
+
+	// Verify scheduler was notified
+	if len(sched.addedAccts) != 1 || sched.addedAccts[0] != "new@gmail.com" {
+		t.Errorf("scheduler.AddAccount not called, addedAccts = %v", sched.addedAccts)
+	}
+}
+
+func TestHandleAddAccountDuplicate(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{APIPort: 8080},
+		Accounts: []config.AccountSchedule{
+			{Email: "existing@gmail.com", Schedule: "0 2 * * *", Enabled: true},
+		},
+	}
+	sched := newMockScheduler()
+	srv := NewServer(cfg, nil, sched, testLogger())
+
+	body := `{"email": "existing@gmail.com"}`
+	req := httptest.NewRequest("POST", "/api/v1/accounts", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["status"] != "exists" {
+		t.Errorf("status = %q, want 'exists'", resp["status"])
+	}
+}
+
+func TestHandleAddAccountInvalidCron(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{APIPort: 8080},
+	}
+	sched := newMockScheduler()
+	srv := NewServer(cfg, nil, sched, testLogger())
+
+	body := `{"email": "new@gmail.com", "schedule": "not a cron"}`
+	req := httptest.NewRequest("POST", "/api/v1/accounts", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d, body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+
+	var resp ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error != "invalid_schedule" {
+		t.Errorf("error = %q, want 'invalid_schedule'", resp.Error)
+	}
+}
+
+func TestHandleAddAccountInvalidEmail(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{APIPort: 8080},
+	}
+	sched := newMockScheduler()
+	srv := NewServer(cfg, nil, sched, testLogger())
+
+	tests := []struct {
+		name string
+		body string
+		code int
+	}{
+		{"empty email", `{"email": ""}`, http.StatusBadRequest},
+		{"no at sign", `{"email": "nope"}`, http.StatusBadRequest},
+		{"no dot", `{"email": "nope@nope"}`, http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/api/v1/accounts", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			srv.Router().ServeHTTP(w, req)
+
+			if w.Code != tt.code {
+				t.Errorf("status = %d, want %d", w.Code, tt.code)
+			}
+		})
+	}
+}
+
 func TestSanitizeTokenPath(t *testing.T) {
 	tokensDir := "/data/tokens"
 

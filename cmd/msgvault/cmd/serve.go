@@ -222,6 +222,10 @@ func (a *schedulerAdapter) TriggerSync(email string) error {
 	return a.scheduler.TriggerSync(email)
 }
 
+func (a *schedulerAdapter) AddAccount(email, schedule string) error {
+	return a.scheduler.AddAccount(email, schedule)
+}
+
 func (a *schedulerAdapter) IsRunning() bool {
 	return a.scheduler.IsRunning()
 }

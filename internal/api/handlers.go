@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/wesm/msgvault/internal/config"
 	"github.com/wesm/msgvault/internal/fileutil"
+	"github.com/wesm/msgvault/internal/scheduler"
 	"github.com/wesm/msgvault/internal/store"
 	"golang.org/x/oauth2"
 )
@@ -284,10 +285,15 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.cfgMu.RLock()
+	cfgAccounts := make([]config.AccountSchedule, len(s.cfg.Accounts))
+	copy(cfgAccounts, s.cfg.Accounts)
+	s.cfgMu.RUnlock()
+
 	var accounts []AccountInfo
 
 	// Get schedule info from config
-	for _, acc := range s.cfg.Accounts {
+	for _, acc := range cfgAccounts {
 		info := AccountInfo{
 			Email:    acc.Email,
 			Schedule: acc.Schedule,
@@ -522,15 +528,20 @@ func (s *Server) handleAddAccount(w http.ResponseWriter, r *http.Request) {
 	if req.Schedule == "" {
 		req.Schedule = "0 2 * * *" // Default: 2am daily
 	}
-	// Note: Enabled defaults to false in Go, but we want true by default
-	// The JSON decoder will set it to true if provided, so we check if the
-	// whole struct was basically empty (no schedule means they didn't provide enabled either)
-	// Actually, let's always default to true for this use case
 	req.Enabled = true
+
+	// Validate cron expression before persisting
+	if err := scheduler.ValidateCronExpr(req.Schedule); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_schedule", err.Error())
+		return
+	}
+
+	s.cfgMu.Lock()
 
 	// Check if account already exists
 	for _, acc := range s.cfg.Accounts {
 		if acc.Email == req.Email {
+			s.cfgMu.Unlock()
 			writeJSON(w, http.StatusOK, map[string]string{
 				"status":  "exists",
 				"message": "Account already configured for " + req.Email,
@@ -548,9 +559,20 @@ func (s *Server) handleAddAccount(w http.ResponseWriter, r *http.Request) {
 
 	// Save config
 	if err := s.cfg.Save(); err != nil {
+		s.cfgMu.Unlock()
 		s.logger.Error("failed to save config", "error", err)
 		writeError(w, http.StatusInternalServerError, "save_error", "Failed to save configuration")
 		return
+	}
+
+	s.cfgMu.Unlock()
+
+	// Register with live scheduler (best-effort — config is already saved)
+	if s.scheduler != nil {
+		if err := s.scheduler.AddAccount(req.Email, req.Schedule); err != nil {
+			s.logger.Warn("account saved but scheduler registration failed",
+				"email", req.Email, "error", err)
+		}
 	}
 
 	s.logger.Info("account added via API", "email", req.Email, "schedule", req.Schedule)

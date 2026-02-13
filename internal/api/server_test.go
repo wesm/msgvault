@@ -19,10 +19,11 @@ func testLogger() *slog.Logger {
 
 // mockScheduler implements SyncScheduler for tests.
 type mockScheduler struct {
-	scheduled map[string]bool
-	running   bool
-	statuses  []AccountStatus
-	triggerFn func(email string) error
+	scheduled  map[string]bool
+	running    bool
+	statuses   []AccountStatus
+	triggerFn  func(email string) error
+	addedAccts []string // emails added via AddAccount
 }
 
 func newMockScheduler() *mockScheduler {
@@ -40,6 +41,12 @@ func (m *mockScheduler) TriggerSync(email string) error {
 	if m.triggerFn != nil {
 		return m.triggerFn(email)
 	}
+	return nil
+}
+
+func (m *mockScheduler) AddAccount(email, schedule string) error {
+	m.scheduled[email] = true
+	m.addedAccts = append(m.addedAccts, email)
 	return nil
 }
 

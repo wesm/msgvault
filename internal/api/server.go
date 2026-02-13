@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -32,6 +33,7 @@ type StoreStats = store.Stats
 type SyncScheduler interface {
 	IsScheduled(email string) bool
 	TriggerSync(email string) error
+	AddAccount(email, schedule string) error
 	Status() []AccountStatus
 	IsRunning() bool
 }
@@ -48,6 +50,7 @@ type Server struct {
 	router      chi.Router
 	server      *http.Server
 	rateLimiter *RateLimiter
+	cfgMu       sync.RWMutex // protects cfg.Accounts
 }
 
 // NewServer creates a new API server.
