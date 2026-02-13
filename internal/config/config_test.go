@@ -850,7 +850,7 @@ func TestSaveAndLoad_RoundTrip(t *testing.T) {
 
 	cfg := NewDefaultConfig()
 	cfg.HomeDir = tmpDir
-	cfg.OAuth.ClientSecrets = "/path/to/secrets.json"
+	cfg.OAuth.ClientSecrets = filepath.Join(tmpDir, "secrets.json")
 	cfg.Sync.RateLimitQPS = 10
 	cfg.Server.APIPort = 9090
 	cfg.Server.APIKey = "my-server-key"
@@ -919,7 +919,8 @@ func TestSave_CreatesFileWithSecurePermissions(t *testing.T) {
 	}
 
 	// Should have no group/other permissions (0600 or stricter)
-	if info.Mode().Perm()&0077 != 0 {
+	// Windows doesn't support Unix file permissions.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
 		t.Errorf("config perm = %04o, want no group/other access",
 			info.Mode().Perm())
 	}

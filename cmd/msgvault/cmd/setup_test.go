@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -40,11 +41,12 @@ func TestCreateNASBundle(t *testing.T) {
 	}
 
 	// Verify config.toml has secure permissions
+	// Windows doesn't support Unix file permissions.
 	info, err := os.Stat(configPath)
 	if err != nil {
 		t.Fatalf("stat config.toml: %v", err)
 	}
-	if info.Mode().Perm()&0077 != 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
 		t.Errorf("config.toml perm = %04o, want no group/other access", info.Mode().Perm())
 	}
 
