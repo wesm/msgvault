@@ -307,37 +307,16 @@ Generate a strong, random API key:
 openssl rand -hex 32
 ```
 
-### HTTPS (Reverse Proxy)
+### Remote Access
 
-For internet-facing deployments, put msgvault behind a reverse proxy with TLS:
+Use [Tailscale](https://tailscale.com/) for remote access to your NAS. It encrypts all traffic and avoids the need for TLS certificates, port forwarding, or reverse proxies. Once Tailscale is installed on both machines, use your Tailscale hostname:
 
-**Caddy** (automatic HTTPS):
-```
-msgvault.example.com {
-    reverse_proxy localhost:8080
-}
+```bash
+msgvault export-token you@gmail.com \
+  --to http://nas.tail12345.ts.net:8080 --api-key KEY --allow-insecure
 ```
 
-**Nginx**:
-```nginx
-server {
-    listen 443 ssl;
-    server_name msgvault.example.com;
-
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location / {
-        proxy_pass http://localhost:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-```
-
-### Firewall
-
-If not using a reverse proxy, restrict port 8080 to your local network:
+Don't expose port 8080 directly to the internet. If you can't use Tailscale, restrict access to your local network:
 
 ```bash
 # UFW example
@@ -520,9 +499,9 @@ After a successful export, msgvault saves the remote server config. For the firs
 
 ```bash
 # First time: provide flags
-msgvault export-token you@gmail.com --to http://nas:8080 --api-key KEY
+msgvault export-token you@gmail.com --to http://nas:8080 --api-key KEY --allow-insecure
 
-# Subsequent exports: no flags needed
+# Subsequent exports: no flags needed (URL, key, and allow-insecure are saved)
 msgvault export-token another@gmail.com
 ```
 
@@ -531,7 +510,7 @@ Or use environment variables:
 ```bash
 export MSGVAULT_REMOTE_URL=http://nas:8080
 export MSGVAULT_REMOTE_API_KEY=your-key
-msgvault export-token you@gmail.com
+msgvault export-token you@gmail.com --allow-insecure
 ```
 
 ### Container Issues
@@ -576,7 +555,7 @@ Common causes:
 The account hasn't been added to the database. Re-export the token from your local machine:
 
 ```bash
-msgvault export-token you@gmail.com --to http://nas-ip:8080 --api-key YOUR_KEY
+msgvault export-token you@gmail.com --to http://nas-ip:8080 --api-key YOUR_KEY --allow-insecure
 ```
 
 This uploads the token and registers the account. Alternatively, if the token file already exists on the server, register it directly:
