@@ -219,7 +219,8 @@ func runExportToken(_ *cobra.Command, args []string) error {
 		stderr:     os.Stderr,
 	}
 
-	result, err := exporter.export(email, remoteURL, apiKey, exportAllowInsecure)
+	allowInsecure := exportAllowInsecure || cfg.Remote.AllowInsecure
+	result, err := exporter.export(email, remoteURL, apiKey, allowInsecure)
 	if err != nil {
 		return err
 	}
