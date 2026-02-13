@@ -1059,7 +1059,8 @@ func TestSubAggregateDrillDownWithSearchQueryPreservesSearch(t *testing.T) {
 }
 
 // TestDrillDownSearchBreadcrumbRoundTrip verifies that searching at aggregate level,
-// drilling down (which preserves search), then pressing Esc restores the aggregate view.
+// drilling down (which preserves search), then pressing Esc restores the aggregate view
+// with the search still in place. Inherited search should not require two Esc presses.
 func TestDrillDownSearchBreadcrumbRoundTrip(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
 	model.level = levelAggregates
@@ -1075,17 +1076,12 @@ func TestDrillDownSearchBreadcrumbRoundTrip(t *testing.T) {
 	// Populate messages so Esc handler works
 	m.messages = []query.MessageSummary{{ID: 1}}
 
-	// Esc clears the search first (message list Esc behavior)
+	// Single Esc goes back to aggregate with search restored from breadcrumb.
+	// Inherited search (no preSearchMessages snapshot) does not get cleared.
 	m2 := applyMessageListKey(t, m, keyEsc())
 
-	// First Esc clears search, stays in message list
-	assertLevel(t, m2, levelMessageList)
-	assertSearchQuery(t, m2, "")
-
-	// Second Esc goes back to aggregate with original search restored from breadcrumb
-	m3 := applyMessageListKey(t, m2, keyEsc())
-	assertLevel(t, m3, levelAggregates)
-	assertSearchQuery(t, m3, "important")
+	assertLevel(t, m2, levelAggregates)
+	assertSearchQuery(t, m2, "important")
 }
 
 // TestDrillDownPreservesSearchQuery verifies that searchQuery persists
@@ -1117,13 +1113,73 @@ func TestSubAggregateDrillDownSearchBreadcrumbRoundTrip(t *testing.T) {
 
 	assertSearchQuery(t, m, "urgent")
 
-	// Populate messages; first Esc clears search, second goes back
+	// Single Esc navigates back (inherited search, no snapshot)
 	m.messages = []query.MessageSummary{{ID: 1}}
 	m2 := applyMessageListKey(t, m, keyEsc())
-	assertSearchQuery(t, m2, "")
 
-	m3 := applyMessageListKey(t, m2, keyEsc())
-	assertSearchQuery(t, m3, "urgent")
+	assertSearchQuery(t, m2, "urgent")
+	assertLevel(t, m2, levelDrillDown)
+}
+
+// TestEscBehaviorInheritedVsLocalSearch verifies that Esc at message list level
+// distinguishes inherited search (from aggregate drill-down) from locally-initiated
+// search. Inherited search: single Esc goes back. Local search: first Esc clears
+// search, second Esc goes back.
+func TestEscBehaviorInheritedVsLocalSearch(t *testing.T) {
+	t.Run("inherited search: single Esc goes back", func(t *testing.T) {
+		model := newTestModelWithRows(testAggregateRows)
+		model.level = levelAggregates
+		model.searchQuery = "avro"
+		model.cursor = 0
+
+		// Drill down — search inherited, no preSearchMessages snapshot
+		m := applyAggregateKey(t, model, keyEnter())
+		m.messages = []query.MessageSummary{{ID: 1}, {ID: 2}}
+
+		if m.preSearchMessages != nil {
+			t.Fatal("inherited search should not have preSearchMessages")
+		}
+
+		// Single Esc goes back to aggregate with search intact
+		m2 := applyMessageListKey(t, m, keyEsc())
+		assertLevel(t, m2, levelAggregates)
+		assertSearchQuery(t, m2, "avro")
+	})
+
+	t.Run("local search: two-step Esc", func(t *testing.T) {
+		model := newTestModelWithRows(testAggregateRows)
+		model.level = levelAggregates
+		model.cursor = 0
+
+		// Drill down without search
+		m := applyAggregateKey(t, model, keyEnter())
+		m.messages = []query.MessageSummary{{ID: 1}, {ID: 2}, {ID: 3}}
+		m.loading = false
+
+		// User initiates search locally — snapshot is created
+		cmd := m.activateInlineSearch("search")
+		assertCmd(t, cmd, true)
+		m.inlineSearchActive = false
+		m.searchQuery = "test"
+		m.messages = []query.MessageSummary{{ID: 99}}
+
+		if m.preSearchMessages == nil {
+			t.Fatal("local search should have preSearchMessages")
+		}
+
+		// First Esc clears the local search, restores pre-search messages
+		m2 := applyMessageListKey(t, m, keyEsc())
+		assertLevel(t, m2, levelMessageList)
+		assertSearchQuery(t, m2, "")
+		if len(m2.messages) != 3 {
+			t.Errorf("expected 3 pre-search messages restored, got %d",
+				len(m2.messages))
+		}
+
+		// Second Esc goes back to aggregate
+		m3 := applyMessageListKey(t, m2, keyEsc())
+		assertLevel(t, m3, levelAggregates)
+	})
 }
 
 // TestStaleSearchResponseIgnoredAfterDrillDown verifies that a search response

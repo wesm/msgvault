@@ -337,8 +337,10 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	// Back - clear inner search first, then navigate back
 	case "esc":
-		// Always clear an active search before navigating back
-		if m.searchQuery != "" {
+		// Clear search only if it was initiated at this level (snapshot exists).
+		// Inherited search (from aggregate drill-down) has no snapshot —
+		// goBack restores the parent view with its search intact.
+		if m.searchQuery != "" && m.preSearchMessages != nil {
 			return m.clearMessageListSearch()
 		}
 		return m.goBack()
