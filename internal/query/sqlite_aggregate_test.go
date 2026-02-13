@@ -635,6 +635,30 @@ func TestEscapeSQLiteLike(t *testing.T) {
 	}
 }
 
+// TestAggregateBySender_RecipientFilterNoOvercount verifies that recipient
+// EXISTS filters don't inflate counts when a message has multiple matching
+// recipients. Message 1 has to:bob AND to:carol; a search matching both
+// must still count message 1 once.
+func TestAggregateBySender_RecipientFilterNoOvercount(t *testing.T) {
+	env := newTestEnv(t)
+
+	opts := DefaultAggregateOptions()
+	// Message 1 (from alice) has to:bob AND to:carol. With old JOIN-based
+	// filters this would double-count, inflating alice's count from 3 to 4.
+	opts.SearchQuery = "to:bob@company.org"
+	rows, err := env.Engine.Aggregate(env.Ctx, ViewSenders, opts)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+
+	m := aggRowMap(t, rows)
+	// Alice sent messages 1,2,3 — all have bob as recipient.
+	// Each must be counted exactly once.
+	if got := m["alice@example.com"]; got != 3 {
+		t.Errorf("alice count = %d, want 3 (no overcount)", got)
+	}
+}
+
 // TestSQLiteEngine_SubAggregate_InvalidViewType verifies that invalid ViewType values
 // return a clear error from the SubAggregate API.
 func TestSQLiteEngine_SubAggregate_InvalidViewType(t *testing.T) {

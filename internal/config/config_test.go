@@ -955,6 +955,86 @@ func TestSave_TightensWeakPermissions(t *testing.T) {
 	}
 }
 
+func TestSave_FollowsSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require elevated privileges on Windows")
+	}
+
+	tmpDir := t.TempDir()
+	targetDir := t.TempDir()
+	targetPath := filepath.Join(targetDir, "actual-config.toml")
+	linkPath := filepath.Join(tmpDir, "config.toml")
+
+	// Create symlink: linkPath → targetPath
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	cfg := NewDefaultConfig()
+	cfg.HomeDir = tmpDir
+	cfg.Sync.RateLimitQPS = 77
+
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	// Symlink should still exist and point to targetPath
+	linkTarget, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("symlink was replaced: Readlink error = %v", err)
+	}
+	if linkTarget != targetPath {
+		t.Errorf("symlink target = %q, want %q", linkTarget, targetPath)
+	}
+
+	// Target file should contain the saved config
+	loaded, err := Load(targetPath, "")
+	if err != nil {
+		t.Fatalf("Load target: %v", err)
+	}
+	if loaded.Sync.RateLimitQPS != 77 {
+		t.Errorf("RateLimitQPS = %d, want 77", loaded.Sync.RateLimitQPS)
+	}
+}
+
+func TestSave_FailurePreservesExisting(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Save initial valid config
+	cfg := NewDefaultConfig()
+	cfg.HomeDir = tmpDir
+	cfg.Sync.RateLimitQPS = 5
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("initial Save: %v", err)
+	}
+
+	// Read back original content
+	originalBytes, err := os.ReadFile(cfg.ConfigFilePath())
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	// Verify no temp files are left behind
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".config-") {
+			t.Errorf("leftover temp file: %s", e.Name())
+		}
+	}
+
+	// Original config should still be intact
+	currentBytes, err := os.ReadFile(cfg.ConfigFilePath())
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(currentBytes) != string(originalBytes) {
+		t.Error("config file content changed unexpectedly")
+	}
+}
+
 func TestSave_OverwritesExisting(t *testing.T) {
 	tmpDir := t.TempDir()
 

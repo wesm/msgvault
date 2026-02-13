@@ -249,6 +249,18 @@ func (c *Config) ConfigFilePath() string {
 func (c *Config) Save() error {
 	path := c.ConfigFilePath()
 
+	// Resolve symlinks so atomic rename replaces the target, not
+	// the symlink itself. EvalSymlinks fails on dangling symlinks
+	// (target doesn't exist yet), so fall back to Readlink.
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	} else if target, lErr := os.Readlink(path); lErr == nil {
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		path = target
+	}
+
 	// Ensure home directory exists
 	if err := c.EnsureHomeDir(); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
