@@ -923,6 +923,8 @@ func TestDuckDBEngine_SearchFast(t *testing.T) {
 		// Operator filters
 		{"FromFilter", "from:bob", MessageFilter{}, []string{"Question", "Final"}},
 		{"LabelFilter", "label:Work", MessageFilter{}, []string{"Hello World", "Question"}},
+		{"LabelFilter_CaseInsensitive", "label:work", MessageFilter{}, []string{"Hello World", "Question"}},
+		{"LabelFilter_Substring", "label:wor", MessageFilter{}, []string{"Hello World", "Question"}},
 		{"HasAttachment", "has:attachment", MessageFilter{}, []string{"Re: Hello", "Question"}},
 		{"ToFilter_Bob", "to:bob", MessageFilter{}, []string{"Hello World", "Re: Hello", "Follow up"}},
 		{"ToFilter_Carol", "to:carol", MessageFilter{}, []string{"Hello World"}},
@@ -1348,6 +1350,11 @@ func TestDuckDBEngine_GetGmailIDsByFilter(t *testing.T) {
 		{
 			name:    "label=Work",
 			filter:  MessageFilter{Label: "Work"},
+			wantIDs: []string{"msg1", "msg4"},
+		},
+		{
+			name:    "label=work_case_insensitive",
+			filter:  MessageFilter{Label: "work"},
 			wantIDs: []string{"msg1", "msg4"},
 		},
 		{

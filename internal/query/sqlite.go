@@ -435,7 +435,43 @@ func (e *SQLiteEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 // Aggregate performs grouping based on the provided ViewType.
 func (e *SQLiteEngine) Aggregate(ctx context.Context, groupBy ViewType, opts AggregateOptions) ([]AggregateRow, error) {
 	conditions, args := optsToFilterConditions(opts, "m.")
-	return e.executeAggregate(ctx, groupBy, opts, "", conditions, args)
+
+	var filterJoins string
+	if opts.SearchQuery != "" {
+		q := search.Parse(opts.SearchQuery)
+
+		// For Labels view with label search, filter the
+		// grouping column (l.name) directly instead of adding
+		// a conflicting label join. Strip labels from the
+		// parsed query before building the generic parts.
+		if groupBy == ViewLabels && len(q.Labels) > 0 {
+			for _, label := range q.Labels {
+				conditions = append(conditions,
+					"LOWER(l.name) LIKE LOWER(?)")
+				args = append(args, "%"+label+"%")
+			}
+			// Clear labels so buildSearchQueryParts doesn't
+			// add a conflicting label join.
+			q.Labels = nil
+		}
+
+		searchConds, searchArgs, searchJns, ftsJoin :=
+			e.buildSearchQueryParts(ctx, q)
+		conditions = append(conditions, searchConds...)
+		args = append(args, searchArgs...)
+		var joinParts []string
+		if ftsJoin != "" {
+			joinParts = append(joinParts, ftsJoin)
+		}
+		joinParts = append(joinParts, searchJns...)
+		if len(joinParts) > 0 {
+			filterJoins = strings.Join(joinParts, "\n")
+		}
+	}
+
+	return e.executeAggregate(
+		ctx, groupBy, opts, filterJoins, conditions, args,
+	)
 }
 
 // executeAggregate is the shared implementation for Aggregate and SubAggregate.

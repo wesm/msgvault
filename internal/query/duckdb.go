@@ -1732,9 +1732,9 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 			SELECT 1 FROM ml
 			JOIN lbl ON lbl.id = ml.label_id
 			WHERE ml.message_id = msg.id
-			  AND lbl.name = ?
+			  AND lbl.name ILIKE ? ESCAPE '\'
 		)`)
-		args = append(args, filter.Label)
+		args = append(args, escapeILIKE(filter.Label))
 	}
 
 	if filter.TimeRange.Period != "" {
@@ -2300,9 +2300,9 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 			SELECT 1 FROM ml
 			JOIN lbl ON lbl.id = ml.label_id
 			WHERE ml.message_id = msg.id
-			  AND lbl.name = ?
+			  AND lbl.name ILIKE ? ESCAPE '\'
 		)`)
-		args = append(args, filter.Label)
+		args = append(args, escapeILIKE(filter.Label))
 	}
 	if filter.TimeRange.Period != "" {
 		granularity := inferTimeGranularity(filter.TimeRange.Granularity, filter.TimeRange.Period)

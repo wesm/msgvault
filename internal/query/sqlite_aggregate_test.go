@@ -528,6 +528,63 @@ func TestAggregateDeterministicOrderOnTies(t *testing.T) {
 	})
 }
 
+// TestAggregateByLabel_WithSearchQuery verifies that label: search in the
+// Labels aggregate view only shows matching labels (case-insensitive substring).
+func TestAggregateByLabel_WithSearchQuery(t *testing.T) {
+	env := newTestEnv(t)
+
+	tests := []struct {
+		name       string
+		query      string
+		wantLabels []string
+	}{
+		{
+			name:       "case_insensitive",
+			query:      "label:work",
+			wantLabels: []string{"Work"},
+		},
+		{
+			name:       "substring",
+			query:      "label:wor",
+			wantLabels: []string{"Work"},
+		},
+		{
+			name:       "no_match",
+			query:      "label:nonexistent",
+			wantLabels: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := DefaultAggregateOptions()
+			opts.SearchQuery = tt.query
+			rows, err := env.Engine.Aggregate(
+				env.Ctx, ViewLabels, opts,
+			)
+			if err != nil {
+				t.Fatalf("Aggregate: %v", err)
+			}
+			gotLabels := make([]string, 0, len(rows))
+			for _, r := range rows {
+				gotLabels = append(gotLabels, r.Key)
+			}
+			if len(gotLabels) != len(tt.wantLabels) {
+				t.Errorf("got %d labels %v, want %d %v",
+					len(gotLabels), gotLabels,
+					len(tt.wantLabels), tt.wantLabels)
+				return
+			}
+			for i, want := range tt.wantLabels {
+				if gotLabels[i] != want {
+					t.Errorf("label[%d] = %q, want %q",
+						i, gotLabels[i], want)
+				}
+			}
+		})
+	}
+}
+
 // TestSQLiteEngine_SubAggregate_InvalidViewType verifies that invalid ViewType values
 // return a clear error from the SubAggregate API.
 func TestSQLiteEngine_SubAggregate_InvalidViewType(t *testing.T) {
