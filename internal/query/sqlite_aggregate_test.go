@@ -585,6 +585,51 @@ func TestAggregateByLabel_WithSearchQuery(t *testing.T) {
 	}
 }
 
+// TestSubAggregate_WithSearchQuery verifies that SubAggregate applies
+// SearchQuery to filter results (not silently dropped).
+func TestSubAggregate_WithSearchQuery(t *testing.T) {
+	env := newTestEnv(t)
+
+	// SubAggregate by Labels under sender alice, search "work"
+	opts := DefaultAggregateOptions()
+	opts.SearchQuery = "label:work"
+	filter := MessageFilter{Sender: "alice@test.com"}
+	rows, err := env.Engine.SubAggregate(
+		env.Ctx, filter, ViewLabels, opts,
+	)
+	if err != nil {
+		t.Fatalf("SubAggregate: %v", err)
+	}
+	// Should only return "Work" label, not all labels for alice
+	for _, r := range rows {
+		if r.Key != "Work" {
+			t.Errorf("unexpected label %q in results (expected only Work)",
+				r.Key)
+		}
+	}
+}
+
+// TestEscapeSQLiteLike verifies that wildcard characters are escaped
+// so they match literally in label search.
+func TestEscapeSQLiteLike(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{"work", "work"},
+		{"100%", `100\%`},
+		{"in_box", `in\_box`},
+		{`path\raw`, `path\\raw`},
+		{`%_\`, `\%\_\\`},
+	}
+	for _, tt := range tests {
+		got := escapeSQLiteLike(tt.input)
+		if got != tt.want {
+			t.Errorf("escapeSQLiteLike(%q) = %q, want %q",
+				tt.input, got, tt.want)
+		}
+	}
+}
+
 // TestSQLiteEngine_SubAggregate_InvalidViewType verifies that invalid ViewType values
 // return a clear error from the SubAggregate API.
 func TestSQLiteEngine_SubAggregate_InvalidViewType(t *testing.T) {

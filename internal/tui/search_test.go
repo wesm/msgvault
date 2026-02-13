@@ -1214,6 +1214,108 @@ func TestStaleSearchResponseIgnoredAfterDrillDown(t *testing.T) {
 	}
 }
 
+// TestStaleSearchIgnoredAfterInheritedEsc verifies that after pressing Esc to
+// go back from an inherited-search message list, in-flight search responses
+// are ignored because searchRequestID was incremented.
+func TestStaleSearchIgnoredAfterInheritedEsc(t *testing.T) {
+	model := newTestModelWithRows(testAggregateRows)
+	model.level = levelAggregates
+	model.searchQuery = "avro"
+	model.cursor = 0
+
+	// Drill down with inherited search
+	m := applyAggregateKey(t, model, keyEnter())
+	m.messages = []query.MessageSummary{{ID: 1}}
+
+	// Capture the search request ID that the in-flight search carries
+	inflightRequestID := m.searchRequestID
+
+	// Esc back to aggregate
+	m2 := applyMessageListKey(t, m, keyEsc())
+	assertLevel(t, m2, levelAggregates)
+
+	// Stale search response arrives with the old request ID
+	m3 := applySearchResults(t, m2, inflightRequestID,
+		[]query.MessageSummary{{ID: 999}}, 0)
+
+	// Must be ignored — level and rows unchanged
+	assertLevel(t, m3, levelAggregates)
+	if len(m3.messages) == 1 && m3.messages[0].ID == 999 {
+		t.Error("stale search response should have been ignored")
+	}
+}
+
+// TestAKeyWithActiveSearchUsesLoadSearch verifies that pressing "a" at
+// aggregate level with an active search query uses loadSearch (not
+// loadMessages) and invalidates stale loadMessages responses.
+func TestAKeyWithActiveSearchUsesLoadSearch(t *testing.T) {
+	model := newTestModelWithRows(testAggregateRows)
+	model.level = levelAggregates
+	model.searchQuery = "important"
+	model.cursor = 0
+
+	initialSearchID := model.searchRequestID
+	initialLoadID := model.loadRequestID
+
+	m, cmd := applyAggregateKeyWithCmd(t, model, key('a'))
+
+	assertLevel(t, m, levelMessageList)
+	assertSearchQuery(t, m, "important")
+	assertCmd(t, cmd, true)
+
+	// searchRequestID should increment (invalidate + new search)
+	if m.searchRequestID <= initialSearchID {
+		t.Errorf("expected searchRequestID > %d, got %d",
+			initialSearchID, m.searchRequestID)
+	}
+	// loadRequestID should also increment to invalidate stale loads
+	if m.loadRequestID <= initialLoadID {
+		t.Errorf("expected loadRequestID > %d, got %d",
+			initialLoadID, m.loadRequestID)
+	}
+}
+
+// TestInheritedSearchLocalReSearchSnapshots verifies that pressing /
+// from a message list with inherited search (no snapshot) creates a
+// snapshot, allowing two-step Esc to restore the inherited results.
+func TestInheritedSearchLocalReSearchSnapshots(t *testing.T) {
+	model := newTestModelWithRows(testAggregateRows)
+	model.level = levelAggregates
+	model.searchQuery = "avro"
+	model.cursor = 0
+
+	// Drill down with inherited search
+	m := applyAggregateKey(t, model, keyEnter())
+	m.messages = []query.MessageSummary{{ID: 1}, {ID: 2}}
+	m.loading = false
+
+	// User presses / to refine search — should snapshot inherited results
+	cmd := m.activateInlineSearch("search")
+	assertCmd(t, cmd, true)
+
+	if m.preSearchMessages == nil {
+		t.Fatal("activateInlineSearch should snapshot inherited results")
+	}
+	if len(m.preSearchMessages) != 2 {
+		t.Errorf("snapshot should have 2 messages, got %d",
+			len(m.preSearchMessages))
+	}
+
+	// Simulate new search committed
+	m.inlineSearchActive = false
+	m.searchQuery = "new query"
+	m.messages = []query.MessageSummary{{ID: 99}}
+
+	// First Esc restores inherited search results
+	m2 := applyMessageListKey(t, m, keyEsc())
+	assertLevel(t, m2, levelMessageList)
+	assertSearchQuery(t, m2, "")
+	if len(m2.messages) != 2 {
+		t.Errorf("expected 2 inherited messages restored, got %d",
+			len(m2.messages))
+	}
+}
+
 // TestPreSearchSnapshotRestoreOnEsc verifies that activating inline search at the
 // message list level snapshots state, and Esc restores it instantly without re-query.
 func TestPreSearchSnapshotRestoreOnEsc(t *testing.T) {

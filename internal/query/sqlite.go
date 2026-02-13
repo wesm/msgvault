@@ -435,6 +435,14 @@ func (e *SQLiteEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 	filterConditions = append(filterConditions, optsConds...)
 	args = append(args, optsArgs...)
 
+	searchJoins, searchConds, searchArgs :=
+		e.buildAggregateSearchParts(opts.SearchQuery, groupBy)
+	filterConditions = append(filterConditions, searchConds...)
+	args = append(args, searchArgs...)
+	if searchJoins != "" {
+		filterJoins += "\n" + searchJoins
+	}
+
 	return e.executeAggregate(ctx, groupBy, opts, filterJoins, filterConditions, args)
 }
 
@@ -442,43 +450,60 @@ func (e *SQLiteEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 func (e *SQLiteEngine) Aggregate(ctx context.Context, groupBy ViewType, opts AggregateOptions) ([]AggregateRow, error) {
 	conditions, args := optsToFilterConditions(opts, "m.")
 
-	var filterJoins string
-	if opts.SearchQuery != "" {
-		q := search.Parse(opts.SearchQuery)
-
-		// For Labels view with label search, filter the
-		// grouping column (l.name) directly instead of adding
-		// a conflicting label join. Strip labels from the
-		// parsed query before building the generic parts.
-		if groupBy == ViewLabels && len(q.Labels) > 0 {
-			for _, label := range q.Labels {
-				conditions = append(conditions,
-					`LOWER(l.name) LIKE LOWER(?) ESCAPE '\'`)
-				args = append(args,
-					"%"+escapeSQLiteLike(label)+"%")
-			}
-			// Clear labels so buildSearchQueryParts doesn't
-			// add a conflicting label join.
-			q.Labels = nil
-		}
-
-		searchConds, searchArgs, searchJns, ftsJoin :=
-			e.buildSearchQueryParts(ctx, q)
-		conditions = append(conditions, searchConds...)
-		args = append(args, searchArgs...)
-		var joinParts []string
-		if ftsJoin != "" {
-			joinParts = append(joinParts, ftsJoin)
-		}
-		joinParts = append(joinParts, searchJns...)
-		if len(joinParts) > 0 {
-			filterJoins = strings.Join(joinParts, "\n")
-		}
-	}
+	searchJoins, searchConds, searchArgs :=
+		e.buildAggregateSearchParts(opts.SearchQuery, groupBy)
+	conditions = append(conditions, searchConds...)
+	args = append(args, searchArgs...)
 
 	return e.executeAggregate(
-		ctx, groupBy, opts, filterJoins, conditions, args,
+		ctx, groupBy, opts, searchJoins, conditions, args,
 	)
+}
+
+// buildAggregateSearchParts parses a search query for aggregate views
+// and returns (joins, conditions, args). For Labels view with label
+// search, filters the grouping column directly.
+func (e *SQLiteEngine) buildAggregateSearchParts(
+	searchQuery string, groupBy ViewType,
+) (string, []string, []interface{}) {
+	if searchQuery == "" {
+		return "", nil, nil
+	}
+
+	q := search.Parse(searchQuery)
+
+	var conditions []string
+	var args []interface{}
+
+	// For Labels view with label search, filter the grouping
+	// column (l.name) directly instead of adding a conflicting
+	// label join. Strip labels from the parsed query before
+	// building the generic parts.
+	if groupBy == ViewLabels && len(q.Labels) > 0 {
+		for _, label := range q.Labels {
+			conditions = append(conditions,
+				`LOWER(l.name) LIKE LOWER(?) ESCAPE '\'`)
+			args = append(args,
+				"%"+escapeSQLiteLike(label)+"%")
+		}
+		q.Labels = nil
+	}
+
+	searchConds, searchArgs, searchJns, ftsJoin :=
+		e.buildSearchQueryParts(context.Background(), q)
+	conditions = append(conditions, searchConds...)
+	args = append(args, searchArgs...)
+	var joinParts []string
+	if ftsJoin != "" {
+		joinParts = append(joinParts, ftsJoin)
+	}
+	joinParts = append(joinParts, searchJns...)
+
+	var joins string
+	if len(joinParts) > 0 {
+		joins = strings.Join(joinParts, "\n")
+	}
+	return joins, conditions, args
 }
 
 // executeAggregate is the shared implementation for Aggregate and SubAggregate.

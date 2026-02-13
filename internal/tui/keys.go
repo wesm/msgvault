@@ -343,6 +343,9 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.searchQuery != "" && m.preSearchMessages != nil {
 			return m.clearMessageListSearch()
 		}
+		// Invalidate in-flight search responses so they don't write
+		// stale message data into the restored parent view.
+		m.searchRequestID++
 		return m.goBack()
 
 	// Selection
@@ -1338,8 +1341,12 @@ func (m *Model) restorePreSearchSnapshot() tea.Cmd {
 }
 
 func (m *Model) activateInlineSearch(placeholder string) tea.Cmd {
-	// Snapshot current message list so Esc can restore instantly
-	if m.level == levelMessageList && m.searchQuery == "" {
+	// Snapshot current message list so Esc can restore instantly.
+	// Only take a snapshot if we don't already have one (re-searches
+	// keep the original snapshot). This also handles inherited search
+	// from aggregate drill-down: the first local / captures the
+	// inherited results so Esc can restore them.
+	if m.level == levelMessageList && m.preSearchMessages == nil {
 		m.preSearchMessages = m.messages
 		m.preSearchCursor = m.cursor
 		m.preSearchScrollOffset = m.scrollOffset
