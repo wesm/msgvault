@@ -969,32 +969,27 @@ func TestHeaderViewShowsFilteredStatsOnSearch(t *testing.T) {
 	}
 }
 
-// TestDrillDownWithSearchQueryClearsSearch verifies that drilling down from a
-// filtered aggregate clears the search query (layered search: each level independent).
-func TestDrillDownWithSearchQueryClearsSearch(t *testing.T) {
+// TestDrillDownWithSearchQueryPreservesSearch verifies that drilling down from a
+// filtered aggregate preserves the search query so the message list is filtered.
+func TestDrillDownWithSearchQueryPreservesSearch(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
 	model.level = levelAggregates
 	model.searchQuery = "important" // Active search filter
 	model.cursor = 0                // alice@example.com
 
-	// Capture initial request IDs to verify exact increments
-	initialLoadRequestID := model.loadRequestID
 	initialSearchRequestID := model.searchRequestID
 
 	// Press Enter to drill down
 	m, cmd := applyAggregateKeyWithCmd(t, model, keyEnter())
 
 	assertLevel(t, m, levelMessageList)
-	assertSearchQuery(t, m, "")
-	assertCmd(t, cmd, true) // Should return command to load messages
+	assertSearchQuery(t, m, "important") // Search preserved
+	assertCmd(t, cmd, true)
 
-	if m.loadRequestID != initialLoadRequestID+1 {
-		t.Errorf("expected loadRequestID to increment by 1 (from %d to %d), got %d",
-			initialLoadRequestID, initialLoadRequestID+1, m.loadRequestID)
-	}
-	if m.searchRequestID != initialSearchRequestID+1 {
-		t.Errorf("expected searchRequestID to increment by 1 (from %d to %d), got %d",
-			initialSearchRequestID, initialSearchRequestID+1, m.searchRequestID)
+	// Should use loadSearch (searchRequestID incremented twice: invalidate + new search)
+	if m.searchRequestID != initialSearchRequestID+2 {
+		t.Errorf("expected searchRequestID to increment by 2 (from %d to %d), got %d",
+			initialSearchRequestID, initialSearchRequestID+2, m.searchRequestID)
 	}
 }
 
@@ -1025,9 +1020,9 @@ func TestDrillDownWithoutSearchQueryUsesLoadMessages(t *testing.T) {
 	}
 }
 
-// TestSubAggregateDrillDownWithSearchQueryClearsSearch verifies drill-down from
-// sub-aggregate also clears the search query (layered search).
-func TestSubAggregateDrillDownWithSearchQueryClearsSearch(t *testing.T) {
+// TestSubAggregateDrillDownWithSearchQueryPreservesSearch verifies drill-down from
+// sub-aggregate preserves the search query.
+func TestSubAggregateDrillDownWithSearchQueryPreservesSearch(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
 	model.level = levelDrillDown
 	model.searchQuery = "urgent"
@@ -1036,53 +1031,53 @@ func TestSubAggregateDrillDownWithSearchQueryClearsSearch(t *testing.T) {
 	model.viewType = query.ViewLabels
 	model.cursor = 0
 
-	// Capture initial request IDs to verify exact increments
-	initialLoadRequestID := model.loadRequestID
 	initialSearchRequestID := model.searchRequestID
 
 	m, cmd := applyAggregateKeyWithCmd(t, model, keyEnter())
 
 	assertLevel(t, m, levelMessageList)
-	assertSearchQuery(t, m, "")
-	assertCmd(t, cmd, true) // Should return command to load messages
+	assertSearchQuery(t, m, "urgent") // Search preserved
+	assertCmd(t, cmd, true)
 
-	if m.loadRequestID != initialLoadRequestID+1 {
-		t.Errorf("expected loadRequestID to increment by 1 (from %d to %d), got %d",
-			initialLoadRequestID, initialLoadRequestID+1, m.loadRequestID)
-	}
-	if m.searchRequestID != initialSearchRequestID+1 {
-		t.Errorf("expected searchRequestID to increment by 1 (from %d to %d), got %d",
-			initialSearchRequestID, initialSearchRequestID+1, m.searchRequestID)
+	if m.searchRequestID != initialSearchRequestID+2 {
+		t.Errorf("expected searchRequestID to increment by 2 (from %d to %d), got %d",
+			initialSearchRequestID, initialSearchRequestID+2, m.searchRequestID)
 	}
 }
 
 // TestDrillDownSearchBreadcrumbRoundTrip verifies that searching at aggregate level,
-// drilling down (which clears search), then pressing Esc restores the original search.
+// drilling down (which preserves search), then pressing Esc restores the aggregate view.
 func TestDrillDownSearchBreadcrumbRoundTrip(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
 	model.level = levelAggregates
 	model.searchQuery = "important"
 	model.cursor = 0
 
-	// Drill down — search should be cleared
+	// Drill down — search should persist
 	m := applyAggregateKey(t, model, keyEnter())
 
-	assertSearchQuery(t, m, "")
+	assertSearchQuery(t, m, "important")
 	assertLevel(t, m, levelMessageList)
 
 	// Populate messages so Esc handler works
 	m.messages = []query.MessageSummary{{ID: 1}}
 
-	// Esc back — should restore outer search from breadcrumb
+	// Esc clears the search first (message list Esc behavior)
 	m2 := applyMessageListKey(t, m, keyEsc())
 
-	assertLevel(t, m2, levelAggregates)
-	assertSearchQuery(t, m2, "important")
+	// First Esc clears search, stays in message list
+	assertLevel(t, m2, levelMessageList)
+	assertSearchQuery(t, m2, "")
+
+	// Second Esc goes back to aggregate with original search restored from breadcrumb
+	m3 := applyMessageListKey(t, m2, keyEsc())
+	assertLevel(t, m3, levelAggregates)
+	assertSearchQuery(t, m3, "important")
 }
 
-// TestDrillDownClearsHighlightTerms verifies that highlightTerms produces no
-// highlighting after drill-down (since searchQuery is empty).
-func TestDrillDownClearsHighlightTerms(t *testing.T) {
+// TestDrillDownPreservesSearchQuery verifies that searchQuery persists
+// after drill-down so highlighting and filtering remain active.
+func TestDrillDownPreservesSearchQuery(t *testing.T) {
 	model := newTestModelWithRows(testAggregateRows)
 	model.level = levelAggregates
 	model.searchQuery = "alice"
@@ -1090,12 +1085,7 @@ func TestDrillDownClearsHighlightTerms(t *testing.T) {
 
 	m := applyAggregateKey(t, model, keyEnter())
 
-	// highlightTerms with empty searchQuery should return text unchanged
-	text := "alice@example.com"
-	result := highlightTerms(text, m.searchQuery)
-	if result != text {
-		t.Errorf("expected no highlighting after drill-down, got %q", result)
-	}
+	assertSearchQuery(t, m, "alice")
 }
 
 // TestSubAggregateDrillDownSearchBreadcrumbRoundTrip verifies the breadcrumb
@@ -1109,16 +1099,18 @@ func TestSubAggregateDrillDownSearchBreadcrumbRoundTrip(t *testing.T) {
 	model.viewType = query.ViewLabels
 	model.cursor = 0
 
-	// Drill down to message list — search should be cleared
+	// Drill down to message list — search should persist
 	m := applyAggregateKey(t, model, keyEnter())
 
-	assertSearchQuery(t, m, "")
+	assertSearchQuery(t, m, "urgent")
 
-	// Populate messages and go back
+	// Populate messages; first Esc clears search, second goes back
 	m.messages = []query.MessageSummary{{ID: 1}}
 	m2 := applyMessageListKey(t, m, keyEsc())
+	assertSearchQuery(t, m2, "")
 
-	assertSearchQuery(t, m2, "urgent")
+	m3 := applyMessageListKey(t, m2, keyEsc())
+	assertSearchQuery(t, m3, "urgent")
 }
 
 // TestStaleSearchResponseIgnoredAfterDrillDown verifies that a search response

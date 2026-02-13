@@ -182,6 +182,10 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		// If there's an active search query, show search results instead of all messages
 		if m.searchQuery != "" {
+			m.searchFilter = m.drillFilter
+			m.searchFilter.SourceID = m.accountFilter
+			m.searchFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
+			m.searchFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
 			m.searchRequestID++
 			return m, m.loadSearch(m.searchQuery)
 		}
@@ -1189,13 +1193,19 @@ func (m Model) enterDrillDown(row query.AggregateRow) (tea.Model, tea.Cmd) {
 		m.selection.messageIDs = make(map[int64]bool)
 	}
 
-	// Clear search on drill-down: the drill filter already
-	// constrains to the correct subset. The breadcrumb
-	// preserves the outer search for back-navigation.
-	// Increment searchRequestID to invalidate any in-flight
-	// search responses from the aggregate level.
-	m.searchQuery = ""
+	// Invalidate in-flight search responses from the aggregate level.
 	m.searchRequestID++
+
+	// Preserve search query through drill-down so the message list
+	// shows only messages matching both the drill filter and the search.
+	if m.searchQuery != "" {
+		m.searchFilter = m.drillFilter
+		m.searchFilter.SourceID = m.accountFilter
+		m.searchFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
+		m.searchFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
+		m.searchRequestID++
+		return m, m.loadSearch(m.searchQuery)
+	}
 
 	m.loadRequestID++
 	return m, m.loadMessages()
