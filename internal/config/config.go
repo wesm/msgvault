@@ -254,16 +254,11 @@ func (c *Config) Save() error {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("create config file: %w", err)
 	}
 	defer f.Close()
-
-	// Secure file permissions (config may contain API keys)
-	if err := fileutil.SecureChmod(path, 0600); err != nil {
-		slog.Warn("failed to secure config file permissions", "path", path, "err", err)
-	}
 
 	if err := toml.NewEncoder(f).Encode(c); err != nil {
 		return fmt.Errorf("encode config: %w", err)

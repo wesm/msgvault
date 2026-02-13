@@ -200,7 +200,9 @@ func setupRemoteServer(reader *bufio.Reader, oauthSecretsPath string) (string, s
 	} else {
 		fmt.Printf("\nNAS deployment files created in: %s\n", bundleDir)
 		fmt.Println("  - config.toml (ready for NAS)")
-		fmt.Println("  - client_secret.json (copy of OAuth credentials)")
+		if oauthSecretsPath != "" {
+			fmt.Println("  - client_secret.json (copy of OAuth credentials)")
+		}
 		fmt.Println("  - docker-compose.yml (ready to deploy)")
 		fmt.Println()
 		fmt.Println("To deploy on your NAS:")
@@ -299,7 +301,7 @@ func copyFile(src, dst string) error {
 	}
 	defer srcFile.Close()
 
-	dstFile, err := os.Create(dst)
+	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
