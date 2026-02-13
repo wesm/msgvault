@@ -528,7 +528,7 @@ func (s *Server) handleAddAccount(w http.ResponseWriter, r *http.Request) {
 	if req.Schedule == "" {
 		req.Schedule = "0 2 * * *" // Default: 2am daily
 	}
-	req.Enabled = true
+	req.Enabled = true // Always enable — caller is export-token registering for sync
 
 	// Validate cron expression before persisting
 	if err := scheduler.ValidateCronExpr(req.Schedule); err != nil {

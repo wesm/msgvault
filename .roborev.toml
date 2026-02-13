@@ -10,25 +10,7 @@ The Windows CSV fallback path uses \\N as a NULL sentinel (PostgreSQL
 convention) with DuckDB's nullstr option. This is an accepted design
 choice — do not flag it as a concern.
 
-The setup wizard defaults to HTTP (not HTTPS) for remote server URLs.
-This is intentional — the deployment model assumes Tailscale or a
-trusted LAN where TLS termination is handled at the network layer.
-Requiring HTTPS would force certificate management on NAS users for
-no security benefit. Do not flag HTTP defaults or allow_insecure as
-security issues.
-
-The setup wizard prints the generated API key to stdout. This is
-intentional — it is an interactive CLI tool, not a CI pipeline.
-The user needs to see the key to use it. Do not flag plaintext key
-display in interactive CLI output.
-
-POST /api/v1/accounts forces enabled=true on new accounts. This is
-intentional — the endpoint is called by export-token to register
-accounts for sync. Creating a disabled account via this flow has no
-use case. Do not flag the enabled override.
-
-The remote store pagination uses page-aligned offsets only. All
-callers (the API) convert page/page_size to aligned offsets. Non-
-aligned offsets are not a supported use case. Do not flag pagination
-offset alignment.
+HTTP remote defaults, plaintext key display in interactive CLI,
+enabled=true override on account creation, and page-aligned pagination
+are documented design decisions — see code comments at each site.
 """

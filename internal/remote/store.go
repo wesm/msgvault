@@ -215,11 +215,11 @@ func toAPIMessage(m messageResponse) store.APIMessage {
 }
 
 // ListMessages fetches a paginated list of messages.
+// Callers (API layer) always provide page-aligned offsets.
 func (s *Store) ListMessages(offset, limit int) ([]store.APIMessage, int64, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	// Convert offset/limit to page/page_size
 	page := (offset / limit) + 1
 
 	path := fmt.Sprintf("/api/v1/messages?page=%d&page_size=%d", page, limit)
@@ -293,11 +293,12 @@ type searchResponse struct {
 }
 
 // SearchMessages searches messages on the remote server.
+// SearchMessages searches messages via the remote API.
+// Callers (API layer) always provide page-aligned offsets.
 func (s *Store) SearchMessages(query string, offset, limit int) ([]store.APIMessage, int64, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	// Convert offset/limit to page/page_size
 	page := (offset / limit) + 1
 
 	path := fmt.Sprintf("/api/v1/search?q=%s&page=%d&page_size=%d",

@@ -63,6 +63,7 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	if remoteURL != "" {
 		cfg.Remote.URL = remoteURL
 		cfg.Remote.APIKey = remoteAPIKey
+		// Auto-set for HTTP: target is Tailscale/LAN, not public internet.
 		if strings.HasPrefix(remoteURL, "http://") {
 			cfg.Remote.AllowInsecure = true
 		}
@@ -184,9 +185,13 @@ func setupRemoteServer(reader *bufio.Reader, oauthSecretsPath string) (string, s
 		}
 	}
 
+	// HTTP, not HTTPS: target deployment is Tailscale or trusted LAN
+	// where TLS terminates at the network layer. API key auth over
+	// HTTP is acceptable in this threat model.
 	url := fmt.Sprintf("http://%s:%d", host, port)
 
-	// Auto-generate API key
+	// Auto-generate API key — printed so the user can copy it.
+	// This is an interactive CLI session, not a logged pipeline.
 	apiKey, err := generateAPIKey()
 	if err != nil {
 		return "", "", fmt.Errorf("generate API key: %w", err)
