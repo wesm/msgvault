@@ -663,6 +663,37 @@ func TestHandleAddAccountInvalidEmail(t *testing.T) {
 	}
 }
 
+func TestHandleAddAccountSaveFailure(t *testing.T) {
+	// Point HomeDir to a file (not a directory) so Save() fails
+	tmpFile := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(tmpFile, []byte("x"), 0600); err != nil {
+		t.Fatalf("create blocker file: %v", err)
+	}
+
+	cfg := &config.Config{
+		Server:  config.ServerConfig{APIPort: 8080},
+		HomeDir: tmpFile, // Save() will fail: can't mkdir inside a file
+	}
+	sched := newMockScheduler()
+	srv := NewServer(cfg, nil, sched, testLogger())
+
+	body := `{"email": "fail@gmail.com", "schedule": "0 2 * * *"}`
+	req := httptest.NewRequest("POST", "/api/v1/accounts", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+
+	// In-memory state should be rolled back
+	if len(cfg.Accounts) != 0 {
+		t.Errorf("cfg.Accounts has %d entries, want 0 (rollback failed)", len(cfg.Accounts))
+	}
+}
+
 func TestSanitizeTokenPath(t *testing.T) {
 	tokensDir := "/data/tokens"
 
