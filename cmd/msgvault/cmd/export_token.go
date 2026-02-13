@@ -59,153 +59,205 @@ func init() {
 	rootCmd.AddCommand(exportTokenCmd)
 }
 
-func runExportToken(cmd *cobra.Command, args []string) error {
-	email := args[0]
+// tokenExporter uploads OAuth tokens to a remote msgvault server.
+type tokenExporter struct {
+	httpClient *http.Client
+	tokensDir  string
+	stdout     io.Writer
+	stderr     io.Writer
+}
 
-	// Resolution order: flag > env var > config file
-	if exportTokenTo == "" {
-		exportTokenTo = os.Getenv("MSGVAULT_REMOTE_URL")
-	}
-	if exportTokenTo == "" {
-		exportTokenTo = cfg.Remote.URL
-	}
+// exportResult holds the resolved parameters after a successful export,
+// so the caller can decide whether to persist them.
+type exportResult struct {
+	remoteURL     string
+	apiKey        string
+	allowInsecure bool
+}
 
-	if exportTokenAPIKey == "" {
-		exportTokenAPIKey = os.Getenv("MSGVAULT_REMOTE_API_KEY")
-	}
-	if exportTokenAPIKey == "" {
-		exportTokenAPIKey = cfg.Remote.APIKey
-	}
-
-	// Validate required values
-	if exportTokenTo == "" {
-		return fmt.Errorf("remote URL required: use --to flag, MSGVAULT_REMOTE_URL env var, or [remote] url in config.toml")
-	}
-	if exportTokenAPIKey == "" {
-		return fmt.Errorf("API key required: use --api-key flag, MSGVAULT_REMOTE_API_KEY env var, or [remote] api_key in config.toml")
-	}
-
+// export validates inputs, reads the local token, uploads it to the
+// remote server, and registers the account.
+func (e *tokenExporter) export(
+	email, remoteURL, apiKey string, allowInsecure bool,
+) (*exportResult, error) {
 	// Parse and validate URL
-	parsedURL, err := url.Parse(exportTokenTo)
+	parsedURL, err := url.Parse(remoteURL)
 	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
+		return nil, fmt.Errorf("invalid URL: %w", err)
 	}
-
-	// Enforce HTTPS unless --allow-insecure is set
-	if parsedURL.Scheme == "http" && !exportAllowInsecure {
-		return fmt.Errorf("HTTPS required for security (OAuth tokens contain sensitive credentials)\n\n" +
-			"Options:\n" +
-			"  1. Use HTTPS: --to https://nas:8080\n" +
-			"  2. For trusted networks (e.g., Tailscale): --allow-insecure")
+	if parsedURL.Scheme == "http" && !allowInsecure {
+		return nil, fmt.Errorf(
+			"HTTPS required for security (OAuth tokens contain sensitive credentials)\n\n" +
+				"Options:\n" +
+				"  1. Use HTTPS: --to https://nas:8080\n" +
+				"  2. For trusted networks (e.g., Tailscale): --allow-insecure")
 	}
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return fmt.Errorf("URL scheme must be http or https, got: %s", parsedURL.Scheme)
+		return nil, fmt.Errorf("URL scheme must be http or https, got: %s", parsedURL.Scheme)
 	}
 
 	if err := validateExportEmail(email); err != nil {
-		return err
+		return nil, err
 	}
 
-	// Find token file using sanitized path
-	tokensDir := cfg.TokensDir()
-	tokenPath := sanitizeExportTokenPath(tokensDir, email)
-
-	// Check if token exists
+	// Read local token
+	tokenPath := sanitizeExportTokenPath(e.tokensDir, email)
 	if _, err := os.Stat(tokenPath); os.IsNotExist(err) {
-		return fmt.Errorf("no token found for %s\n\nRun 'msgvault add-account %s' first to authenticate", email, email)
+		return nil, fmt.Errorf(
+			"no token found for %s\n\nRun 'msgvault add-account %s' first to authenticate",
+			email, email)
 	}
-
-	// Read token file
 	tokenData, err := os.ReadFile(tokenPath)
 	if err != nil {
-		return fmt.Errorf("failed to read token: %w", err)
+		return nil, fmt.Errorf("failed to read token: %w", err)
 	}
 
-	// Build request URL (escape email for path safety)
-	reqURL := strings.TrimSuffix(exportTokenTo, "/") + "/api/v1/auth/token/" + url.PathEscape(email)
+	baseURL := strings.TrimSuffix(remoteURL, "/")
 
-	// Create request
+	// Upload token
+	fmt.Fprintf(e.stdout, "Uploading token to %s...\n", remoteURL)
+	if parsedURL.Scheme == "http" {
+		fmt.Fprintf(e.stderr, "WARNING: Sending credentials over insecure HTTP connection\n")
+	}
+	if err := e.uploadToken(baseURL, apiKey, email, tokenData); err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(e.stdout, "Token uploaded successfully for %s\n", email)
+
+	// Register account (best-effort)
+	e.addAccount(baseURL, apiKey, email)
+
+	return &exportResult{
+		remoteURL:     remoteURL,
+		apiKey:        apiKey,
+		allowInsecure: allowInsecure,
+	}, nil
+}
+
+// uploadToken POSTs the token data to the remote server.
+func (e *tokenExporter) uploadToken(
+	baseURL, apiKey, email string, tokenData []byte,
+) error {
+	reqURL := baseURL + "/api/v1/auth/token/" + url.PathEscape(email)
+
 	req, err := http.NewRequest("POST", reqURL, bytes.NewReader(tokenData))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-Key", exportTokenAPIKey)
+	req.Header.Set("X-API-Key", apiKey)
 
-	// Create HTTP client with timeout
-	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	// Send request
-	fmt.Printf("Uploading token to %s...\n", exportTokenTo)
-	if parsedURL.Scheme == "http" {
-		fmt.Fprintf(os.Stderr, "WARNING: Sending credentials over insecure HTTP connection\n")
-	}
-	resp, err := httpClient.Do(req)
+	resp, err := e.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to connect to remote server: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Read response
 	body, _ := io.ReadAll(resp.Body)
-
 	if resp.StatusCode != http.StatusCreated {
 		return fmt.Errorf("upload failed (HTTP %d): %s", resp.StatusCode, string(body))
 	}
+	return nil
+}
 
-	fmt.Printf("Token uploaded successfully for %s\n", email)
+// addAccount registers the email on the remote server. Failures are
+// logged as warnings since the token upload already succeeded.
+func (e *tokenExporter) addAccount(baseURL, apiKey, email string) {
+	fmt.Fprintf(e.stdout, "Adding account to remote config...\n")
+	accountURL := baseURL + "/api/v1/accounts"
+	accountBody := fmt.Sprintf(
+		`{"email":%q,"schedule":"0 2 * * *","enabled":true}`, email)
 
-	// Add account to remote config via API
-	fmt.Printf("Adding account to remote config...\n")
-	accountURL := strings.TrimSuffix(exportTokenTo, "/") + "/api/v1/accounts"
-	accountBody := fmt.Sprintf(`{"email":%q,"schedule":"0 2 * * *","enabled":true}`, email)
-
-	accountReq, err := http.NewRequest("POST", accountURL, strings.NewReader(accountBody))
+	req, err := http.NewRequest("POST", accountURL, strings.NewReader(accountBody))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Could not create account request: %v\n", err)
-	} else {
-		accountReq.Header.Set("Content-Type", "application/json")
-		accountReq.Header.Set("X-API-Key", exportTokenAPIKey)
+		fmt.Fprintf(e.stderr, "Warning: Could not create account request: %v\n", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
 
-		accountResp, err := httpClient.Do(accountReq)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Could not add account to remote config: %v\n", err)
-		} else {
-			accountRespBody, _ := io.ReadAll(accountResp.Body)
-			accountResp.Body.Close()
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "Warning: Could not add account to remote config: %v\n", err)
+		return
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
 
-			if accountResp.StatusCode == http.StatusCreated {
-				fmt.Printf("Account added to remote config\n")
-			} else if accountResp.StatusCode == http.StatusOK {
-				fmt.Printf("Account already configured on remote\n")
-			} else {
-				fmt.Fprintf(os.Stderr, "Warning: Could not add account (HTTP %d): %s\n", accountResp.StatusCode, string(accountRespBody))
-			}
-		}
+	switch resp.StatusCode {
+	case http.StatusCreated:
+		fmt.Fprintf(e.stdout, "Account added to remote config\n")
+	case http.StatusOK:
+		fmt.Fprintf(e.stdout, "Account already configured on remote\n")
+	default:
+		fmt.Fprintf(e.stderr,
+			"Warning: Could not add account (HTTP %d): %s\n",
+			resp.StatusCode, string(respBody))
+	}
+}
+
+func runExportToken(_ *cobra.Command, args []string) error {
+	email := args[0]
+
+	// Resolution order: flag > env var > config file
+	remoteURL := resolveParam(exportTokenTo, "MSGVAULT_REMOTE_URL", cfg.Remote.URL)
+	apiKey := resolveParam(exportTokenAPIKey, "MSGVAULT_REMOTE_API_KEY", cfg.Remote.APIKey)
+
+	if remoteURL == "" {
+		return fmt.Errorf(
+			"remote URL required: use --to flag, MSGVAULT_REMOTE_URL env var, or [remote] url in config.toml")
+	}
+	if apiKey == "" {
+		return fmt.Errorf(
+			"API key required: use --api-key flag, MSGVAULT_REMOTE_API_KEY env var, or [remote] api_key in config.toml")
 	}
 
-	// Save remote config for future use (if not already saved)
-	if cfg.Remote.URL != exportTokenTo || cfg.Remote.APIKey != exportTokenAPIKey ||
-		(exportAllowInsecure && !cfg.Remote.AllowInsecure) {
-		cfg.Remote.URL = exportTokenTo
-		cfg.Remote.APIKey = exportTokenAPIKey
-		if exportAllowInsecure {
+	exporter := &tokenExporter{
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+		tokensDir:  cfg.TokensDir(),
+		stdout:     os.Stdout,
+		stderr:     os.Stderr,
+	}
+
+	result, err := exporter.export(email, remoteURL, apiKey, exportAllowInsecure)
+	if err != nil {
+		return err
+	}
+
+	// Save remote config for future use
+	if cfg.Remote.URL != result.remoteURL ||
+		cfg.Remote.APIKey != result.apiKey ||
+		(result.allowInsecure && !cfg.Remote.AllowInsecure) {
+		cfg.Remote.URL = result.remoteURL
+		cfg.Remote.APIKey = result.apiKey
+		if result.allowInsecure {
 			cfg.Remote.AllowInsecure = true
 		}
 		if err := cfg.Save(); err != nil {
 			fmt.Fprintf(os.Stderr, "Note: Could not save remote config: %v\n", err)
 		} else {
-			fmt.Printf("Remote server saved to %s (future exports won't need --to/--api-key)\n", cfg.ConfigFilePath())
+			fmt.Printf("Remote server saved to %s (future exports won't need --to/--api-key)\n",
+				cfg.ConfigFilePath())
 		}
 	}
 
 	fmt.Println("\nSetup complete! The remote server will sync daily at 2am.")
 	fmt.Printf("To trigger an immediate sync:\n")
-	fmt.Printf("  curl -X POST -H 'X-API-Key: ...' %s/api/v1/sync/%s\n", exportTokenTo, email)
+	fmt.Printf("  curl -X POST -H 'X-API-Key: ...' %s/api/v1/sync/%s\n",
+		result.remoteURL, email)
 
 	return nil
+}
+
+// resolveParam returns the first non-empty value from: flag, env var, config.
+func resolveParam(flag, envKey, configVal string) string {
+	if flag != "" {
+		return flag
+	}
+	if v := os.Getenv(envKey); v != "" {
+		return v
+	}
+	return configVal
 }
 
 // validateExportEmail checks that an email address is well-formed
@@ -238,7 +290,8 @@ func sanitizeExportTokenPath(tokensDir, email string) string {
 
 	// If path escapes tokensDir, use hash-based fallback
 	if !strings.HasPrefix(cleanPath, cleanTokensDir+string(os.PathSeparator)) {
-		return filepath.Join(tokensDir, fmt.Sprintf("%x.json", sha256.Sum256([]byte(email))))
+		return filepath.Join(tokensDir,
+			fmt.Sprintf("%x.json", sha256.Sum256([]byte(email))))
 	}
 
 	return cleanPath
