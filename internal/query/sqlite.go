@@ -480,12 +480,15 @@ func (e *SQLiteEngine) buildAggregateSearchParts(
 	// label join. Strip labels from the parsed query before
 	// building the generic parts.
 	if groupBy == ViewLabels && len(q.Labels) > 0 {
+		var labelParts []string
 		for _, label := range q.Labels {
-			conditions = append(conditions,
+			labelParts = append(labelParts,
 				`LOWER(l.name) LIKE LOWER(?) ESCAPE '\'`)
 			args = append(args,
 				"%"+escapeSQLiteLike(label)+"%")
 		}
+		conditions = append(conditions,
+			"("+strings.Join(labelParts, " OR ")+")")
 		q.Labels = nil
 	}
 

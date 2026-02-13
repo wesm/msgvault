@@ -549,6 +549,11 @@ func TestAggregateByLabel_WithSearchQuery(t *testing.T) {
 			wantLabels: []string{"Work"},
 		},
 		{
+			name:       "multi_label_or",
+			query:      "label:work label:important",
+			wantLabels: []string{"Work", "IMPORTANT"},
+		},
+		{
 			name:       "no_match",
 			query:      "label:nonexistent",
 			wantLabels: nil,
