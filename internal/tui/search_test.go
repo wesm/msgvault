@@ -57,14 +57,15 @@ func TestSearchResultsStale(t *testing.T) {
 // TestInlineSearchTabToggle verifies Tab key behavior across different search states.
 func TestInlineSearchTabToggle(t *testing.T) {
 	tests := []struct {
-		name                    string
-		level                   viewLevel
-		initialMode             searchModeKind
-		query                   string
-		wantMode                searchModeKind
-		wantCmd                 bool
-		wantInlineSearchLoading bool
-		wantRequestIDIncrement  bool
+		name                     string
+		level                    viewLevel
+		initialMode              searchModeKind
+		query                    string
+		wantMode                 searchModeKind
+		wantCmd                  bool
+		wantInlineSearchLoading  bool
+		wantSearchIDIncrement    bool
+		wantAggregateIDIncrement bool
 	}{
 		{
 			name:                    "toggle fast to deep at message list",
@@ -74,7 +75,7 @@ func TestInlineSearchTabToggle(t *testing.T) {
 			wantMode:                searchModeDeep,
 			wantCmd:                 true,
 			wantInlineSearchLoading: true,
-			wantRequestIDIncrement:  true,
+			wantSearchIDIncrement:   true,
 		},
 		{
 			name:                    "toggle deep to fast at message list",
@@ -84,7 +85,7 @@ func TestInlineSearchTabToggle(t *testing.T) {
 			wantMode:                searchModeFast,
 			wantCmd:                 true,
 			wantInlineSearchLoading: true,
-			wantRequestIDIncrement:  true,
+			wantSearchIDIncrement:   true,
 		},
 		{
 			name:                    "no search with empty query",
@@ -94,17 +95,16 @@ func TestInlineSearchTabToggle(t *testing.T) {
 			wantMode:                searchModeDeep,
 			wantCmd:                 false,
 			wantInlineSearchLoading: false,
-			wantRequestIDIncrement:  false,
 		},
 		{
-			name:                    "toggle to deep at aggregate level",
-			level:                   levelAggregates,
-			initialMode:             searchModeFast,
-			query:                   "test query",
-			wantMode:                searchModeDeep,
-			wantCmd:                 true,
-			wantInlineSearchLoading: true,
-			wantRequestIDIncrement:  true,
+			name:                     "toggle to deep at aggregate level",
+			level:                    levelAggregates,
+			initialMode:              searchModeFast,
+			query:                    "test query",
+			wantMode:                 searchModeDeep,
+			wantCmd:                  true,
+			wantInlineSearchLoading:  true,
+			wantAggregateIDIncrement: true,
 		},
 	}
 
@@ -114,7 +114,8 @@ func TestInlineSearchTabToggle(t *testing.T) {
 				WithLevel(tt.level).
 				WithActiveSearch(tt.query, tt.initialMode).
 				Build()
-			initialRequestID := model.searchRequestID
+			initialSearchID := model.searchRequestID
+			initialAggregateID := model.aggregateRequestID
 
 			m, cmd := applyInlineSearchKey(t, model, keyTab())
 
@@ -122,16 +123,28 @@ func TestInlineSearchTabToggle(t *testing.T) {
 			assertCmd(t, cmd, tt.wantCmd)
 
 			if m.inlineSearchLoading != tt.wantInlineSearchLoading {
-				t.Errorf("expected inlineSearchLoading=%v, got %v", tt.wantInlineSearchLoading, m.inlineSearchLoading)
+				t.Errorf("expected inlineSearchLoading=%v, got %v",
+					tt.wantInlineSearchLoading, m.inlineSearchLoading)
 			}
 
-			if tt.wantRequestIDIncrement {
-				if m.searchRequestID != initialRequestID+1 {
-					t.Errorf("expected searchRequestID to increment by 1 (from %d to %d), got %d",
-						initialRequestID, initialRequestID+1, m.searchRequestID)
+			if tt.wantSearchIDIncrement {
+				if m.searchRequestID != initialSearchID+1 {
+					t.Errorf("searchRequestID: want %d, got %d",
+						initialSearchID+1, m.searchRequestID)
 				}
-			} else if m.searchRequestID != initialRequestID {
-				t.Errorf("expected searchRequestID to remain %d, got %d", initialRequestID, m.searchRequestID)
+			} else if m.searchRequestID != initialSearchID {
+				t.Errorf("searchRequestID should not change: want %d, got %d",
+					initialSearchID, m.searchRequestID)
+			}
+
+			if tt.wantAggregateIDIncrement {
+				if m.aggregateRequestID != initialAggregateID+1 {
+					t.Errorf("aggregateRequestID: want %d, got %d",
+						initialAggregateID+1, m.aggregateRequestID)
+				}
+			} else if m.aggregateRequestID != initialAggregateID {
+				t.Errorf("aggregateRequestID should not change: want %d, got %d",
+					initialAggregateID, m.aggregateRequestID)
 			}
 		})
 	}

@@ -263,32 +263,26 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyCol
 
 	q := search.Parse(searchQuery)
 
-	// Text terms: filter on the view's grouping key columns when provided,
-	// otherwise fall back to subject + sender search.
+	// Text terms: always search subject + sender, plus the view's grouping
+	// key columns when provided (e.g., label name in Labels view).
 	for _, term := range q.TextTerms {
 		termPattern := "%" + escapeILIKE(term) + "%"
-		if len(keyColumns) > 0 {
-			// Filter on the grouping dimension's columns
-			var parts []string
-			for _, col := range keyColumns {
-				parts = append(parts, col+` ILIKE ? ESCAPE '\'`)
-				args = append(args, termPattern)
-			}
-			conditions = append(conditions, "("+strings.Join(parts, " OR ")+")")
-		} else {
-			// Default: search subject and sender (for Senders/Time views)
-			conditions = append(conditions, `(
-				msg.subject ILIKE ? ESCAPE '\' OR
-				EXISTS (
-					SELECT 1 FROM mr mr_search
-					JOIN p p_search ON p_search.id = mr_search.participant_id
-					WHERE mr_search.message_id = msg.id
-					  AND mr_search.recipient_type = 'from'
-					  AND (p_search.email_address ILIKE ? ESCAPE '\' OR p_search.display_name ILIKE ? ESCAPE '\')
-				)
-			)`)
-			args = append(args, termPattern, termPattern, termPattern)
+		var parts []string
+		parts = append(parts, `msg.subject ILIKE ? ESCAPE '\'`)
+		args = append(args, termPattern)
+		parts = append(parts, `EXISTS (
+			SELECT 1 FROM mr mr_search
+			JOIN p p_search ON p_search.id = mr_search.participant_id
+			WHERE mr_search.message_id = msg.id
+			  AND mr_search.recipient_type = 'from'
+			  AND (p_search.email_address ILIKE ? ESCAPE '\' OR p_search.display_name ILIKE ? ESCAPE '\')
+		)`)
+		args = append(args, termPattern, termPattern)
+		for _, col := range keyColumns {
+			parts = append(parts, col+` ILIKE ? ESCAPE '\'`)
+			args = append(args, termPattern)
 		}
+		conditions = append(conditions, "("+strings.Join(parts, " OR ")+")")
 	}
 
 	// from: filter - match sender email

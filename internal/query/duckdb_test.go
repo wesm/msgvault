@@ -533,44 +533,44 @@ func TestDuckDBEngine_AggregateByRecipient(t *testing.T) {
 }
 
 // TestDuckDBEngine_AggregateByRecipient_SearchFiltersOnKey verifies that
-// searching in Recipients view filters on recipient email/name, not subject/sender.
-// This reproduces a bug where the search applied to subject/sender instead of
-// the recipient grouping key, causing inflated counts when summed across groups.
+// text term search in Recipients view matches subjects, senders, and the
+// recipient key column, then shows the recipient breakdown of all matching
+// messages.
 func TestDuckDBEngine_AggregateByRecipient_SearchFiltersOnKey(t *testing.T) {
 	engine := newParquetEngine(t)
 	ctx := context.Background()
 
-	// Search for "bob" — should return only bob@company.org as a recipient
-	// Test data: bob is a recipient (to) in msgs 1,2,3
+	// Search for "bob" — matches:
+	//   - bob@company.org as recipient key in msg1,2,3
+	//   - bob@company.org as sender of msg4,5
+	// Recipient breakdown of msgs 1-5: bob(3), alice(2), carol(1), dan(1)
 	opts := DefaultAggregateOptions()
 	opts.SearchQuery = "bob"
 	rows, err := engine.Aggregate(ctx, ViewRecipients, opts)
 	if err != nil {
 		t.Fatalf("AggregateByRecipient (search 'bob'): %v", err)
 	}
-
-	// Should only match bob@company.org as recipient, not bob as sender
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 recipient matching 'bob', got %d", len(rows))
+	gotKeys := make(map[string]bool)
+	for _, r := range rows {
+		gotKeys[r.Key] = true
 	}
-	if rows[0].Key != "bob@company.org" {
-		t.Errorf("expected bob@company.org, got %s", rows[0].Key)
-	}
-	if rows[0].Count != 3 {
-		t.Errorf("expected count=3 for bob, got %d", rows[0].Count)
+	if !gotKeys["bob@company.org"] {
+		t.Errorf("expected bob@company.org in results, got %v", rows)
 	}
 
-	// Search for "dan" — should return only dan@other.net (cc recipient in msg 2)
+	// Search for "dan" — matches dan@other.net as recipient key (msg2)
+	// and dan as sender display name. msg2 recipients: bob, dan
 	opts.SearchQuery = "dan"
 	rows, err = engine.Aggregate(ctx, ViewRecipients, opts)
 	if err != nil {
 		t.Fatalf("AggregateByRecipient (search 'dan'): %v", err)
 	}
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 recipient matching 'dan', got %d", len(rows))
+	gotKeys = make(map[string]bool)
+	for _, r := range rows {
+		gotKeys[r.Key] = true
 	}
-	if rows[0].Key != "dan@other.net" {
-		t.Errorf("expected dan@other.net, got %s", rows[0].Key)
+	if !gotKeys["dan@other.net"] {
+		t.Errorf("expected dan@other.net in results, got %v", rows)
 	}
 
 	// Verify totals don't exceed baseline

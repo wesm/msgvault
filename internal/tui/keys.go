@@ -37,20 +37,17 @@ func (m Model) handleInlineSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchQuery = query
 			m.inlineSearchLoading = true
 			spinCmd := m.startSpinner()
-			m.searchFilter = m.drillFilter
-			m.searchFilter.SourceID = m.accountFilter
-			m.searchFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
-			m.searchFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
-			// Deep search from aggregate: transition to message list
-			if m.searchMode == searchModeDeep && m.level != levelMessageList {
-				m.level = levelMessageList
-				m.messages = nil
-				m.cursor = 0
-				m.scrollOffset = 0
-				m.loadRequestID++
+			if m.level == levelMessageList {
+				m.searchFilter = m.drillFilter
+				m.searchFilter.SourceID = m.accountFilter
+				m.searchFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
+				m.searchFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
+				m.searchRequestID++
+				return m, tea.Batch(spinCmd, m.loadSearch(query))
 			}
-			m.searchRequestID++
-			return m, tea.Batch(spinCmd, m.loadSearch(query))
+			// Aggregate views: reload aggregates with search filter
+			m.aggregateRequestID++
+			return m, tea.Batch(spinCmd, m.loadData())
 		}
 		return m, nil
 
@@ -1289,23 +1286,7 @@ func (m Model) commitInlineSearch() (tea.Model, tea.Cmd) {
 		spinCmd := m.startSpinner()
 		return m, tea.Batch(spinCmd, m.loadSearch(queryStr))
 	}
-	// Deep search from aggregate: transition to message list
-	if m.searchMode == searchModeDeep {
-		m.level = levelMessageList
-		m.messages = nil
-		m.cursor = 0
-		m.scrollOffset = 0
-		m.searchFilter = m.drillFilter
-		m.searchFilter.SourceID = m.accountFilter
-		m.searchFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
-		m.searchFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
-		m.loadRequestID++
-		m.searchRequestID++
-		m.loading = true
-		spinCmd := m.startSpinner()
-		return m, tea.Batch(spinCmd, m.loadSearch(queryStr))
-	}
-	// In aggregate views (fast mode), results already showing from debounced search
+	// In aggregate views, results already showing from debounced search
 	return m, nil
 }
 

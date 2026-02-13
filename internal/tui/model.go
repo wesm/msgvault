@@ -1062,13 +1062,7 @@ func (m Model) handleSearchDebounce(msg searchDebounceMsg) (tea.Model, tea.Cmd) 
 		}
 		return m, tea.Batch(spinCmd, m.loadSearch(msg.query))
 	}
-	// Deep search at aggregate level: skip live debounce updates.
-	// The search executes on commit (Enter) or Tab toggle.
-	if m.searchMode == searchModeDeep {
-		m.inlineSearchLoading = false
-		return m, nil
-	}
-	// Aggregate views (fast mode): reload aggregates with search filter
+	// Aggregate views: reload aggregates with search filter
 	m.aggregateRequestID++
 	return m, tea.Batch(spinCmd, m.loadData())
 }
