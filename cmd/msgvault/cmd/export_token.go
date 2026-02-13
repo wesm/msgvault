@@ -102,13 +102,8 @@ func runExportToken(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("URL scheme must be http or https, got: %s", parsedURL.Scheme)
 	}
 
-	// Validate email format (strict validation to prevent path traversal)
-	if !strings.Contains(email, "@") || !strings.Contains(email, ".") {
-		return fmt.Errorf("invalid email format: %s", email)
-	}
-	// Reject path traversal characters
-	if strings.ContainsAny(email, "/\\..") || strings.Contains(email, "..") {
-		return fmt.Errorf("invalid email format: contains path characters")
+	if err := validateExportEmail(email); err != nil {
+		return err
 	}
 
 	// Find token file using sanitized path
@@ -192,9 +187,13 @@ func runExportToken(cmd *cobra.Command, args []string) error {
 	}
 
 	// Save remote config for future use (if not already saved)
-	if cfg.Remote.URL != exportTokenTo || cfg.Remote.APIKey != exportTokenAPIKey {
+	if cfg.Remote.URL != exportTokenTo || cfg.Remote.APIKey != exportTokenAPIKey ||
+		(exportAllowInsecure && !cfg.Remote.AllowInsecure) {
 		cfg.Remote.URL = exportTokenTo
 		cfg.Remote.APIKey = exportTokenAPIKey
+		if exportAllowInsecure {
+			cfg.Remote.AllowInsecure = true
+		}
 		if err := cfg.Save(); err != nil {
 			fmt.Fprintf(os.Stderr, "Note: Could not save remote config: %v\n", err)
 		} else {
@@ -206,6 +205,18 @@ func runExportToken(cmd *cobra.Command, args []string) error {
 	fmt.Printf("To trigger an immediate sync:\n")
 	fmt.Printf("  curl -X POST -H 'X-API-Key: ...' %s/api/v1/sync/%s\n", exportTokenTo, email)
 
+	return nil
+}
+
+// validateExportEmail checks that an email address is well-formed
+// and doesn't contain path traversal characters.
+func validateExportEmail(email string) error {
+	if !strings.Contains(email, "@") || !strings.Contains(email, ".") {
+		return fmt.Errorf("invalid email format: %s", email)
+	}
+	if strings.ContainsAny(email, "/\\") || strings.Contains(email, "..") {
+		return fmt.Errorf("invalid email format: contains path characters")
+	}
 	return nil
 }
 

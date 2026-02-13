@@ -63,6 +63,9 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	if remoteURL != "" {
 		cfg.Remote.URL = remoteURL
 		cfg.Remote.APIKey = remoteAPIKey
+		if strings.HasPrefix(remoteURL, "http://") {
+			cfg.Remote.AllowInsecure = true
+		}
 	}
 
 	// Only save if we configured something

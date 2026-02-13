@@ -212,11 +212,11 @@ func toAPIMessage(m messageResponse) store.APIMessage {
 
 // ListMessages fetches a paginated list of messages.
 func (s *Store) ListMessages(offset, limit int) ([]store.APIMessage, int64, error) {
-	// Convert offset/limit to page/page_size
-	page := (offset / limit) + 1
 	if limit <= 0 {
 		limit = 20
 	}
+	// Convert offset/limit to page/page_size
+	page := (offset / limit) + 1
 
 	path := fmt.Sprintf("/api/v1/messages?page=%d&page_size=%d", page, limit)
 	resp, err := s.doRequest("GET", path, nil)
@@ -290,11 +290,11 @@ type searchResponse struct {
 
 // SearchMessages searches messages on the remote server.
 func (s *Store) SearchMessages(query string, offset, limit int) ([]store.APIMessage, int64, error) {
-	// Convert offset/limit to page/page_size
-	page := (offset / limit) + 1
 	if limit <= 0 {
 		limit = 20
 	}
+	// Convert offset/limit to page/page_size
+	page := (offset / limit) + 1
 
 	path := fmt.Sprintf("/api/v1/search?q=%s&page=%d&page_size=%d",
 		url.QueryEscape(query), page, limit)

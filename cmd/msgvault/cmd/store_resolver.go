@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/wesm/msgvault/internal/remote"
@@ -86,19 +85,4 @@ func MustBeLocal(cmdName string) error {
 			"Use --local flag to force local database.", cmdName)
 	}
 	return nil
-}
-
-// remoteHint returns a hint about the data source being used.
-func remoteHint() string {
-	if IsRemoteMode() {
-		return fmt.Sprintf(" (remote: %s)", cfg.Remote.URL)
-	}
-	return ""
-}
-
-// localDBExists returns true if the local database file exists.
-func localDBExists() bool {
-	dbPath := cfg.DatabaseDSN()
-	_, err := os.Stat(dbPath)
-	return err == nil
 }
