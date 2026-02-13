@@ -199,13 +199,18 @@ func setupRemoteServer(reader *bufio.Reader, oauthSecretsPath string) (string, s
 	fmt.Printf("\nGenerated API key: %s\n", apiKey)
 
 	// Create NAS deployment bundle
+	// Use existing secrets path if user kept their current OAuth config
+	effectiveSecrets := oauthSecretsPath
+	if effectiveSecrets == "" {
+		effectiveSecrets = cfg.OAuth.ClientSecrets
+	}
 	bundleDir := filepath.Join(cfg.HomeDir, "nas-bundle")
-	if err := createNASBundle(bundleDir, apiKey, oauthSecretsPath, port); err != nil {
+	if err := createNASBundle(bundleDir, apiKey, effectiveSecrets, port); err != nil {
 		fmt.Printf("Warning: Could not create NAS bundle: %v\n", err)
 	} else {
 		fmt.Printf("\nNAS deployment files created in: %s\n", bundleDir)
 		fmt.Println("  - config.toml (ready for NAS)")
-		if oauthSecretsPath != "" {
+		if effectiveSecrets != "" {
 			fmt.Println("  - client_secret.json (copy of OAuth credentials)")
 		}
 		fmt.Println("  - docker-compose.yml (ready to deploy)")
