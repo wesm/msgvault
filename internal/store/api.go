@@ -193,8 +193,7 @@ func (s *Store) SearchMessages(query string, offset, limit int) ([]APIMessage, i
 	}
 	defer rows.Close()
 
-	// Use FTS-specific scanner that handles string dates
-	messages, ids, err := scanMessageRowsFTS(rows)
+	messages, ids, err := scanMessageRows(rows)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -290,30 +289,6 @@ func (s *Store) searchMessagesLike(query string, offset, limit int) ([]APIMessag
 // scanMessageRows scans the standard 7-column message row set.
 // Uses string scanning for dates to handle all SQLite datetime formats robustly.
 func scanMessageRows(rows *sql.Rows) ([]APIMessage, []int64, error) {
-	var messages []APIMessage
-	var ids []int64
-	for rows.Next() {
-		var m APIMessage
-		var sentAtStr sql.NullString
-		err := rows.Scan(&m.ID, &m.Subject, &m.From, &sentAtStr, &m.Snippet, &m.HasAttachments, &m.SizeEstimate)
-		if err != nil {
-			return nil, nil, err
-		}
-		if sentAtStr.Valid && sentAtStr.String != "" {
-			m.SentAt = parseSQLiteTime(sentAtStr.String)
-		}
-		messages = append(messages, m)
-		ids = append(ids, m.ID)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("iterate messages: %w", err)
-	}
-	return messages, ids, nil
-}
-
-// scanMessageRowsFTS scans message rows from FTS5 queries where dates may be strings.
-// FTS5 virtual table joins can return datetime columns as strings instead of time.Time.
-func scanMessageRowsFTS(rows *sql.Rows) ([]APIMessage, []int64, error) {
 	var messages []APIMessage
 	var ids []int64
 	for rows.Next() {

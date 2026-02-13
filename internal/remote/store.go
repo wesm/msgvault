@@ -52,6 +52,10 @@ func New(cfg Config) (*Store, error) {
 		return nil, fmt.Errorf("URL scheme must be http or https, got: %s", parsedURL.Scheme)
 	}
 
+	if parsedURL.Host == "" {
+		return nil, fmt.Errorf("remote URL must include a host (e.g., http://nas:8080)")
+	}
+
 	timeout := cfg.Timeout
 	if timeout == 0 {
 		timeout = 30 * time.Second

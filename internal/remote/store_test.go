@@ -65,6 +65,20 @@ func TestNew_RejectsInvalidScheme(t *testing.T) {
 	}
 }
 
+func TestNew_RejectsEmptyHost(t *testing.T) {
+	_, err := New(Config{
+		URL:           "http://",
+		APIKey:        "key",
+		AllowInsecure: true,
+	})
+	if err == nil {
+		t.Fatal("New() should reject URL with empty host")
+	}
+	if !strings.Contains(err.Error(), "must include a host") {
+		t.Errorf("error = %q, want mention of host", err.Error())
+	}
+}
+
 func TestNew_TrimsTrailingSlash(t *testing.T) {
 	s, err := New(Config{
 		URL:           "http://nas:8080/",
