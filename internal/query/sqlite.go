@@ -1251,81 +1251,76 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 func (e *SQLiteEngine) buildSearchQueryParts(ctx context.Context, q *search.Query) (conditions []string, args []interface{}, joins []string, ftsJoin string) {
 	// Include all messages (deleted messages shown with indicator in TUI)
 
-	// From filter - handles both exact addresses and @domain patterns
+	// From filter - uses EXISTS to avoid join multiplication in aggregates.
+	// Handles both exact addresses and @domain patterns.
 	if len(q.FromAddrs) > 0 {
-		joins = append(joins, `
-			JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
-			JOIN participants p_from ON p_from.id = mr_from.participant_id
-		`)
-		var exactAddrs []string
-		var domainPatterns []string
+		var fromParts []string
 		for _, addr := range q.FromAddrs {
 			if strings.HasPrefix(addr, "@") {
-				// Domain pattern: match emails ending with @domain
-				domainPatterns = append(domainPatterns, addr)
+				fromParts = append(fromParts,
+					"LOWER(p_from.email_address) LIKE ?")
+				args = append(args, "%"+addr)
 			} else {
-				exactAddrs = append(exactAddrs, addr)
-			}
-		}
-		var fromConditions []string
-		if len(exactAddrs) > 0 {
-			placeholders := make([]string, len(exactAddrs))
-			for i, addr := range exactAddrs {
-				placeholders[i] = "?"
+				fromParts = append(fromParts,
+					"LOWER(p_from.email_address) = LOWER(?)")
 				args = append(args, addr)
 			}
-			fromConditions = append(fromConditions, fmt.Sprintf("LOWER(p_from.email_address) IN (%s)", strings.Join(placeholders, ",")))
 		}
-		for _, domain := range domainPatterns {
-			// Use LIKE for domain suffix matching (e.g., @example.com matches alice@example.com)
-			args = append(args, "%"+domain)
-			fromConditions = append(fromConditions, "LOWER(p_from.email_address) LIKE ?")
-		}
-		if len(fromConditions) > 0 {
-			conditions = append(conditions, "("+strings.Join(fromConditions, " OR ")+")")
-		}
+		conditions = append(conditions, fmt.Sprintf(`EXISTS (
+			SELECT 1 FROM message_recipients mr_from
+			JOIN participants p_from ON p_from.id = mr_from.participant_id
+			WHERE mr_from.message_id = m.id
+			  AND mr_from.recipient_type = 'from'
+			  AND (%s)
+		)`, strings.Join(fromParts, " OR ")))
 	}
 
-	// To filter
+	// To filter - EXISTS to avoid join multiplication
 	if len(q.ToAddrs) > 0 {
-		joins = append(joins, `
-			JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type = 'to'
-			JOIN participants p_to ON p_to.id = mr_to.participant_id
-		`)
 		placeholders := make([]string, len(q.ToAddrs))
 		for i, addr := range q.ToAddrs {
 			placeholders[i] = "?"
 			args = append(args, addr)
 		}
-		conditions = append(conditions, fmt.Sprintf("LOWER(p_to.email_address) IN (%s)", strings.Join(placeholders, ",")))
+		conditions = append(conditions, fmt.Sprintf(`EXISTS (
+			SELECT 1 FROM message_recipients mr_to
+			JOIN participants p_to ON p_to.id = mr_to.participant_id
+			WHERE mr_to.message_id = m.id
+			  AND mr_to.recipient_type = 'to'
+			  AND LOWER(p_to.email_address) IN (%s)
+		)`, strings.Join(placeholders, ",")))
 	}
 
-	// CC filter
+	// CC filter - EXISTS to avoid join multiplication
 	if len(q.CcAddrs) > 0 {
-		joins = append(joins, `
-			JOIN message_recipients mr_cc ON mr_cc.message_id = m.id AND mr_cc.recipient_type = 'cc'
-			JOIN participants p_cc ON p_cc.id = mr_cc.participant_id
-		`)
 		placeholders := make([]string, len(q.CcAddrs))
 		for i, addr := range q.CcAddrs {
 			placeholders[i] = "?"
 			args = append(args, addr)
 		}
-		conditions = append(conditions, fmt.Sprintf("LOWER(p_cc.email_address) IN (%s)", strings.Join(placeholders, ",")))
+		conditions = append(conditions, fmt.Sprintf(`EXISTS (
+			SELECT 1 FROM message_recipients mr_cc
+			JOIN participants p_cc ON p_cc.id = mr_cc.participant_id
+			WHERE mr_cc.message_id = m.id
+			  AND mr_cc.recipient_type = 'cc'
+			  AND LOWER(p_cc.email_address) IN (%s)
+		)`, strings.Join(placeholders, ",")))
 	}
 
-	// BCC filter
+	// BCC filter - EXISTS to avoid join multiplication
 	if len(q.BccAddrs) > 0 {
-		joins = append(joins, `
-			JOIN message_recipients mr_bcc ON mr_bcc.message_id = m.id AND mr_bcc.recipient_type = 'bcc'
-			JOIN participants p_bcc ON p_bcc.id = mr_bcc.participant_id
-		`)
 		placeholders := make([]string, len(q.BccAddrs))
 		for i, addr := range q.BccAddrs {
 			placeholders[i] = "?"
 			args = append(args, addr)
 		}
-		conditions = append(conditions, fmt.Sprintf("LOWER(p_bcc.email_address) IN (%s)", strings.Join(placeholders, ",")))
+		conditions = append(conditions, fmt.Sprintf(`EXISTS (
+			SELECT 1 FROM message_recipients mr_bcc
+			JOIN participants p_bcc ON p_bcc.id = mr_bcc.participant_id
+			WHERE mr_bcc.message_id = m.id
+			  AND mr_bcc.recipient_type = 'bcc'
+			  AND LOWER(p_bcc.email_address) IN (%s)
+		)`, strings.Join(placeholders, ",")))
 	}
 
 	// Label filter - case-insensitive substring match using EXISTS
