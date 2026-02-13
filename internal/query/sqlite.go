@@ -436,7 +436,7 @@ func (e *SQLiteEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 	args = append(args, optsArgs...)
 
 	searchJoins, searchConds, searchArgs :=
-		e.buildAggregateSearchParts(opts.SearchQuery, groupBy)
+		e.buildAggregateSearchParts(ctx, opts.SearchQuery, groupBy)
 	filterConditions = append(filterConditions, searchConds...)
 	args = append(args, searchArgs...)
 	if searchJoins != "" {
@@ -451,7 +451,7 @@ func (e *SQLiteEngine) Aggregate(ctx context.Context, groupBy ViewType, opts Agg
 	conditions, args := optsToFilterConditions(opts, "m.")
 
 	searchJoins, searchConds, searchArgs :=
-		e.buildAggregateSearchParts(opts.SearchQuery, groupBy)
+		e.buildAggregateSearchParts(ctx, opts.SearchQuery, groupBy)
 	conditions = append(conditions, searchConds...)
 	args = append(args, searchArgs...)
 
@@ -464,7 +464,7 @@ func (e *SQLiteEngine) Aggregate(ctx context.Context, groupBy ViewType, opts Agg
 // and returns (joins, conditions, args). For Labels view with label
 // search, filters the grouping column directly.
 func (e *SQLiteEngine) buildAggregateSearchParts(
-	searchQuery string, groupBy ViewType,
+	ctx context.Context, searchQuery string, groupBy ViewType,
 ) (string, []string, []interface{}) {
 	if searchQuery == "" {
 		return "", nil, nil
@@ -490,7 +490,7 @@ func (e *SQLiteEngine) buildAggregateSearchParts(
 	}
 
 	searchConds, searchArgs, searchJns, ftsJoin :=
-		e.buildSearchQueryParts(context.Background(), q)
+		e.buildSearchQueryParts(ctx, q)
 	conditions = append(conditions, searchConds...)
 	args = append(args, searchArgs...)
 	var joinParts []string

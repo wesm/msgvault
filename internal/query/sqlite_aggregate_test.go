@@ -593,19 +593,19 @@ func TestSubAggregate_WithSearchQuery(t *testing.T) {
 	// SubAggregate by Labels under sender alice, search "work"
 	opts := DefaultAggregateOptions()
 	opts.SearchQuery = "label:work"
-	filter := MessageFilter{Sender: "alice@test.com"}
+	filter := MessageFilter{Sender: "alice@example.com"}
 	rows, err := env.Engine.SubAggregate(
 		env.Ctx, filter, ViewLabels, opts,
 	)
 	if err != nil {
 		t.Fatalf("SubAggregate: %v", err)
 	}
-	// Should only return "Work" label, not all labels for alice
-	for _, r := range rows {
-		if r.Key != "Work" {
-			t.Errorf("unexpected label %q in results (expected only Work)",
-				r.Key)
-		}
+	// Should return exactly the "Work" label, not all labels for alice
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 label row, got %d: %v", len(rows), rows)
+	}
+	if rows[0].Key != "Work" {
+		t.Errorf("expected label Work, got %q", rows[0].Key)
 	}
 }
 
