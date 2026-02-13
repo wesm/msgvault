@@ -8,12 +8,18 @@ Deploy msgvault on Docker for NAS devices (Synology, QNAP), Raspberry Pi, or any
 # Pull the image
 docker pull ghcr.io/wesm/msgvault:latest
 
-# Create data directory and config
+# Create data directory
 mkdir -p ./data
+
+# Copy your Google OAuth client_secret.json (see "OAuth Setup" below)
+cp client_secret.json ./data/client_secret.json
 
 # Generate API key and create config
 API_KEY=$(openssl rand -hex 32)
 cat > ./data/config.toml << EOF
+[oauth]
+client_secrets = "/data/client_secret.json"
+
 [server]
 bind_addr = "0.0.0.0"
 api_key = "$API_KEY"
@@ -29,7 +35,7 @@ docker run -d \
   ghcr.io/wesm/msgvault:latest serve
 ```
 
-> **Note:** The `api_key` is required when binding to `0.0.0.0`. Without a config file, the server binds to `127.0.0.1` (loopback only inside the container), making the port mapping ineffective.
+> **Note:** The `api_key` is required when binding to `0.0.0.0`. The `[oauth]` section is required for `serve` to start — see "OAuth Setup" below for how to get `client_secret.json`.
 
 ## Image Tags
 
@@ -51,9 +57,9 @@ Docker automatically selects the correct architecture.
 
 ---
 
-## OAuth Setup (Headless)
+## OAuth Setup
 
-Since Docker containers run without a browser, use the device flow to authenticate Gmail accounts.
+Docker containers run without a browser, so you authenticate on a local machine and export the token to the server. Google's OAuth device flow does not support Gmail API scopes, so a direct in-container authorization is not possible.
 
 ### Step 1: Create Google OAuth Credentials
 
@@ -71,7 +77,7 @@ Since Docker containers run without a browser, use the device flow to authentica
 
 ### Step 2: Configure msgvault
 
-Copy your credentials to the data directory:
+Copy your credentials to the data directory and create the config:
 
 ```bash
 cp client_secret.json ./data/client_secret.json
@@ -87,44 +93,31 @@ client_secrets = "/data/client_secret.json"
 api_port = 8080
 bind_addr = "0.0.0.0"
 api_key = "your-secret-api-key-here"  # Generate with: openssl rand -hex 32
-
-[[accounts]]
-email = "you@gmail.com"
-schedule = "0 2 * * *"  # Daily at 2 AM
-enabled = true
 ```
 
-### Step 3: Add Account via Device Flow
+Start (or restart) the container so it picks up the config.
 
-Run the add-account command with `--headless`:
+### Step 3: Authenticate via Token Export
+
+**On your local machine** (with a browser):
 
 ```bash
-docker exec -it msgvault msgvault add-account you@gmail.com --headless
+# 1. Install msgvault locally
+go install github.com/wesm/msgvault@latest
+
+# 2. Authenticate via browser (opens Google sign-in)
+msgvault add-account you@gmail.com
+
+# 3. Export token to your NAS/server
+msgvault export-token you@gmail.com \
+  --to http://nas-ip:8080 \
+  --api-key YOUR_API_KEY \
+  --allow-insecure  # Only needed for plain HTTP (trusted LAN)
 ```
 
-You'll see output like:
+The token is uploaded via the API, saved to `/data/tokens/` on the server, and the account is automatically registered for scheduled sync.
 
-```
-To authorize this device, visit:
-  https://www.google.com/device
-
-And enter code: ABCD-EFGH
-
-Waiting for authorization...
-```
-
-**On any device** (phone, laptop, tablet):
-1. Open the URL shown
-2. Sign in to your Google account
-3. Enter the code displayed
-4. Grant msgvault access to Gmail
-
-The command will detect authorization and save the token:
-
-```
-Authorization successful!
-Token saved to /data/tokens/you@gmail.com.json
-```
+> **Tip:** After the first export, msgvault saves the remote URL and API key to your local config. Subsequent exports for other accounts don't need `--to` or `--api-key`.
 
 ### Step 4: Verify Setup
 
@@ -133,60 +126,21 @@ Token saved to /data/tokens/you@gmail.com.json
 docker exec msgvault ls -la /data/tokens/
 
 # Test sync (limit to 10 messages)
-docker exec msgvault msgvault sync you@gmail.com --limit 10
+docker exec msgvault msgvault sync-full you@gmail.com --limit 10
 
 # Check daemon logs
 docker logs msgvault
-```
-
-### Alternative: Token Export (Recommended)
-
-If the device flow doesn't work (Google's device flow doesn't support all Gmail API scopes for some OAuth configurations), you can authenticate on your local machine and export the token to your NAS.
-
-**On your local machine** (with a browser):
-
-```bash
-# 1. Install msgvault locally or run from source
-go install github.com/wesm/msgvault@latest
-
-# 2. Authenticate via browser
-msgvault add-account you@gmail.com
-
-# 3. Export token to your NAS
-msgvault export-token you@gmail.com \
-  --to http://nas-ip:8080 \
-  --api-key YOUR_API_KEY
-```
-
-The token is uploaded securely via the API and saved to `/data/tokens/` on the NAS.
-
-**Then on your NAS**, add the account to `config.toml`:
-
-```toml
-[[accounts]]
-email = "you@gmail.com"
-schedule = "0 2 * * *"
-enabled = true
-```
-
-Restart the container or trigger a sync:
-
-```bash
-docker-compose restart
-# Or:
-curl -X POST -H "X-API-Key: YOUR_KEY" http://nas-ip:8080/api/v1/sync/you@gmail.com
 ```
 
 ### Troubleshooting OAuth
 
 | Error | Cause | Solution |
 |-------|-------|----------|
-| "Authorization timeout" | Didn't complete device flow in time | Re-run `add-account --headless` and complete faster |
 | "Invalid grant" | Token expired or revoked | Delete token file, re-authorize: `rm /data/tokens/you@gmail.com.json` |
 | "Access blocked: msgvault has not completed the Google verification process" | Using personal OAuth app | Click **Advanced** → **Go to msgvault (unsafe)** |
 | "Quota exceeded" | Gmail API rate limits | Wait 24 hours, then retry |
 | "Network error" / timeout | Container can't reach Google | Check DNS, proxy settings, firewall |
-| "Device flow scope error" | Gmail API scopes not supported | Use **Token Export** workflow instead |
+| Upload failed / connection refused | Server not running or wrong URL | Verify container is up and URL is correct |
 
 ---
 
@@ -279,22 +233,26 @@ docker-compose up -d
 
 **5. Add Gmail accounts**
 
-For each account in your config:
+On your local machine (with a browser), authenticate and export tokens for each account:
 
 ```bash
-docker exec -it msgvault msgvault add-account personal@gmail.com --headless
-# Complete device flow...
+# Authenticate locally
+msgvault add-account personal@gmail.com
+msgvault add-account work@gmail.com
 
-docker exec -it msgvault msgvault add-account work@gmail.com --headless
-# Complete device flow...
+# Export tokens to NAS (account is auto-registered on the server)
+msgvault export-token personal@gmail.com \
+  --to http://nas-ip:8080 --api-key YOUR_KEY --allow-insecure
+msgvault export-token work@gmail.com
+# (URL and key are saved after first export)
 ```
 
 **6. Run initial sync**
 
 ```bash
-# Full sync (first time)
-docker exec msgvault msgvault sync personal@gmail.com
-docker exec msgvault msgvault sync work@gmail.com
+# Full sync (first time — required before scheduled incremental syncs work)
+docker exec msgvault msgvault sync-full personal@gmail.com
+docker exec msgvault msgvault sync-full work@gmail.com
 ```
 
 **7. Verify scheduled sync**
@@ -615,13 +573,17 @@ Common causes:
 
 **"No source found for email"**
 
-The account hasn't been added to the database. Run:
+The account hasn't been added to the database. Re-export the token from your local machine:
 
 ```bash
-docker exec msgvault msgvault add-account you@gmail.com --headless
+msgvault export-token you@gmail.com --to http://nas-ip:8080 --api-key YOUR_KEY
 ```
 
-Or if using token export, the token exists but account isn't registered. The `add-account` command will detect the existing token and register the account.
+This uploads the token and registers the account. Alternatively, if the token file already exists on the server, register it directly:
+
+```bash
+docker exec msgvault msgvault add-account you@gmail.com
+```
 
 **First sync fails with "incremental sync requires full sync first"**
 
