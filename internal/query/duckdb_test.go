@@ -1962,6 +1962,43 @@ func TestAggregateBySender_WithSearchQuery(t *testing.T) {
 	}
 }
 
+// TestAggregateByLabel_WithLabelSearch verifies that label: search in the
+// Labels aggregate view only shows matching labels, not all labels from
+// matching messages.
+func TestAggregateByLabel_WithLabelSearch(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	// Test data: INBOX on msg1-5, Work on msg1+msg4, IMPORTANT on msg2.
+	// Searching label:work should only show "Work", not INBOX/IMPORTANT.
+	opts := AggregateOptions{
+		SearchQuery: "label:work",
+		Limit:       100,
+	}
+	rows, err := engine.Aggregate(ctx, ViewLabels, opts)
+	if err != nil {
+		t.Fatalf("Aggregate(ViewLabels, label:work): %v", err)
+	}
+
+	gotLabels := make(map[string]bool)
+	for _, row := range rows {
+		gotLabels[row.Key] = true
+	}
+
+	if !gotLabels["Work"] {
+		t.Errorf("expected 'Work' in results, got: %v", rows)
+	}
+	if gotLabels["INBOX"] {
+		t.Errorf("'INBOX' should not appear when searching label:work, got: %v", rows)
+	}
+	if gotLabels["IMPORTANT"] {
+		t.Errorf("'IMPORTANT' should not appear when searching label:work, got: %v", rows)
+	}
+	if len(rows) != 1 {
+		t.Errorf("expected 1 label row, got %d: %v", len(rows), rows)
+	}
+}
+
 // TestBuildSearchConditions_EscapedWildcards verifies that buildSearchConditions
 // escapes ILIKE wildcards and uses ESCAPE clause for all text patterns.
 func TestBuildSearchConditions_EscapedWildcards(t *testing.T) {

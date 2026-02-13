@@ -324,15 +324,37 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyCol
 		args = append(args, subjPattern)
 	}
 
-	// label: filter - case-insensitive substring match
-	for _, label := range q.Labels {
-		conditions = append(conditions, `EXISTS (
-			SELECT 1 FROM ml ml_label
-			JOIN lbl l_label ON l_label.id = ml_label.label_id
-			WHERE ml_label.message_id = msg.id
-			  AND l_label.name ILIKE ? ESCAPE '\'
-		)`)
-		args = append(args, "%"+escapeILIKE(label)+"%")
+	// label: filter - case-insensitive substring match.
+	// In the Labels aggregate view (keyColumns includes the label column),
+	// filter the grouping column directly so only matching labels appear
+	// in results — not all labels from matching messages.
+	labelKeyCol := ""
+	for _, col := range keyColumns {
+		if col == "lbl.name" {
+			labelKeyCol = col
+			break
+		}
+	}
+	if labelKeyCol != "" && len(q.Labels) > 0 {
+		// Labels view: filter the grouped label column directly.
+		// Use OR so label:arrow label:inbox shows both matching labels.
+		var labelParts []string
+		for _, label := range q.Labels {
+			labelParts = append(labelParts, labelKeyCol+` ILIKE ? ESCAPE '\'`)
+			args = append(args, "%"+escapeILIKE(label)+"%")
+		}
+		conditions = append(conditions, "("+strings.Join(labelParts, " OR ")+")")
+	} else {
+		// Non-label views: use EXISTS to filter messages by label.
+		for _, label := range q.Labels {
+			conditions = append(conditions, `EXISTS (
+				SELECT 1 FROM ml ml_label
+				JOIN lbl l_label ON l_label.id = ml_label.label_id
+				WHERE ml_label.message_id = msg.id
+				  AND l_label.name ILIKE ? ESCAPE '\'
+			)`)
+			args = append(args, "%"+escapeILIKE(label)+"%")
+		}
 	}
 
 	// has:attachment filter
