@@ -960,44 +960,91 @@ func TestSave_FollowsSymlink(t *testing.T) {
 		t.Skip("symlinks require elevated privileges on Windows")
 	}
 
-	tmpDir := t.TempDir()
-	targetDir := t.TempDir()
-	targetPath := filepath.Join(targetDir, "actual-config.toml")
-	linkPath := filepath.Join(tmpDir, "config.toml")
+	t.Run("absolute target", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		targetDir := t.TempDir()
+		targetPath := filepath.Join(targetDir, "actual-config.toml")
+		linkPath := filepath.Join(tmpDir, "config.toml")
 
-	// Create symlink: linkPath → targetPath
-	if err := os.Symlink(targetPath, linkPath); err != nil {
-		t.Fatalf("Symlink: %v", err)
-	}
+		if err := os.Symlink(targetPath, linkPath); err != nil {
+			t.Fatalf("Symlink: %v", err)
+		}
 
-	cfg := NewDefaultConfig()
-	cfg.HomeDir = tmpDir
-	cfg.Sync.RateLimitQPS = 77
+		cfg := NewDefaultConfig()
+		cfg.HomeDir = tmpDir
+		cfg.Sync.RateLimitQPS = 77
 
-	if err := cfg.Save(); err != nil {
-		t.Fatalf("Save() error = %v", err)
-	}
+		if err := cfg.Save(); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
 
-	// Symlink should still exist and point to targetPath
-	linkTarget, err := os.Readlink(linkPath)
-	if err != nil {
-		t.Fatalf("symlink was replaced: Readlink error = %v", err)
-	}
-	if linkTarget != targetPath {
-		t.Errorf("symlink target = %q, want %q", linkTarget, targetPath)
-	}
+		linkTarget, err := os.Readlink(linkPath)
+		if err != nil {
+			t.Fatalf("symlink was replaced: %v", err)
+		}
+		if linkTarget != targetPath {
+			t.Errorf("symlink target = %q, want %q", linkTarget, targetPath)
+		}
 
-	// Target file should contain the saved config
-	loaded, err := Load(targetPath, "")
-	if err != nil {
-		t.Fatalf("Load target: %v", err)
-	}
-	if loaded.Sync.RateLimitQPS != 77 {
-		t.Errorf("RateLimitQPS = %d, want 77", loaded.Sync.RateLimitQPS)
-	}
+		loaded, err := Load(targetPath, "")
+		if err != nil {
+			t.Fatalf("Load target: %v", err)
+		}
+		if loaded.Sync.RateLimitQPS != 77 {
+			t.Errorf("RateLimitQPS = %d, want 77", loaded.Sync.RateLimitQPS)
+		}
+	})
+
+	t.Run("relative target", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		// Create subdir for the actual file
+		subDir := filepath.Join(tmpDir, "real")
+		if err := os.Mkdir(subDir, 0700); err != nil {
+			t.Fatalf("Mkdir: %v", err)
+		}
+		targetPath := filepath.Join(subDir, "config.toml")
+		linkPath := filepath.Join(tmpDir, "config.toml")
+
+		// Relative symlink: config.toml → real/config.toml
+		if err := os.Symlink("real/config.toml", linkPath); err != nil {
+			t.Fatalf("Symlink: %v", err)
+		}
+
+		cfg := NewDefaultConfig()
+		cfg.HomeDir = tmpDir
+		cfg.Sync.RateLimitQPS = 88
+
+		if err := cfg.Save(); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
+
+		// Symlink must still be intact
+		linkTarget, err := os.Readlink(linkPath)
+		if err != nil {
+			t.Fatalf("symlink was replaced: %v", err)
+		}
+		if linkTarget != "real/config.toml" {
+			t.Errorf("symlink target = %q, want %q",
+				linkTarget, "real/config.toml")
+		}
+
+		// Target file should contain the saved config
+		loaded, err := Load(targetPath, "")
+		if err != nil {
+			t.Fatalf("Load target: %v", err)
+		}
+		if loaded.Sync.RateLimitQPS != 88 {
+			t.Errorf("RateLimitQPS = %d, want 88",
+				loaded.Sync.RateLimitQPS)
+		}
+	})
 }
 
 func TestSave_FailurePreservesExisting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("cannot make directory unwritable on Windows")
+	}
+
 	tmpDir := t.TempDir()
 
 	// Save initial valid config
@@ -1014,7 +1061,41 @@ func TestSave_FailurePreservesExisting(t *testing.T) {
 		t.Fatalf("ReadFile: %v", err)
 	}
 
-	// Verify no temp files are left behind
+	// Make directory unwritable so CreateTemp fails
+	if err := os.Chmod(tmpDir, 0500); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(tmpDir, 0700) })
+
+	// Probe whether the restriction actually works
+	probe, probeErr := os.CreateTemp(tmpDir, "probe-*")
+	if probeErr == nil {
+		probe.Close()
+		os.Remove(probe.Name())
+		t.Skip("chmod 0500 did not restrict writes (running as root)")
+	}
+
+	// Save should fail
+	cfg.Sync.RateLimitQPS = 99
+	if err := cfg.Save(); err == nil {
+		t.Fatal("Save should fail when directory is unwritable")
+	}
+
+	// Restore permissions to verify state
+	if err := os.Chmod(tmpDir, 0700); err != nil {
+		t.Fatalf("Chmod restore: %v", err)
+	}
+
+	// Original config should be intact
+	currentBytes, err := os.ReadFile(cfg.ConfigFilePath())
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(currentBytes) != string(originalBytes) {
+		t.Error("config file was corrupted after failed Save")
+	}
+
+	// No temp files should be left behind
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
@@ -1023,15 +1104,6 @@ func TestSave_FailurePreservesExisting(t *testing.T) {
 		if strings.HasPrefix(e.Name(), ".config-") {
 			t.Errorf("leftover temp file: %s", e.Name())
 		}
-	}
-
-	// Original config should still be intact
-	currentBytes, err := os.ReadFile(cfg.ConfigFilePath())
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if string(currentBytes) != string(originalBytes) {
-		t.Error("config file content changed unexpectedly")
 	}
 }
 

@@ -643,17 +643,19 @@ func TestAggregateBySender_RecipientFilterNoOvercount(t *testing.T) {
 	env := newTestEnv(t)
 
 	opts := DefaultAggregateOptions()
-	// Message 1 (from alice) has to:bob AND to:carol. With old JOIN-based
-	// filters this would double-count, inflating alice's count from 3 to 4.
-	opts.SearchQuery = "to:bob@company.org"
+	// Message 1 (from alice) has to:bob AND to:carol. Searching for
+	// both terms exercises the multi-recipient path: with old JOIN-based
+	// filters, message 1 would match both joins and be double-counted.
+	opts.SearchQuery = "to:bob@company.org to:carol@example.com"
 	rows, err := env.Engine.Aggregate(env.Ctx, ViewSenders, opts)
 	if err != nil {
 		t.Fatalf("Aggregate: %v", err)
 	}
 
 	m := aggRowMap(t, rows)
-	// Alice sent messages 1,2,3 — all have bob as recipient.
-	// Each must be counted exactly once.
+	// to: terms use OR — messages 1,2,3 match (all have to:bob, msg 1
+	// also has to:carol). With old JOIN filters, message 1 would produce
+	// two joined rows (matching bob and carol), inflating to count 4.
 	if got := m["alice@example.com"]; got != 3 {
 		t.Errorf("alice count = %d, want 3 (no overcount)", got)
 	}
