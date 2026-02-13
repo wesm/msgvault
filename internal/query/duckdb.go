@@ -324,7 +324,7 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyCol
 		args = append(args, subjPattern)
 	}
 
-	// label: filter - case-insensitive match
+	// label: filter - case-insensitive substring match
 	for _, label := range q.Labels {
 		conditions = append(conditions, `EXISTS (
 			SELECT 1 FROM ml ml_label
@@ -332,7 +332,7 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyCol
 			WHERE ml_label.message_id = msg.id
 			  AND l_label.name ILIKE ? ESCAPE '\'
 		)`)
-		args = append(args, escapeILIKE(label))
+		args = append(args, "%"+escapeILIKE(label)+"%")
 	}
 
 	// has:attachment filter
@@ -2330,7 +2330,7 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 		}
 	}
 
-	// Label filter - case-insensitive EXISTS subquery
+	// Label filter - case-insensitive substring match
 	if len(q.Labels) > 0 {
 		for _, label := range q.Labels {
 			conditions = append(conditions, `EXISTS (
@@ -2338,7 +2338,7 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 				JOIN lbl ON lbl.id = ml.label_id
 				WHERE ml.message_id = msg.id AND lbl.name ILIKE ? ESCAPE '\'
 			)`)
-			args = append(args, escapeILIKE(label))
+			args = append(args, "%"+escapeILIKE(label)+"%")
 		}
 	}
 
