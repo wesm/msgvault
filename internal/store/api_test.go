@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestEscapeLike(t *testing.T) {
@@ -64,6 +65,102 @@ func seedMessage(t *testing.T, st *Store, sourceID, convID int64, sourceMessageI
 		t.Fatalf("UpsertMessage(%q): %v", sourceMessageID, err)
 	}
 	return id
+}
+
+func TestParseSQLiteTime(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  time.Time
+	}{
+		{
+			"space-separated with fractional seconds and TZ",
+			"2024-06-15 10:30:45.123456-07:00",
+			time.Date(2024, 6, 15, 10, 30, 45, 123456000, time.FixedZone("", -7*3600)),
+		},
+		{
+			"T-separated with fractional seconds and TZ",
+			"2024-06-15T10:30:45.123456-07:00",
+			time.Date(2024, 6, 15, 10, 30, 45, 123456000, time.FixedZone("", -7*3600)),
+		},
+		{
+			"space-separated with fractional seconds no TZ",
+			"2024-06-15 10:30:45.500",
+			time.Date(2024, 6, 15, 10, 30, 45, 500000000, time.UTC),
+		},
+		{
+			"T-separated with fractional seconds no TZ",
+			"2024-06-15T10:30:45.500",
+			time.Date(2024, 6, 15, 10, 30, 45, 500000000, time.UTC),
+		},
+		{
+			"space-separated basic (datetime('now') format)",
+			"2024-06-15 10:30:45",
+			time.Date(2024, 6, 15, 10, 30, 45, 0, time.UTC),
+		},
+		{
+			"T-separated basic",
+			"2024-06-15T10:30:45",
+			time.Date(2024, 6, 15, 10, 30, 45, 0, time.UTC),
+		},
+		{
+			"space-separated without seconds",
+			"2024-06-15 10:30",
+			time.Date(2024, 6, 15, 10, 30, 0, 0, time.UTC),
+		},
+		{
+			"T-separated without seconds",
+			"2024-06-15T10:30",
+			time.Date(2024, 6, 15, 10, 30, 0, 0, time.UTC),
+		},
+		{
+			"date only",
+			"2024-06-15",
+			time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			"RFC3339 with Z",
+			"2024-06-15T10:30:45Z",
+			time.Date(2024, 6, 15, 10, 30, 45, 0, time.UTC),
+		},
+		{
+			"RFC3339 with offset",
+			"2024-06-15T10:30:45+05:30",
+			time.Date(2024, 6, 15, 10, 30, 45, 0, time.FixedZone("", 5*3600+30*60)),
+		},
+		{
+			"RFC3339Nano",
+			"2024-06-15T10:30:45.123456789Z",
+			time.Date(2024, 6, 15, 10, 30, 45, 123456789, time.UTC),
+		},
+		{
+			"empty string returns zero time",
+			"",
+			time.Time{},
+		},
+		{
+			"garbage returns zero time",
+			"not-a-date",
+			time.Time{},
+		},
+		{
+			"unix timestamp string returns zero time",
+			"1718451045",
+			time.Time{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseSQLiteTime(tt.input)
+			if !got.Equal(tt.want) {
+				t.Errorf(
+					"parseSQLiteTime(%q) = %v, want %v",
+					tt.input, got, tt.want,
+				)
+			}
+		})
+	}
 }
 
 func TestSearchMessagesLikeLiteralWildcards(t *testing.T) {
