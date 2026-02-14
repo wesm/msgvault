@@ -1215,6 +1215,7 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 		FROM messages m
 		%s
 		WHERE %s
+		ORDER BY m.sent_at DESC, m.id DESC
 	`, strings.Join(joins, "\n"), strings.Join(conditions, " AND "))
 
 	// Only add LIMIT if explicitly set (0 means no limit)
