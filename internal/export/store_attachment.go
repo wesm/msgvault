@@ -15,7 +15,7 @@ import (
 	"github.com/wesm/msgvault/internal/mime"
 )
 
-var validatedAttachmentFiles sync.Map // key: fullPath + size + mtime + expectedHash
+var validatedAttachmentFiles sync.Map // key: fullPath + size + expectedHash → value: modTime (int64)
 
 // StoreAttachmentFile stores att.Content on disk under attachmentsDir using
 // content-addressed storage (hash[:2]/hash). It validates existing files when
@@ -159,9 +159,12 @@ func validateExistingAttachmentFile(fullPath string, expectedSize int64, expecte
 		return fmt.Errorf("attachment file %q has size %d, want %d", fullPath, st.Size(), expectedSize)
 	}
 
-	key := fmt.Sprintf("%s\x00%d\x00%d\x00%s", fullPath, expectedSize, st.ModTime().UnixNano(), expectedHash)
-	if _, ok := validatedAttachmentFiles.Load(key); ok {
-		return nil
+	key := fmt.Sprintf("%s\x00%d\x00%s", fullPath, expectedSize, expectedHash)
+	modTime := st.ModTime().UnixNano()
+	if cached, ok := validatedAttachmentFiles.Load(key); ok {
+		if cached.(int64) == modTime {
+			return nil
+		}
 	}
 
 	h := sha256.New()
@@ -172,6 +175,6 @@ func validateExistingAttachmentFile(fullPath string, expectedSize int64, expecte
 	if gotHash != expectedHash {
 		return fmt.Errorf("attachment file %q has hash %q, want %q", fullPath, gotHash, expectedHash)
 	}
-	validatedAttachmentFiles.Store(key, struct{}{})
+	validatedAttachmentFiles.Store(key, modTime)
 	return nil
 }

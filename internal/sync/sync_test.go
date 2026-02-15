@@ -1551,3 +1551,38 @@ func TestIncrementalSyncMixedOperations(t *testing.T) {
 	assertMessageHasLabel(t, env.Store, "existing-2", "STARRED")
 	assertMessageCount(t, env.Store, 3) // 2 original (1 deleted but still counted) + 1 new
 }
+
+// TestIncrementalSyncLabelRemovedWithMissingRaw verifies that removing a label
+// from a message whose raw MIME data is missing still succeeds. The label-removal
+// path operates on the message_labels table directly and never touches raw data.
+func TestIncrementalSyncLabelRemovedWithMissingRaw(t *testing.T) {
+	env := newTestEnv(t)
+	env.Mock.Profile.MessagesTotal = 1
+	env.Mock.Profile.HistoryID = 12340
+	env.Mock.AddMessage("msg1", testMIME(), []string{"INBOX", "STARRED"})
+
+	runFullSync(t, env)
+
+	// Verify starting state
+	assertMessageHasLabel(t, env.Store, "msg1", "STARRED")
+	assertRawDataExists(t, env.Store, "msg1")
+
+	// Delete raw MIME data to simulate missing raw
+	_, err := env.Store.DB().Exec(`
+		DELETE FROM message_raw WHERE message_id = (
+			SELECT id FROM messages WHERE source_message_id = 'msg1'
+		)`)
+	if err != nil {
+		t.Fatalf("delete raw data: %v", err)
+	}
+
+	// Now simulate label removal via incremental sync
+	env.SetHistory(12350, historyLabelRemoved("msg1", "STARRED"))
+
+	summary := runIncrementalSync(t, env)
+	assertSummary(t, summary, WantSummary{Found: intPtr(1)})
+
+	// Label should be removed despite missing raw data
+	assertMessageNotHasLabel(t, env.Store, "msg1", "STARRED")
+	assertMessageHasLabel(t, env.Store, "msg1", "INBOX")
+}
