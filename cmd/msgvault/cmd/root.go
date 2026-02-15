@@ -10,6 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/config"
+	"github.com/wesm/msgvault/internal/oauth"
+	"golang.org/x/oauth2"
 )
 
 var (
@@ -141,6 +143,40 @@ func wrapOAuthError(err error) error {
 		return fmt.Errorf("OAuth client secrets file not accessible.%s", oauthSetupHint())
 	}
 	return err
+}
+
+// getTokenSourceWithReauth tries to get a token source for the given email.
+// If the token exists but is expired/revoked, it automatically deletes the old
+// token and re-initiates the OAuth browser flow.
+func getTokenSourceWithReauth(ctx context.Context, oauthMgr *oauth.Manager, email string) (oauth2.TokenSource, error) {
+	tokenSource, err := oauthMgr.TokenSource(ctx, email)
+	if err == nil {
+		return tokenSource, nil
+	}
+
+	// No token at all — user needs to run add-account
+	if !oauthMgr.HasToken(email) {
+		return nil, fmt.Errorf("get token source: %w (run 'add-account %s' first)", err, email)
+	}
+
+	// Token exists but failed (expired/revoked) — auto re-authorize
+	fmt.Printf("Token for %s is expired or revoked. Re-authorizing...\n", email)
+
+	if delErr := oauthMgr.DeleteToken(email); delErr != nil {
+		return nil, fmt.Errorf("delete expired token: %w", delErr)
+	}
+
+	if authErr := oauthMgr.Authorize(ctx, email); authErr != nil {
+		return nil, fmt.Errorf("re-authorize %s: %w", email, authErr)
+	}
+
+	// Retry with the new token
+	tokenSource, err = oauthMgr.TokenSource(ctx, email)
+	if err != nil {
+		return nil, fmt.Errorf("get token source after re-authorization: %w", err)
+	}
+
+	return tokenSource, nil
 }
 
 func init() {

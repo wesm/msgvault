@@ -137,12 +137,9 @@ func runIncrementalSync(ctx context.Context, s *store.Store, oauthMgr *oauth.Man
 		return fmt.Errorf("no history ID - run 'sync-full' first")
 	}
 
-	tokenSource, err := oauthMgr.TokenSource(ctx, email)
+	tokenSource, err := getTokenSourceWithReauth(ctx, oauthMgr, email)
 	if err != nil {
-		if oauthMgr.HasToken(email) {
-			return fmt.Errorf("get token source: %w (token may be expired; run 'add-account %s --force' to re-authorize)", err, email)
-		}
-		return fmt.Errorf("get token source: %w (run 'add-account %s' first)", err, email)
+		return err
 	}
 
 	// Create Gmail client
