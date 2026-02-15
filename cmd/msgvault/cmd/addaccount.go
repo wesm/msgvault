@@ -11,6 +11,7 @@ import (
 var (
 	headless           bool
 	accountDisplayName string
+	forceReauth        bool
 )
 
 var addAccountCmd = &cobra.Command{
@@ -21,9 +22,13 @@ var addAccountCmd = &cobra.Command{
 By default, opens a browser for authorization. Use --headless to see instructions
 for authorizing on headless servers (Google does not support Gmail in device flow).
 
+If a token already exists, the command skips authorization. Use --force to delete
+the existing token and re-authorize (useful when a token has expired or been revoked).
+
 Examples:
   msgvault add-account you@gmail.com
   msgvault add-account you@gmail.com --headless
+  msgvault add-account you@gmail.com --force
   msgvault add-account you@gmail.com --display-name "Work Account"`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -58,6 +63,14 @@ Examples:
 			return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
 		}
 
+		// If --force, delete existing token so we re-authorize
+		if forceReauth && oauthMgr.HasToken(email) {
+			fmt.Printf("Removing existing token for %s...\n", email)
+			if err := oauthMgr.DeleteToken(email); err != nil {
+				return fmt.Errorf("delete existing token: %w", err)
+			}
+		}
+
 		// Check if already authorized (e.g., token copied from another machine)
 		if oauthMgr.HasToken(email) {
 			// Still create the source record - needed for headless setup
@@ -72,7 +85,7 @@ Examples:
 				}
 			}
 			fmt.Printf("Account %s is ready.\n", email)
-			fmt.Println("You can now run: msgvault sync-full", email)
+			fmt.Println("To re-authorize, run: msgvault add-account", email, "--force")
 			return nil
 		}
 
@@ -105,6 +118,7 @@ Examples:
 
 func init() {
 	addAccountCmd.Flags().BoolVar(&headless, "headless", false, "Show instructions for headless server setup")
+	addAccountCmd.Flags().BoolVar(&forceReauth, "force", false, "Delete existing token and re-authorize (use when token is expired or revoked)")
 	addAccountCmd.Flags().StringVar(&accountDisplayName, "display-name", "", "Display name for the account (e.g., \"Work\", \"Personal\")")
 	rootCmd.AddCommand(addAccountCmd)
 }

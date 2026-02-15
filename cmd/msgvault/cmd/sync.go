@@ -139,7 +139,7 @@ func runIncrementalSync(ctx context.Context, s *store.Store, oauthMgr *oauth.Man
 
 	tokenSource, err := oauthMgr.TokenSource(ctx, email)
 	if err != nil {
-		return fmt.Errorf("get token source: %w (run 'add-account' first)", err)
+		return fmt.Errorf("get token source: %w (run 'add-account --force' to re-authorize)", err)
 	}
 
 	// Create Gmail client
