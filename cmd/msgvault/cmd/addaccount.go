@@ -34,6 +34,11 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		email := args[0]
 
+		// Reject incompatible flag combination
+		if headless && forceReauth {
+			return fmt.Errorf("--headless and --force cannot be used together: --force requires browser-based OAuth which is not available in headless mode")
+		}
+
 		// For --headless, just show instructions (no OAuth config needed)
 		if headless {
 			oauth.PrintHeadlessInstructions(email, cfg.TokensDir())
