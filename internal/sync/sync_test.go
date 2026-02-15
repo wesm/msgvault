@@ -1576,11 +1576,20 @@ func TestIncrementalSyncLabelRemovedWithMissingRaw(t *testing.T) {
 		t.Fatalf("delete raw data: %v", err)
 	}
 
+	// Record raw fetch count before incremental sync
+	callsBeforeIncr := len(env.Mock.GetMessageCalls)
+
 	// Now simulate label removal via incremental sync
 	env.SetHistory(12350, historyLabelRemoved("msg1", "STARRED"))
 
 	summary := runIncrementalSync(t, env)
 	assertSummary(t, summary, WantSummary{Found: intPtr(1)})
+
+	// No raw fetches should occur for label-only changes
+	callsAfterIncr := len(env.Mock.GetMessageCalls)
+	if newCalls := callsAfterIncr - callsBeforeIncr; newCalls != 0 {
+		t.Errorf("expected 0 GetMessageRaw calls for label removal, got %d", newCalls)
+	}
 
 	// Label should be removed despite missing raw data
 	assertMessageNotHasLabel(t, env.Store, "msg1", "STARRED")

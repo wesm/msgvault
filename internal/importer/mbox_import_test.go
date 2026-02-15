@@ -488,16 +488,8 @@ func TestImportMbox_RerunRepairsMissingRawInsteadOfSkipping(t *testing.T) {
 
 	sum := sha256.Sum256(raw)
 	rawHash := hex.EncodeToString(sum[:])
-	absPath, err := filepath.Abs(mboxPath)
-	if err != nil {
-		t.Fatalf("abs path: %v", err)
-	}
-	fileDisc, err := mboxFileDiscriminator(absPath)
-	if err != nil {
-		t.Fatalf("mboxFileDiscriminator: %v", err)
-	}
 
-	sourceMsgID := fmt.Sprintf("%s-%s-%d", fileDisc, rawHash, int64(1))
+	sourceMsgID := fmt.Sprintf("mbox-%s-%d", rawHash, int64(1))
 	if _, err := st.UpsertMessage(&store.Message{
 		ConversationID:  convID,
 		SourceID:        src.ID,

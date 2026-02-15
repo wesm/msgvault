@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -116,15 +115,6 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 	if resolved, err := filepath.EvalSymlinks(absPath); err == nil {
 		cpFile = resolved
 	}
-	// Include a content-derived per-file discriminator in source_message_id to reduce
-	// collisions across different MBOX files.
-	fileDisc, err := mboxFileDiscriminator(absPath)
-	if err != nil {
-		fileSum := sha256.Sum256([]byte(cpFile))
-		fileDisc = hex.EncodeToString(fileSum[:8])
-		log.Warn("failed to fingerprint mbox; falling back to path-based discriminator", "error", err)
-	}
-
 	// Ensure / get the source.
 	src, err := st.GetOrCreateSource(opts.SourceType, opts.Identifier)
 	if err != nil {
@@ -425,13 +415,15 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 		}
 
 		// Compute stable IDs:
-		// - rawHash: sha256(raw MIME), used for thread fallback
-		// - sourceMsgID: file discriminator + rawHash + message sequence number, used as source_message_id
+		// - rawHash: sha256(raw MIME), used for thread fallback and dedup
+		// - sourceMsgID: based on stable message-level identity (rawHash + seq)
+		//   so that re-importing the same mailbox after file changes (e.g. new
+		//   export with appended messages) deduplicates unchanged messages.
 		msgSeq++
 		sum := sha256.Sum256(msg.Raw)
 		rawHash := hex.EncodeToString(sum[:])
 		nextOffset := r.NextFromOffset()
-		sourceMsgID := fmt.Sprintf("%s-%s-%d", fileDisc, rawHash, msgSeq)
+		sourceMsgID := fmt.Sprintf("mbox-%s-%d", rawHash, msgSeq)
 		pending = append(pending, pendingMboxMessage{
 			Msg:        msg,
 			RawHash:    rawHash,
@@ -489,46 +481,6 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 	}
 
 	return summary, nil
-}
-
-func mboxFileDiscriminator(path string) (string, error) {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return "", err
-	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	const sampleBytes int64 = 64 << 10 // 64 KiB
-
-	h := sha256.New()
-	var sz [8]byte
-	binary.LittleEndian.PutUint64(sz[:], uint64(fi.Size()))
-	_, _ = h.Write(sz[:])
-
-	first, err := io.ReadAll(io.LimitReader(f, sampleBytes))
-	if err != nil {
-		return "", err
-	}
-	_, _ = h.Write(first)
-
-	if fi.Size() > sampleBytes {
-		if _, err := f.Seek(fi.Size()-sampleBytes, io.SeekStart); err != nil {
-			return "", err
-		}
-		last, err := io.ReadAll(io.LimitReader(f, sampleBytes))
-		if err != nil {
-			return "", err
-		}
-		_, _ = h.Write(last)
-	}
-
-	sum := h.Sum(nil)
-	return hex.EncodeToString(sum[:8]), nil
 }
 
 func saveMboxCheckpoint(st *store.Store, syncID int64, file string, offset int64, seq int64, cp *store.Checkpoint) error {

@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 )
 
 const maxLineBytes = 32 << 20 // 32 MiB
@@ -119,12 +118,12 @@ func (r *Reader) Next() (*Message, error) {
 	if !r.hasNextFrom {
 		for {
 			lineStart := r.Offset()
-			line, err := r.readLine()
+			line, err := r.readLineBytes()
 			if err != nil && err != io.EOF {
 				return nil, err
 			}
-			if isFromSeparator(line) {
-				r.nextFromLine = strings.TrimRight(line, "\r\n")
+			if isFromSeparatorLine(line) {
+				r.nextFromLine = string(bytes.TrimRight(line, "\r\n"))
 				r.nextFromOffset = lineStart
 				r.hasNextFrom = true
 				break
@@ -148,9 +147,9 @@ func (r *Reader) Next() (*Message, error) {
 		lineStart := r.Offset()
 		line, err := r.readLineBytes()
 		if len(line) > 0 {
-			if isFromSeparatorBytes(line) {
+			if isFromSeparatorLine(line) {
 				// Found the next message separator; stash it for the next call.
-				r.nextFromLine = strings.TrimRight(string(line), "\r\n")
+				r.nextFromLine = string(bytes.TrimRight(line, "\r\n"))
 				r.nextFromOffset = lineStart
 				r.hasNextFrom = true
 				break
@@ -190,11 +189,6 @@ func (r *Reader) Next() (*Message, error) {
 	}, nil
 }
 
-func (r *Reader) readLine() (string, error) {
-	b, err := r.readLineBytes()
-	return string(b), err
-}
-
 func (r *Reader) readLineBytes() ([]byte, error) {
 	// ReadBytes returns bufio.ErrBufferFull when the buffer fills before finding
 	// the delimiter. Treat that as a partial line and keep accumulating.
@@ -221,24 +215,17 @@ func (r *Reader) readLineBytes() ([]byte, error) {
 	}
 }
 
-func isFromSeparator(line string) bool {
-	if !strings.HasPrefix(line, "From ") {
+var fromPrefix = []byte("From ")
+
+// isFromSeparatorLine checks whether line (with or without trailing newline)
+// looks like an mbox "From " separator. Works for both string and []byte
+// callers by accepting []byte and converting only the trimmed portion.
+func isFromSeparatorLine(line []byte) bool {
+	if !bytes.HasPrefix(line, fromPrefix) {
 		return false
 	}
-	return looksLikeFromSeparatorLine(strings.TrimRight(line, "\r\n"))
-}
-
-func isFromSeparatorBytes(line []byte) bool {
-	if !bytes.HasPrefix(line, []byte("From ")) {
-		return false
-	}
-	return looksLikeFromSeparatorLine(string(bytes.TrimRight(line, "\r\n")))
-}
-
-func looksLikeFromSeparatorLine(line string) bool {
-	// This is intentionally permissive for compatibility with real-world exports.
-	// Unescaped body lines that resemble a "From " separator can still be misdetected.
-	_, ok := ParseFromSeparatorDate(line)
+	trimmed := string(bytes.TrimRight(line, "\r\n"))
+	_, ok := ParseFromSeparatorDate(trimmed)
 	return ok
 }
 
@@ -271,7 +258,7 @@ func Validate(r io.Reader, maxBytes int64) error {
 	br := bufio.NewReader(io.LimitReader(r, maxBytes))
 	for {
 		line, err := br.ReadString('\n')
-		if isFromSeparator(line) {
+		if isFromSeparatorLine([]byte(line)) {
 			return nil
 		}
 		if err != nil {

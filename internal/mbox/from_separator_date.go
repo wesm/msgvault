@@ -6,7 +6,39 @@ import (
 	"time"
 )
 
-var fromSeparatorDateLayouts = []string{
+// dateLayoutSpec holds precomputed metadata for a date layout string.
+type dateLayoutSpec struct {
+	layout    string
+	numFields int
+	hasTZ     bool
+	tzIdx     int // index of MST token in fields, or -1
+}
+
+// fromSeparatorLayouts is the precomputed set of layout specs, built at init.
+var fromSeparatorLayouts []dateLayoutSpec
+
+func init() {
+	for _, layout := range rawDateLayouts {
+		fields := strings.Fields(layout)
+		spec := dateLayoutSpec{
+			layout:    layout,
+			numFields: len(fields),
+			hasTZ: strings.Contains(layout, "MST") ||
+				strings.Contains(layout, "-0700") ||
+				strings.Contains(layout, "-07:00"),
+			tzIdx: -1,
+		}
+		for i, f := range fields {
+			if f == "MST" {
+				spec.tzIdx = i
+				break
+			}
+		}
+		fromSeparatorLayouts = append(fromSeparatorLayouts, spec)
+	}
+}
+
+var rawDateLayouts = []string{
 	"Mon Jan 2 15:04:05 2006",
 	"Mon Jan 2 15:04:05 -0700 2006",
 	"Mon Jan 2 15:04:05 -07:00 2006",
@@ -81,18 +113,15 @@ func looksLikeTZToken(token string) bool {
 	if looksLikeNumericOffset(token) {
 		return true
 	}
-	if token == "" {
+	if token == "" || len(token) > 5 {
 		return false
 	}
 	if token != strings.ToUpper(token) {
 		return false
 	}
-	if len(token) > 5 {
-		return false
-	}
 	for i := 0; i < len(token); i++ {
 		c := token[i]
-		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
+		if c < 'A' || c > 'Z' {
 			return false
 		}
 	}
@@ -100,27 +129,86 @@ func looksLikeTZToken(token string) bool {
 }
 
 func looksLikeNumericOffset(token string) bool {
-	if token == "" {
+	if len(token) < 5 {
 		return false
 	}
 	if token[0] != '+' && token[0] != '-' {
 		return false
 	}
+	// +HHMM format
 	if len(token) == 5 {
-		for i := 1; i < len(token); i++ {
+		for i := 1; i < 5; i++ {
 			if token[i] < '0' || token[i] > '9' {
 				return false
 			}
 		}
 		return true
 	}
+	// +HH:MM format
 	if len(token) == 6 && token[3] == ':' {
-		if token[1] < '0' || token[1] > '9' || token[2] < '0' || token[2] > '9' || token[4] < '0' || token[4] > '9' || token[5] < '0' || token[5] > '9' {
-			return false
-		}
-		return true
+		return token[1] >= '0' && token[1] <= '9' &&
+			token[2] >= '0' && token[2] <= '9' &&
+			token[4] >= '0' && token[4] <= '9' &&
+			token[5] >= '0' && token[5] <= '9'
 	}
 	return false
+}
+
+// parseFromSeparatorDateFields is the shared parsing pipeline used by both the
+// permissive and strict date parsers.
+func parseFromSeparatorDateFields(fields []string, strict bool) (time.Time, bool) {
+	if len(fields) < 6 || fields[0] != "From" {
+		return time.Time{}, false
+	}
+
+	for _, spec := range fromSeparatorLayouts {
+		if len(fields) < 2+spec.numFields {
+			continue
+		}
+
+		if strict && !spec.hasTZ && len(fields) > 2+spec.numFields {
+			if looksLikeTZToken(fields[2+spec.numFields]) {
+				continue
+			}
+		}
+
+		dateFields := fields[2 : 2+spec.numFields]
+		dateStr := strings.Join(dateFields, " ")
+
+		if spec.tzIdx == -1 {
+			// No MST placeholder in layout
+			if t, err := time.Parse(spec.layout, dateStr); err == nil {
+				return t, true
+			}
+			continue
+		}
+
+		if !strict {
+			// Permissive: try direct parse (Go maps unknown tz abbrevs to UTC)
+			if t, err := time.Parse(spec.layout, dateStr); err == nil {
+				return t, true
+			}
+			continue
+		}
+
+		// Strict: only accept known timezone abbreviations
+		if spec.tzIdx >= len(dateFields) {
+			continue
+		}
+		off, ok := tzOffsetFromAbbrev(dateFields[spec.tzIdx])
+		if !ok {
+			continue
+		}
+
+		patched := make([]string, len(dateFields))
+		copy(patched, dateFields)
+		patched[spec.tzIdx] = offsetHHMM(off)
+		numericLayout := strings.Replace(spec.layout, "MST", "-0700", 1)
+		if t, err := time.Parse(numericLayout, strings.Join(patched, " ")); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // ParseFromSeparatorDate parses the ctime-like date portion of an mbox "From "
@@ -131,25 +219,7 @@ func looksLikeNumericOffset(token string) bool {
 // ("From <x> <ctime-like date> ...") can be misclassified; mbox writers should
 // escape such body lines (e.g. ">From ").
 func ParseFromSeparatorDate(line string) (time.Time, bool) {
-	fields := strings.Fields(line)
-	// Typical mbox "From " separator: "From <sender> <ctime-like date> [extra...]"
-	// Some producers append extra tokens (e.g. "remote from ..."), so only parse the
-	// date prefix.
-	if len(fields) < 6 || fields[0] != "From" {
-		return time.Time{}, false
-	}
-
-	for _, layout := range fromSeparatorDateLayouts {
-		n := len(strings.Fields(layout))
-		if len(fields) < 2+n {
-			continue
-		}
-		dateStr := strings.Join(fields[2:2+n], " ")
-		if t, err := time.Parse(layout, dateStr); err == nil {
-			return t, true
-		}
-	}
-	return time.Time{}, false
+	return parseFromSeparatorDateFields(strings.Fields(line), false)
 }
 
 // ParseFromSeparatorDateStrict parses the ctime-like date portion of an mbox "From "
@@ -157,57 +227,5 @@ func ParseFromSeparatorDate(line string) (time.Time, bool) {
 // well-known timezone abbreviations. This avoids treating arbitrary abbreviations
 // as UTC.
 func ParseFromSeparatorDateStrict(line string) (time.Time, bool) {
-	fields := strings.Fields(line)
-	if len(fields) < 6 || fields[0] != "From" {
-		return time.Time{}, false
-	}
-
-	for _, layout := range fromSeparatorDateLayouts {
-		n := len(strings.Fields(layout))
-		if len(fields) < 2+n {
-			continue
-		}
-		hasTZ := strings.Contains(layout, "MST") || strings.Contains(layout, "-0700") || strings.Contains(layout, "-07:00")
-		if !hasTZ && len(fields) > 2+n && looksLikeTZToken(fields[2+n]) {
-			continue
-		}
-
-		dateFields := fields[2 : 2+n]
-		dateStr := strings.Join(dateFields, " ")
-
-		if !strings.Contains(layout, "MST") {
-			if t, err := time.Parse(layout, dateStr); err == nil {
-				return t, true
-			}
-			continue
-		}
-
-		layoutFields := strings.Fields(layout)
-		tzIdx := -1
-		for i := range layoutFields {
-			if layoutFields[i] == "MST" {
-				tzIdx = i
-				break
-			}
-		}
-		if tzIdx == -1 {
-			continue
-		}
-		if tzIdx >= len(dateFields) {
-			continue
-		}
-		off, ok := tzOffsetFromAbbrev(dateFields[tzIdx])
-		if !ok {
-			continue
-		}
-
-		patched := append([]string(nil), dateFields...)
-		patched[tzIdx] = offsetHHMM(off)
-		patchedStr := strings.Join(patched, " ")
-		numericLayout := strings.Replace(layout, "MST", "-0700", 1)
-		if t, err := time.Parse(numericLayout, patchedStr); err == nil {
-			return t, true
-		}
-	}
-	return time.Time{}, false
+	return parseFromSeparatorDateFields(strings.Fields(line), true)
 }

@@ -2,13 +2,18 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/fileutil"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/store"
+)
+
+const (
+	stdoutSentinel = "-"
+	emlFileMode    = 0o600
 )
 
 var (
@@ -29,72 +34,85 @@ Examples:
   msgvault export-eml 18f0abc123def -o important.eml`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		idStr := args[0]
-
-		// Open database
-		dbPath := cfg.DatabaseDSN()
-		s, err := store.Open(dbPath)
-		if err != nil {
-			return fmt.Errorf("open database: %w", err)
-		}
-		defer s.Close()
-
-		// Create query engine to look up the message
-		engine := query.NewSQLiteEngine(s.DB())
-
-		// Try to parse as numeric ID first
-		var msgID int64
-		var sourceMessageID string
-		if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
-			msgID = id
-			// Get source message ID for output filename
-			msg, err := engine.GetMessage(cmd.Context(), id)
-			if err != nil {
-				return fmt.Errorf("get message: %w", err)
-			}
-			if msg == nil {
-				return fmt.Errorf("message not found: %s", idStr)
-			}
-			sourceMessageID = msg.SourceMessageID
-		} else {
-			// It's a source message ID (e.g. Gmail ID or imported ID)
-			sourceMessageID = idStr
-			msg, err := engine.GetMessageBySourceID(cmd.Context(), idStr)
-			if err != nil {
-				return fmt.Errorf("get message: %w", err)
-			}
-			if msg == nil {
-				return fmt.Errorf("message not found: %s", idStr)
-			}
-			msgID = msg.ID
-		}
-
-		// Get the raw MIME data
-		rawData, err := s.GetMessageRaw(msgID)
-		if err != nil {
-			return fmt.Errorf("get raw message data: %w (message may not have raw data stored)", err)
-		}
-
-		// Determine output filename
-		outputPath := exportEMLOutput
-		if outputPath == "" {
-			outputPath = fmt.Sprintf("%s.eml", sourceMessageID)
-		}
-
-		// Write to file or stdout
-		if outputPath == "-" {
-			_, err = os.Stdout.Write(rawData)
-			return err
-		}
-
-		err = fileutil.SecureWriteFile(outputPath, rawData, 0600) // Restricted permissions for email content
-		if err != nil {
-			return fmt.Errorf("write file: %w", err)
-		}
-
-		fmt.Printf("Exported message to: %s (%d bytes)\n", outputPath, len(rawData))
-		return nil
+		return runExportEML(cmd, args[0], exportEMLOutput)
 	},
+}
+
+type resolvedMessage struct {
+	ID              int64
+	SourceMessageID string
+}
+
+func resolveMessage(engine *query.SQLiteEngine, cmd *cobra.Command, messageRef string) (resolvedMessage, error) {
+	if id, err := strconv.ParseInt(messageRef, 10, 64); err == nil {
+		msg, err := engine.GetMessage(cmd.Context(), id)
+		if err != nil {
+			return resolvedMessage{}, fmt.Errorf("get message: %w", err)
+		}
+		if msg == nil {
+			return resolvedMessage{}, fmt.Errorf("message not found: %s", messageRef)
+		}
+		return resolvedMessage{ID: id, SourceMessageID: msg.SourceMessageID}, nil
+	}
+
+	msg, err := engine.GetMessageBySourceID(cmd.Context(), messageRef)
+	if err != nil {
+		return resolvedMessage{}, fmt.Errorf("get message: %w", err)
+	}
+	if msg == nil {
+		return resolvedMessage{}, fmt.Errorf("message not found: %s", messageRef)
+	}
+	return resolvedMessage{ID: msg.ID, SourceMessageID: msg.SourceMessageID}, nil
+}
+
+func sanitizeEMLFilename(sourceMessageID string) string {
+	safe := strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == '\x00' {
+			return '_'
+		}
+		return r
+	}, sourceMessageID)
+	if safe == "" {
+		safe = "message"
+	}
+	return safe + ".eml"
+}
+
+func runExportEML(cmd *cobra.Command, messageRef, outputPath string) error {
+	dbPath := cfg.DatabaseDSN()
+	s, err := store.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer s.Close()
+
+	engine := query.NewSQLiteEngine(s.DB())
+
+	resolved, err := resolveMessage(engine, cmd, messageRef)
+	if err != nil {
+		return err
+	}
+
+	rawData, err := s.GetMessageRaw(resolved.ID)
+	if err != nil {
+		return fmt.Errorf("get raw message data: %w (message may not have raw data stored)", err)
+	}
+
+	if outputPath == "" {
+		outputPath = sanitizeEMLFilename(resolved.SourceMessageID)
+	}
+
+	if outputPath == stdoutSentinel {
+		_, err = cmd.OutOrStdout().Write(rawData)
+		return err
+	}
+
+	if err := fileutil.SecureWriteFile(outputPath, rawData, emlFileMode); err != nil {
+		return fmt.Errorf("write file: %w", err)
+	}
+
+	cmd.Printf("Exported message to: %s (%d bytes)\n", outputPath, len(rawData))
+	return nil
 }
 
 func init() {

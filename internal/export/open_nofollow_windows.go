@@ -4,9 +4,9 @@ package export
 
 import "os"
 
-// openNoFollow is a best-effort equivalent of O_NOFOLLOW.
-// Windows does not provide an easy O_NOFOLLOW-style open here; this may follow
-// reparse points and symlinks. Callers still validate size and content hash.
+// openNoFollow opens a file read-only.
+// Windows does not provide O_NOFOLLOW; this may follow reparse points and
+// symlinks. Callers validate size and content hash as additional safeguards.
 func openNoFollow(path string) (*os.File, error) {
-	return os.Open(path)
+	return os.OpenFile(path, os.O_RDONLY, 0)
 }

@@ -116,6 +116,26 @@ func (s *Store) EnsureConversation(sourceID int64, sourceConversationID, title s
 	return result.LastInsertId()
 }
 
+const upsertMessageSQL = `
+	INSERT INTO messages (
+		conversation_id, source_id, source_message_id, message_type,
+		sent_at, received_at, internal_date, sender_id, is_from_me,
+		subject, snippet, size_estimate,
+		has_attachments, attachment_count, archived_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+	ON CONFLICT(source_id, source_message_id) DO UPDATE SET
+		conversation_id = excluded.conversation_id,
+		sent_at = excluded.sent_at,
+		received_at = excluded.received_at,
+		internal_date = excluded.internal_date,
+		sender_id = excluded.sender_id,
+		is_from_me = excluded.is_from_me,
+		subject = excluded.subject,
+		snippet = excluded.snippet,
+		size_estimate = excluded.size_estimate,
+		has_attachments = excluded.has_attachments,
+		attachment_count = excluded.attachment_count`
+
 // UpsertMessage inserts or updates a message.
 func (s *Store) UpsertMessage(msg *Message) (int64, error) {
 	args := []any{
@@ -127,27 +147,7 @@ func (s *Store) UpsertMessage(msg *Message) (int64, error) {
 
 	// Use RETURNING to avoid an extra SELECT per message when supported.
 	var id int64
-	err := s.db.QueryRow(`
-		INSERT INTO messages (
-			conversation_id, source_id, source_message_id, message_type,
-			sent_at, received_at, internal_date, sender_id, is_from_me,
-			subject, snippet, size_estimate,
-			has_attachments, attachment_count, archived_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-		ON CONFLICT(source_id, source_message_id) DO UPDATE SET
-			conversation_id = excluded.conversation_id,
-			sent_at = excluded.sent_at,
-			received_at = excluded.received_at,
-			internal_date = excluded.internal_date,
-			sender_id = excluded.sender_id,
-			is_from_me = excluded.is_from_me,
-			subject = excluded.subject,
-			snippet = excluded.snippet,
-			size_estimate = excluded.size_estimate,
-			has_attachments = excluded.has_attachments,
-			attachment_count = excluded.attachment_count
-		RETURNING id
-	`, args...).Scan(&id)
+	err := s.db.QueryRow(upsertMessageSQL+"\n\t\tRETURNING id\n\t", args...).Scan(&id)
 
 	if err != nil {
 		// SQLite < 3.35 does not support RETURNING. Fall back to an Exec + SELECT.
@@ -155,30 +155,14 @@ func (s *Store) UpsertMessage(msg *Message) (int64, error) {
 			return 0, err
 		}
 
-		if _, execErr := s.db.Exec(`
-			INSERT INTO messages (
-				conversation_id, source_id, source_message_id, message_type,
-				sent_at, received_at, internal_date, sender_id, is_from_me,
-				subject, snippet, size_estimate,
-				has_attachments, attachment_count, archived_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-			ON CONFLICT(source_id, source_message_id) DO UPDATE SET
-				conversation_id = excluded.conversation_id,
-				sent_at = excluded.sent_at,
-				received_at = excluded.received_at,
-				internal_date = excluded.internal_date,
-				sender_id = excluded.sender_id,
-				is_from_me = excluded.is_from_me,
-				subject = excluded.subject,
-				snippet = excluded.snippet,
-				size_estimate = excluded.size_estimate,
-				has_attachments = excluded.has_attachments,
-				attachment_count = excluded.attachment_count
-		`, args...); execErr != nil {
+		if _, execErr := s.db.Exec(upsertMessageSQL, args...); execErr != nil {
 			return 0, execErr
 		}
 
-		if err := s.db.QueryRow(`SELECT id FROM messages WHERE source_id = ? AND source_message_id = ?`, msg.SourceID, msg.SourceMessageID).Scan(&id); err != nil {
+		if err := s.db.QueryRow(
+			`SELECT id FROM messages WHERE source_id = ? AND source_message_id = ?`,
+			msg.SourceID, msg.SourceMessageID,
+		).Scan(&id); err != nil {
 			return 0, err
 		}
 	}
@@ -508,8 +492,13 @@ func (s *Store) MarkMessagesDeletedBatch(sourceID int64, sourceMessageIDs []stri
 
 // MarkMessageDeletedByGmailID marks a message as deleted by its Gmail ID.
 // This is used by the deletion executor which only has the Gmail message ID.
-// The permanent flag indicates whether the message was permanently deleted or just trashed.
+// When permanent is true, the message row is deleted entirely; otherwise it is
+// soft-deleted by setting deleted_from_source_at.
 func (s *Store) MarkMessageDeletedByGmailID(permanent bool, gmailID string) error {
+	if permanent {
+		_, err := s.db.Exec(`DELETE FROM messages WHERE source_message_id = ?`, gmailID)
+		return err
+	}
 	_, err := s.db.Exec(`
 		UPDATE messages
 		SET deleted_from_source_at = datetime('now')

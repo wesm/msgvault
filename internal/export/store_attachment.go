@@ -15,36 +15,33 @@ import (
 	"github.com/wesm/msgvault/internal/mime"
 )
 
-var validatedAttachmentFiles sync.Map // key: fullPath + size + expectedHash → value: modTime (int64)
+// key: fullPath + size + expectedHash -> value: modTime (int64)
+var validatedAttachmentFiles sync.Map
 
-// StoreAttachmentFile stores att.Content on disk under attachmentsDir using
-// content-addressed storage (hash[:2]/hash). It validates existing files when
-// de-duping. If attachmentsDir is a symlink, it is resolved before writing.
-//
-// Returns the storage path relative to attachmentsDir (e.g. "ab/<hash>"), or
-// empty string if nothing was stored.
-func StoreAttachmentFile(attachmentsDir string, att *mime.Attachment) (string, error) {
-	if attachmentsDir == "" || len(att.Content) == 0 {
-		return "", nil
+// resolveContentHash computes the SHA-256 of content and validates it against
+// the provided hash (if any). Returns the canonical lowercase hash without
+// mutating the attachment.
+func resolveContentHash(content []byte, providedHash string) (string, error) {
+	sum := sha256.Sum256(content)
+	computed := hex.EncodeToString(sum[:])
+
+	if providedHash == "" {
+		return computed, nil
 	}
 
-	sum := sha256.Sum256(att.Content)
-	computedHash := hex.EncodeToString(sum[:])
+	normalized := strings.ToLower(providedHash)
+	if err := ValidateContentHash(normalized); err != nil {
+		return "", fmt.Errorf("invalid attachment content hash %q: %w", normalized, err)
+	}
+	if normalized != computed {
+		return "", fmt.Errorf("attachment content hash mismatch: provided %q, computed %q", normalized, computed)
+	}
+	return normalized, nil
+}
 
-	if att.ContentHash == "" {
-		att.ContentHash = computedHash
-	}
-	att.ContentHash = strings.ToLower(att.ContentHash)
-	if err := ValidateContentHash(att.ContentHash); err != nil {
-		return "", fmt.Errorf("invalid attachment content hash %q: %w", att.ContentHash, err)
-	}
-	if att.ContentHash != computedHash {
-		return "", fmt.Errorf("attachment content hash mismatch: provided %q, computed %q", att.ContentHash, computedHash)
-	}
-
-	// Content-addressed storage: first 2 chars / full hash
-	subdir := att.ContentHash[:2]
-	storagePath := path.Join(subdir, att.ContentHash)
+// prepareStorageDir ensures the base attachments directory exists, resolves
+// symlinks, and returns the resolved absolute path.
+func prepareStorageDir(attachmentsDir string) (string, error) {
 	baseDir, err := filepath.Abs(attachmentsDir)
 	if err != nil {
 		return "", fmt.Errorf("abs attachments dir %q: %w", attachmentsDir, err)
@@ -59,32 +56,109 @@ func StoreAttachmentFile(attachmentsDir string, att *mime.Attachment) (string, e
 	if err != nil {
 		return "", fmt.Errorf("resolve attachments dir %q: %w", attachmentsDir, err)
 	}
-	baseDir = resolved
-	if st, err := os.Lstat(baseDir); err == nil {
-		if !st.IsDir() {
-			return "", fmt.Errorf("attachments dir %q is not a directory", baseDir)
-		}
-	} else {
+	st, err := os.Lstat(resolved)
+	if err != nil {
 		return "", fmt.Errorf("lstat attachments dir: %w", err)
 	}
+	if !st.IsDir() {
+		return "", fmt.Errorf("attachments dir %q is not a directory", resolved)
+	}
+	return resolved, nil
+}
 
-	fullPath := filepath.Join(baseDir, subdir, att.ContentHash)
-	subdirPath := filepath.Join(baseDir, subdir)
+// ensureSubdirSafe creates the hash-prefix subdirectory and checks it is
+// not a symlink.
+func ensureSubdirSafe(baseDir, hashPrefix string) error {
+	subdirPath := filepath.Join(baseDir, hashPrefix)
 	if st, err := os.Lstat(subdirPath); err == nil {
 		if st.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("attachment dir %q is a symlink", subdirPath)
+			return fmt.Errorf("attachment dir %q is a symlink", subdirPath)
 		}
 	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("lstat attachment dir: %w", err)
+		return fmt.Errorf("lstat attachment dir: %w", err)
+	}
+	return fileutil.SecureMkdirAll(subdirPath, 0700)
+}
+
+// writeAtomicFile writes data to a temp file alongside fullPath and renames
+// it into place. On rename conflict (concurrent writer), validates the
+// existing file instead.
+func writeAtomicFile(fullPath string, data []byte, expectedSize int64, expectedHash string) error {
+	dir := filepath.Dir(fullPath)
+	base := filepath.Base(fullPath)
+
+	tmp, err := os.CreateTemp(dir, base+".tmp.")
+	if err != nil {
+		return fmt.Errorf("create temp attachment file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	removeTmp := true
+	defer func() {
+		if removeTmp {
+			_ = tmp.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := fileutil.SecureChmod(tmpPath, 0600); err != nil {
+		return fmt.Errorf("chmod temp attachment file: %w", err)
 	}
 
-	if err := fileutil.SecureMkdirAll(filepath.Dir(fullPath), 0700); err != nil {
-		return "", fmt.Errorf("create attachment dir: %w", err)
+	if _, err := tmp.Write(data); err != nil {
+		return fmt.Errorf("write attachment file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close attachment file: %w", err)
 	}
 
+	if err := os.Rename(tmpPath, fullPath); err != nil {
+		// Another writer may have installed the final file first (notably on
+		// Windows; Unix rename typically overwrites). Validate the existing file.
+		if _, statErr := os.Lstat(fullPath); statErr == nil {
+			removeTmp = false
+			_ = os.Remove(tmpPath)
+			return validateExistingAttachmentFile(fullPath, expectedSize, expectedHash)
+		}
+		return fmt.Errorf("rename attachment file into place: %w", err)
+	}
+	removeTmp = false
+	return nil
+}
+
+// StoreAttachmentFile stores att.Content on disk under attachmentsDir using
+// content-addressed storage (hash[:2]/hash). It validates existing files when
+// de-duping. If attachmentsDir is a symlink, it is resolved before writing.
+//
+// Returns the storage path relative to attachmentsDir (e.g. "ab/<hash>"), or
+// empty string if nothing was stored.
+func StoreAttachmentFile(attachmentsDir string, att *mime.Attachment) (string, error) {
+	if attachmentsDir == "" || len(att.Content) == 0 {
+		return "", nil
+	}
+
+	contentHash, err := resolveContentHash(att.Content, att.ContentHash)
+	if err != nil {
+		return "", err
+	}
+	att.ContentHash = contentHash
+
+	hashPrefix := contentHash[:2]
+	storagePath := path.Join(hashPrefix, contentHash)
+
+	baseDir, err := prepareStorageDir(attachmentsDir)
+	if err != nil {
+		return "", err
+	}
+
+	if err := ensureSubdirSafe(baseDir, hashPrefix); err != nil {
+		return "", err
+	}
+
+	fullPath := filepath.Join(baseDir, hashPrefix, contentHash)
 	expectedSize := int64(len(att.Content))
+
 	if _, err := os.Lstat(fullPath); err == nil {
-		if err := validateExistingAttachmentFile(fullPath, expectedSize, att.ContentHash); err != nil {
+		if err := validateExistingAttachmentFile(fullPath, expectedSize, contentHash); err != nil {
 			return "", err
 		}
 		return storagePath, nil
@@ -92,52 +166,9 @@ func StoreAttachmentFile(attachmentsDir string, att *mime.Attachment) (string, e
 		return "", fmt.Errorf("lstat attachment file: %w", err)
 	}
 
-	// Write to a temp file and rename into place to avoid other concurrent
-	// writers observing a partially written final path.
-	tmp, err := os.CreateTemp(filepath.Dir(fullPath), att.ContentHash+".tmp.")
-	if err != nil {
-		return "", fmt.Errorf("create temp attachment file: %w", err)
+	if err := writeAtomicFile(fullPath, att.Content, expectedSize, contentHash); err != nil {
+		return "", err
 	}
-	tmpPath := tmp.Name()
-	cleanupTmp := true
-	defer func() {
-		if cleanupTmp {
-			_ = tmp.Close()
-			_ = os.Remove(tmpPath)
-		}
-	}()
-
-	if err := fileutil.SecureChmod(tmpPath, 0600); err != nil {
-		return "", fmt.Errorf("chmod temp attachment file: %w", err)
-	}
-
-	b := att.Content
-	for len(b) > 0 {
-		n, err := tmp.Write(b)
-		if err != nil {
-			return "", fmt.Errorf("write attachment file: %w", err)
-		}
-		b = b[n:]
-	}
-	if err := tmp.Close(); err != nil {
-		return "", fmt.Errorf("close attachment file: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, fullPath); err != nil {
-		// Another writer may have installed the final file first (notably on
-		// Windows; Unix rename typically overwrites). Validate the existing file.
-		if _, statErr := os.Lstat(fullPath); statErr == nil {
-			cleanupTmp = false
-			_ = os.Remove(tmpPath)
-			if err := validateExistingAttachmentFile(fullPath, expectedSize, att.ContentHash); err != nil {
-				return "", err
-			}
-			return storagePath, nil
-		}
-		return "", fmt.Errorf("rename attachment file into place: %w", err)
-	}
-	cleanupTmp = false
-
 	return storagePath, nil
 }
 
