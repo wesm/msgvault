@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/wesm/msgvault/internal/importer"
+	"github.com/wesm/msgvault/internal/importer/mboxzip"
 	"github.com/wesm/msgvault/internal/mbox"
 	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/testutil/email"
@@ -419,7 +420,7 @@ func TestImportMboxCmd_EndToEnd_ZipResumeAcrossFiles(t *testing.T) {
 	}
 
 	// Extract the zip so we can compute a checkpoint offset within the first extracted file.
-	extracted, err := resolveMboxExport(zipPath, tmp)
+	extracted, err := mboxzip.ResolveMboxExport(zipPath, tmp, nil)
 	if err != nil {
 		t.Fatalf("resolveMboxExport: %v", err)
 	}

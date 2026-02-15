@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -29,18 +28,6 @@ type mboxCheckpoint struct {
 	Offset int64  `json:"offset"`
 	Seq    int64  `json:"seq,omitempty"`
 }
-
-var errZipExtractLimitExceeded = mboxzip.ErrExtractLimitExceeded
-var _ = errZipExtractLimitExceeded
-
-// These are intentionally very high defaults; they exist to prevent zip-bomb
-// style resource exhaustion while still supporting large real-world exports.
-const (
-	defaultMaxZipEntryBytes int64 = mboxzip.DefaultMaxZipEntryBytes
-	defaultMaxZipTotalBytes int64 = mboxzip.DefaultMaxZipTotalBytes
-)
-
-type zipExtractLimits = mboxzip.ExtractLimits
 
 var importMboxCmd = &cobra.Command{
 	Use:   "import-mbox <identifier> <export-file>",
@@ -125,7 +112,7 @@ Examples:
 			attachmentsDir = ""
 		}
 
-		mboxFiles, err := resolveMboxExport(exportPath, cfg.Data.DataDir)
+		mboxFiles, err := mboxzip.ResolveMboxExport(exportPath, cfg.Data.DataDir, logger)
 		if err != nil {
 			return err
 		}
@@ -334,24 +321,4 @@ func init() {
 	importMboxCmd.Flags().BoolVar(&importMboxNoResume, "no-resume", false, "Do not resume from an interrupted import")
 	importMboxCmd.Flags().IntVar(&importMboxCheckpointInterval, "checkpoint-interval", 200, "Save progress every N messages")
 	importMboxCmd.Flags().BoolVar(&importMboxNoAttachments, "no-attachments", false, "Do not store attachments (disk or database). Messages will still be marked as having attachments. Note: rerunning later without --no-attachments will not backfill attachments for already-imported messages.")
-}
-
-func resolveMboxExport(exportPath string, importsDir string) ([]string, error) {
-	return mboxzip.ResolveMboxExport(exportPath, importsDir, logger)
-}
-
-func extractMboxFromZip(zipPath, destDir string) ([]string, error) {
-	return mboxzip.ExtractMboxFromZip(zipPath, destDir, logger)
-}
-
-func extractMboxFromZipWithLimits(zipPath, destDir string, limits zipExtractLimits) ([]string, error) {
-	return mboxzip.ExtractMboxFromZipWithLimits(zipPath, destDir, limits, logger)
-}
-
-func validateExtractedMboxCache(zipPath, destDir string, limits zipExtractLimits) ([]string, error) {
-	return mboxzip.ValidateExtractedMboxCache(zipPath, destDir, limits)
-}
-
-func copyWithLimit(dst io.Writer, src io.Reader, max int64) (int64, error) {
-	return mboxzip.CopyWithLimit(dst, src, max)
 }

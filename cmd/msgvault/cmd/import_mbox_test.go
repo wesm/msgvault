@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wesm/msgvault/internal/importer/mboxzip"
 )
 
 func writeZipFile(t *testing.T, path string, entries map[string]string) {
@@ -166,7 +168,7 @@ func TestResolveMboxExport_ZipExtractsAndCaches(t *testing.T) {
 		"sent.mbx":   "From a@b Sat Jan 1 00:00:01 2024\nSubject: y\n\nBody2\n",
 	})
 
-	files1, err := resolveMboxExport(zipPath, tmp)
+	files1, err := mboxzip.ResolveMboxExport(zipPath, tmp, nil)
 	if err != nil {
 		t.Fatalf("resolveMboxExport: %v", err)
 	}
@@ -188,7 +190,7 @@ func TestResolveMboxExport_ZipExtractsAndCaches(t *testing.T) {
 	}
 
 	// Second run should reuse the extracted files (sentinel-based caching).
-	files2, err := resolveMboxExport(zipPath, tmp)
+	files2, err := mboxzip.ResolveMboxExport(zipPath, tmp, nil)
 	if err != nil {
 		t.Fatalf("resolveMboxExport (2nd): %v", err)
 	}
@@ -205,7 +207,7 @@ func TestResolveMboxExport_ZipTouchDoesNotInvalidateCache(t *testing.T) {
 		"inbox.mbox": "From a@b Sat Jan 1 00:00:00 2024\nSubject: x\n\nBody\n",
 	})
 
-	files1, err := resolveMboxExport(zipPath, tmp)
+	files1, err := mboxzip.ResolveMboxExport(zipPath, tmp, nil)
 	if err != nil {
 		t.Fatalf("resolveMboxExport: %v", err)
 	}
@@ -219,7 +221,7 @@ func TestResolveMboxExport_ZipTouchDoesNotInvalidateCache(t *testing.T) {
 		t.Fatalf("chtimes zip: %v", err)
 	}
 
-	files2, err := resolveMboxExport(zipPath, tmp)
+	files2, err := mboxzip.ResolveMboxExport(zipPath, tmp, nil)
 	if err != nil {
 		t.Fatalf("resolveMboxExport (2nd): %v", err)
 	}
@@ -251,9 +253,9 @@ func TestExtractMboxFromZip_CacheValidationRejectsUnknownUncompressedSizeCRCMism
 		t.Fatalf("write cached file: %v", err)
 	}
 
-	_, err := validateExtractedMboxCache(zipPath, destDir, zipExtractLimits{
-		MaxEntryBytes: defaultMaxZipEntryBytes,
-		MaxTotalBytes: defaultMaxZipTotalBytes,
+	_, err := mboxzip.ValidateExtractedMboxCache(zipPath, destDir, mboxzip.ExtractLimits{
+		MaxEntryBytes: mboxzip.DefaultMaxZipEntryBytes,
+		MaxTotalBytes: mboxzip.DefaultMaxZipTotalBytes,
 	})
 	if err == nil {
 		t.Fatalf("expected error")
@@ -283,9 +285,9 @@ func TestExtractMboxFromZip_CacheValidationRejectsEmptyEntrySizeMismatch(t *test
 		t.Fatalf("write cached file: %v", err)
 	}
 
-	_, err := validateExtractedMboxCache(zipPath, destDir, zipExtractLimits{
-		MaxEntryBytes: defaultMaxZipEntryBytes,
-		MaxTotalBytes: defaultMaxZipTotalBytes,
+	_, err := mboxzip.ValidateExtractedMboxCache(zipPath, destDir, mboxzip.ExtractLimits{
+		MaxEntryBytes: mboxzip.DefaultMaxZipEntryBytes,
+		MaxTotalBytes: mboxzip.DefaultMaxZipTotalBytes,
 	})
 	if err == nil {
 		t.Fatalf("expected error")
@@ -317,9 +319,9 @@ func TestExtractMboxFromZip_CacheValidationRejectsSameSizeCRCMismatch(t *testing
 		t.Fatalf("write cached file: %v", err)
 	}
 
-	_, err := validateExtractedMboxCache(zipPath, destDir, zipExtractLimits{
-		MaxEntryBytes: defaultMaxZipEntryBytes,
-		MaxTotalBytes: defaultMaxZipTotalBytes,
+	_, err := mboxzip.ValidateExtractedMboxCache(zipPath, destDir, mboxzip.ExtractLimits{
+		MaxEntryBytes: mboxzip.DefaultMaxZipEntryBytes,
+		MaxTotalBytes: mboxzip.DefaultMaxZipTotalBytes,
 	})
 	if err == nil {
 		t.Fatalf("expected error")
@@ -351,9 +353,9 @@ func TestExtractMboxFromZip_CacheValidationSkipsCRCByDefaultWhenSizeKnown(t *tes
 		t.Fatalf("write cached file: %v", err)
 	}
 
-	_, err := validateExtractedMboxCache(zipPath, destDir, zipExtractLimits{
-		MaxEntryBytes: defaultMaxZipEntryBytes,
-		MaxTotalBytes: defaultMaxZipTotalBytes,
+	_, err := mboxzip.ValidateExtractedMboxCache(zipPath, destDir, mboxzip.ExtractLimits{
+		MaxEntryBytes: mboxzip.DefaultMaxZipEntryBytes,
+		MaxTotalBytes: mboxzip.DefaultMaxZipTotalBytes,
 	})
 	if err != nil {
 		t.Fatalf("expected success, got %v", err)
@@ -384,9 +386,9 @@ func TestExtractMboxFromZip_CacheValidationRejectsExtraFiles(t *testing.T) {
 		t.Fatalf("write extra file: %v", err)
 	}
 
-	_, err := validateExtractedMboxCache(zipPath, destDir, zipExtractLimits{
-		MaxEntryBytes: defaultMaxZipEntryBytes,
-		MaxTotalBytes: defaultMaxZipTotalBytes,
+	_, err := mboxzip.ValidateExtractedMboxCache(zipPath, destDir, mboxzip.ExtractLimits{
+		MaxEntryBytes: mboxzip.DefaultMaxZipEntryBytes,
+		MaxTotalBytes: mboxzip.DefaultMaxZipTotalBytes,
 	})
 	if err == nil {
 		t.Fatalf("expected error")
@@ -407,7 +409,7 @@ func TestExtractMboxFromZip_RejectsZipChecksumError(t *testing.T) {
 	corruptZipFileBytes(t, zipPath, content)
 
 	destDir := filepath.Join(tmp, "extract")
-	_, err := extractMboxFromZip(zipPath, destDir)
+	_, err := mboxzip.ExtractMboxFromZip(zipPath, destDir, nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -434,7 +436,7 @@ func TestCopyWithLimit_NoProgressAfterLimit_ReturnsErrNoProgress(t *testing.T) {
 	var dst bytes.Buffer
 	src := &noProgressReader{b: []byte("abc")}
 
-	n, err := copyWithLimit(&dst, src, 3)
+	n, err := mboxzip.CopyWithLimit(&dst, src, 3)
 	if n != 3 {
 		t.Fatalf("n=%d, want 3", n)
 	}
@@ -453,7 +455,7 @@ func TestExtractMboxFromZip_DisambiguatesCollidingBaseNames(t *testing.T) {
 	})
 
 	destDir := filepath.Join(tmp, "extract")
-	files, err := extractMboxFromZip(zipPath, destDir)
+	files, err := mboxzip.ExtractMboxFromZip(zipPath, destDir, nil)
 	if err != nil {
 		t.Fatalf("extractMboxFromZip: %v", err)
 	}
@@ -507,7 +509,7 @@ func TestExtractMboxFromZip_DoesNotOverwriteOnCraftedNameCollision(t *testing.T)
 	}
 
 	destDir := filepath.Join(tmp, "extract")
-	files, err := extractMboxFromZip(zipPath, destDir)
+	files, err := mboxzip.ExtractMboxFromZip(zipPath, destDir, nil)
 	if err != nil {
 		t.Fatalf("extractMboxFromZip: %v", err)
 	}
@@ -539,7 +541,7 @@ func TestExtractMboxFromZip_FlattensTraversalNamesSafely(t *testing.T) {
 	})
 
 	destDir := filepath.Join(tmp, "extract")
-	files, err := extractMboxFromZip(zipPath, destDir)
+	files, err := mboxzip.ExtractMboxFromZip(zipPath, destDir, nil)
 	if err != nil {
 		t.Fatalf("extractMboxFromZip: %v", err)
 	}
@@ -563,7 +565,7 @@ func TestExtractMboxFromZip_SanitizesWindowsInvalidFilenames(t *testing.T) {
 	})
 
 	destDir := filepath.Join(tmp, "extract")
-	files, err := extractMboxFromZip(zipPath, destDir)
+	files, err := mboxzip.ExtractMboxFromZip(zipPath, destDir, nil)
 	if err != nil {
 		t.Fatalf("extractMboxFromZip: %v", err)
 	}
@@ -584,10 +586,10 @@ func TestExtractMboxFromZip_EnforcesEntrySizeLimit(t *testing.T) {
 	})
 
 	destDir := filepath.Join(tmp, "extract")
-	_, err := extractMboxFromZipWithLimits(zipPath, destDir, zipExtractLimits{
+	_, err := mboxzip.ExtractMboxFromZipWithLimits(zipPath, destDir, mboxzip.ExtractLimits{
 		MaxEntryBytes: 10,
 		MaxTotalBytes: 0,
-	})
+	}, nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -606,10 +608,10 @@ func TestExtractMboxFromZip_EnforcesTotalSizeLimit(t *testing.T) {
 	})
 
 	destDir := filepath.Join(tmp, "extract")
-	_, err := extractMboxFromZipWithLimits(zipPath, destDir, zipExtractLimits{
+	_, err := mboxzip.ExtractMboxFromZipWithLimits(zipPath, destDir, mboxzip.ExtractLimits{
 		MaxEntryBytes: 100,
 		MaxTotalBytes: 10,
-	})
+	}, nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -634,7 +636,7 @@ func TestResolveMboxExport_Zip_ReturnsAbsolutePathsWhenImportsDirRelative(t *tes
 	if err != nil {
 		t.Fatalf("rel imports dir: %v", err)
 	}
-	files, err := resolveMboxExport(zipPath, importsRel)
+	files, err := mboxzip.ResolveMboxExport(zipPath, importsRel, nil)
 	if err != nil {
 		t.Fatalf("resolveMboxExport: %v", err)
 	}
@@ -667,7 +669,7 @@ func TestResolveMboxExport_Zip_RejectsSymlinkedImportsDir(t *testing.T) {
 		t.Skipf("symlink not available: %v", err)
 	}
 
-	_, err := resolveMboxExport(zipPath, linkImports)
+	_, err := mboxzip.ResolveMboxExport(zipPath, linkImports, nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -685,7 +687,7 @@ func TestResolveMboxExport_RejectsNonRegularFile(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	_, err := resolveMboxExport(exportPath, tmp)
+	_, err := mboxzip.ResolveMboxExport(exportPath, tmp, nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -715,7 +717,7 @@ func TestExtractMboxFromZip_RejectsSymlinkExtractDir(t *testing.T) {
 		t.Skipf("symlink not available: %v", err)
 	}
 
-	_, err := extractMboxFromZip(zipPath, destDir)
+	_, err := mboxzip.ExtractMboxFromZip(zipPath, destDir, nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -747,7 +749,7 @@ func TestExtractMboxFromZip_DoesNotWriteThroughPreExistingSymlink(t *testing.T) 
 		t.Skipf("symlink not available: %v", err)
 	}
 
-	files, err := extractMboxFromZip(zipPath, destDir)
+	files, err := mboxzip.ExtractMboxFromZip(zipPath, destDir, nil)
 	if err != nil {
 		t.Fatalf("extractMboxFromZip: %v", err)
 	}
@@ -804,7 +806,7 @@ func TestExtractMboxFromZip_CachedExtractionRejectsSymlinkedFiles(t *testing.T) 
 		t.Skipf("symlink not available: %v", err)
 	}
 
-	files, err := extractMboxFromZip(zipPath, destDir)
+	files, err := mboxzip.ExtractMboxFromZip(zipPath, destDir, nil)
 	if err != nil {
 		t.Fatalf("extractMboxFromZip: %v", err)
 	}
