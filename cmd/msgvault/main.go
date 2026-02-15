@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,6 +15,9 @@ func main() {
 	defer cancel()
 
 	if err := cmd.ExecuteContext(ctx); err != nil {
+		if errors.Is(err, context.Canceled) && ctx.Err() == context.Canceled {
+			os.Exit(130)
+		}
 		os.Exit(1)
 	}
 }

@@ -7,14 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/wesm/msgvault/internal/fileutil"
+	"github.com/wesm/msgvault/internal/export"
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/mime"
 	"github.com/wesm/msgvault/internal/store"
@@ -163,7 +161,7 @@ func (s *Syncer) processBatch(ctx context.Context, sourceID int64, listResp *gma
 	}
 
 	// Check which messages already exist
-	existingMap, err := s.store.MessageExistsBatch(sourceID, messageIDs)
+	existingMap, err := s.store.MessageExistsWithRawBatch(sourceID, messageIDs)
 	if err != nil {
 		return nil, fmt.Errorf("check existing: %w", err)
 	}
@@ -451,7 +449,11 @@ func (s *Syncer) parseToModel(sourceID int64, raw *gmail.RawMessage, threadID st
 	}
 
 	// Ensure participants exist in database
-	allAddresses := append(append(append(parsed.From, parsed.To...), parsed.Cc...), parsed.Bcc...)
+	allAddresses := make([]mime.Address, 0, len(parsed.From)+len(parsed.To)+len(parsed.Cc)+len(parsed.Bcc))
+	allAddresses = append(allAddresses, parsed.From...)
+	allAddresses = append(allAddresses, parsed.To...)
+	allAddresses = append(allAddresses, parsed.Cc...)
+	allAddresses = append(allAddresses, parsed.Bcc...)
 	participantMap, err := s.store.EnsureParticipantsBatch(allAddresses)
 	if err != nil {
 		return nil, fmt.Errorf("ensure participants: %w", err)
@@ -644,29 +646,13 @@ func (s *Syncer) storeRecipients(messageID int64, recipientType string, addresse
 
 // storeAttachment stores an attachment to disk and records it in the database.
 func (s *Syncer) storeAttachment(messageID int64, att *mime.Attachment) error {
-	if len(att.Content) == 0 {
-		return nil
-	}
-
-	// Content-addressed storage: first 2 chars / full hash
-	subdir := att.ContentHash[:2]
-	storagePath := filepath.Join(subdir, att.ContentHash)
-	fullPath := filepath.Join(s.opts.AttachmentsDir, storagePath)
-
-	// Create directory if needed
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+	storagePath, err := export.StoreAttachmentFile(s.opts.AttachmentsDir, att)
+	if err != nil || storagePath == "" {
 		return err
 	}
 
-	// Write file if it doesn't exist (deduplication)
-	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-		if err := fileutil.SecureWriteFile(fullPath, att.Content, 0600); err != nil {
-			return err
-		}
-	}
-
 	// Record in database
-	return s.store.UpsertAttachment(messageID, att.Filename, att.ContentType, storagePath, att.ContentHash, att.Size)
+	return s.store.UpsertAttachment(messageID, att.Filename, att.ContentType, storagePath, att.ContentHash, len(att.Content))
 }
 
 // joinEmails concatenates email addresses from a slice of mime.Address with spaces.
