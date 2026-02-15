@@ -64,10 +64,14 @@ Examples:
 		}
 
 		// If --force, delete existing token so we re-authorize
-		if forceReauth && oauthMgr.HasToken(email) {
-			fmt.Printf("Removing existing token for %s...\n", email)
-			if err := oauthMgr.DeleteToken(email); err != nil {
-				return fmt.Errorf("delete existing token: %w", err)
+		if forceReauth {
+			if oauthMgr.HasToken(email) {
+				fmt.Printf("Removing existing token for %s...\n", email)
+				if err := oauthMgr.DeleteToken(email); err != nil {
+					return fmt.Errorf("delete existing token: %w", err)
+				}
+			} else {
+				fmt.Printf("No existing token found for %s, proceeding with authorization.\n", email)
 			}
 		}
 
@@ -84,8 +88,9 @@ Examples:
 					return fmt.Errorf("set display name: %w", err)
 				}
 			}
-			fmt.Printf("Account %s is ready.\n", email)
-			fmt.Println("To re-authorize, run: msgvault add-account", email, "--force")
+			fmt.Printf("Account %s is already authorized.\n", email)
+			fmt.Println("Next step: msgvault sync-full", email)
+			fmt.Println("To re-authorize (e.g., expired token), run: msgvault add-account", email, "--force")
 			return nil
 		}
 
