@@ -1,17 +1,13 @@
 package query
 
 import (
-	"bytes"
-	"compress/zlib"
 	"context"
 	"database/sql"
 	"fmt"
-	"io"
 	"log"
 	"strings"
 	"sync"
 
-	"github.com/wesm/msgvault/internal/mime"
 	"github.com/wesm/msgvault/internal/search"
 )
 
@@ -673,45 +669,7 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 
 // fetchLabelsForMessages adds labels to message summaries.
 func (e *SQLiteEngine) fetchLabelsForMessages(ctx context.Context, messages []MessageSummary) error {
-	if len(messages) == 0 {
-		return nil
-	}
-
-	// Build message ID list
-	ids := make([]interface{}, len(messages))
-	placeholders := make([]string, len(messages))
-	idToIndex := make(map[int64]int)
-	for i, msg := range messages {
-		ids[i] = msg.ID
-		placeholders[i] = "?"
-		idToIndex[msg.ID] = i
-	}
-
-	query := fmt.Sprintf(`
-		SELECT ml.message_id, l.name
-		FROM message_labels ml
-		JOIN labels l ON l.id = ml.label_id
-		WHERE ml.message_id IN (%s)
-	`, strings.Join(placeholders, ","))
-
-	rows, err := e.db.QueryContext(ctx, query, ids...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var msgID int64
-		var labelName string
-		if err := rows.Scan(&msgID, &labelName); err != nil {
-			return err
-		}
-		if idx, ok := idToIndex[msgID]; ok {
-			messages[idx].Labels = append(messages[idx].Labels, labelName)
-		}
-	}
-
-	return rows.Err()
+	return fetchLabelsForMessageList(ctx, e.db, "", messages)
 }
 
 // GetMessage retrieves a full message by internal ID.
@@ -729,206 +687,24 @@ func (e *SQLiteEngine) GetMessageBySourceID(ctx context.Context, sourceMessageID
 }
 
 func (e *SQLiteEngine) getMessageByQuery(ctx context.Context, whereClause string, args ...interface{}) (*MessageDetail, error) {
-	// Always exclude soft-deleted messages, consistent with list/aggregate queries
-	query := fmt.Sprintf(`
-		SELECT
-			m.id,
-			m.source_message_id,
-			m.conversation_id,
-			COALESCE(conv.source_conversation_id, ''),
-			COALESCE(m.subject, ''),
-			COALESCE(m.snippet, ''),
-			m.sent_at,
-			m.received_at,
-			COALESCE(m.size_estimate, 0),
-			m.has_attachments
-		FROM messages m
-		LEFT JOIN conversations conv ON conv.id = m.conversation_id
-		WHERE %s
-	`, whereClause)
-
-	var msg MessageDetail
-	var sentAt, receivedAt sql.NullTime
-	err := e.db.QueryRowContext(ctx, query, args...).Scan(
-		&msg.ID,
-		&msg.SourceMessageID,
-		&msg.ConversationID,
-		&msg.SourceConversationID,
-		&msg.Subject,
-		&msg.Snippet,
-		&sentAt,
-		&receivedAt,
-		&msg.SizeEstimate,
-		&msg.HasAttachments,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get message: %w", err)
-	}
-
-	if sentAt.Valid {
-		msg.SentAt = sentAt.Time
-	}
-	if receivedAt.Valid {
-		t := receivedAt.Time
-		msg.ReceivedAt = &t
-	}
-
-	// Fetch body from separate table (PK lookup, avoids scanning large body B-tree)
-	var bodyText, bodyHTML sql.NullString
-	err = e.db.QueryRowContext(ctx, `
-		SELECT body_text, body_html FROM message_bodies WHERE message_id = ?
-	`, msg.ID).Scan(&bodyText, &bodyHTML)
-	if err == nil {
-		if bodyText.Valid {
-			msg.BodyText = bodyText.String
-		}
-		if bodyHTML.Valid {
-			msg.BodyHTML = bodyHTML.String
-		}
-	} else if err != sql.ErrNoRows {
-		return nil, fmt.Errorf("get message body: %w", err)
-	}
-
-	// If body is empty, try to extract from raw MIME
-	if msg.BodyText == "" && msg.BodyHTML == "" {
-		if body, err := e.extractBodyFromRaw(ctx, msg.ID); err == nil && body != "" {
-			msg.BodyText = body
-		}
-	}
-
-	// Fetch participants
-	if err := e.fetchParticipants(ctx, &msg); err != nil {
-		return nil, fmt.Errorf("fetch participants: %w", err)
-	}
-
-	// Fetch labels
-	if err := e.fetchLabels(ctx, &msg); err != nil {
-		return nil, fmt.Errorf("fetch labels: %w", err)
-	}
-
-	// Fetch attachments
-	if err := e.fetchAttachments(ctx, &msg); err != nil {
-		return nil, fmt.Errorf("fetch attachments: %w", err)
-	}
-
-	return &msg, nil
+	return getMessageByQueryShared(ctx, e.db, "", whereClause, args...)
 }
 
 // extractBodyFromRaw extracts text body from compressed MIME data.
 func (e *SQLiteEngine) extractBodyFromRaw(ctx context.Context, messageID int64) (string, error) {
-	var compressed []byte
-	var compression sql.NullString
-
-	err := e.db.QueryRowContext(ctx, `
-		SELECT raw_data, compression FROM message_raw WHERE message_id = ?
-	`, messageID).Scan(&compressed, &compression)
-	if err != nil {
-		return "", err
-	}
-
-	var rawData []byte
-	if compression.Valid && compression.String == "zlib" {
-		r, err := zlib.NewReader(bytes.NewReader(compressed))
-		if err != nil {
-			return "", err
-		}
-		defer r.Close()
-		rawData, err = io.ReadAll(r)
-		if err != nil {
-			return "", err
-		}
-	} else {
-		rawData = compressed
-	}
-
-	// Parse MIME and extract text
-	parsed, err := mime.Parse(rawData)
-	if err != nil {
-		return "", err
-	}
-
-	return parsed.GetBodyText(), nil
+	return extractBodyFromRawShared(ctx, e.db, "", messageID)
 }
 
 func (e *SQLiteEngine) fetchParticipants(ctx context.Context, msg *MessageDetail) error {
-	rows, err := e.db.QueryContext(ctx, `
-		SELECT mr.recipient_type, p.email_address, COALESCE(mr.display_name, p.display_name, '')
-		FROM message_recipients mr
-		JOIN participants p ON p.id = mr.participant_id
-		WHERE mr.message_id = ?
-	`, msg.ID)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var recipType, email, name string
-		if err := rows.Scan(&recipType, &email, &name); err != nil {
-			return err
-		}
-		addr := Address{Email: email, Name: name}
-		switch recipType {
-		case "from":
-			msg.From = append(msg.From, addr)
-		case "to":
-			msg.To = append(msg.To, addr)
-		case "cc":
-			msg.Cc = append(msg.Cc, addr)
-		case "bcc":
-			msg.Bcc = append(msg.Bcc, addr)
-		}
-	}
-
-	return rows.Err()
+	return fetchParticipantsShared(ctx, e.db, "", msg)
 }
 
 func (e *SQLiteEngine) fetchLabels(ctx context.Context, msg *MessageDetail) error {
-	rows, err := e.db.QueryContext(ctx, `
-		SELECT l.name
-		FROM message_labels ml
-		JOIN labels l ON l.id = ml.label_id
-		WHERE ml.message_id = ?
-	`, msg.ID)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return err
-		}
-		msg.Labels = append(msg.Labels, name)
-	}
-
-	return rows.Err()
+	return fetchMessageLabelsDetail(ctx, e.db, "", msg)
 }
 
 func (e *SQLiteEngine) fetchAttachments(ctx context.Context, msg *MessageDetail) error {
-	rows, err := e.db.QueryContext(ctx, `
-		SELECT id, COALESCE(filename, ''), COALESCE(mime_type, ''), COALESCE(size, 0), COALESCE(content_hash, '')
-		FROM attachments
-		WHERE message_id = ?
-	`, msg.ID)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var att AttachmentInfo
-		if err := rows.Scan(&att.ID, &att.Filename, &att.MimeType, &att.Size, &att.ContentHash); err != nil {
-			return err
-		}
-		msg.Attachments = append(msg.Attachments, att)
-	}
-
-	return rows.Err()
+	return fetchAttachmentsShared(ctx, e.db, "", msg)
 }
 
 // GetAttachment retrieves attachment metadata by ID.
@@ -1230,20 +1006,7 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	}
 	defer rows.Close()
 
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan gmail id: %w", err)
-		}
-		ids = append(ids, id)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate gmail ids: %w", err)
-	}
-
-	return ids, nil
+	return collectGmailIDs(rows)
 }
 
 // Search performs a Gmail-style search query.
