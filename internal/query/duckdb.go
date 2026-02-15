@@ -1205,23 +1205,6 @@ func (e *DuckDBEngine) getMessageByQuery(ctx context.Context, whereClause string
 	return getMessageByQueryShared(ctx, e.db, "sqlite_db.", whereClause, args...)
 }
 
-// extractBodyFromRaw extracts text body from compressed MIME data.
-func (e *DuckDBEngine) extractBodyFromRaw(ctx context.Context, messageID int64) (string, error) {
-	return extractBodyFromRawShared(ctx, e.db, "sqlite_db.", messageID)
-}
-
-func (e *DuckDBEngine) fetchParticipants(ctx context.Context, msg *MessageDetail) error {
-	return fetchParticipantsShared(ctx, e.db, "sqlite_db.", msg)
-}
-
-func (e *DuckDBEngine) fetchMessageLabels(ctx context.Context, msg *MessageDetail) error {
-	return fetchMessageLabelsDetail(ctx, e.db, "sqlite_db.", msg)
-}
-
-func (e *DuckDBEngine) fetchAttachments(ctx context.Context, msg *MessageDetail) error {
-	return fetchAttachmentsShared(ctx, e.db, "sqlite_db.", msg)
-}
-
 // Search performs a Gmail-style search query.
 // Uses direct SQLite connection for FTS5 support when available,
 // falls back to LIKE queries via sqlite_scan otherwise.

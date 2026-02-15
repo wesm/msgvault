@@ -267,6 +267,7 @@ func getMessageByQueryShared(ctx context.Context, db *sql.DB, tablePrefix string
 
 // collectGmailIDs scans rows for source_message_id strings.
 func collectGmailIDs(rows *sql.Rows) ([]string, error) {
+	defer rows.Close()
 	var ids []string
 	for rows.Next() {
 		var id string

@@ -690,23 +690,6 @@ func (e *SQLiteEngine) getMessageByQuery(ctx context.Context, whereClause string
 	return getMessageByQueryShared(ctx, e.db, "", whereClause, args...)
 }
 
-// extractBodyFromRaw extracts text body from compressed MIME data.
-func (e *SQLiteEngine) extractBodyFromRaw(ctx context.Context, messageID int64) (string, error) {
-	return extractBodyFromRawShared(ctx, e.db, "", messageID)
-}
-
-func (e *SQLiteEngine) fetchParticipants(ctx context.Context, msg *MessageDetail) error {
-	return fetchParticipantsShared(ctx, e.db, "", msg)
-}
-
-func (e *SQLiteEngine) fetchLabels(ctx context.Context, msg *MessageDetail) error {
-	return fetchMessageLabelsDetail(ctx, e.db, "", msg)
-}
-
-func (e *SQLiteEngine) fetchAttachments(ctx context.Context, msg *MessageDetail) error {
-	return fetchAttachmentsShared(ctx, e.db, "", msg)
-}
-
 // GetAttachment retrieves attachment metadata by ID.
 func (e *SQLiteEngine) GetAttachment(ctx context.Context, id int64) (*AttachmentInfo, error) {
 	var att AttachmentInfo
