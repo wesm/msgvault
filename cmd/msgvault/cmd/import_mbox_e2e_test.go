@@ -258,10 +258,6 @@ func TestImportMboxCmd_ReturnsCanceledWhenContextCanceled(t *testing.T) {
 		rootCmd.SetArgs(nil)
 	})
 
-	// The global importMboxCmd is executed multiple times across tests; ensure it
-	// picks up the ExecuteContext context for this run.
-	importMboxCmd.SetContext(context.TODO())
-
 	raw := email.NewMessage().
 		From("Alice <alice@example.com>").
 		To("Bob <bob@example.com>").
@@ -296,6 +292,11 @@ func TestImportMboxCmd_ReturnsCanceledWhenContextCanceled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+
+	// Set the import command's context to the canceled context directly,
+	// since Cobra child commands with their own context don't inherit
+	// from the root's ExecuteContext.
+	importMboxCmd.SetContext(ctx)
 
 	err := rootCmd.ExecuteContext(ctx)
 	if err == nil {
