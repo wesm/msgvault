@@ -148,6 +148,8 @@ func wrapOAuthError(err error) error {
 // getTokenSourceWithReauth tries to get a token source for the given email.
 // If the token exists but is expired/revoked, it automatically deletes the old
 // token and re-initiates the OAuth browser flow.
+// NOTE: This function requires a browser for re-authorization. Only use from
+// interactive CLI commands (sync, sync-full, verify), not from daemon mode (serve).
 func getTokenSourceWithReauth(ctx context.Context, oauthMgr *oauth.Manager, email string) (oauth2.TokenSource, error) {
 	tokenSource, err := oauthMgr.TokenSource(ctx, email)
 	if err == nil {

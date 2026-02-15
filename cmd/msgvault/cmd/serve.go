@@ -239,7 +239,8 @@ func runScheduledSync(ctx context.Context, email string, s *store.Store, oauthMg
 	logger.Info("starting scheduled sync", "email", email)
 	startTime := time.Now()
 
-	// Get token source
+	// Get token source — intentionally not using getTokenSourceWithReauth here
+	// because serve runs as a daemon and cannot open a browser for OAuth.
 	tokenSource, err := oauthMgr.TokenSource(ctx, email)
 	if err != nil {
 		if oauthMgr.HasToken(email) {
