@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/config"
 	"github.com/wesm/msgvault/internal/oauth"
@@ -145,11 +146,26 @@ func wrapOAuthError(err error) error {
 	return err
 }
 
+// isAuthInvalidError returns true if the error indicates the OAuth token is
+// permanently invalid (expired or revoked), as opposed to a transient failure
+// like a network error or context cancellation.
+func isAuthInvalidError(err error) bool {
+	var retrieveErr *oauth2.RetrieveError
+	if errors.As(err, &retrieveErr) {
+		// Google returns "invalid_grant" when refresh tokens are expired or revoked
+		return retrieveErr.ErrorCode == "invalid_grant"
+	}
+	return false
+}
+
 // getTokenSourceWithReauth tries to get a token source for the given email.
-// If the token exists but is expired/revoked, it automatically deletes the old
-// token and re-initiates the OAuth browser flow.
-// NOTE: This function requires a browser for re-authorization. Only use from
-// interactive CLI commands (sync, sync-full, verify), not from daemon mode (serve).
+// If the token exists but is expired/revoked (invalid_grant), it automatically
+// deletes the old token and re-initiates the OAuth browser flow.
+// Transient errors (network, context cancellation) are returned as-is without
+// deleting the token.
+// NOTE: This function requires a browser and an interactive terminal for
+// re-authorization. Only use from interactive CLI commands (sync, sync-full,
+// verify), not from daemon mode (serve).
 func getTokenSourceWithReauth(ctx context.Context, oauthMgr *oauth.Manager, email string) (oauth2.TokenSource, error) {
 	tokenSource, err := oauthMgr.TokenSource(ctx, email)
 	if err == nil {
@@ -161,7 +177,16 @@ func getTokenSourceWithReauth(ctx context.Context, oauthMgr *oauth.Manager, emai
 		return nil, fmt.Errorf("get token source: %w (run 'add-account %s' first)", err, email)
 	}
 
-	// Token exists but failed (expired/revoked) — auto re-authorize
+	// Token exists but failed — only auto-reauth for auth-invalid errors
+	if !isAuthInvalidError(err) {
+		return nil, fmt.Errorf("get token source for %s: %w", email, err)
+	}
+
+	// Non-interactive session cannot open a browser for reauth
+	if !isatty.IsTerminal(os.Stdin.Fd()) && !isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+		return nil, fmt.Errorf("token for %s is expired or revoked, but cannot re-authorize in a non-interactive session (run 'add-account --force %s' from a terminal)", email, email)
+	}
+
 	fmt.Printf("Token for %s is expired or revoked. Re-authorizing...\n", email)
 
 	if delErr := oauthMgr.DeleteToken(email); delErr != nil {
