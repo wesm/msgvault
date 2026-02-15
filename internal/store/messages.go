@@ -59,6 +59,35 @@ func (s *Store) MessageExistsBatch(sourceID int64, sourceMessageIDs []string) (m
 	return result, nil
 }
 
+// MessageExistsWithRawBatch checks which message IDs already exist in the database
+// and have raw MIME data stored.
+// Returns a map of source_message_id -> internal message_id.
+func (s *Store) MessageExistsWithRawBatch(sourceID int64, sourceMessageIDs []string) (map[string]int64, error) {
+	if len(sourceMessageIDs) == 0 {
+		return make(map[string]int64), nil
+	}
+
+	result := make(map[string]int64)
+	err := queryInChunks(s.db, sourceMessageIDs, []interface{}{sourceID},
+		`SELECT m.source_message_id, m.id
+		 FROM messages m
+		 JOIN message_raw mr ON mr.message_id = m.id
+		 WHERE m.source_id = ? AND m.source_message_id IN (%s)`,
+		func(rows *sql.Rows) error {
+			var srcID string
+			var id int64
+			if err := rows.Scan(&srcID, &id); err != nil {
+				return err
+			}
+			result[srcID] = id
+			return nil
+		})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // EnsureConversation gets or creates a conversation (thread) for a message.
 func (s *Store) EnsureConversation(sourceID int64, sourceConversationID, title string) (int64, error) {
 	// Try to get existing
@@ -89,7 +118,16 @@ func (s *Store) EnsureConversation(sourceID int64, sourceConversationID, title s
 
 // UpsertMessage inserts or updates a message.
 func (s *Store) UpsertMessage(msg *Message) (int64, error) {
-	result, err := s.db.Exec(`
+	args := []any{
+		msg.ConversationID, msg.SourceID, msg.SourceMessageID, msg.MessageType,
+		msg.SentAt, msg.ReceivedAt, msg.InternalDate, msg.SenderID, msg.IsFromMe,
+		msg.Subject, msg.Snippet, msg.SizeEstimate,
+		msg.HasAttachments, msg.AttachmentCount,
+	}
+
+	// Use RETURNING to avoid an extra SELECT per message when supported.
+	var id int64
+	err := s.db.QueryRow(`
 		INSERT INTO messages (
 			conversation_id, source_id, source_message_id, message_type,
 			sent_at, received_at, internal_date, sender_id, is_from_me,
@@ -108,27 +146,42 @@ func (s *Store) UpsertMessage(msg *Message) (int64, error) {
 			size_estimate = excluded.size_estimate,
 			has_attachments = excluded.has_attachments,
 			attachment_count = excluded.attachment_count
-	`, msg.ConversationID, msg.SourceID, msg.SourceMessageID, msg.MessageType,
-		msg.SentAt, msg.ReceivedAt, msg.InternalDate, msg.SenderID, msg.IsFromMe,
-		msg.Subject, msg.Snippet, msg.SizeEstimate,
-		msg.HasAttachments, msg.AttachmentCount)
+		RETURNING id
+	`, args...).Scan(&id)
 
 	if err != nil {
-		return 0, err
-	}
+		// SQLite < 3.35 does not support RETURNING. Fall back to an Exec + SELECT.
+		if !isSQLiteError(err, "RETURNING") {
+			return 0, err
+		}
 
-	// Get the ID (either from insert or existing row)
-	id, err := result.LastInsertId()
-	if err != nil || id == 0 {
-		// Row was updated, need to fetch ID
-		err = s.db.QueryRow(`
-			SELECT id FROM messages WHERE source_id = ? AND source_message_id = ?
-		`, msg.SourceID, msg.SourceMessageID).Scan(&id)
-		if err != nil {
+		if _, execErr := s.db.Exec(`
+			INSERT INTO messages (
+				conversation_id, source_id, source_message_id, message_type,
+				sent_at, received_at, internal_date, sender_id, is_from_me,
+				subject, snippet, size_estimate,
+				has_attachments, attachment_count, archived_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+			ON CONFLICT(source_id, source_message_id) DO UPDATE SET
+				conversation_id = excluded.conversation_id,
+				sent_at = excluded.sent_at,
+				received_at = excluded.received_at,
+				internal_date = excluded.internal_date,
+				sender_id = excluded.sender_id,
+				is_from_me = excluded.is_from_me,
+				subject = excluded.subject,
+				snippet = excluded.snippet,
+				size_estimate = excluded.size_estimate,
+				has_attachments = excluded.has_attachments,
+				attachment_count = excluded.attachment_count
+		`, args...); execErr != nil {
+			return 0, execErr
+		}
+
+		if err := s.db.QueryRow(`SELECT id FROM messages WHERE source_id = ? AND source_message_id = ?`, msg.SourceID, msg.SourceMessageID).Scan(&id); err != nil {
 			return 0, err
 		}
 	}
-
 	return id, nil
 }
 
