@@ -410,6 +410,77 @@ func TestImportEmlxDir_NoMailboxes(t *testing.T) {
 	}
 }
 
+func TestImportEmlxDir_OversizedFileRejected(t *testing.T) {
+	st, tmp := openTestStore(t)
+
+	root := filepath.Join(tmp, "Mail")
+	mboxDir := filepath.Join(root, "Mailboxes", "Test.mbox")
+
+	raw := email.NewMessage().
+		From("Alice <alice@example.com>").
+		Subject("Hello").
+		Body("hi\n").
+		Bytes()
+	mkMailboxDir(t, mboxDir, map[string][]byte{"1.emlx": raw})
+
+	summary, err := ImportEmlxDir(
+		context.Background(), st, root, EmlxImportOptions{
+			Identifier:         "alice@example.com",
+			NoResume:           true,
+			CheckpointInterval: 1,
+			MaxMessageBytes:    10, // Tiny limit to trigger rejection.
+		},
+	)
+	if err != nil {
+		t.Fatalf("ImportEmlxDir: %v", err)
+	}
+	if summary.MessagesAdded != 0 {
+		t.Fatalf("MessagesAdded = %d, want 0", summary.MessagesAdded)
+	}
+	if summary.Errors == 0 {
+		t.Fatalf("expected errors > 0 for oversized file")
+	}
+}
+
+func TestImportEmlxDir_CancelledLeavesRunning(t *testing.T) {
+	st, tmp := openTestStore(t)
+
+	root := filepath.Join(tmp, "Mail")
+	mboxDir := filepath.Join(root, "Mailboxes", "Test.mbox")
+
+	raw := email.NewMessage().
+		From("Alice <alice@example.com>").
+		Subject("Hello").
+		Body("hi\n").
+		Bytes()
+	mkMailboxDir(t, mboxDir, map[string][]byte{"1.emlx": raw})
+
+	// Cancel context before starting.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := ImportEmlxDir(ctx, st, root, EmlxImportOptions{
+		Identifier:         "alice@example.com",
+		NoResume:           true,
+		CheckpointInterval: 1,
+	})
+	if err != nil {
+		t.Fatalf("ImportEmlxDir: %v", err)
+	}
+
+	// Sync run should still be in "running" state (not completed),
+	// so resume can pick it up.
+	var status string
+	if err := st.DB().QueryRow(
+		`SELECT status FROM sync_runs ORDER BY started_at DESC LIMIT 1`,
+	).Scan(&status); err != nil {
+		t.Fatalf("select sync: %v", err)
+	}
+	if status != store.SyncStatusRunning {
+		t.Fatalf("status = %q, want %q", status, store.SyncStatusRunning)
+	}
+}
+
 func TestImportEmlxDir_Idempotent(t *testing.T) {
 	st, tmp := openTestStore(t)
 

@@ -142,6 +142,35 @@ func TestDiscoverMailboxes_NotADirectory(t *testing.T) {
 	}
 }
 
+func TestDiscoverMailboxes_NestedMbox(t *testing.T) {
+	root := t.TempDir()
+	mail := filepath.Join(root, "Mail")
+
+	// Parent .mbox contains a child .mbox inside it.
+	// Apple Mail sometimes nests mailboxes this way.
+	mkMailbox(t, filepath.Join(mail, "Parent.mbox"), "1.emlx")
+	mkMailbox(t, filepath.Join(mail, "Parent.mbox", "Child.mbox"), "1.emlx")
+
+	mailboxes, err := DiscoverMailboxes(mail)
+	if err != nil {
+		t.Fatalf("DiscoverMailboxes: %v", err)
+	}
+	if len(mailboxes) != 2 {
+		t.Fatalf("got %d mailboxes, want 2", len(mailboxes))
+	}
+
+	labels := make(map[string]bool)
+	for _, mb := range mailboxes {
+		labels[mb.Label] = true
+	}
+	if !labels["Parent"] {
+		t.Errorf("missing Parent label, have: %v", labels)
+	}
+	if !labels["Parent/Child"] {
+		t.Errorf("missing Parent/Child label, have: %v", labels)
+	}
+}
+
 func TestLabelFromPath(t *testing.T) {
 	tests := []struct {
 		root string

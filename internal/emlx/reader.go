@@ -53,20 +53,21 @@ func Parse(data []byte) (*Message, error) {
 	}
 
 	mimeStart := newline + 1
-	mimeEnd := int64(mimeStart) + byteCount
-	if mimeEnd > int64(len(data)) {
+	available := int64(len(data) - mimeStart)
+	if byteCount > available {
 		return nil, fmt.Errorf(
 			"emlx: byte count %d exceeds file size (available: %d)",
-			byteCount, len(data)-mimeStart,
+			byteCount, available,
 		)
 	}
+	mimeEnd := mimeStart + int(byteCount)
 
 	msg := &Message{
 		Raw: data[mimeStart:mimeEnd],
 	}
 
 	// Parse optional plist metadata (best-effort).
-	if int(mimeEnd) < len(data) {
+	if mimeEnd < len(data) {
 		plistData := data[mimeEnd:]
 		parsePlist(plistData, msg)
 	}

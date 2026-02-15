@@ -80,8 +80,7 @@ func DiscoverMailboxes(rootDir string) ([]Mailbox, error) {
 			Path: path, Label: label, Files: files,
 		})
 
-		// Don't descend into the Messages/ subdirectory.
-		return filepath.SkipDir
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("emlx discover: walk: %w", err)
@@ -99,7 +98,7 @@ func DiscoverMailboxes(rootDir string) ([]Mailbox, error) {
 // Rules:
 //   - Strip root prefix
 //   - Strip known containers: Mailboxes/, IMAP-*/, POP-*/
-//   - Strip .mbox/.imapmbox suffix from final component
+//   - Strip .mbox/.imapmbox suffix from all components
 //   - Use the remaining path as the label
 func LabelFromPath(rootDir, mailboxPath string) string {
 	rel, err := filepath.Rel(rootDir, mailboxPath)
@@ -127,9 +126,10 @@ func LabelFromPath(rootDir, mailboxPath string) string {
 		return stripMailboxSuffix(filepath.Base(mailboxPath))
 	}
 
-	// Strip .mbox/.imapmbox from the last component.
-	last := len(filtered) - 1
-	filtered[last] = stripMailboxSuffix(filtered[last])
+	// Strip .mbox/.imapmbox suffix from all components.
+	for i := range filtered {
+		filtered[i] = stripMailboxSuffix(filtered[i])
+	}
 
 	return strings.Join(filtered, "/")
 }

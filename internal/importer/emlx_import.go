@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -362,24 +363,33 @@ func ImportEmlxDir(
 
 			filePath := filepath.Join(mb.Path, "Messages", fileName)
 
-			// Check file size before reading.
+			// Check file size before reading to avoid OOM on oversized files.
+			fi, statErr := os.Stat(filePath)
+			if statErr != nil {
+				cp.ErrorsCount++
+				summary.Errors++
+				log.Warn("failed to stat .emlx",
+					"file", filePath, "error", statErr,
+				)
+				continue
+			}
+			if fi.Size() > opts.MaxMessageBytes {
+				cp.ErrorsCount++
+				summary.Errors++
+				log.Warn("file exceeds size limit",
+					"file", filePath,
+					"size", fi.Size(),
+					"limit", opts.MaxMessageBytes,
+				)
+				continue
+			}
+
 			msg, err := emlx.ParseFile(filePath)
 			if err != nil {
 				cp.ErrorsCount++
 				summary.Errors++
 				log.Warn("failed to parse .emlx",
 					"file", filePath, "error", err,
-				)
-				continue
-			}
-
-			if int64(len(msg.Raw)) > opts.MaxMessageBytes {
-				cp.ErrorsCount++
-				summary.Errors++
-				log.Warn("message exceeds size limit",
-					"file", filePath,
-					"size", len(msg.Raw),
-					"limit", opts.MaxMessageBytes,
 				)
 				continue
 			}
@@ -439,6 +449,11 @@ func ImportEmlxDir(
 		cp.ErrorsCount++
 		summary.Errors++
 		log.Warn("failed to save final checkpoint", "error", err)
+	}
+
+	// If cancelled, leave the sync run as "running" so resume works.
+	if ctx.Err() != nil {
+		return summary, nil
 	}
 
 	if hardErrors {
