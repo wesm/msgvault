@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/wesm/msgvault/internal/config"
+	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/scheduler"
 	"github.com/wesm/msgvault/internal/store"
 )
@@ -45,6 +46,7 @@ type AccountStatus = scheduler.AccountStatus
 type Server struct {
 	cfg         *config.Config
 	store       MessageStore
+	engine      query.Engine // Query engine for aggregates and TUI support
 	scheduler   SyncScheduler
 	logger      *slog.Logger
 	router      chi.Router
@@ -53,13 +55,33 @@ type Server struct {
 	cfgMu       sync.RWMutex // protects cfg.Accounts
 }
 
+// ServerOptions configures the API server.
+type ServerOptions struct {
+	Config    *config.Config
+	Store     MessageStore
+	Engine    query.Engine // Optional: query engine for aggregates and TUI support
+	Scheduler SyncScheduler
+	Logger    *slog.Logger
+}
+
 // NewServer creates a new API server.
 func NewServer(cfg *config.Config, store MessageStore, sched SyncScheduler, logger *slog.Logger) *Server {
+	return NewServerWithOptions(ServerOptions{
+		Config:    cfg,
+		Store:     store,
+		Scheduler: sched,
+		Logger:    logger,
+	})
+}
+
+// NewServerWithOptions creates a new API server with full options including query engine.
+func NewServerWithOptions(opts ServerOptions) *Server {
 	s := &Server{
-		cfg:       cfg,
-		store:     store,
-		scheduler: sched,
-		logger:    logger,
+		cfg:       opts.Config,
+		store:     opts.Store,
+		engine:    opts.Engine,
+		scheduler: opts.Scheduler,
+		logger:    opts.Logger,
 	}
 	s.router = s.setupRouter()
 	return s
@@ -109,6 +131,14 @@ func (s *Server) setupRouter() chi.Router {
 
 		// Search
 		r.Get("/search", s.handleSearch)
+
+		// TUI aggregate endpoints (require query engine)
+		r.Get("/aggregates", s.handleAggregates)
+		r.Get("/aggregates/sub", s.handleSubAggregates)
+		r.Get("/messages/filter", s.handleFilteredMessages)
+		r.Get("/stats/total", s.handleTotalStats)
+		r.Get("/search/fast", s.handleFastSearch)
+		r.Get("/search/deep", s.handleDeepSearch)
 
 		// Accounts and sync
 		r.Get("/accounts", s.handleListAccounts)
