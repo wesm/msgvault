@@ -1012,6 +1012,29 @@ func TestHandleFastSearchMissingQuery(t *testing.T) {
 	}
 }
 
+func TestHandleFastSearchInvalidViewType(t *testing.T) {
+	engine := &querytest.MockEngine{}
+	srv := newTestServerWithEngine(t, engine)
+
+	req := httptest.NewRequest("GET", "/api/v1/search/fast?q=test&view_type=invalid", nil)
+	w := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	var errResp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	if errResp["error"] != "invalid_view_type" {
+		t.Errorf("error = %q, want 'invalid_view_type'", errResp["error"])
+	}
+}
+
 func TestHandleDeepSearch(t *testing.T) {
 	engine := &querytest.MockEngine{
 		SearchResults: []query.MessageSummary{
