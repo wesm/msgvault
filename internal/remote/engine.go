@@ -647,9 +647,7 @@ func buildSearchQueryString(q *search.Query) string {
 
 	var parts []string
 
-	for _, term := range q.TextTerms {
-		parts = append(parts, term)
-	}
+	parts = append(parts, q.TextTerms...)
 	for _, addr := range q.FromAddrs {
 		parts = append(parts, "from:"+addr)
 	}
