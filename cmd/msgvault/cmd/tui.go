@@ -50,8 +50,12 @@ Selection & Deletion:
 
 Performance:
   For large archives (100k+ messages), the TUI uses Parquet files for fast
-  aggregation queries. Run 'msgvault-sync build-parquet' to generate them.
-  Use --force-sql to bypass Parquet and query SQLite directly (slow).`,
+  aggregation queries. Run 'msgvault build-cache' to generate them.
+  Use --force-sql to bypass Parquet and query SQLite directly (slow).
+
+Remote Mode:
+  When [remote].url is configured, the TUI connects to a remote msgvault server.
+  Use --local to force local database. Deletion and export are disabled in remote mode.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var engine query.Engine
 		var isRemote bool
