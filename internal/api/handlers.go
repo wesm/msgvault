@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -875,8 +874,7 @@ func (s *Server) handleAggregates(w http.ResponseWriter, r *http.Request) {
 
 	opts := parseAggregateOptions(r)
 
-	ctx := context.Background()
-	rows, err := s.engine.Aggregate(ctx, viewType, opts)
+	rows, err := s.engine.Aggregate(r.Context(), viewType, opts)
 	if err != nil {
 		s.logger.Error("aggregate query failed", "view_type", viewTypeStr, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Aggregate query failed")
@@ -917,8 +915,7 @@ func (s *Server) handleSubAggregates(w http.ResponseWriter, r *http.Request) {
 	filter := parseMessageFilter(r)
 	opts := parseAggregateOptions(r)
 
-	ctx := context.Background()
-	rows, err := s.engine.SubAggregate(ctx, filter, viewType, opts)
+	rows, err := s.engine.SubAggregate(r.Context(), filter, viewType, opts)
 	if err != nil {
 		s.logger.Error("sub-aggregate query failed", "view_type", viewTypeStr, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Sub-aggregate query failed")
@@ -946,8 +943,7 @@ func (s *Server) handleFilteredMessages(w http.ResponseWriter, r *http.Request) 
 
 	filter := parseMessageFilter(r)
 
-	ctx := context.Background()
-	messages, err := s.engine.ListMessages(ctx, filter)
+	messages, err := s.engine.ListMessages(r.Context(), filter)
 	if err != nil {
 		s.logger.Error("filtered messages query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Message query failed")
@@ -997,8 +993,7 @@ func (s *Server) handleTotalStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ctx := context.Background()
-	stats, err := s.engine.GetTotalStats(ctx, opts)
+	stats, err := s.engine.GetTotalStats(r.Context(), opts)
 	if err != nil {
 		s.logger.Error("total stats query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Stats query failed")
@@ -1024,10 +1019,16 @@ func (s *Server) handleFastSearch(w http.ResponseWriter, r *http.Request) {
 
 	filter := parseMessageFilter(r)
 
-	// Get view type for stats grouping
+	// Get view type for stats grouping (optional, defaults to senders)
 	var statsGroupBy query.ViewType
 	if v := r.URL.Query().Get("view_type"); v != "" {
-		statsGroupBy, _ = parseViewType(v)
+		var ok bool
+		statsGroupBy, ok = parseViewType(v)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid_view_type",
+				"Invalid view_type. Must be one of: senders, sender_names, recipients, recipient_names, domains, labels, time")
+			return
+		}
 	}
 
 	offset := filter.Pagination.Offset
@@ -1036,10 +1037,9 @@ func (s *Server) handleFastSearch(w http.ResponseWriter, r *http.Request) {
 		limit = 100
 	}
 
-	ctx := context.Background()
 	q := search.Parse(queryStr)
 
-	result, err := s.engine.SearchFastWithStats(ctx, q, queryStr, filter, statsGroupBy, limit, offset)
+	result, err := s.engine.SearchFastWithStats(r.Context(), q, queryStr, filter, statsGroupBy, limit, offset)
 	if err != nil {
 		s.logger.Error("fast search failed", "query", queryStr, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Search failed")
@@ -1082,10 +1082,9 @@ func (s *Server) handleDeepSearch(w http.ResponseWriter, r *http.Request) {
 		limit = 100
 	}
 
-	ctx := context.Background()
 	q := search.Parse(queryStr)
 
-	messages, err := s.engine.Search(ctx, q, limit, offset)
+	messages, err := s.engine.Search(r.Context(), q, limit, offset)
 	if err != nil {
 		s.logger.Error("deep search failed", "query", queryStr, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Search failed")

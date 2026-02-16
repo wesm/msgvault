@@ -351,7 +351,7 @@ func (e *Engine) Aggregate(ctx context.Context, groupBy query.ViewType, opts que
 	params := buildAggregateQuery(groupBy, opts)
 	path := "/api/v1/aggregates?" + params.Encode()
 
-	resp, err := e.store.doRequest("GET", path, nil)
+	resp, err := e.store.doRequestWithContext(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -380,13 +380,15 @@ func (e *Engine) SubAggregate(ctx context.Context, filter query.MessageFilter, g
 	if opts.Limit > 0 {
 		params.Set("limit", strconv.Itoa(opts.Limit))
 	}
+	// Use TimeGranularity from opts, not from filter (fixes roborev finding)
+	params.Set("time_granularity", timeGranularityToString(opts.TimeGranularity))
 	if opts.SearchQuery != "" {
 		params.Set("search_query", opts.SearchQuery)
 	}
 
 	path := "/api/v1/aggregates/sub?" + params.Encode()
 
-	resp, err := e.store.doRequest("GET", path, nil)
+	resp, err := e.store.doRequestWithContext(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -409,7 +411,7 @@ func (e *Engine) ListMessages(ctx context.Context, filter query.MessageFilter) (
 	params := buildFilterQuery(filter)
 	path := "/api/v1/messages/filter?" + params.Encode()
 
-	resp, err := e.store.doRequest("GET", path, nil)
+	resp, err := e.store.doRequestWithContext(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -499,7 +501,7 @@ func (e *Engine) Search(ctx context.Context, q *search.Query, limit, offset int)
 
 	path := "/api/v1/search/deep?" + params.Encode()
 
-	resp, err := e.store.doRequest("GET", path, nil)
+	resp, err := e.store.doRequestWithContext(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -549,7 +551,7 @@ func (e *Engine) SearchFastWithStats(ctx context.Context, q *search.Query, query
 
 	path := "/api/v1/search/fast?" + params.Encode()
 
-	resp, err := e.store.doRequest("GET", path, nil)
+	resp, err := e.store.doRequestWithContext(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -611,7 +613,7 @@ func (e *Engine) GetTotalStats(ctx context.Context, opts query.StatsOptions) (*q
 	params := buildStatsQuery(opts)
 	path := "/api/v1/stats/total?" + params.Encode()
 
-	resp, err := e.store.doRequest("GET", path, nil)
+	resp, err := e.store.doRequestWithContext(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
