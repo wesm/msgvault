@@ -149,6 +149,11 @@ func TestListMessages_Filters(t *testing.T) {
 			wantCount: 2,
 		},
 		{
+			name:      "Filter by label case-insensitive",
+			filter:    MessageFilter{Label: "work"},
+			wantCount: 2,
+		},
+		{
 			name:      "Filter by sender name",
 			filter:    MessageFilter{SenderName: "Alice Smith"},
 			wantCount: 3,
@@ -621,6 +626,34 @@ func TestMatchEmptySenderName_CombinedWithDomain(t *testing.T) {
 
 	if len(messages) != 0 {
 		t.Errorf("expected 0 messages for MatchEmptySenderName+Domain, got %d", len(messages))
+	}
+}
+
+func TestGetGmailIDsByFilter_Label(t *testing.T) {
+	env := newTestEnv(t)
+
+	tests := []struct {
+		name    string
+		label   string
+		wantLen int
+	}{
+		{"exact_case", "Work", 2},
+		{"case_insensitive", "work", 2},
+		{"no_match", "Nonexistent", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ids, err := env.Engine.GetGmailIDsByFilter(
+				env.Ctx, MessageFilter{Label: tt.label},
+			)
+			if err != nil {
+				t.Fatalf("GetGmailIDsByFilter: %v", err)
+			}
+			if len(ids) != tt.wantLen {
+				t.Errorf("got %d IDs, want %d", len(ids), tt.wantLen)
+			}
+		})
 	}
 }
 

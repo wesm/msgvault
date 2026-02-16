@@ -66,6 +66,12 @@ func (e *SQLiteEngine) Close() error {
 	return nil
 }
 
+// escapeSQLiteLike escapes LIKE wildcard characters (%, _, \) with \.
+func escapeSQLiteLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
+
 // aggDimension describes the variable parts of an aggregate query for a given ViewType.
 type aggDimension struct {
 	keyExpr   string // SQL expression for the grouping key
@@ -377,13 +383,13 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		conditions = append(conditions, "(p_filter_from.domain IS NULL OR p_filter_from.domain = '')")
 	}
 
-	// Label filter
+	// Label filter - case-insensitive exact match
 	if filter.Label != "" {
 		joins = append(joins, `
 			JOIN message_labels ml_filter ON ml_filter.message_id = m.id
 			JOIN labels l_filter ON l_filter.id = ml_filter.label_id
 		`)
-		conditions = append(conditions, "l_filter.name = ?")
+		conditions = append(conditions, "LOWER(l_filter.name) = LOWER(?)")
 		args = append(args, filter.Label)
 	} else if filter.MatchesEmpty(ViewLabels) {
 		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM message_labels ml WHERE ml.message_id = m.id)")
@@ -429,13 +435,78 @@ func (e *SQLiteEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 	filterConditions = append(filterConditions, optsConds...)
 	args = append(args, optsArgs...)
 
+	searchJoins, searchConds, searchArgs :=
+		e.buildAggregateSearchParts(ctx, opts.SearchQuery, groupBy)
+	filterConditions = append(filterConditions, searchConds...)
+	args = append(args, searchArgs...)
+	if searchJoins != "" {
+		filterJoins += "\n" + searchJoins
+	}
+
 	return e.executeAggregate(ctx, groupBy, opts, filterJoins, filterConditions, args)
 }
 
 // Aggregate performs grouping based on the provided ViewType.
 func (e *SQLiteEngine) Aggregate(ctx context.Context, groupBy ViewType, opts AggregateOptions) ([]AggregateRow, error) {
 	conditions, args := optsToFilterConditions(opts, "m.")
-	return e.executeAggregate(ctx, groupBy, opts, "", conditions, args)
+
+	searchJoins, searchConds, searchArgs :=
+		e.buildAggregateSearchParts(ctx, opts.SearchQuery, groupBy)
+	conditions = append(conditions, searchConds...)
+	args = append(args, searchArgs...)
+
+	return e.executeAggregate(
+		ctx, groupBy, opts, searchJoins, conditions, args,
+	)
+}
+
+// buildAggregateSearchParts parses a search query for aggregate views
+// and returns (joins, conditions, args). For Labels view with label
+// search, filters the grouping column directly.
+func (e *SQLiteEngine) buildAggregateSearchParts(
+	ctx context.Context, searchQuery string, groupBy ViewType,
+) (string, []string, []interface{}) {
+	if searchQuery == "" {
+		return "", nil, nil
+	}
+
+	q := search.Parse(searchQuery)
+
+	var conditions []string
+	var args []interface{}
+
+	// For Labels view with label search, filter the grouping
+	// column (l.name) directly instead of adding a conflicting
+	// label join. Strip labels from the parsed query before
+	// building the generic parts.
+	if groupBy == ViewLabels && len(q.Labels) > 0 {
+		var labelParts []string
+		for _, label := range q.Labels {
+			labelParts = append(labelParts,
+				`LOWER(l.name) LIKE LOWER(?) ESCAPE '\'`)
+			args = append(args,
+				"%"+escapeSQLiteLike(label)+"%")
+		}
+		conditions = append(conditions,
+			"("+strings.Join(labelParts, " OR ")+")")
+		q.Labels = nil
+	}
+
+	searchConds, searchArgs, searchJns, ftsJoin :=
+		e.buildSearchQueryParts(ctx, q)
+	conditions = append(conditions, searchConds...)
+	args = append(args, searchArgs...)
+	var joinParts []string
+	if ftsJoin != "" {
+		joinParts = append(joinParts, ftsJoin)
+	}
+	joinParts = append(joinParts, searchJns...)
+
+	var joins string
+	if len(joinParts) > 0 {
+		joins = strings.Join(joinParts, "\n")
+	}
+	return joins, conditions, args
 }
 
 // executeAggregate is the shared implementation for Aggregate and SubAggregate.
@@ -1107,7 +1178,7 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 			JOIN message_labels ml ON ml.message_id = m.id
 			JOIN labels l ON l.id = ml.label_id
 		`)
-		conditions = append(conditions, "l.name = ?")
+		conditions = append(conditions, "LOWER(l.name) = LOWER(?)")
 		args = append(args, filter.Label)
 	}
 
@@ -1144,6 +1215,7 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 		FROM messages m
 		%s
 		WHERE %s
+		ORDER BY m.sent_at DESC, m.id DESC
 	`, strings.Join(joins, "\n"), strings.Join(conditions, " AND "))
 
 	// Only add LIMIT if explicitly set (0 means no limit)
@@ -1180,95 +1252,88 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 func (e *SQLiteEngine) buildSearchQueryParts(ctx context.Context, q *search.Query) (conditions []string, args []interface{}, joins []string, ftsJoin string) {
 	// Include all messages (deleted messages shown with indicator in TUI)
 
-	// From filter - handles both exact addresses and @domain patterns
+	// From filter - uses EXISTS to avoid join multiplication in aggregates.
+	// Handles both exact addresses and @domain patterns.
 	if len(q.FromAddrs) > 0 {
-		joins = append(joins, `
-			JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
-			JOIN participants p_from ON p_from.id = mr_from.participant_id
-		`)
-		var exactAddrs []string
-		var domainPatterns []string
+		var fromParts []string
 		for _, addr := range q.FromAddrs {
 			if strings.HasPrefix(addr, "@") {
-				// Domain pattern: match emails ending with @domain
-				domainPatterns = append(domainPatterns, addr)
+				fromParts = append(fromParts,
+					"LOWER(p_from.email_address) LIKE ?")
+				args = append(args, "%"+addr)
 			} else {
-				exactAddrs = append(exactAddrs, addr)
-			}
-		}
-		var fromConditions []string
-		if len(exactAddrs) > 0 {
-			placeholders := make([]string, len(exactAddrs))
-			for i, addr := range exactAddrs {
-				placeholders[i] = "?"
+				fromParts = append(fromParts,
+					"LOWER(p_from.email_address) = LOWER(?)")
 				args = append(args, addr)
 			}
-			fromConditions = append(fromConditions, fmt.Sprintf("LOWER(p_from.email_address) IN (%s)", strings.Join(placeholders, ",")))
 		}
-		for _, domain := range domainPatterns {
-			// Use LIKE for domain suffix matching (e.g., @example.com matches alice@example.com)
-			args = append(args, "%"+domain)
-			fromConditions = append(fromConditions, "LOWER(p_from.email_address) LIKE ?")
-		}
-		if len(fromConditions) > 0 {
-			conditions = append(conditions, "("+strings.Join(fromConditions, " OR ")+")")
-		}
+		conditions = append(conditions, fmt.Sprintf(`EXISTS (
+			SELECT 1 FROM message_recipients mr_from
+			JOIN participants p_from ON p_from.id = mr_from.participant_id
+			WHERE mr_from.message_id = m.id
+			  AND mr_from.recipient_type = 'from'
+			  AND (%s)
+		)`, strings.Join(fromParts, " OR ")))
 	}
 
-	// To filter
+	// To filter - EXISTS to avoid join multiplication
 	if len(q.ToAddrs) > 0 {
-		joins = append(joins, `
-			JOIN message_recipients mr_to ON mr_to.message_id = m.id AND mr_to.recipient_type = 'to'
-			JOIN participants p_to ON p_to.id = mr_to.participant_id
-		`)
 		placeholders := make([]string, len(q.ToAddrs))
 		for i, addr := range q.ToAddrs {
 			placeholders[i] = "?"
 			args = append(args, addr)
 		}
-		conditions = append(conditions, fmt.Sprintf("LOWER(p_to.email_address) IN (%s)", strings.Join(placeholders, ",")))
+		conditions = append(conditions, fmt.Sprintf(`EXISTS (
+			SELECT 1 FROM message_recipients mr_to
+			JOIN participants p_to ON p_to.id = mr_to.participant_id
+			WHERE mr_to.message_id = m.id
+			  AND mr_to.recipient_type = 'to'
+			  AND LOWER(p_to.email_address) IN (%s)
+		)`, strings.Join(placeholders, ",")))
 	}
 
-	// CC filter
+	// CC filter - EXISTS to avoid join multiplication
 	if len(q.CcAddrs) > 0 {
-		joins = append(joins, `
-			JOIN message_recipients mr_cc ON mr_cc.message_id = m.id AND mr_cc.recipient_type = 'cc'
-			JOIN participants p_cc ON p_cc.id = mr_cc.participant_id
-		`)
 		placeholders := make([]string, len(q.CcAddrs))
 		for i, addr := range q.CcAddrs {
 			placeholders[i] = "?"
 			args = append(args, addr)
 		}
-		conditions = append(conditions, fmt.Sprintf("LOWER(p_cc.email_address) IN (%s)", strings.Join(placeholders, ",")))
+		conditions = append(conditions, fmt.Sprintf(`EXISTS (
+			SELECT 1 FROM message_recipients mr_cc
+			JOIN participants p_cc ON p_cc.id = mr_cc.participant_id
+			WHERE mr_cc.message_id = m.id
+			  AND mr_cc.recipient_type = 'cc'
+			  AND LOWER(p_cc.email_address) IN (%s)
+		)`, strings.Join(placeholders, ",")))
 	}
 
-	// BCC filter
+	// BCC filter - EXISTS to avoid join multiplication
 	if len(q.BccAddrs) > 0 {
-		joins = append(joins, `
-			JOIN message_recipients mr_bcc ON mr_bcc.message_id = m.id AND mr_bcc.recipient_type = 'bcc'
-			JOIN participants p_bcc ON p_bcc.id = mr_bcc.participant_id
-		`)
 		placeholders := make([]string, len(q.BccAddrs))
 		for i, addr := range q.BccAddrs {
 			placeholders[i] = "?"
 			args = append(args, addr)
 		}
-		conditions = append(conditions, fmt.Sprintf("LOWER(p_bcc.email_address) IN (%s)", strings.Join(placeholders, ",")))
+		conditions = append(conditions, fmt.Sprintf(`EXISTS (
+			SELECT 1 FROM message_recipients mr_bcc
+			JOIN participants p_bcc ON p_bcc.id = mr_bcc.participant_id
+			WHERE mr_bcc.message_id = m.id
+			  AND mr_bcc.recipient_type = 'bcc'
+			  AND LOWER(p_bcc.email_address) IN (%s)
+		)`, strings.Join(placeholders, ",")))
 	}
 
-	// Label filter
-	if len(q.Labels) > 0 {
-		joins = append(joins, `
-			JOIN message_labels ml ON ml.message_id = m.id
-			JOIN labels l ON l.id = ml.label_id
-		`)
-		placeholders := make([]string, len(q.Labels))
-		for i, label := range q.Labels {
-			placeholders[i] = "?"
-			args = append(args, label)
-		}
-		conditions = append(conditions, fmt.Sprintf("l.name IN (%s)", strings.Join(placeholders, ",")))
+	// Label filter - case-insensitive substring match using EXISTS
+	// so each label term can match a different row in message_labels.
+	for _, label := range q.Labels {
+		conditions = append(conditions, `EXISTS (
+			SELECT 1 FROM message_labels ml_lbl
+			JOIN labels l_lbl ON l_lbl.id = ml_lbl.label_id
+			WHERE ml_lbl.message_id = m.id
+			  AND LOWER(l_lbl.name) LIKE LOWER(?) ESCAPE '\'
+		)`)
+		args = append(args, "%"+escapeSQLiteLike(label)+"%")
 	}
 
 	// Subject filter
@@ -1454,11 +1519,10 @@ func (e *SQLiteEngine) executeSearchQuery(ctx context.Context, conditions []stri
 // MergeFilterIntoQuery combines a MessageFilter context with a search.Query.
 // Context filters are appended to existing query filters.
 //
-// Note on semantics: Appending to FromAddrs/ToAddrs/Labels produces IN clauses
-// with OR semantics within each dimension. This means if user searches "from:alice"
-// and context has Sender=bob, the result matches alice OR bob. For strict AND
-// intersection, we would need separate WHERE conditions per context filter.
-// Current behavior: context widens the search within other constraints.
+// Note on semantics: Appending to FromAddrs/ToAddrs produces OR semantics
+// within each dimension (IN clause). Labels use per-term EXISTS subqueries
+// with AND semantics (message must have all labels). Context filters widen
+// the search within other constraints.
 func MergeFilterIntoQuery(q *search.Query, filter MessageFilter) *search.Query {
 	// Copy all fields from original query (preserves any future non-slice fields)
 	merged := *q

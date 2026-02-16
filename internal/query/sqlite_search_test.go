@@ -41,6 +41,16 @@ func TestSearch_Filters(t *testing.T) {
 			wantCount: 2,
 		},
 		{
+			name:      "LabelFilter_CaseInsensitive",
+			query:     &search.Query{Labels: []string{"work"}},
+			wantCount: 2,
+		},
+		{
+			name:      "LabelFilter_Substring",
+			query:     &search.Query{Labels: []string{"wor"}},
+			wantCount: 2, // matches "Work"
+		},
+		{
 			name:      "DateRangeFilter",
 			query:     &search.Query{AfterDate: &after, BeforeDate: &before},
 			wantCount: 2,

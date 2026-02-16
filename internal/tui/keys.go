@@ -22,9 +22,11 @@ func (m Model) handleInlineSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "tab":
-		// Toggle search mode between Fast and Deep (only at message list level)
+		// Toggle search mode — only meaningful at message list level
+		// where Fast (Parquet metadata) and Deep (FTS5 body) differ.
+		// At aggregate level, both modes run the same query.
 		if m.level != levelMessageList {
-			return m, nil // Tab has no effect at aggregate levels
+			return m, nil
 		}
 		if m.searchMode == searchModeFast {
 			m.searchMode = searchModeDeep
@@ -33,9 +35,7 @@ func (m Model) handleInlineSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchMode = searchModeFast
 			m.searchInput.Placeholder = "search (Tab: deep)"
 		}
-		// Invalidate any pending debounce timers from old mode
 		m.inlineSearchDebounce++
-		// Re-trigger search immediately with new mode (no debounce for explicit mode toggle)
 		if query := m.searchInput.Value(); query != "" {
 			m.searchQuery = query
 			m.inlineSearchLoading = true
@@ -182,6 +182,11 @@ func (m Model) handleAggregateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		// If there's an active search query, show search results instead of all messages
 		if m.searchQuery != "" {
+			m.searchFilter = m.drillFilter
+			m.searchFilter.SourceID = m.accountFilter
+			m.searchFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
+			m.searchFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
+			m.loadRequestID++ // Invalidate stale loadMessages responses
 			m.searchRequestID++
 			return m, m.loadSearch(m.searchQuery)
 		}
@@ -333,10 +338,15 @@ func (m Model) handleMessageListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	// Back - clear inner search first, then navigate back
 	case "esc":
-		// Always clear an active search before navigating back
-		if m.searchQuery != "" {
+		// Clear search only if it was initiated at this level (snapshot exists).
+		// Inherited search (from aggregate drill-down) has no snapshot —
+		// goBack restores the parent view with its search intact.
+		if m.searchQuery != "" && m.preSearchMessages != nil {
 			return m.clearMessageListSearch()
 		}
+		// Invalidate in-flight search responses so they don't write
+		// stale message data into the restored parent view.
+		m.searchRequestID++
 		return m.goBack()
 
 	// Selection
@@ -890,6 +900,8 @@ func (m Model) handleModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleExportAttachmentsKeys(msg)
 	case modalExportResult:
 		return m.handleExportResultKeys()
+	case modalError:
+		return m.handleErrorKeys()
 	case modalHelp:
 		return m.handleHelpKeys(msg)
 	}
@@ -1035,6 +1047,14 @@ func (m Model) handleExportResultKeys() (tea.Model, tea.Cmd) {
 	// Any key closes the result modal
 	m.modal = modalNone
 	m.modalResult = ""
+	return m, nil
+}
+
+func (m Model) handleErrorKeys() (tea.Model, tea.Cmd) {
+	// Any key dismisses the error modal
+	m.modal = modalNone
+	m.modalResult = ""
+	m.err = nil
 	return m, nil
 }
 
@@ -1188,13 +1208,20 @@ func (m Model) enterDrillDown(row query.AggregateRow) (tea.Model, tea.Cmd) {
 		m.selection.messageIDs = make(map[int64]bool)
 	}
 
-	// Clear search on drill-down: the drill filter already
-	// constrains to the correct subset. The breadcrumb
-	// preserves the outer search for back-navigation.
-	// Increment searchRequestID to invalidate any in-flight
-	// search responses from the aggregate level.
-	m.searchQuery = ""
+	// Invalidate in-flight search responses from the aggregate level.
 	m.searchRequestID++
+
+	// Preserve search query through drill-down so the message list
+	// shows only messages matching both the drill filter and the search.
+	if m.searchQuery != "" {
+		m.searchFilter = m.drillFilter
+		m.searchFilter.SourceID = m.accountFilter
+		m.searchFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
+		m.searchFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
+		m.loadRequestID++ // Invalidate stale loadMessages responses
+		m.searchRequestID++
+		return m, m.loadSearch(m.searchQuery)
+	}
 
 	m.loadRequestID++
 	return m, m.loadMessages()
@@ -1321,8 +1348,12 @@ func (m *Model) restorePreSearchSnapshot() tea.Cmd {
 }
 
 func (m *Model) activateInlineSearch(placeholder string) tea.Cmd {
-	// Snapshot current message list so Esc can restore instantly
-	if m.level == levelMessageList && m.searchQuery == "" {
+	// Snapshot current message list so Esc can restore instantly.
+	// Only take a snapshot if we don't already have one (re-searches
+	// keep the original snapshot). This also handles inherited search
+	// from aggregate drill-down: the first local / captures the
+	// inherited results so Esc can restore them.
+	if m.level == levelMessageList && m.preSearchMessages == nil {
 		m.preSearchMessages = m.messages
 		m.preSearchCursor = m.cursor
 		m.preSearchScrollOffset = m.scrollOffset

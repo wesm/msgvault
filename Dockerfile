@@ -62,7 +62,7 @@ WORKDIR /data
 
 # Health check using wget (curl not included to keep image small)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget -q --spider http://localhost:8080/health || exit 1
+    CMD wget -qO/dev/null http://localhost:8080/health || exit 1
 
 # Default port for HTTP API
 EXPOSE 8080

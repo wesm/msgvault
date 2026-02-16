@@ -533,44 +533,44 @@ func TestDuckDBEngine_AggregateByRecipient(t *testing.T) {
 }
 
 // TestDuckDBEngine_AggregateByRecipient_SearchFiltersOnKey verifies that
-// searching in Recipients view filters on recipient email/name, not subject/sender.
-// This reproduces a bug where the search applied to subject/sender instead of
-// the recipient grouping key, causing inflated counts when summed across groups.
+// text term search in Recipients view matches subjects, senders, and the
+// recipient key column, then shows the recipient breakdown of all matching
+// messages.
 func TestDuckDBEngine_AggregateByRecipient_SearchFiltersOnKey(t *testing.T) {
 	engine := newParquetEngine(t)
 	ctx := context.Background()
 
-	// Search for "bob" — should return only bob@company.org as a recipient
-	// Test data: bob is a recipient (to) in msgs 1,2,3
+	// Search for "bob" — matches:
+	//   - bob@company.org as recipient key in msg1,2,3
+	//   - bob@company.org as sender of msg4,5
+	// Recipient breakdown of msgs 1-5: bob(3), alice(2), carol(1), dan(1)
 	opts := DefaultAggregateOptions()
 	opts.SearchQuery = "bob"
 	rows, err := engine.Aggregate(ctx, ViewRecipients, opts)
 	if err != nil {
 		t.Fatalf("AggregateByRecipient (search 'bob'): %v", err)
 	}
-
-	// Should only match bob@company.org as recipient, not bob as sender
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 recipient matching 'bob', got %d", len(rows))
+	gotKeys := make(map[string]bool)
+	for _, r := range rows {
+		gotKeys[r.Key] = true
 	}
-	if rows[0].Key != "bob@company.org" {
-		t.Errorf("expected bob@company.org, got %s", rows[0].Key)
-	}
-	if rows[0].Count != 3 {
-		t.Errorf("expected count=3 for bob, got %d", rows[0].Count)
+	if !gotKeys["bob@company.org"] {
+		t.Errorf("expected bob@company.org in results, got %v", rows)
 	}
 
-	// Search for "dan" — should return only dan@other.net (cc recipient in msg 2)
+	// Search for "dan" — matches dan@other.net as recipient key (msg2)
+	// and dan as sender display name. msg2 recipients: bob, dan
 	opts.SearchQuery = "dan"
 	rows, err = engine.Aggregate(ctx, ViewRecipients, opts)
 	if err != nil {
 		t.Fatalf("AggregateByRecipient (search 'dan'): %v", err)
 	}
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 recipient matching 'dan', got %d", len(rows))
+	gotKeys = make(map[string]bool)
+	for _, r := range rows {
+		gotKeys[r.Key] = true
 	}
-	if rows[0].Key != "dan@other.net" {
-		t.Errorf("expected dan@other.net, got %s", rows[0].Key)
+	if !gotKeys["dan@other.net"] {
+		t.Errorf("expected dan@other.net in results, got %v", rows)
 	}
 
 	// Verify totals don't exceed baseline
@@ -923,6 +923,8 @@ func TestDuckDBEngine_SearchFast(t *testing.T) {
 		// Operator filters
 		{"FromFilter", "from:bob", MessageFilter{}, []string{"Question", "Final"}},
 		{"LabelFilter", "label:Work", MessageFilter{}, []string{"Hello World", "Question"}},
+		{"LabelFilter_CaseInsensitive", "label:work", MessageFilter{}, []string{"Hello World", "Question"}},
+		{"LabelFilter_Substring", "label:wor", MessageFilter{}, []string{"Hello World", "Question"}},
 		{"HasAttachment", "has:attachment", MessageFilter{}, []string{"Re: Hello", "Question"}},
 		{"ToFilter_Bob", "to:bob", MessageFilter{}, []string{"Hello World", "Re: Hello", "Follow up"}},
 		{"ToFilter_Carol", "to:carol", MessageFilter{}, []string{"Hello World"}},
@@ -1348,6 +1350,11 @@ func TestDuckDBEngine_GetGmailIDsByFilter(t *testing.T) {
 		{
 			name:    "label=Work",
 			filter:  MessageFilter{Label: "Work"},
+			wantIDs: []string{"msg1", "msg4"},
+		},
+		{
+			name:    "label=work_case_insensitive",
+			filter:  MessageFilter{Label: "work"},
 			wantIDs: []string{"msg1", "msg4"},
 		},
 		{
@@ -1857,7 +1864,7 @@ func TestBuildWhereClause_SearchOperators(t *testing.T) {
 		{
 			name:        "label operator",
 			searchQuery: "label:INBOX",
-			wantClauses: []string{"l_label.name = ?"}, // Exact match, consistent with SearchFast
+			wantClauses: []string{"l_label.name ILIKE ? ESCAPE"}, // Case-insensitive match
 		},
 		{
 			name:        "combined operators",
@@ -1930,6 +1937,11 @@ func TestAggregateBySender_WithSearchQuery(t *testing.T) {
 			searchQuery: "has:attachment",
 			wantSenders: []string{"alice@example.com", "bob@company.org"}, // msg2 (alice) and msg4 (bob)
 		},
+		{
+			name:        "label search filter (case-insensitive)",
+			searchQuery: "label:work",
+			wantSenders: []string{"alice@example.com", "bob@company.org"}, // msg1 (alice) and msg4 (bob)
+		},
 	}
 
 	for _, tt := range tests {
@@ -1954,6 +1966,43 @@ func TestAggregateBySender_WithSearchQuery(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAggregateByLabel_WithLabelSearch verifies that label: search in the
+// Labels aggregate view only shows matching labels, not all labels from
+// matching messages.
+func TestAggregateByLabel_WithLabelSearch(t *testing.T) {
+	engine := newParquetEngine(t)
+	ctx := context.Background()
+
+	// Test data: INBOX on msg1-5, Work on msg1+msg4, IMPORTANT on msg2.
+	// Searching label:work should only show "Work", not INBOX/IMPORTANT.
+	opts := AggregateOptions{
+		SearchQuery: "label:work",
+		Limit:       100,
+	}
+	rows, err := engine.Aggregate(ctx, ViewLabels, opts)
+	if err != nil {
+		t.Fatalf("Aggregate(ViewLabels, label:work): %v", err)
+	}
+
+	gotLabels := make(map[string]bool)
+	for _, row := range rows {
+		gotLabels[row.Key] = true
+	}
+
+	if !gotLabels["Work"] {
+		t.Errorf("expected 'Work' in results, got: %v", rows)
+	}
+	if gotLabels["INBOX"] {
+		t.Errorf("'INBOX' should not appear when searching label:work, got: %v", rows)
+	}
+	if gotLabels["IMPORTANT"] {
+		t.Errorf("'IMPORTANT' should not appear when searching label:work, got: %v", rows)
+	}
+	if len(rows) != 1 {
+		t.Errorf("expected 1 label row, got %d: %v", len(rows), rows)
 	}
 }
 

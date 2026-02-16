@@ -143,6 +143,16 @@ func TestParse(t *testing.T) {
 					query: "label:INBOX l:work",
 					want:  Query{Labels: []string{"INBOX", "work"}},
 				},
+				{
+					name:  "empty label ignored",
+					query: "label:",
+					want:  Query{},
+				},
+				{
+					name:  "empty label with other terms",
+					query: "label: hello",
+					want:  Query{TextTerms: []string{"hello"}},
+				},
 			},
 		},
 		{

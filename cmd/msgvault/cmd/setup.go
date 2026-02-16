@@ -272,9 +272,7 @@ rate_limit_qps = 5
 	}
 
 	// Create docker-compose.yml
-	dockerCompose := fmt.Sprintf(`version: "3.8"
-
-services:
+	dockerCompose := fmt.Sprintf(`services:
   msgvault:
     image: ghcr.io/wesm/msgvault:latest
     container_name: msgvault
