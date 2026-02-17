@@ -584,15 +584,12 @@ func TestExportAttachment(t *testing.T) {
 	})
 
 	t.Run("default destination is ~/Downloads", func(t *testing.T) {
-		// This test only verifies the handler doesn't error when
-		// ~/Downloads exists (it does on macOS).
-		home, err := os.UserHomeDir()
-		if err != nil {
-			t.Skip("cannot determine home dir")
-		}
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
 		downloads := filepath.Join(home, "Downloads")
-		if _, err := os.Stat(downloads); os.IsNotExist(err) {
-			t.Skip("~/Downloads does not exist")
+		if err := os.Mkdir(downloads, 0755); err != nil {
+			t.Fatal(err)
 		}
 
 		resp := runTool[exportResponse](t, "export_attachment", h.exportAttachment, map[string]any{
@@ -601,8 +598,6 @@ func TestExportAttachment(t *testing.T) {
 		if !strings.HasPrefix(resp.Path, downloads) {
 			t.Fatalf("expected path under ~/Downloads, got %s", resp.Path)
 		}
-		// Clean up the file we just wrote.
-		os.Remove(resp.Path)
 	})
 
 	t.Run("invalid destination", func(t *testing.T) {
