@@ -53,9 +53,13 @@ make lint                     # Run linter
 # TUI and analytics
 ./msgvault tui                                        # Launch TUI
 ./msgvault tui --account you@gmail.com                # Filter by account
+./msgvault tui --local                                # Force local (override remote config)
 ./msgvault build-cache                                # Build Parquet cache
 ./msgvault build-cache --full-rebuild                 # Full rebuild
 ./msgvault stats                                      # Show archive stats
+
+# Daemon mode (NAS/server deployment)
+./msgvault serve                                      # Start HTTP API + scheduled syncs
 
 # Maintenance
 ./msgvault repair-encoding                            # Fix UTF-8 encoding issues

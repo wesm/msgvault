@@ -14,6 +14,12 @@ HTTP remote defaults, plaintext key display in interactive CLI,
 enabled=true override on account creation, and page-aligned pagination
 are documented design decisions — see code comments at each site.
 
+Remote engine query string reconstruction in buildSearchQueryString is
+intentionally simplified — phrase quoting edge cases are acceptable since
+the search parser on the server re-parses the query. Empty search queries
+sending q= is expected; the server returns empty results gracefully.
+TimeGranularity defaults to "month" when unspecified, which is correct.
+
 This is a single-user personal tool with no privilege separation, no
 setuid, no shared directories, and no multi-tenant access. Do not flag
 symlink-following, local file overwrites, or similar CWE patterns that
