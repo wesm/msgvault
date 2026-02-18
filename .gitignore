@@ -23,6 +23,7 @@ oauth_client*.json
 # Local development state
 .beads/
 .githooks/post-commit
+.githooks/post-rewrite
 .mcp.json
 
 # Python
