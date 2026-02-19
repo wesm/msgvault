@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -189,5 +190,204 @@ func TestScanSource_NullRequiredTimestamp(t *testing.T) {
 	errStr := err.Error()
 	if !strings.Contains(errStr, "created_at") || !strings.Contains(errStr, "NULL") {
 		t.Errorf("error should mention field and NULL status, got: %s", errStr)
+	}
+}
+
+// TestResetSourceData verifies that ResetSourceData clears all data for a source
+// while preserving the source entry itself.
+func TestResetSourceData(t *testing.T) {
+	f := storetest.New(t)
+
+	// Add some messages to the source
+	f.CreateMessage("msg1")
+	f.CreateMessage("msg2")
+	f.CreateMessage("msg3")
+
+	// Verify messages exist
+	var count int
+	err := f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages WHERE source_id = ?", f.Source.ID).Scan(&count)
+	testutil.MustNoErr(t, err, "count messages before reset")
+	if count != 3 {
+		t.Fatalf("expected 3 messages before reset, got %d", count)
+	}
+
+	// Set a sync cursor to verify it gets cleared
+	err = f.Store.UpdateSourceSyncCursor(f.Source.ID, "test-cursor-12345")
+	testutil.MustNoErr(t, err, "set sync cursor")
+
+	// Reset the source data
+	deleted, err := f.Store.ResetSourceData(f.Source.ID)
+	testutil.MustNoErr(t, err, "ResetSourceData")
+
+	if deleted != 3 {
+		t.Errorf("expected 3 messages deleted, got %d", deleted)
+	}
+
+	// Verify messages are gone
+	err = f.Store.DB().QueryRow("SELECT COUNT(*) FROM messages WHERE source_id = ?", f.Source.ID).Scan(&count)
+	testutil.MustNoErr(t, err, "count messages after reset")
+	if count != 0 {
+		t.Errorf("expected 0 messages after reset, got %d", count)
+	}
+
+	// Verify source still exists but sync cursor is cleared
+	source, err := f.Store.GetSourceByIdentifier(f.Source.Identifier)
+	testutil.MustNoErr(t, err, "GetSourceByIdentifier after reset")
+	if source == nil {
+		t.Fatal("source should still exist after reset")
+	}
+	if source.SyncCursor.Valid {
+		t.Errorf("sync cursor should be NULL after reset, got %q", source.SyncCursor.String)
+	}
+	if source.LastSyncAt.Valid {
+		t.Error("last_sync_at should be NULL after reset")
+	}
+}
+
+// TestResetSourceData_IsolatesAccounts verifies that resetting one account
+// does not affect data belonging to other accounts.
+func TestResetSourceData_IsolatesAccounts(t *testing.T) {
+	st := testutil.NewTestStore(t)
+
+	// Create two accounts
+	account1, err := st.GetOrCreateSource("gmail", "account1@example.com")
+	testutil.MustNoErr(t, err, "create account1")
+	account2, err := st.GetOrCreateSource("gmail", "account2@example.com")
+	testutil.MustNoErr(t, err, "create account2")
+
+	// Create conversations for each account
+	conv1, err := st.EnsureConversation(account1.ID, "thread-1", "Account 1 Thread")
+	testutil.MustNoErr(t, err, "create conversation for account1")
+	conv2, err := st.EnsureConversation(account2.ID, "thread-2", "Account 2 Thread")
+	testutil.MustNoErr(t, err, "create conversation for account2")
+
+	// Add messages to account 1
+	for i := 0; i < 5; i++ {
+		_, err := st.UpsertMessage(&store.Message{
+			ConversationID:  conv1,
+			SourceID:        account1.ID,
+			SourceMessageID: fmt.Sprintf("acct1-msg-%d", i),
+			MessageType:     "email",
+			SizeEstimate:    1000,
+		})
+		testutil.MustNoErr(t, err, "insert message for account1")
+	}
+
+	// Add messages to account 2
+	for i := 0; i < 3; i++ {
+		_, err := st.UpsertMessage(&store.Message{
+			ConversationID:  conv2,
+			SourceID:        account2.ID,
+			SourceMessageID: fmt.Sprintf("acct2-msg-%d", i),
+			MessageType:     "email",
+			SizeEstimate:    2000,
+		})
+		testutil.MustNoErr(t, err, "insert message for account2")
+	}
+
+	// Create labels for each account
+	_, err = st.EnsureLabel(account1.ID, "INBOX", "Inbox", "system")
+	testutil.MustNoErr(t, err, "create label for account1")
+	_, err = st.EnsureLabel(account2.ID, "INBOX", "Inbox", "system")
+	testutil.MustNoErr(t, err, "create label for account2")
+
+	// Set sync cursors for both
+	err = st.UpdateSourceSyncCursor(account1.ID, "cursor-account1")
+	testutil.MustNoErr(t, err, "set cursor for account1")
+	err = st.UpdateSourceSyncCursor(account2.ID, "cursor-account2")
+	testutil.MustNoErr(t, err, "set cursor for account2")
+
+	// Verify initial state
+	var count1, count2 int
+	err = st.DB().QueryRow("SELECT COUNT(*) FROM messages WHERE source_id = ?", account1.ID).Scan(&count1)
+	testutil.MustNoErr(t, err, "count account1 messages before")
+	err = st.DB().QueryRow("SELECT COUNT(*) FROM messages WHERE source_id = ?", account2.ID).Scan(&count2)
+	testutil.MustNoErr(t, err, "count account2 messages before")
+
+	if count1 != 5 {
+		t.Fatalf("expected 5 messages for account1, got %d", count1)
+	}
+	if count2 != 3 {
+		t.Fatalf("expected 3 messages for account2, got %d", count2)
+	}
+
+	// Reset account 1 ONLY
+	deleted, err := st.ResetSourceData(account1.ID)
+	testutil.MustNoErr(t, err, "ResetSourceData for account1")
+
+	if deleted != 5 {
+		t.Errorf("expected 5 messages deleted from account1, got %d", deleted)
+	}
+
+	// Verify account 1 is cleared
+	err = st.DB().QueryRow("SELECT COUNT(*) FROM messages WHERE source_id = ?", account1.ID).Scan(&count1)
+	testutil.MustNoErr(t, err, "count account1 messages after")
+	if count1 != 0 {
+		t.Errorf("expected 0 messages for account1 after reset, got %d", count1)
+	}
+
+	// Verify account 1 conversations are cleared
+	var convCount1 int
+	err = st.DB().QueryRow("SELECT COUNT(*) FROM conversations WHERE source_id = ?", account1.ID).Scan(&convCount1)
+	testutil.MustNoErr(t, err, "count account1 conversations after")
+	if convCount1 != 0 {
+		t.Errorf("expected 0 conversations for account1 after reset, got %d", convCount1)
+	}
+
+	// Verify account 1 labels are cleared
+	var labelCount1 int
+	err = st.DB().QueryRow("SELECT COUNT(*) FROM labels WHERE source_id = ?", account1.ID).Scan(&labelCount1)
+	testutil.MustNoErr(t, err, "count account1 labels after")
+	if labelCount1 != 0 {
+		t.Errorf("expected 0 labels for account1 after reset, got %d", labelCount1)
+	}
+
+	// Verify account 1 sync cursor is cleared
+	src1, err := st.GetSourceByIdentifier("account1@example.com")
+	testutil.MustNoErr(t, err, "get account1 after reset")
+	if src1.SyncCursor.Valid {
+		t.Errorf("account1 sync cursor should be NULL, got %q", src1.SyncCursor.String)
+	}
+
+	// ============================================================
+	// CRITICAL: Verify account 2 is COMPLETELY UNTOUCHED
+	// ============================================================
+
+	// Account 2 messages should still exist
+	err = st.DB().QueryRow("SELECT COUNT(*) FROM messages WHERE source_id = ?", account2.ID).Scan(&count2)
+	testutil.MustNoErr(t, err, "count account2 messages after")
+	if count2 != 3 {
+		t.Errorf("ISOLATION FAILURE: expected 3 messages for account2, got %d", count2)
+	}
+
+	// Account 2 conversations should still exist
+	var convCount2 int
+	err = st.DB().QueryRow("SELECT COUNT(*) FROM conversations WHERE source_id = ?", account2.ID).Scan(&convCount2)
+	testutil.MustNoErr(t, err, "count account2 conversations after")
+	if convCount2 != 1 {
+		t.Errorf("ISOLATION FAILURE: expected 1 conversation for account2, got %d", convCount2)
+	}
+
+	// Account 2 labels should still exist
+	var labelCount2 int
+	err = st.DB().QueryRow("SELECT COUNT(*) FROM labels WHERE source_id = ?", account2.ID).Scan(&labelCount2)
+	testutil.MustNoErr(t, err, "count account2 labels after")
+	if labelCount2 != 1 {
+		t.Errorf("ISOLATION FAILURE: expected 1 label for account2, got %d", labelCount2)
+	}
+
+	// Account 2 sync cursor should still be set
+	src2, err := st.GetSourceByIdentifier("account2@example.com")
+	testutil.MustNoErr(t, err, "get account2 after reset")
+	if !src2.SyncCursor.Valid || src2.SyncCursor.String != "cursor-account2" {
+		t.Errorf("ISOLATION FAILURE: account2 sync cursor should be 'cursor-account2', got %v", src2.SyncCursor)
+	}
+
+	// Verify total message count in database
+	var totalMessages int
+	err = st.DB().QueryRow("SELECT COUNT(*) FROM messages").Scan(&totalMessages)
+	testutil.MustNoErr(t, err, "count total messages")
+	if totalMessages != 3 {
+		t.Errorf("expected 3 total messages (all from account2), got %d", totalMessages)
 	}
 }
