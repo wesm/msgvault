@@ -135,9 +135,9 @@ Examples:
 }
 
 func runFullSync(ctx context.Context, s *store.Store, oauthMgr *oauth.Manager, email string) error {
-	tokenSource, err := oauthMgr.TokenSource(ctx, email)
+	tokenSource, err := getTokenSourceWithReauth(ctx, oauthMgr, email)
 	if err != nil {
-		return fmt.Errorf("get token source: %w (run 'add-account' first)", err)
+		return err
 	}
 
 	// Create Gmail client

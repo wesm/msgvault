@@ -67,9 +67,9 @@ Examples:
 			cancel()
 		}()
 
-		tokenSource, err := oauthMgr.TokenSource(ctx, email)
+		tokenSource, err := getTokenSourceWithReauth(ctx, oauthMgr, email)
 		if err != nil {
-			return fmt.Errorf("get token source: %w (run 'add-account' first)", err)
+			return err
 		}
 
 		// Create Gmail client (no rate limiter needed for single call)

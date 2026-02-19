@@ -8,8 +8,11 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/config"
+	"github.com/wesm/msgvault/internal/oauth"
+	"golang.org/x/oauth2"
 )
 
 var (
@@ -141,6 +144,66 @@ func wrapOAuthError(err error) error {
 		return fmt.Errorf("OAuth client secrets file not accessible.%s", oauthSetupHint())
 	}
 	return err
+}
+
+// isAuthInvalidError returns true if the error indicates the OAuth token is
+// permanently invalid (expired or revoked), as opposed to a transient failure
+// like a network error or context cancellation.
+func isAuthInvalidError(err error) bool {
+	var retrieveErr *oauth2.RetrieveError
+	if errors.As(err, &retrieveErr) {
+		// Google returns "invalid_grant" when refresh tokens are expired or revoked
+		return retrieveErr.ErrorCode == "invalid_grant"
+	}
+	return false
+}
+
+// getTokenSourceWithReauth tries to get a token source for the given email.
+// If the token exists but is expired/revoked (invalid_grant), it automatically
+// deletes the old token and re-initiates the OAuth browser flow.
+// Transient errors (network, context cancellation) are returned as-is without
+// deleting the token.
+// NOTE: This function requires a browser and an interactive terminal for
+// re-authorization. Only use from interactive CLI commands (sync, sync-full,
+// verify), not from daemon mode (serve).
+func getTokenSourceWithReauth(ctx context.Context, oauthMgr *oauth.Manager, email string) (oauth2.TokenSource, error) {
+	tokenSource, err := oauthMgr.TokenSource(ctx, email)
+	if err == nil {
+		return tokenSource, nil
+	}
+
+	// No token at all — user needs to run add-account
+	if !oauthMgr.HasToken(email) {
+		return nil, fmt.Errorf("get token source: %w (run 'add-account %s' first)", err, email)
+	}
+
+	// Token exists but failed — only auto-reauth for auth-invalid errors
+	if !isAuthInvalidError(err) {
+		return nil, fmt.Errorf("get token source for %s: %w", email, err)
+	}
+
+	// Non-interactive session cannot open a browser for reauth
+	if !isatty.IsTerminal(os.Stdin.Fd()) && !isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+		return nil, fmt.Errorf("token for %s is expired or revoked, but cannot re-authorize in a non-interactive session (run 'add-account --force %s' from a terminal)", email, email)
+	}
+
+	fmt.Printf("Token for %s is expired or revoked. Re-authorizing...\n", email)
+
+	if delErr := oauthMgr.DeleteToken(email); delErr != nil {
+		return nil, fmt.Errorf("delete expired token: %w", delErr)
+	}
+
+	if authErr := oauthMgr.Authorize(ctx, email); authErr != nil {
+		return nil, fmt.Errorf("re-authorize %s: %w", email, authErr)
+	}
+
+	// Retry with the new token
+	tokenSource, err = oauthMgr.TokenSource(ctx, email)
+	if err != nil {
+		return nil, fmt.Errorf("get token source after re-authorization: %w", err)
+	}
+
+	return tokenSource, nil
 }
 
 func init() {
