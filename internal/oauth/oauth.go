@@ -299,8 +299,8 @@ func (m *Manager) saveToken(email string, token *oauth2.Token, scopes []string) 
 	path := m.tokenPath(email)
 
 	// Atomic write via temp file + rename to avoid TOCTOU symlink races.
-	// If an attacker creates a symlink between tokenPath() returning and
-	// the write, os.Rename replaces the symlink itself rather than following it.
+	// On POSIX, os.Rename replaces the symlink itself rather than following it.
+	// On Windows, os.Rename doesn't overwrite existing files, so we remove first.
 	tmpFile, err := os.CreateTemp(m.tokensDir, ".token-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp token file: %w", err)
@@ -320,6 +320,17 @@ func (m *Manager) saveToken(email string, token *oauth2.Token, scopes []string) 
 		os.Remove(tmpPath)
 		return fmt.Errorf("chmod temp token file: %w", err)
 	}
+
+	// On Windows, remove existing file before rename since os.Rename doesn't overwrite.
+	// Only ignore "file not found" errors - other errors (permission denied, directory, etc.)
+	// should be reported since they would cause the rename to fail anyway.
+	if runtime.GOOS == "windows" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			os.Remove(tmpPath)
+			return fmt.Errorf("remove existing token file: %w", err)
+		}
+	}
+
 	if err := os.Rename(tmpPath, path); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("rename temp token file: %w", err)

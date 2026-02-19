@@ -1,0 +1,155 @@
+package cmd
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+	"github.com/wesm/msgvault/tools/devdata/dataset"
+)
+
+var (
+	newDataSrcFlag string
+	newDataDstFlag string
+	newDataRowFlag int
+	newDataDryRun  bool
+)
+
+var newDataCmd = &cobra.Command{
+	Use:   "new-data",
+	Short: "Create a new dataset by copying N messages from a source",
+	Long:  "Creates a new dataset directory with a subset of messages from the source database, including all referentially-linked data.",
+	RunE:  runNewData,
+}
+
+func init() {
+	newDataCmd.Flags().StringVar(&newDataSrcFlag, "src", "", "source dataset name (default: active dataset)")
+	newDataCmd.Flags().StringVar(&newDataDstFlag, "dst", "", "destination dataset name (required)")
+	newDataCmd.Flags().IntVar(&newDataRowFlag, "rows", 0, "number of messages to copy (required)")
+	newDataCmd.Flags().BoolVar(&newDataDryRun, "dry-run", false, "show what would be copied without writing")
+	_ = newDataCmd.MarkFlagRequired("dst")
+	_ = newDataCmd.MarkFlagRequired("rows")
+	rootCmd.AddCommand(newDataCmd)
+}
+
+func runNewData(cmd *cobra.Command, args []string) error {
+	if newDataRowFlag <= 0 {
+		return fmt.Errorf("--rows must be a positive integer, got %d", newDataRowFlag)
+	}
+	if err := dataset.ValidateDatasetName(newDataDstFlag); err != nil {
+		return fmt.Errorf("invalid --dst: %w", err)
+	}
+	if newDataSrcFlag != "" {
+		if err := dataset.ValidateDatasetName(newDataSrcFlag); err != nil {
+			return fmt.Errorf("invalid --src: %w", err)
+		}
+	}
+
+	home, err := homeDir()
+	if err != nil {
+		return err
+	}
+
+	// Resolve source path
+	var srcDir string
+	if newDataSrcFlag != "" {
+		srcDir, err = datasetPath(newDataSrcFlag)
+		if err != nil {
+			return err
+		}
+	} else {
+		mvPath, err := msgvaultPath()
+		if err != nil {
+			return err
+		}
+		resolved, err := filepath.EvalSymlinks(mvPath)
+		if err != nil {
+			return fmt.Errorf("resolve %s: %w", mvPath, err)
+		}
+		srcDir = resolved
+	}
+
+	// Resolve destination path
+	dstDir, err := datasetPath(newDataDstFlag)
+	if err != nil {
+		return err
+	}
+
+	// Canonicalize and validate paths
+	srcDir, err = filepath.Abs(filepath.Clean(srcDir))
+	if err != nil {
+		return fmt.Errorf("resolve source path: %w", err)
+	}
+	dstDir, err = filepath.Abs(filepath.Clean(dstDir))
+	if err != nil {
+		return fmt.Errorf("resolve destination path: %w", err)
+	}
+
+	// Path traversal protection: verify both paths are within home directory.
+	// Use filepath.Rel to compute the relative path from home to each target;
+	// if the result starts with ".." the path escapes the home directory.
+	absHome, err := filepath.Abs(filepath.Clean(home))
+	if err != nil {
+		return fmt.Errorf("resolve home directory: %w", err)
+	}
+	srcRel, err := filepath.Rel(absHome, srcDir)
+	if err != nil || srcRel == ".." || strings.HasPrefix(srcRel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("source path %q is outside home directory", srcDir)
+	}
+	dstRel, err := filepath.Rel(absHome, dstDir)
+	if err != nil || dstRel == ".." || strings.HasPrefix(dstRel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("destination path %q is outside home directory", dstDir)
+	}
+
+	// Validate source
+	srcDBPath := filepath.Join(srcDir, "msgvault.db")
+	if !dataset.Exists(srcDBPath) {
+		return fmt.Errorf("source database not found: %s", srcDBPath)
+	}
+
+	// Validate destination doesn't exist
+	if dataset.Exists(dstDir) {
+		return fmt.Errorf("destination already exists: %s", dstDir)
+	}
+
+	// Dry run: show what would happen
+	if newDataDryRun {
+		fmt.Fprintf(os.Stdout, "Source:      %s\n", srcDir)
+		fmt.Fprintf(os.Stdout, "Destination: %s\n", dstDir)
+		fmt.Fprintf(os.Stdout, "Messages:    %d (most recent by sent_at)\n", newDataRowFlag)
+		fmt.Fprintf(os.Stderr, "devdata: dry run — no changes made\n")
+		return nil
+	}
+
+	// Perform the copy
+	fmt.Fprintf(os.Stderr, "devdata: copying %d messages from %s to %s...\n", newDataRowFlag, srcDir, dstDir)
+
+	result, err := dataset.CopySubset(srcDBPath, dstDir, newDataRowFlag)
+	if err != nil {
+		return fmt.Errorf("copy dataset: %w", err)
+	}
+
+	// Copy config.toml if present
+	srcConfig := filepath.Join(srcDir, "config.toml")
+	dstConfig := filepath.Join(dstDir, "config.toml")
+	if err := dataset.CopyFileIfExists(srcConfig, dstConfig, srcDir, dstDir); err != nil {
+		fmt.Fprintf(os.Stderr, "devdata: warning: could not copy config.toml: %v\n", err)
+	}
+
+	// Print summary
+	fmt.Fprintf(os.Stderr, "devdata: created dataset %q in %s\n", newDataDstFlag, result.Elapsed.Round(time.Millisecond))
+	fmt.Fprintf(os.Stdout, "Messages:      %d\n", result.Messages)
+	fmt.Fprintf(os.Stdout, "Conversations: %d\n", result.Conversations)
+	fmt.Fprintf(os.Stdout, "Participants:  %d\n", result.Participants)
+	fmt.Fprintf(os.Stdout, "Labels:        %d\n", result.Labels)
+	fmt.Fprintf(os.Stdout, "Database size: %s\n", formatSize(result.DBSize))
+
+	if int64(newDataRowFlag) > result.Messages {
+		fmt.Fprintf(os.Stderr, "devdata: warning: requested %d messages but source only had %d\n", newDataRowFlag, result.Messages)
+	}
+
+	return nil
+}

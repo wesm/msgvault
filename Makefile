@@ -12,7 +12,7 @@ LDFLAGS := -X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=$(VERSION) \
 
 LDFLAGS_RELEASE := $(LDFLAGS) -s -w
 
-.PHONY: build build-release install clean test test-v fmt lint tidy shootout run-shootout setup-hooks help
+.PHONY: build build-release install clean test test-v fmt lint tidy shootout run-shootout setup-hooks build-devdata help
 
 # Build the binary (debug)
 build:
@@ -40,9 +40,14 @@ install:
 		CGO_ENABLED=1 go build -tags fts5 -ldflags="$(LDFLAGS)" -o "$$INSTALL_DIR/msgvault" ./cmd/msgvault; \
 	fi
 
+# Build the devdata tool
+build-devdata:
+	CGO_ENABLED=1 go build -tags fts5 -o devdata ./tools/devdata
+	@chmod +x devdata
+
 # Clean build artifacts
 clean:
-	rm -f msgvault mimeshootout
+	rm -f msgvault mimeshootout devdata
 	rm -rf bin/
 
 # Run tests
@@ -97,3 +102,4 @@ help:
 	@echo ""
 	@echo "  shootout       - Build MIME shootout tool"
 	@echo "  run-shootout   - Run MIME shootout"
+	@echo "  build-devdata  - Build devdata dataset management tool"
