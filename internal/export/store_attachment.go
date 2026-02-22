@@ -8,8 +8,10 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wesm/msgvault/internal/fileutil"
 	"github.com/wesm/msgvault/internal/mime"
@@ -173,9 +175,20 @@ func StoreAttachmentFile(attachmentsDir string, att *mime.Attachment) (string, e
 }
 
 func validateExistingAttachmentFile(fullPath string, expectedSize int64, expectedHash string) error {
-	f, err := openNoFollow(fullPath)
-	if err != nil {
-		return fmt.Errorf("open attachment file for validation: %w", err)
+	var f *os.File
+	var err error
+	const maxRetries = 5
+	for attempt := range maxRetries {
+		f, err = openNoFollow(fullPath)
+		if err == nil {
+			break
+		}
+		if runtime.GOOS != "windows" || attempt == maxRetries-1 {
+			return fmt.Errorf(
+				"open attachment file for validation: %w", err,
+			)
+		}
+		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
 	}
 	defer f.Close()
 

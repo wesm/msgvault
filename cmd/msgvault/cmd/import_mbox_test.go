@@ -162,6 +162,12 @@ func zeroZipCentralDirUncompressedSize(t *testing.T, zipPath string, entryName s
 func TestResolveMboxExport_ZipExtractsAndCaches(t *testing.T) {
 	tmp := t.TempDir()
 
+	// Resolve symlinks / 8.3 short names so path comparisons work on Windows.
+	evalTmp, err := filepath.EvalSymlinks(tmp)
+	if err != nil {
+		t.Fatalf("eval symlinks: %v", err)
+	}
+
 	zipPath := filepath.Join(tmp, "export.zip")
 	writeZipFile(t, zipPath, map[string]string{
 		"inbox.mbox": "From a@b Sat Jan 1 00:00:00 2024\nSubject: x\n\nBody\n",
@@ -184,7 +190,7 @@ func TestResolveMboxExport_ZipExtractsAndCaches(t *testing.T) {
 		if _, err := os.Stat(p); err != nil {
 			t.Fatalf("stat extracted file %q: %v", p, err)
 		}
-		if !strings.Contains(filepath.Dir(p), filepath.Join(tmp, "imports", "mbox")) {
+		if !strings.Contains(filepath.Dir(p), filepath.Join(evalTmp, "imports", "mbox")) {
 			t.Fatalf("unexpected extracted dir for %q", p)
 		}
 	}
@@ -634,7 +640,7 @@ func TestResolveMboxExport_Zip_ReturnsAbsolutePathsWhenImportsDirRelative(t *tes
 	}
 	importsRel, err := filepath.Rel(wd, tmp)
 	if err != nil {
-		t.Fatalf("rel imports dir: %v", err)
+		t.Skipf("cannot make relative path (cross-drive on Windows): %v", err)
 	}
 	files, err := mboxzip.ResolveMboxExport(zipPath, importsRel, nil)
 	if err != nil {
