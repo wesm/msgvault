@@ -59,6 +59,17 @@ func IngestRawMessage(
 	allAddresses = append(allAddresses, parsed.To...)
 	allAddresses = append(allAddresses, parsed.Cc...)
 	allAddresses = append(allAddresses, parsed.Bcc...)
+	for i := range allAddresses {
+		allAddresses[i].Email = textutil.SanitizeUTF8(
+			allAddresses[i].Email,
+		)
+		allAddresses[i].Name = textutil.SanitizeUTF8(
+			allAddresses[i].Name,
+		)
+		allAddresses[i].Domain = textutil.SanitizeUTF8(
+			allAddresses[i].Domain,
+		)
+	}
 	participantMap, err := st.EnsureParticipantsBatch(allAddresses)
 	if err != nil {
 		return fmt.Errorf("ensure participants: %w", err)
@@ -217,7 +228,7 @@ func IngestRawMessage(
 func normalizeMessageID(id string) string {
 	id = strings.TrimSpace(id)
 	id = strings.Trim(id, "<>")
-	return id
+	return textutil.SanitizeUTF8(id)
 }
 
 func threadKey(parsed *mime.Message, rawHash string) string {
