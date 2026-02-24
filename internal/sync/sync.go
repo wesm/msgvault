@@ -26,6 +26,10 @@ var ErrHistoryExpired = errors.New("history expired - run full sync")
 
 // Options configures sync behavior.
 type Options struct {
+	// SourceType is the type of source being synced ("gmail" or "imap").
+	// Defaults to "gmail" if empty.
+	SourceType string
+
 	// Query is an optional Gmail search query (e.g., "before:2020/01/01")
 	Query string
 
@@ -222,7 +226,11 @@ func (s *Syncer) Full(ctx context.Context, email string) (summary *gmail.SyncSum
 	summary = &gmail.SyncSummary{StartTime: startTime}
 
 	// Get or create source
-	source, err := s.store.GetOrCreateSource("gmail", email)
+	sourceType := s.opts.SourceType
+	if sourceType == "" {
+		sourceType = "gmail"
+	}
+	source, err := s.store.GetOrCreateSource(sourceType, email)
 	if err != nil {
 		return nil, fmt.Errorf("get/create source: %w", err)
 	}

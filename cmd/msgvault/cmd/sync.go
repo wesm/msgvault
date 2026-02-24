@@ -35,11 +35,6 @@ Examples:
   msgvault sync you@gmail.com   # Sync specific account`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Validate config
-		if cfg.OAuth.ClientSecrets == "" {
-			return errOAuthNotConfigured()
-		}
-
 		// Open database
 		dbPath := cfg.DatabaseDSN()
 		s, err := store.Open(dbPath)
@@ -52,13 +47,32 @@ Examples:
 			return fmt.Errorf("init schema: %w", err)
 		}
 
+		// Handle IMAP sources before checking OAuth: IMAP does not support
+		// incremental sync, so redirect to a full sync without requiring Gmail
+		// OAuth credentials.
+		if len(args) == 1 {
+			src, lookupErr := s.GetSourceByIdentifier(args[0])
+			if lookupErr != nil {
+				return fmt.Errorf("look up source: %w", lookupErr)
+			}
+			if src != nil && src.SourceType == "imap" {
+				fmt.Printf("Note: IMAP accounts do not support incremental sync. Running full sync instead.\n\n")
+				return runFullSync(cmd.Context(), s, nil, src)
+			}
+		}
+
+		// Gmail incremental sync requires OAuth.
+		if cfg.OAuth.ClientSecrets == "" {
+			return errOAuthNotConfigured()
+		}
+
 		// Create OAuth manager
 		oauthMgr, err := oauth.NewManager(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger)
 		if err != nil {
 			return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
 		}
 
-		// Determine which accounts to sync
+		// Determine which accounts to sync (Gmail only for incremental sync)
 		var emails []string
 		if len(args) == 1 {
 			emails = []string{args[0]}
@@ -68,7 +82,7 @@ Examples:
 				return fmt.Errorf("list sources: %w", err)
 			}
 			if len(sources) == 0 {
-				return fmt.Errorf("no accounts configured - run 'add-account' first")
+				return fmt.Errorf("no Gmail accounts configured - run 'add-account' first")
 			}
 			for _, src := range sources {
 				if !src.SyncCursor.Valid || src.SyncCursor.String == "" {
@@ -82,7 +96,7 @@ Examples:
 				emails = append(emails, src.Identifier)
 			}
 			if len(emails) == 0 {
-				return fmt.Errorf("no accounts have been fully synced yet - run 'sync-full' first")
+				return fmt.Errorf("no Gmail accounts have been fully synced yet - run 'sync-full' first")
 			}
 		}
 
