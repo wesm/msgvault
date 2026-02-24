@@ -58,9 +58,18 @@ Examples:
 			return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
 		}
 
-		// Determine which accounts to sync
+		// Determine which accounts to sync (Gmail only for incremental sync)
 		var emails []string
 		if len(args) == 1 {
+			// Explicit identifier: check if it's an IMAP source and redirect if so
+			src, lookupErr := s.GetSourceByIdentifier(args[0])
+			if lookupErr != nil {
+				return fmt.Errorf("look up source: %w", lookupErr)
+			}
+			if src != nil && src.SourceType == "imap" {
+				fmt.Printf("Note: IMAP accounts do not support incremental sync. Running full sync instead.\n\n")
+				return runFullSync(cmd.Context(), s, oauthMgr, src)
+			}
 			emails = []string{args[0]}
 		} else {
 			sources, err := s.ListSources("gmail")
@@ -68,7 +77,7 @@ Examples:
 				return fmt.Errorf("list sources: %w", err)
 			}
 			if len(sources) == 0 {
-				return fmt.Errorf("no accounts configured - run 'add-account' first")
+				return fmt.Errorf("no Gmail accounts configured - run 'add-account' first")
 			}
 			for _, src := range sources {
 				if !src.SyncCursor.Valid || src.SyncCursor.String == "" {
@@ -82,7 +91,7 @@ Examples:
 				emails = append(emails, src.Identifier)
 			}
 			if len(emails) == 0 {
-				return fmt.Errorf("no accounts have been fully synced yet - run 'sync-full' first")
+				return fmt.Errorf("no Gmail accounts have been fully synced yet - run 'sync-full' first")
 			}
 		}
 
