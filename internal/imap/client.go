@@ -207,8 +207,7 @@ func (c *Client) buildMessageListCache(ctx context.Context) error {
 			if isNetworkError(err) {
 				c.logger.Warn("network error selecting mailbox, reconnecting", "mailbox", mailbox, "error", err)
 				if reconErr := c.reconnect(ctx); reconErr != nil {
-					c.logger.Warn("reconnect failed, aborting list", "error", reconErr)
-					break
+					return fmt.Errorf("reconnect failed listing mailbox %q: %w", mailbox, reconErr)
 				}
 				if err := c.selectMailbox(mailbox); err != nil {
 					c.logger.Warn("skipping mailbox after reconnect", "mailbox", mailbox, "error", err)
@@ -225,8 +224,7 @@ func (c *Client) buildMessageListCache(ctx context.Context) error {
 			if isNetworkError(err) {
 				c.logger.Warn("network error during UID SEARCH, reconnecting", "mailbox", mailbox, "error", err)
 				if reconErr := c.reconnect(ctx); reconErr != nil {
-					c.logger.Warn("reconnect failed, aborting list", "error", reconErr)
-					break
+					return fmt.Errorf("reconnect failed searching mailbox %q: %w", mailbox, reconErr)
 				}
 				if selErr := c.selectMailbox(mailbox); selErr != nil {
 					c.logger.Warn("skipping mailbox after reconnect", "mailbox", mailbox, "error", selErr)
@@ -470,8 +468,7 @@ func (c *Client) GetMessagesRawBatch(ctx context.Context, messageIDs []string) (
 			if isNetworkError(err) {
 				c.logger.Warn("network error selecting mailbox, reconnecting", "mailbox", mailbox, "error", err)
 				if reconErr := c.reconnect(ctx); reconErr != nil {
-					c.logger.Warn("reconnect failed, aborting batch", "error", reconErr)
-					return results, nil
+					return results, fmt.Errorf("reconnect failed fetching mailbox %q: %w", mailbox, reconErr)
 				}
 				if err := c.selectMailbox(mailbox); err != nil {
 					c.logger.Warn("skipping mailbox batch after reconnect", "mailbox", mailbox, "error", err)
@@ -512,8 +509,7 @@ func (c *Client) GetMessagesRawBatch(ctx context.Context, messageIDs []string) (
 				if isNetworkError(err) {
 					c.logger.Warn("network error during UID FETCH, reconnecting", "mailbox", mailbox, "error", err)
 					if reconErr := c.reconnect(ctx); reconErr != nil {
-						c.logger.Warn("reconnect failed, aborting batch", "error", reconErr)
-						return results, nil
+						return results, fmt.Errorf("reconnect failed fetching chunk in mailbox %q: %w", mailbox, reconErr)
 					}
 					if selErr := c.selectMailbox(mailbox); selErr != nil {
 						c.logger.Warn("skipping remaining chunks after reconnect", "mailbox", mailbox, "error", selErr)
