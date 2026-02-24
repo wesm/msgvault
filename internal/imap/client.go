@@ -21,17 +21,27 @@ func WithLogger(logger *slog.Logger) Option {
 	return func(c *Client) { c.logger = logger }
 }
 
+// fetchChunkSize is the maximum number of UIDs per UID FETCH command.
+// Large FETCH sets cause server-side timeouts on big mailboxes; chunking
+// keeps each round-trip short.
+const fetchChunkSize = 50
+
+// listPageSize is the number of message IDs returned per ListMessages call.
+// Matches typical Gmail page size so the sync loop checkpoints frequently.
+const listPageSize = 500
+
 // Client implements gmail.API for IMAP servers.
 type Client struct {
 	config   *Config
 	password string
 	logger   *slog.Logger
 
-	mu              sync.Mutex
-	conn            *imapclient.Client
-	selectedMailbox string   // currently selected mailbox
-	mailboxCache    []string // cached list of selectable mailboxes
-	trashMailbox    string   // cached trash mailbox name
+	mu               sync.Mutex
+	conn             *imapclient.Client
+	selectedMailbox  string               // currently selected mailbox
+	mailboxCache     []string             // cached list of selectable mailboxes
+	messageListCache []gmailapi.MessageID // full message ID list, built once per session
+	trashMailbox     string               // cached trash mailbox name
 }
 
 // NewClient creates a new IMAP client.
@@ -83,15 +93,38 @@ func (c *Client) connect(ctx context.Context) error {
 	return nil
 }
 
+// reconnect closes the current connection and re-establishes it. Caller must hold mu.
+func (c *Client) reconnect(ctx context.Context) error {
+	if c.conn != nil {
+		_ = c.conn.Close()
+		c.conn = nil
+	}
+	c.selectedMailbox = ""
+	c.mailboxCache = nil
+	c.messageListCache = nil
+	c.logger.Debug("reconnecting to IMAP server", "addr", c.config.Addr())
+	return c.connect(ctx)
+}
+
 // withConn runs fn with the active connection, connecting if necessary.
 // It holds the mutex for the duration of fn.
+// If fn returns a network error the dead connection is cleared so the next
+// call reconnects cleanly.
 func (c *Client) withConn(ctx context.Context, fn func(*imapclient.Client) error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.connect(ctx); err != nil {
 		return err
 	}
-	return fn(c.conn)
+	err := fn(c.conn)
+	if err != nil && isNetworkError(err) {
+		if c.conn != nil {
+			_ = c.conn.Close()
+		}
+		c.conn = nil
+		c.selectedMailbox = ""
+	}
+	return err
 }
 
 // selectMailbox selects a mailbox if not already selected. Caller must hold mu.
@@ -146,6 +179,100 @@ func (c *Client) listMailboxesLocked() ([]string, error) {
 
 	c.mailboxCache = names
 	return names, nil
+}
+
+// buildMessageListCache enumerates all mailboxes and populates c.messageListCache.
+// Caller must hold mu and have an active connection.
+func (c *Client) buildMessageListCache(ctx context.Context) error {
+	mailboxes, err := c.listMailboxesLocked()
+	if err != nil {
+		if isNetworkError(err) {
+			if reconErr := c.reconnect(ctx); reconErr != nil {
+				return fmt.Errorf("reconnect after LIST error: %w", reconErr)
+			}
+			mailboxes, err = c.listMailboxesLocked()
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	var messages []gmailapi.MessageID
+	for _, mailbox := range mailboxes {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		if err := c.selectMailbox(mailbox); err != nil {
+			if isNetworkError(err) {
+				c.logger.Warn("network error selecting mailbox, reconnecting", "mailbox", mailbox, "error", err)
+				if reconErr := c.reconnect(ctx); reconErr != nil {
+					c.logger.Warn("reconnect failed, aborting list", "error", reconErr)
+					break
+				}
+				if err := c.selectMailbox(mailbox); err != nil {
+					c.logger.Warn("skipping mailbox after reconnect", "mailbox", mailbox, "error", err)
+					continue
+				}
+			} else {
+				c.logger.Warn("skipping mailbox", "mailbox", mailbox, "error", err)
+				continue
+			}
+		}
+
+		searchData, err := c.conn.UIDSearch(&imap.SearchCriteria{}, &imap.SearchOptions{ReturnAll: true}).Wait()
+		if err != nil {
+			if isNetworkError(err) {
+				c.logger.Warn("network error during UID SEARCH, reconnecting", "mailbox", mailbox, "error", err)
+				if reconErr := c.reconnect(ctx); reconErr != nil {
+					c.logger.Warn("reconnect failed, aborting list", "error", reconErr)
+					break
+				}
+				if selErr := c.selectMailbox(mailbox); selErr != nil {
+					c.logger.Warn("skipping mailbox after reconnect", "mailbox", mailbox, "error", selErr)
+					continue
+				}
+				searchData, err = c.conn.UIDSearch(&imap.SearchCriteria{}, &imap.SearchOptions{ReturnAll: true}).Wait()
+				if err != nil {
+					c.logger.Warn("UID SEARCH failed after reconnect", "mailbox", mailbox, "error", err)
+					continue
+				}
+			} else {
+				c.logger.Warn("UID SEARCH failed, skipping mailbox", "mailbox", mailbox, "error", err)
+				continue
+			}
+		}
+
+		uidSet, ok := searchData.All.(imap.UIDSet)
+		if !ok {
+			continue
+		}
+		uids, _ := uidSet.Nums()
+		for _, uid := range uids {
+			messages = append(messages, gmailapi.MessageID{
+				ID:       compositeID(mailbox, uid),
+				ThreadID: "",
+			})
+		}
+		c.logger.Debug("listed mailbox", "mailbox", mailbox, "count", len(uids))
+	}
+
+	c.messageListCache = messages
+	return nil
+}
+
+// isNetworkError reports whether err indicates the underlying TCP connection
+// was closed or timed out, meaning the IMAP session must be re-established.
+func isNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "operation timed out") ||
+		strings.Contains(msg, "EOF")
 }
 
 // hasAttr checks whether attr is in the attrs list.
@@ -229,60 +356,59 @@ func (c *Client) ListLabels(ctx context.Context) ([]*gmailapi.Label, error) {
 	return labels, nil
 }
 
-// ListMessages returns message IDs from all IMAP mailboxes.
-// IMAP has no real pagination; all messages are returned in a single call.
-// Subsequent calls with a non-empty pageToken return an empty response.
+// ListMessages returns a page of message IDs from all IMAP mailboxes.
+//
+// The first call (pageToken == "") enumerates all mailboxes and caches the full
+// list of message IDs; subsequent calls return successive pages of listPageSize
+// using the returned NextPageToken as a numeric offset. This matches the Gmail
+// pagination contract so the sync loop checkpoints and reports progress
+// frequently on large mailboxes.
 func (c *Client) ListMessages(ctx context.Context, query string, pageToken string) (*gmailapi.MessageListResponse, error) {
-	if pageToken != "" {
-		return &gmailapi.MessageListResponse{}, nil
-	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	var messages []gmailapi.MessageID
-	err := c.withConn(ctx, func(conn *imapclient.Client) error {
-		mailboxes, err := c.listMailboxesLocked()
-		if err != nil {
-			return err
-		}
-
-		for _, mailbox := range mailboxes {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-
-			if err := c.selectMailbox(mailbox); err != nil {
-				c.logger.Warn("skipping mailbox", "mailbox", mailbox, "error", err)
-				continue
-			}
-
-			searchData, err := conn.UIDSearch(&imap.SearchCriteria{}, &imap.SearchOptions{ReturnAll: true}).Wait()
-			if err != nil {
-				c.logger.Warn("UID SEARCH failed, skipping mailbox", "mailbox", mailbox, "error", err)
-				continue
-			}
-
-			uidSet, ok := searchData.All.(imap.UIDSet)
-			if !ok {
-				continue
-			}
-			uids, _ := uidSet.Nums()
-			for _, uid := range uids {
-				messages = append(messages, gmailapi.MessageID{
-					ID:       compositeID(mailbox, uid),
-					ThreadID: "",
-				})
-			}
-			c.logger.Debug("listed mailbox", "mailbox", mailbox, "count", len(uids))
-		}
-		return nil
-	})
-	if err != nil {
+	if err := c.connect(ctx); err != nil {
 		return nil, err
 	}
 
+	// Build the full message ID list once per session.
+	if c.messageListCache == nil {
+		if err := c.buildMessageListCache(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	// Parse page offset from token.
+	offset := 0
+	if pageToken != "" {
+		n, err := strconv.Atoi(pageToken)
+		if err != nil || n < 0 {
+			return &gmailapi.MessageListResponse{}, nil
+		}
+		offset = n
+	}
+
+	all := c.messageListCache
+	total := int64(len(all))
+
+	if offset >= len(all) {
+		return &gmailapi.MessageListResponse{ResultSizeEstimate: total}, nil
+	}
+
+	end := offset + listPageSize
+	if end > len(all) {
+		end = len(all)
+	}
+
+	nextToken := ""
+	if end < len(all) {
+		nextToken = strconv.Itoa(end)
+	}
+
 	return &gmailapi.MessageListResponse{
-		Messages:           messages,
-		NextPageToken:      "",
-		ResultSizeEstimate: int64(len(messages)),
+		Messages:           all[offset:end],
+		NextPageToken:      nextToken,
+		ResultSizeEstimate: total,
 	}, nil
 }
 
@@ -300,6 +426,11 @@ func (c *Client) GetMessageRaw(ctx context.Context, messageID string) (*gmailapi
 
 // GetMessagesRawBatch fetches multiple messages, grouping by mailbox for efficiency.
 // Results are returned in the same order as messageIDs; nil entries indicate failures.
+//
+// UIDs per mailbox are fetched in chunks of fetchChunkSize to avoid huge FETCH
+// commands that time out on large mailboxes. On network errors the connection is
+// re-established and the failed chunk is retried once; if reconnect itself fails
+// the function returns immediately with whatever results were collected.
 func (c *Client) GetMessagesRawBatch(ctx context.Context, messageIDs []string) ([]*gmailapi.RawMessage, error) {
 	type idxUID struct {
 		idx int
@@ -323,28 +454,80 @@ func (c *Client) GetMessagesRawBatch(ctx context.Context, messageIDs []string) (
 		BodySection:  []*imap.FetchItemBodySection{{}}, // empty section = entire message
 	}
 
-	err := c.withConn(ctx, func(conn *imapclient.Client) error {
-		for mailbox, items := range byMailbox {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-			if err := c.selectMailbox(mailbox); err != nil {
+	if err := c.connect(ctx); err != nil {
+		return nil, err
+	}
+
+	for mailbox, items := range byMailbox {
+		if ctx.Err() != nil {
+			return results, ctx.Err()
+		}
+
+		if err := c.selectMailbox(mailbox); err != nil {
+			if isNetworkError(err) {
+				c.logger.Warn("network error selecting mailbox, reconnecting", "mailbox", mailbox, "error", err)
+				if reconErr := c.reconnect(ctx); reconErr != nil {
+					c.logger.Warn("reconnect failed, aborting batch", "error", reconErr)
+					return results, nil
+				}
+				if err := c.selectMailbox(mailbox); err != nil {
+					c.logger.Warn("skipping mailbox batch after reconnect", "mailbox", mailbox, "error", err)
+					continue
+				}
+			} else {
 				c.logger.Warn("skipping mailbox batch", "mailbox", mailbox, "error", err)
 				continue
 			}
+		}
 
-			var uidSet imap.UIDSet
-			uidToIdx := make(map[imap.UID]int, len(items))
-			for _, item := range items {
-				uidSet.AddNum(item.uid)
-				uidToIdx[item.uid] = item.idx
+		// Build UID→result-index map for all items in this mailbox.
+		uidToIdx := make(map[imap.UID]int, len(items))
+		for _, item := range items {
+			uidToIdx[item.uid] = item.idx
+		}
+
+		// Fetch in chunks to avoid huge UID FETCH commands that time out on
+		// large mailboxes.
+	chunkLoop:
+		for chunkStart := 0; chunkStart < len(items); chunkStart += fetchChunkSize {
+			if ctx.Err() != nil {
+				return results, ctx.Err()
 			}
 
-			msgs, err := conn.Fetch(uidSet, fetchOpts).Collect()
+			chunk := items[chunkStart:]
+			if len(chunk) > fetchChunkSize {
+				chunk = chunk[:fetchChunkSize]
+			}
+
+			var uidSet imap.UIDSet
+			for _, item := range chunk {
+				uidSet.AddNum(item.uid)
+			}
+
+			msgs, err := c.conn.Fetch(uidSet, fetchOpts).Collect()
 			if err != nil {
-				c.logger.Warn("UID FETCH failed", "mailbox", mailbox, "error", err)
-				continue
+				if isNetworkError(err) {
+					c.logger.Warn("network error during UID FETCH, reconnecting", "mailbox", mailbox, "error", err)
+					if reconErr := c.reconnect(ctx); reconErr != nil {
+						c.logger.Warn("reconnect failed, aborting batch", "error", reconErr)
+						return results, nil
+					}
+					if selErr := c.selectMailbox(mailbox); selErr != nil {
+						c.logger.Warn("skipping remaining chunks after reconnect", "mailbox", mailbox, "error", selErr)
+						break chunkLoop
+					}
+					msgs, err = c.conn.Fetch(uidSet, fetchOpts).Collect()
+					if err != nil {
+						c.logger.Warn("UID FETCH failed after reconnect", "mailbox", mailbox, "error", err)
+						break chunkLoop
+					}
+				} else {
+					c.logger.Warn("UID FETCH failed", "mailbox", mailbox, "error", err)
+					break chunkLoop
+				}
 			}
 
 			for _, msgBuf := range msgs {
@@ -370,10 +553,6 @@ func (c *Client) GetMessagesRawBatch(ctx context.Context, messageIDs []string) (
 				}
 			}
 		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
 	return results, nil
 }
