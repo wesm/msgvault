@@ -35,11 +35,6 @@ Examples:
   msgvault sync you@gmail.com   # Sync specific account`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Validate config
-		if cfg.OAuth.ClientSecrets == "" {
-			return errOAuthNotConfigured()
-		}
-
 		// Open database
 		dbPath := cfg.DatabaseDSN()
 		s, err := store.Open(dbPath)
@@ -52,6 +47,25 @@ Examples:
 			return fmt.Errorf("init schema: %w", err)
 		}
 
+		// Handle IMAP sources before checking OAuth: IMAP does not support
+		// incremental sync, so redirect to a full sync without requiring Gmail
+		// OAuth credentials.
+		if len(args) == 1 {
+			src, lookupErr := s.GetSourceByIdentifier(args[0])
+			if lookupErr != nil {
+				return fmt.Errorf("look up source: %w", lookupErr)
+			}
+			if src != nil && src.SourceType == "imap" {
+				fmt.Printf("Note: IMAP accounts do not support incremental sync. Running full sync instead.\n\n")
+				return runFullSync(cmd.Context(), s, nil, src)
+			}
+		}
+
+		// Gmail incremental sync requires OAuth.
+		if cfg.OAuth.ClientSecrets == "" {
+			return errOAuthNotConfigured()
+		}
+
 		// Create OAuth manager
 		oauthMgr, err := oauth.NewManager(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger)
 		if err != nil {
@@ -61,15 +75,6 @@ Examples:
 		// Determine which accounts to sync (Gmail only for incremental sync)
 		var emails []string
 		if len(args) == 1 {
-			// Explicit identifier: check if it's an IMAP source and redirect if so
-			src, lookupErr := s.GetSourceByIdentifier(args[0])
-			if lookupErr != nil {
-				return fmt.Errorf("look up source: %w", lookupErr)
-			}
-			if src != nil && src.SourceType == "imap" {
-				fmt.Printf("Note: IMAP accounts do not support incremental sync. Running full sync instead.\n\n")
-				return runFullSync(cmd.Context(), s, oauthMgr, src)
-			}
 			emails = []string{args[0]}
 		} else {
 			sources, err := s.ListSources("gmail")

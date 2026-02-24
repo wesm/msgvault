@@ -14,7 +14,6 @@ var (
 	imapHost     string
 	imapPort     int
 	imapUsername string
-	imapPassword string
 	imapNoTLS    bool
 	imapSTARTTLS bool
 )
@@ -28,7 +27,7 @@ By default, connects using implicit TLS (IMAPS, port 993).
 Use --starttls for STARTTLS upgrade on port 143.
 Use --no-tls for a plain unencrypted connection (not recommended).
 
-If --password is not provided, you will be prompted to enter it interactively.
+You will be prompted to enter your password interactively.
 
 Examples:
   msgvault add-imap --host imap.example.com --username user@example.com
@@ -52,17 +51,15 @@ Examples:
 			Username: imapUsername,
 		}
 
-		// Get password
-		password := imapPassword
-		if password == "" {
-			fmt.Printf("Password for %s@%s: ", imapUsername, imapHost)
-			raw, err := term.ReadPassword(int(syscall.Stdin))
-			fmt.Println()
-			if err != nil {
-				return fmt.Errorf("read password: %w", err)
-			}
-			password = string(raw)
+		// Get password via secure interactive prompt only (never via flag to
+		// avoid exposure in shell history and process listings).
+		fmt.Printf("Password for %s@%s: ", imapUsername, imapHost)
+		raw, err := term.ReadPassword(int(syscall.Stdin))
+		fmt.Println()
+		if err != nil {
+			return fmt.Errorf("read password: %w", err)
 		}
+		password := string(raw)
 		if password == "" {
 			return fmt.Errorf("password is required")
 		}
@@ -130,7 +127,6 @@ func init() {
 	addIMAPCmd.Flags().StringVar(&imapHost, "host", "", "IMAP server hostname (required)")
 	addIMAPCmd.Flags().IntVar(&imapPort, "port", 0, "IMAP server port (default: 993 for TLS, 143 otherwise)")
 	addIMAPCmd.Flags().StringVar(&imapUsername, "username", "", "IMAP username / email address (required)")
-	addIMAPCmd.Flags().StringVar(&imapPassword, "password", "", "IMAP password (prompted if not provided)")
 	addIMAPCmd.Flags().BoolVar(&imapNoTLS, "no-tls", false, "Disable TLS (plain connection, not recommended)")
 	addIMAPCmd.Flags().BoolVar(&imapSTARTTLS, "starttls", false, "Use STARTTLS instead of implicit TLS")
 	rootCmd.AddCommand(addIMAPCmd)

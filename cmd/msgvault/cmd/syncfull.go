@@ -50,11 +50,6 @@ Examples:
 			return fmt.Errorf("--limit must be a non-negative number")
 		}
 
-		// Validate config
-		if cfg.OAuth.ClientSecrets == "" {
-			return errOAuthNotConfigured()
-		}
-
 		// Open database
 		dbPath := cfg.DatabaseDSN()
 		s, err := store.Open(dbPath)
@@ -67,10 +62,22 @@ Examples:
 			return fmt.Errorf("init schema: %w", err)
 		}
 
-		// Create OAuth manager
-		oauthMgr, err := oauth.NewManager(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger)
-		if err != nil {
-			return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
+		// oauthMgr is created lazily on first use so that IMAP-only users are
+		// not blocked by an absent client_secrets file.
+		var oauthMgr *oauth.Manager
+		getOAuthMgr := func() (*oauth.Manager, error) {
+			if oauthMgr != nil {
+				return oauthMgr, nil
+			}
+			if cfg.OAuth.ClientSecrets == "" {
+				return nil, errOAuthNotConfigured()
+			}
+			mgr, err := oauth.NewManager(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger)
+			if err != nil {
+				return nil, wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
+			}
+			oauthMgr = mgr
+			return oauthMgr, nil
 		}
 
 		// Determine which sources to sync
@@ -98,7 +105,11 @@ Examples:
 			for _, src := range allSources {
 				switch src.SourceType {
 				case "gmail":
-					if !oauthMgr.HasToken(src.Identifier) {
+					mgr, err := getOAuthMgr()
+					if err != nil {
+						return err
+					}
+					if !mgr.HasToken(src.Identifier) {
 						fmt.Printf("Skipping %s (no OAuth token - run 'add-account' first)\n", src.Identifier)
 						continue
 					}
@@ -107,6 +118,9 @@ Examples:
 						fmt.Printf("Skipping %s (no credentials - run 'add-imap' first)\n", src.Identifier)
 						continue
 					}
+				default:
+					fmt.Printf("Skipping %s (unsupported source type %q)\n", src.Identifier, src.SourceType)
+					continue
 				}
 				sources = append(sources, src)
 			}
@@ -132,6 +146,14 @@ Examples:
 		for _, src := range sources {
 			if ctx.Err() != nil {
 				break
+			}
+
+			// Ensure the OAuth manager is initialized before syncing Gmail sources.
+			if src.SourceType == "gmail" || src.SourceType == "" {
+				if _, err := getOAuthMgr(); err != nil {
+					syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", src.Identifier, err))
+					continue
+				}
 			}
 
 			if err := runFullSync(ctx, s, oauthMgr, src); err != nil {

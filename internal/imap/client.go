@@ -573,6 +573,12 @@ func (c *Client) TrashMessage(ctx context.Context, messageID string) error {
 		if err := c.selectMailbox(mailbox); err != nil {
 			return err
 		}
+		// Populate trashMailbox via LIST if not yet discovered.
+		if c.trashMailbox == "" {
+			if _, err := c.listMailboxesLocked(); err != nil {
+				c.logger.Warn("failed to discover trash mailbox, will use default", "error", err)
+			}
+		}
 		trashMailbox := c.trashMailbox
 		if trashMailbox == "" {
 			trashMailbox = "Trash"
