@@ -65,7 +65,12 @@ func DiscoverMailboxes(rootDir string) ([]Mailbox, error) {
 			return nil
 		}
 
-		// Skip .partial.emlx and other non-mailbox directories.
+		// listEmlxFiles reads Messages/ directly, so skip walking it.
+		if d.Name() == "Messages" {
+			return filepath.SkipDir
+		}
+
+		// Skip non-mailbox directories.
 		if !isMailboxDir(path) {
 			return nil
 		}

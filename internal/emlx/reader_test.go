@@ -184,6 +184,15 @@ func TestParseFile_NotFound(t *testing.T) {
 	}
 }
 
+func TestParse_ExtremeByteCount(t *testing.T) {
+	// A declared byte count near MaxInt64 must return an error, not panic.
+	data := "9223372036854775807\nshort"
+	_, err := Parse([]byte(data))
+	if err == nil {
+		t.Fatalf("expected error for extreme byte count")
+	}
+}
+
 func TestParse_WhitespaceAroundByteCount(t *testing.T) {
 	mime := "From: test@example.com\r\n\r\n"
 	// Byte count with leading/trailing spaces.

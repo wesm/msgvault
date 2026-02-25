@@ -191,6 +191,7 @@ func ImportEmlxDir(
 
 	var pending []pendingEmlxMsg
 	var pendingBytes int64
+	pendingIdx := make(map[string]int) // SourceMsg → index in pending
 	lastCpMbox := startMbox
 	lastCpFile := startAfter
 
@@ -324,6 +325,7 @@ func ImportEmlxDir(
 		clear(pending)
 		pending = pending[:0]
 		pendingBytes = 0
+		clear(pendingIdx)
 		return false, nil
 	}
 
@@ -403,16 +405,24 @@ func ImportEmlxDir(
 				fallbackDate = msg.PlistDate
 			}
 
-			pending = append(pending, pendingEmlxMsg{
-				Raw:       msg.Raw,
-				RawHash:   rawHash,
-				SourceMsg: sourceMsgID,
-				LabelIDs:  labelIDs,
-				Fallback:  fallbackDate,
-				MboxIdx:   mboxIdx,
-				FileName:  fileName,
-			})
-			pendingBytes += int64(len(msg.Raw))
+			if idx, dup := pendingIdx[sourceMsgID]; dup {
+				// Same content from a different mailbox; merge labels.
+				pending[idx].LabelIDs = append(
+					pending[idx].LabelIDs, labelIDs...,
+				)
+			} else {
+				pendingIdx[sourceMsgID] = len(pending)
+				pending = append(pending, pendingEmlxMsg{
+					Raw:       msg.Raw,
+					RawHash:   rawHash,
+					SourceMsg: sourceMsgID,
+					LabelIDs:  labelIDs,
+					Fallback:  fallbackDate,
+					MboxIdx:   mboxIdx,
+					FileName:  fileName,
+				})
+				pendingBytes += int64(len(msg.Raw))
+			}
 
 			if len(pending) >= batchSize || pendingBytes >= batchBytes {
 				stop, err := flushPending()

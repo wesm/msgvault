@@ -50,6 +50,18 @@ func IngestRawMessage(
 	bodyText := textutil.EnsureUTF8(parsed.GetBodyText())
 	bodyHTML := textutil.EnsureUTF8(parsed.BodyHTML)
 
+	// Sanitize address fields in place so all downstream consumers
+	// (participantMap, senderID lookup, storeRecipients) use consistent keys.
+	for _, addrs := range [][]mime.Address{
+		parsed.From, parsed.To, parsed.Cc, parsed.Bcc,
+	} {
+		for i := range addrs {
+			addrs[i].Email = textutil.SanitizeUTF8(addrs[i].Email)
+			addrs[i].Name = textutil.SanitizeUTF8(addrs[i].Name)
+			addrs[i].Domain = textutil.SanitizeUTF8(addrs[i].Domain)
+		}
+	}
+
 	allAddresses := make(
 		[]mime.Address, 0,
 		len(parsed.From)+len(parsed.To)+
@@ -59,17 +71,6 @@ func IngestRawMessage(
 	allAddresses = append(allAddresses, parsed.To...)
 	allAddresses = append(allAddresses, parsed.Cc...)
 	allAddresses = append(allAddresses, parsed.Bcc...)
-	for i := range allAddresses {
-		allAddresses[i].Email = textutil.SanitizeUTF8(
-			allAddresses[i].Email,
-		)
-		allAddresses[i].Name = textutil.SanitizeUTF8(
-			allAddresses[i].Name,
-		)
-		allAddresses[i].Domain = textutil.SanitizeUTF8(
-			allAddresses[i].Domain,
-		)
-	}
 	participantMap, err := st.EnsureParticipantsBatch(allAddresses)
 	if err != nil {
 		return fmt.Errorf("ensure participants: %w", err)
