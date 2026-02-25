@@ -2,11 +2,14 @@ package importer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/testutil/email"
@@ -695,5 +698,118 @@ func TestImportEmlxDir_RootMismatchRejectsResume(t *testing.T) {
 		t.Fatalf(
 			"error should mention --no-resume, got: %v", err,
 		)
+	}
+}
+
+func TestImportEmlxDir_CheckpointBlockedOnIngestFailure(t *testing.T) {
+	st, tmp := openTestStore(t)
+
+	root := filepath.Join(tmp, "Mail")
+	mboxDir := filepath.Join(root, "Mailboxes", "Test.mbox")
+
+	mkMsg := func(subject string) []byte {
+		return email.NewMessage().
+			From("Alice <alice@example.com>").
+			To("Bob <bob@example.com>").
+			Subject(subject).
+			Date("Mon, 01 Jan 2024 12:00:00 +0000").
+			Header("Message-ID",
+				fmt.Sprintf("<%s@example.com>", subject)).
+			Body("Hi.\n").
+			Bytes()
+	}
+
+	mkMailboxDir(t, mboxDir, map[string][]byte{
+		"1.emlx": mkMsg("msg1"),
+		"2.emlx": mkMsg("msg2"),
+		"3.emlx": mkMsg("msg3"),
+	})
+
+	// Inject failure on the second message.
+	calls := 0
+	injectFn := func(
+		ctx context.Context, s *store.Store,
+		sourceID int64, identifier, attachmentsDir string,
+		labelIDs []int64, sourceMsgID, rawHash string,
+		raw []byte, fallbackDate time.Time,
+		log *slog.Logger,
+	) error {
+		calls++
+		if calls == 2 {
+			return fmt.Errorf("injected failure")
+		}
+		return IngestRawMessage(
+			ctx, s, sourceID, identifier, attachmentsDir,
+			labelIDs, sourceMsgID, rawHash,
+			raw, fallbackDate, log,
+		)
+	}
+
+	summary, err := ImportEmlxDir(
+		context.Background(), st, root, EmlxImportOptions{
+			Identifier:         "alice@example.com",
+			NoResume:           true,
+			CheckpointInterval: 1,
+			IngestFunc:         injectFn,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ImportEmlxDir: %v", err)
+	}
+	if !summary.HardErrors {
+		t.Fatalf("expected HardErrors=true")
+	}
+	// msg1 and msg3 should be ingested; msg2 failed.
+	if summary.MessagesAdded != 2 {
+		t.Fatalf("MessagesAdded = %d, want 2", summary.MessagesAdded)
+	}
+
+	// Verify the checkpoint cursor stayed at msg1 (did not advance
+	// past the failed msg2).
+	var cursor string
+	if err := st.DB().QueryRow(
+		`SELECT cursor_before FROM sync_runs
+		 ORDER BY started_at DESC LIMIT 1`,
+	).Scan(&cursor); err != nil {
+		t.Fatalf("select cursor: %v", err)
+	}
+	var cp emlxCheckpoint
+	if err := json.Unmarshal([]byte(cursor), &cp); err != nil {
+		t.Fatalf("unmarshal checkpoint: %v", err)
+	}
+	if cp.LastFile != "1.emlx" {
+		t.Fatalf(
+			"checkpoint LastFile = %q, want %q (should not advance past failed msg2)",
+			cp.LastFile, "1.emlx",
+		)
+	}
+
+	// Resume should retry msg2 and succeed (no injected failure this time).
+	summary2, err := ImportEmlxDir(
+		context.Background(), st, root, EmlxImportOptions{
+			Identifier:         "alice@example.com",
+			NoResume:           false,
+			CheckpointInterval: 1,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ImportEmlxDir (resume): %v", err)
+	}
+	// msg2 should now be added; msg1 and msg3 already exist.
+	if summary2.MessagesAdded != 1 {
+		t.Fatalf(
+			"MessagesAdded (resume) = %d, want 1",
+			summary2.MessagesAdded,
+		)
+	}
+
+	var total int
+	if err := st.DB().QueryRow(
+		`SELECT COUNT(*) FROM messages`,
+	).Scan(&total); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if total != 3 {
+		t.Fatalf("total messages = %d, want 3", total)
 	}
 }

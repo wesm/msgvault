@@ -39,6 +39,16 @@ type EmlxImportOptions struct {
 	// Defaults to 128 MiB.
 	MaxMessageBytes int64
 
+	// IngestFunc overrides message ingestion (for tests). If nil,
+	// the default IngestRawMessage is used.
+	IngestFunc func(
+		ctx context.Context, st *store.Store,
+		sourceID int64, identifier, attachmentsDir string,
+		labelIDs []int64, sourceMsgID, rawHash string,
+		raw []byte, fallbackDate time.Time,
+		log *slog.Logger,
+	) error
+
 	// Logger is optional; defaults to slog.Default().
 	Logger *slog.Logger
 }
@@ -87,6 +97,10 @@ func ImportEmlxDir(
 	}
 	if opts.MaxMessageBytes <= 0 {
 		opts.MaxMessageBytes = defaultMaxEmlxBytes
+	}
+	ingestFn := opts.IngestFunc
+	if ingestFn == nil {
+		ingestFn = IngestRawMessage
 	}
 	log := opts.Logger
 	if log == nil {
@@ -143,21 +157,21 @@ func ImportEmlxDir(
 							ecp.RootDir, absRoot,
 						)
 					}
+					if ecp.MailboxIndex < 0 ||
+						ecp.MailboxIndex >= len(mailboxes) {
+						return nil, fmt.Errorf(
+							"checkpoint mailbox index %d out of range (%d mailboxes); rerun with --no-resume to start fresh",
+							ecp.MailboxIndex, len(mailboxes),
+						)
+					}
 					// Validate mailbox path if present (added in later versions).
-					if ecp.MailboxPath != "" {
-						if ecp.MailboxIndex >= len(mailboxes) {
-							return nil, fmt.Errorf(
-								"checkpoint mailbox index %d out of range (%d mailboxes); rerun with --no-resume to start fresh",
-								ecp.MailboxIndex, len(mailboxes),
-							)
-						}
-						if mailboxes[ecp.MailboxIndex].Path != ecp.MailboxPath {
-							return nil, fmt.Errorf(
-								"mailbox at index %d changed (%q -> %q); rerun with --no-resume to start fresh",
-								ecp.MailboxIndex, ecp.MailboxPath,
-								mailboxes[ecp.MailboxIndex].Path,
-							)
-						}
+					if ecp.MailboxPath != "" &&
+						mailboxes[ecp.MailboxIndex].Path != ecp.MailboxPath {
+						return nil, fmt.Errorf(
+							"mailbox at index %d changed (%q -> %q); rerun with --no-resume to start fresh",
+							ecp.MailboxIndex, ecp.MailboxPath,
+							mailboxes[ecp.MailboxIndex].Path,
+						)
 					}
 					syncID = active.ID
 					cp.MessagesProcessed = active.MessagesProcessed
@@ -323,7 +337,7 @@ func ImportEmlxDir(
 				_, alreadyExists = existingAny[p.SourceMsg]
 			}
 
-			if err := IngestRawMessage(
+			if err := ingestFn(
 				ctx, st, src.ID, opts.Identifier,
 				opts.AttachmentsDir, p.LabelIDs,
 				p.SourceMsg, p.RawHash,
