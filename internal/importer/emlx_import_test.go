@@ -591,45 +591,37 @@ func TestImportEmlxDir_Idempotent(t *testing.T) {
 func TestImportEmlxDir_RootMismatchRejectsResume(t *testing.T) {
 	st, tmp := openTestStore(t)
 
-	// Set up a mailbox at root A with one message.
-	rootA := filepath.Join(tmp, "MailA")
-	mboxA := filepath.Join(rootA, "Mailboxes", "Test.mbox")
 	raw := email.NewMessage().
 		From("Alice <alice@example.com>").
 		Subject("Hello").
 		Body("hi\n").
 		Bytes()
-	mkMailboxDir(t, mboxA, map[string][]byte{"1.emlx": raw})
 
-	// Import from root A (creates an active sync with checkpoint).
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately so sync stays "running".
-	_, err := ImportEmlxDir(ctx, st, rootA, EmlxImportOptions{
-		Identifier:         "alice@example.com",
-		NoResume:           true,
-		CheckpointInterval: 1,
-	})
+	// Seed an active (running) sync with a checkpoint pointing to root A.
+	src, err := st.GetOrCreateSource("apple-mail", "alice@example.com")
 	if err != nil {
-		t.Fatalf("ImportEmlxDir (root A): %v", err)
+		t.Fatalf("get/create source: %v", err)
+	}
+	syncID, err := st.StartSync(src.ID, "import-emlx")
+	if err != nil {
+		t.Fatalf("start sync: %v", err)
+	}
+	absRootA, err := filepath.Abs(filepath.Join(tmp, "MailA"))
+	if err != nil {
+		t.Fatalf("abs root A: %v", err)
+	}
+	if err := saveEmlxCheckpoint(
+		st, syncID, absRootA, 0, "", &store.Checkpoint{},
+	); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
 	}
 
-	// Verify sync is "running" (active).
-	var status string
-	if err := st.DB().QueryRow(
-		`SELECT status FROM sync_runs
-		 ORDER BY started_at DESC LIMIT 1`,
-	).Scan(&status); err != nil {
-		t.Fatalf("select sync status: %v", err)
-	}
-	if status != store.SyncStatusRunning {
-		t.Fatalf("status = %q, want %q", status, store.SyncStatusRunning)
-	}
-
-	// Now try to import from root B (different directory).
+	// Create a mailbox at root B.
 	rootB := filepath.Join(tmp, "MailB")
 	mboxB := filepath.Join(rootB, "Mailboxes", "Other.mbox")
 	mkMailboxDir(t, mboxB, map[string][]byte{"1.emlx": raw})
 
+	// Attempt import from root B without --no-resume.
 	_, err = ImportEmlxDir(
 		context.Background(), st, rootB, EmlxImportOptions{
 			Identifier:         "alice@example.com",
