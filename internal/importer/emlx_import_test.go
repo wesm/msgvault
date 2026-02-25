@@ -481,6 +481,64 @@ func TestImportEmlxDir_CancelledLeavesRunning(t *testing.T) {
 	}
 }
 
+func TestImportEmlxDir_SameMailboxDuplicateFiles(t *testing.T) {
+	st, tmp := openTestStore(t)
+
+	root := filepath.Join(tmp, "Mail")
+	mboxDir := filepath.Join(root, "Mailboxes", "Inbox.mbox")
+
+	raw := email.NewMessage().
+		From("Alice <alice@example.com>").
+		To("Bob <bob@example.com>").
+		Subject("Hello").
+		Date("Mon, 01 Jan 2024 12:00:00 +0000").
+		Header("Message-ID", "<msg1@example.com>").
+		Body("Hi Bob.\n").
+		Bytes()
+
+	// Two different filenames with identical MIME content in one mailbox.
+	mkMailboxDir(t, mboxDir, map[string][]byte{
+		"1.emlx": raw,
+		"2.emlx": raw,
+	})
+
+	summary, err := ImportEmlxDir(
+		context.Background(), st, root, EmlxImportOptions{
+			Identifier:         "alice@example.com",
+			NoResume:           true,
+			CheckpointInterval: 1,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ImportEmlxDir: %v", err)
+	}
+
+	if summary.MessagesAdded != 1 {
+		t.Fatalf("MessagesAdded = %d, want 1", summary.MessagesAdded)
+	}
+
+	var msgCount int
+	if err := st.DB().QueryRow(
+		`SELECT COUNT(*) FROM messages`,
+	).Scan(&msgCount); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if msgCount != 1 {
+		t.Fatalf("msgCount = %d, want 1", msgCount)
+	}
+
+	// Only one label mapping (Inbox), not duplicated.
+	var mlCount int
+	if err := st.DB().QueryRow(
+		`SELECT COUNT(*) FROM message_labels`,
+	).Scan(&mlCount); err != nil {
+		t.Fatalf("count message_labels: %v", err)
+	}
+	if mlCount != 1 {
+		t.Fatalf("message_labels count = %d, want 1", mlCount)
+	}
+}
+
 func TestImportEmlxDir_Idempotent(t *testing.T) {
 	st, tmp := openTestStore(t)
 

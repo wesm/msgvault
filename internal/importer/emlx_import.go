@@ -406,10 +406,23 @@ func ImportEmlxDir(
 			}
 
 			if idx, dup := pendingIdx[sourceMsgID]; dup {
-				// Same content from a different mailbox; merge labels.
-				pending[idx].LabelIDs = append(
-					pending[idx].LabelIDs, labelIDs...,
-				)
+				// Same content from another mailbox (or duplicate file
+				// within the same mailbox); merge labels, deduplicating
+				// to avoid unique constraint violations in message_labels.
+				existing := pending[idx].LabelIDs
+				for _, lid := range labelIDs {
+					found := false
+					for _, eid := range existing {
+						if eid == lid {
+							found = true
+							break
+						}
+					}
+					if !found {
+						existing = append(existing, lid)
+					}
+				}
+				pending[idx].LabelIDs = existing
 			} else {
 				pendingIdx[sourceMsgID] = len(pending)
 				pending = append(pending, pendingEmlxMsg{
