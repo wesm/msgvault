@@ -130,18 +130,23 @@ func ImportEmlxDir(
 			return nil, fmt.Errorf("check active sync: %w", err)
 		}
 		if active != nil {
-			syncID = active.ID
-			cp.MessagesProcessed = active.MessagesProcessed
-			cp.MessagesAdded = active.MessagesAdded
-			cp.MessagesUpdated = active.MessagesUpdated
-			cp.ErrorsCount = active.ErrorsCount
-
 			if active.CursorBefore.Valid &&
 				active.CursorBefore.String != "" {
 				var ecp emlxCheckpoint
 				if err := json.Unmarshal(
 					[]byte(active.CursorBefore.String), &ecp,
-				); err == nil && ecp.RootDir == absRoot {
+				); err == nil {
+					if ecp.RootDir != absRoot {
+						return nil, fmt.Errorf(
+							"active emlx import is for a different directory (%q), not %q; rerun with --no-resume to start fresh",
+							ecp.RootDir, absRoot,
+						)
+					}
+					syncID = active.ID
+					cp.MessagesProcessed = active.MessagesProcessed
+					cp.MessagesAdded = active.MessagesAdded
+					cp.MessagesUpdated = active.MessagesUpdated
+					cp.ErrorsCount = active.ErrorsCount
 					startMbox = ecp.MailboxIndex
 					startAfter = ecp.LastFile
 					summary.WasResumed = true

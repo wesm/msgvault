@@ -279,6 +279,14 @@ Examples:
 			if ctx.Err() != nil {
 				break
 			}
+
+			// Stop processing subsequent files when the current file had
+			// hard errors. Otherwise resume would advance past this file
+			// based on a later successful file's checkpoint, permanently
+			// skipping the failed file's unprocessed messages.
+			if summary.HardErrors {
+				break
+			}
 		}
 
 		out := cmd.OutOrStdout()
