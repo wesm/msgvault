@@ -650,6 +650,63 @@ func TestImportEmlxDir_MailboxPathMismatchRejectsResume(t *testing.T) {
 	}
 }
 
+func TestImportEmlxDir_NegativeIndexRejectsResume(t *testing.T) {
+	st, tmp := openTestStore(t)
+
+	raw := email.NewMessage().
+		From("Alice <alice@example.com>").
+		Subject("Hello").
+		Body("hi\n").
+		Bytes()
+
+	root := filepath.Join(tmp, "Mail")
+	mboxDir := filepath.Join(root, "Mailboxes", "Inbox.mbox")
+	mkMailboxDir(t, mboxDir, map[string][]byte{"1.emlx": raw})
+
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatalf("abs root: %v", err)
+	}
+
+	// Seed checkpoint with MailboxIndex = -1 (corrupted data).
+	src, err := st.GetOrCreateSource("apple-mail", "alice@example.com")
+	if err != nil {
+		t.Fatalf("get/create source: %v", err)
+	}
+	syncID, err := st.StartSync(src.ID, "import-emlx")
+	if err != nil {
+		t.Fatalf("start sync: %v", err)
+	}
+	cpJSON, _ := json.Marshal(emlxCheckpoint{
+		RootDir:      absRoot,
+		MailboxIndex: -1,
+		LastFile:     "",
+	})
+	if err := st.UpdateSyncCheckpoint(syncID, &store.Checkpoint{
+		PageToken: string(cpJSON),
+	}); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+
+	_, err = ImportEmlxDir(
+		context.Background(), st, root, EmlxImportOptions{
+			Identifier: "alice@example.com",
+			NoResume:   false,
+		},
+	)
+	if err == nil {
+		t.Fatalf("expected error for negative index")
+	}
+	if !strings.Contains(err.Error(), "out of range") {
+		t.Fatalf("error should mention out of range, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "--no-resume") {
+		t.Fatalf(
+			"error should mention --no-resume, got: %v", err,
+		)
+	}
+}
+
 func TestImportEmlxDir_RootMismatchRejectsResume(t *testing.T) {
 	st, tmp := openTestStore(t)
 
