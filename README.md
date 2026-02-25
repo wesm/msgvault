@@ -15,12 +15,12 @@ Archive a lifetime of email. Analytics and search in milliseconds, entirely offl
 
 Your messages are yours. Decades of correspondence, attachments, and history shouldn't be locked behind a web interface or an API. msgvault downloads a complete local copy and then everything runs offline. Search, analytics, and the MCP server all work against local data with no network access required.
 
-Currently supports Gmail sync, plus offline imports from MBOX exports (including HEY.com).
+Currently supports Gmail sync, plus offline imports from MBOX exports and Apple Mail (.emlx) directories.
 
 ## Features
 
 - **Full Gmail backup**: raw MIME, attachments, labels, and metadata
-- **MBOX import**: import email exports from providers without IMAP/POP access (e.g. HEY.com)
+- **MBOX / Apple Mail import**: import email from MBOX exports or Apple Mail (.emlx) directories
 - **Interactive TUI**: drill-down analytics over your entire message history, powered by DuckDB over Parquet
 - **Full-text search**: FTS5 with Gmail-like query syntax (`from:`, `has:attachment`, date ranges)
 - **MCP server**: access your full archive at the speed of thought in Claude Desktop and other MCP-capable AI agents
@@ -87,20 +87,23 @@ msgvault tui
 | `stats` | Show archive statistics |
 | `verify EMAIL` | Verify archive integrity against Gmail |
 | `export-eml` | Export a message as `.eml` |
-| `import-mbox` | Import email from an MBOX export (HEY has no IMAP/POP) |
+| `import-mbox` | Import email from an MBOX export or `.zip` of MBOX files |
+| `import-emlx` | Import email from an Apple Mail directory tree |
 | `build-cache` | Rebuild the Parquet analytics cache |
 | `repair-encoding` | Fix UTF-8 encoding issues |
 | `list-senders` / `list-domains` / `list-labels` | Explore metadata |
 
 See the [CLI Reference](https://msgvault.io/cli-reference/) for full details.
 
-## Importing HEY.com
+## Importing from MBOX or Apple Mail
 
-HEY exports mail as MBOX (often delivered as a `.zip`). Import it using `import-mbox`:
+Import email from providers that offer MBOX exports or from a local Apple Mail data directory:
 
 ```bash
 msgvault init-db
-msgvault import-mbox you@hey.com /path/to/hey-export.zip --source-type hey --label hey
+msgvault import-mbox you@example.com /path/to/export.mbox
+msgvault import-mbox you@example.com /path/to/export.zip   # zip of MBOX files
+msgvault import-emlx you@example.com ~/Library/Mail/V10     # Apple Mail
 ```
 
 ## Configuration
