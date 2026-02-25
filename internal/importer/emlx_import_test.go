@@ -588,6 +588,65 @@ func TestImportEmlxDir_Idempotent(t *testing.T) {
 	}
 }
 
+func TestImportEmlxDir_MailboxPathMismatchRejectsResume(t *testing.T) {
+	st, tmp := openTestStore(t)
+
+	raw := email.NewMessage().
+		From("Alice <alice@example.com>").
+		Subject("Hello").
+		Body("hi\n").
+		Bytes()
+
+	// Create root with a single mailbox at index 0.
+	root := filepath.Join(tmp, "Mail")
+	mboxDir := filepath.Join(root, "Mailboxes", "Inbox.mbox")
+	mkMailboxDir(t, mboxDir, map[string][]byte{"1.emlx": raw})
+
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatalf("abs root: %v", err)
+	}
+
+	// Seed checkpoint with correct root but a different mailbox path
+	// at index 0, simulating the mailbox tree changing between runs.
+	src, err := st.GetOrCreateSource("apple-mail", "alice@example.com")
+	if err != nil {
+		t.Fatalf("get/create source: %v", err)
+	}
+	syncID, err := st.StartSync(src.ID, "import-emlx")
+	if err != nil {
+		t.Fatalf("start sync: %v", err)
+	}
+	if err := saveEmlxCheckpoint(
+		st, syncID, absRoot, 0,
+		"/old/path/to/OtherMailbox.mbox", "",
+		&store.Checkpoint{},
+	); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+
+	_, err = ImportEmlxDir(
+		context.Background(), st, root, EmlxImportOptions{
+			Identifier:         "alice@example.com",
+			NoResume:           false,
+			CheckpointInterval: 1,
+		},
+	)
+	if err == nil {
+		t.Fatalf("expected error for mailbox path mismatch")
+	}
+	if !strings.Contains(err.Error(), "--no-resume") {
+		t.Fatalf(
+			"error should mention --no-resume, got: %v", err,
+		)
+	}
+	if !strings.Contains(err.Error(), "changed") {
+		t.Fatalf(
+			"error should mention 'changed', got: %v", err,
+		)
+	}
+}
+
 func TestImportEmlxDir_RootMismatchRejectsResume(t *testing.T) {
 	st, tmp := openTestStore(t)
 
@@ -611,7 +670,7 @@ func TestImportEmlxDir_RootMismatchRejectsResume(t *testing.T) {
 		t.Fatalf("abs root A: %v", err)
 	}
 	if err := saveEmlxCheckpoint(
-		st, syncID, absRootA, 0, "", &store.Checkpoint{},
+		st, syncID, absRootA, 0, "", "", &store.Checkpoint{},
 	); err != nil {
 		t.Fatalf("save checkpoint: %v", err)
 	}
