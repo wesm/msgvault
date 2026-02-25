@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/store"
@@ -584,5 +585,64 @@ func TestImportEmlxDir_Idempotent(t *testing.T) {
 	}
 	if msgCount != 1 {
 		t.Fatalf("msgCount = %d, want 1", msgCount)
+	}
+}
+
+func TestImportEmlxDir_RootMismatchRejectsResume(t *testing.T) {
+	st, tmp := openTestStore(t)
+
+	// Set up a mailbox at root A with one message.
+	rootA := filepath.Join(tmp, "MailA")
+	mboxA := filepath.Join(rootA, "Mailboxes", "Test.mbox")
+	raw := email.NewMessage().
+		From("Alice <alice@example.com>").
+		Subject("Hello").
+		Body("hi\n").
+		Bytes()
+	mkMailboxDir(t, mboxA, map[string][]byte{"1.emlx": raw})
+
+	// Import from root A (creates an active sync with checkpoint).
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately so sync stays "running".
+	_, err := ImportEmlxDir(ctx, st, rootA, EmlxImportOptions{
+		Identifier:         "alice@example.com",
+		NoResume:           true,
+		CheckpointInterval: 1,
+	})
+	if err != nil {
+		t.Fatalf("ImportEmlxDir (root A): %v", err)
+	}
+
+	// Verify sync is "running" (active).
+	var status string
+	if err := st.DB().QueryRow(
+		`SELECT status FROM sync_runs
+		 ORDER BY started_at DESC LIMIT 1`,
+	).Scan(&status); err != nil {
+		t.Fatalf("select sync status: %v", err)
+	}
+	if status != store.SyncStatusRunning {
+		t.Fatalf("status = %q, want %q", status, store.SyncStatusRunning)
+	}
+
+	// Now try to import from root B (different directory).
+	rootB := filepath.Join(tmp, "MailB")
+	mboxB := filepath.Join(rootB, "Mailboxes", "Other.mbox")
+	mkMailboxDir(t, mboxB, map[string][]byte{"1.emlx": raw})
+
+	_, err = ImportEmlxDir(
+		context.Background(), st, rootB, EmlxImportOptions{
+			Identifier:         "alice@example.com",
+			NoResume:           false,
+			CheckpointInterval: 1,
+		},
+	)
+	if err == nil {
+		t.Fatalf("expected error for root mismatch")
+	}
+	if !strings.Contains(err.Error(), "--no-resume") {
+		t.Fatalf(
+			"error should mention --no-resume, got: %v", err,
+		)
 	}
 }
