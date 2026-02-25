@@ -2,6 +2,8 @@ package sync
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/wesm/msgvault/internal/gmail"
+	"github.com/wesm/msgvault/internal/mime"
 	"github.com/wesm/msgvault/internal/store"
 	testemail "github.com/wesm/msgvault/internal/testutil/email"
 )
@@ -152,6 +155,113 @@ func TestMIMEParsing(t *testing.T) {
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, WantSummary{Added: intPtr(1)})
 	assertAttachmentCount(t, env.Store, 1)
+}
+
+func TestStoreAttachment_ComputesHashWhenMissing(t *testing.T) {
+	env := newTestEnv(t)
+
+	attachmentsDir := filepath.Join(env.TmpDir, "attachments")
+	env.SetOptions(t, func(o *Options) {
+		o.AttachmentsDir = attachmentsDir
+	})
+
+	src := env.CreateSource(t)
+	convID, err := env.Store.EnsureConversation(src.ID, "t1", "Thread")
+	if err != nil {
+		t.Fatalf("EnsureConversation: %v", err)
+	}
+	messageID, err := env.Store.UpsertMessage(&store.Message{
+		ConversationID:  convID,
+		SourceID:        src.ID,
+		SourceMessageID: "m1",
+		MessageType:     "email",
+	})
+	if err != nil {
+		t.Fatalf("UpsertMessage: %v", err)
+	}
+
+	content := []byte("hello")
+	sum := sha256.Sum256(content)
+	wantHash := hex.EncodeToString(sum[:])
+
+	att := mime.Attachment{
+		Filename:    "a.txt",
+		ContentType: "text/plain",
+		Size:        len(content),
+		ContentHash: "",
+		Content:     content,
+	}
+	if err := env.Syncer.storeAttachment(messageID, &att); err != nil {
+		t.Fatalf("storeAttachment: %v", err)
+	}
+	if att.ContentHash != wantHash {
+		t.Fatalf("ContentHash = %q, want %q", att.ContentHash, wantHash)
+	}
+
+	var gotHash, storagePath string
+	if err := env.Store.DB().QueryRow(`SELECT content_hash, storage_path FROM attachments WHERE message_id = ?`, messageID).Scan(&gotHash, &storagePath); err != nil {
+		t.Fatalf("select attachment: %v", err)
+	}
+	if gotHash != wantHash {
+		t.Fatalf("db content_hash = %q, want %q", gotHash, wantHash)
+	}
+
+	fullPath := filepath.Join(attachmentsDir, filepath.FromSlash(storagePath))
+	b, err := os.ReadFile(fullPath)
+	if err != nil {
+		t.Fatalf("read attachment file: %v", err)
+	}
+	if string(b) != string(content) {
+		t.Fatalf("attachment file contents = %q, want %q", string(b), string(content))
+	}
+}
+
+func TestStoreAttachment_InvalidContentHash_ReturnsError(t *testing.T) {
+	env := newTestEnv(t)
+
+	attachmentsDir := filepath.Join(env.TmpDir, "attachments")
+	env.SetOptions(t, func(o *Options) {
+		o.AttachmentsDir = attachmentsDir
+	})
+
+	src := env.CreateSource(t)
+	convID, err := env.Store.EnsureConversation(src.ID, "t1", "Thread")
+	if err != nil {
+		t.Fatalf("EnsureConversation: %v", err)
+	}
+	messageID, err := env.Store.UpsertMessage(&store.Message{
+		ConversationID:  convID,
+		SourceID:        src.ID,
+		SourceMessageID: "m1",
+		MessageType:     "email",
+	})
+	if err != nil {
+		t.Fatalf("UpsertMessage: %v", err)
+	}
+
+	content := []byte("hello")
+	att := mime.Attachment{
+		Filename:    "a.txt",
+		ContentType: "text/plain",
+		Size:        len(content),
+		ContentHash: "nope", // malformed
+		Content:     content,
+	}
+	if err := env.Syncer.storeAttachment(messageID, &att); err == nil {
+		t.Fatalf("expected error")
+	}
+
+	if _, statErr := os.Stat(attachmentsDir); statErr == nil {
+		t.Fatalf("attachments dir should not have been created for invalid content hash")
+	}
+
+	var count int
+	if err := env.Store.DB().QueryRow(`SELECT COUNT(*) FROM attachments WHERE message_id = ?`, messageID).Scan(&count); err != nil {
+		t.Fatalf("count attachments: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0", count)
+	}
 }
 
 func TestFullSyncEmptyInbox(t *testing.T) {
@@ -1440,4 +1550,48 @@ func TestIncrementalSyncMixedOperations(t *testing.T) {
 	assertDeletedFromSource(t, env.Store, "existing-1", true)
 	assertMessageHasLabel(t, env.Store, "existing-2", "STARRED")
 	assertMessageCount(t, env.Store, 3) // 2 original (1 deleted but still counted) + 1 new
+}
+
+// TestIncrementalSyncLabelRemovedWithMissingRaw verifies that removing a label
+// from a message whose raw MIME data is missing still succeeds. The label-removal
+// path operates on the message_labels table directly and never touches raw data.
+func TestIncrementalSyncLabelRemovedWithMissingRaw(t *testing.T) {
+	env := newTestEnv(t)
+	env.Mock.Profile.MessagesTotal = 1
+	env.Mock.Profile.HistoryID = 12340
+	env.Mock.AddMessage("msg1", testMIME(), []string{"INBOX", "STARRED"})
+
+	runFullSync(t, env)
+
+	// Verify starting state
+	assertMessageHasLabel(t, env.Store, "msg1", "STARRED")
+	assertRawDataExists(t, env.Store, "msg1")
+
+	// Delete raw MIME data to simulate missing raw
+	_, err := env.Store.DB().Exec(`
+		DELETE FROM message_raw WHERE message_id = (
+			SELECT id FROM messages WHERE source_message_id = 'msg1'
+		)`)
+	if err != nil {
+		t.Fatalf("delete raw data: %v", err)
+	}
+
+	// Record raw fetch count before incremental sync
+	callsBeforeIncr := len(env.Mock.GetMessageCalls)
+
+	// Now simulate label removal via incremental sync
+	env.SetHistory(12350, historyLabelRemoved("msg1", "STARRED"))
+
+	summary := runIncrementalSync(t, env)
+	assertSummary(t, summary, WantSummary{Found: intPtr(1)})
+
+	// No raw fetches should occur for label-only changes
+	callsAfterIncr := len(env.Mock.GetMessageCalls)
+	if newCalls := callsAfterIncr - callsBeforeIncr; newCalls != 0 {
+		t.Errorf("expected 0 GetMessageRaw calls for label removal, got %d", newCalls)
+	}
+
+	// Label should be removed despite missing raw data
+	assertMessageNotHasLabel(t, env.Store, "msg1", "STARRED")
+	assertMessageHasLabel(t, env.Store, "msg1", "INBOX")
 }

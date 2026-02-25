@@ -113,3 +113,53 @@ func TestRepairEncoding_NoScanErrors(t *testing.T) {
 		t.Errorf("skippedRows = %d, want 0 for valid data", stats.skippedRows)
 	}
 }
+
+// TestRepairOtherStrings_FixesNewColumns verifies that repairOtherStrings
+// repairs invalid UTF-8 in source_conversation_id, email_address, and domain.
+func TestRepairOtherStrings_FixesNewColumns(t *testing.T) {
+	st := testutil.NewTestStore(t)
+	db := st.DB()
+
+	// Insert a source so foreign key constraints are satisfied.
+	if _, err := db.Exec(
+		`INSERT INTO sources (id, source_type, identifier, created_at, updated_at)
+		 VALUES (1, 'test', 'test@example.com', datetime('now'), datetime('now'))`,
+	); err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+
+	// Insert conversation with invalid UTF-8 in source_conversation_id.
+	if _, err := db.Exec(
+		`INSERT INTO conversations (id, source_id, source_conversation_id, conversation_type, title, created_at, updated_at)
+		 VALUES (1, 1, ?, 'email_thread', 'valid title', datetime('now'), datetime('now'))`,
+		"conv-\x80\x81\x82",
+	); err != nil {
+		t.Fatalf("insert conversation: %v", err)
+	}
+
+	// Insert participant with invalid UTF-8 in email_address and domain.
+	if _, err := db.Exec(
+		`INSERT INTO participants (id, email_address, domain, created_at, updated_at)
+		 VALUES (1, ?, ?, datetime('now'), datetime('now'))`,
+		"user\xFE@example.com", "example\xFF.com",
+	); err != nil {
+		t.Fatalf("insert participant: %v", err)
+	}
+
+	stats := &repairStats{}
+	if err := repairOtherStrings(st, stats); err != nil {
+		t.Fatalf("repairOtherStrings: %v", err)
+	}
+
+	if stats.convSourceIDs != 1 {
+		t.Errorf(
+			"convSourceIDs = %d, want 1", stats.convSourceIDs,
+		)
+	}
+	if stats.emailAddrs != 1 {
+		t.Errorf("emailAddrs = %d, want 1", stats.emailAddrs)
+	}
+	if stats.domains != 1 {
+		t.Errorf("domains = %d, want 1", stats.domains)
+	}
+}

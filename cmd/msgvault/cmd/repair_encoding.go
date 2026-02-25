@@ -25,7 +25,9 @@ This command repairs invalid UTF-8 in:
 - Body text
 - Body HTML
 - Snippet
-- Participant display names
+- Participant display names, email addresses, and domains
+- Conversation titles and source IDs
+- Label names and attachment filenames
 
 For each invalid field, it:
 1. Re-parses the raw MIME data to extract text with proper charset handling
@@ -48,15 +50,18 @@ charset detection issues in the MIME parser.`,
 
 // repairStats tracks repair statistics
 type repairStats struct {
-	subjects     int
-	bodyTexts    int
-	bodyHTMLs    int
-	snippets     int
-	displayNames int
-	labels       int
-	filenames    int
-	convTitles   int
-	skippedRows  int
+	subjects      int
+	bodyTexts     int
+	bodyHTMLs     int
+	snippets      int
+	displayNames  int
+	labels        int
+	filenames     int
+	convTitles    int
+	convSourceIDs int
+	emailAddrs    int
+	domains       int
+	skippedRows   int
 }
 
 func repairEncoding(s *store.Store) error {
@@ -79,7 +84,8 @@ func repairEncoding(s *store.Store) error {
 
 	// Summary
 	total := stats.subjects + stats.bodyTexts + stats.bodyHTMLs + stats.snippets +
-		stats.displayNames + stats.labels + stats.filenames + stats.convTitles
+		stats.displayNames + stats.labels + stats.filenames + stats.convTitles +
+		stats.convSourceIDs + stats.emailAddrs + stats.domains
 	if total == 0 {
 		fmt.Println("No encoding repairs needed.")
 		return nil
@@ -109,6 +115,15 @@ func repairEncoding(s *store.Store) error {
 	}
 	if stats.convTitles > 0 {
 		fmt.Printf("  Conv titles:   %d\n", stats.convTitles)
+	}
+	if stats.convSourceIDs > 0 {
+		fmt.Printf("  Conv src IDs:  %d\n", stats.convSourceIDs)
+	}
+	if stats.emailAddrs > 0 {
+		fmt.Printf("  Email addrs:   %d\n", stats.emailAddrs)
+	}
+	if stats.domains > 0 {
+		fmt.Printf("  Domains:       %d\n", stats.domains)
 	}
 	if stats.skippedRows > 0 {
 		fmt.Printf("  Skipped rows:  %d (scan errors)\n", stats.skippedRows)
@@ -462,6 +477,27 @@ func repairOtherStrings(s *store.Store, stats *repairStats) error {
 			query:      "SELECT id, title FROM conversations WHERE title IS NOT NULL",
 			updateStmt: "UPDATE conversations SET title = ? WHERE id = ?",
 			counter:    &stats.convTitles,
+		},
+		{
+			name:       "conversations",
+			column:     "source_conversation_id",
+			query:      "SELECT id, source_conversation_id FROM conversations WHERE source_conversation_id IS NOT NULL",
+			updateStmt: "UPDATE conversations SET source_conversation_id = ? WHERE id = ?",
+			counter:    &stats.convSourceIDs,
+		},
+		{
+			name:       "participants",
+			column:     "email_address",
+			query:      "SELECT id, email_address FROM participants WHERE email_address IS NOT NULL",
+			updateStmt: "UPDATE participants SET email_address = ? WHERE id = ?",
+			counter:    &stats.emailAddrs,
+		},
+		{
+			name:       "participants",
+			column:     "domain",
+			query:      "SELECT id, domain FROM participants WHERE domain IS NOT NULL",
+			updateStmt: "UPDATE participants SET domain = ? WHERE id = ?",
+			counter:    &stats.domains,
 		},
 	}
 

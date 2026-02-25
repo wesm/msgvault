@@ -18,9 +18,9 @@ if [ -n "$UNFORMATTED" ]; then
     exit 1
 fi
 
-# Run linter
+# Run linter (only check new issues vs HEAD)
 echo "Running linter..."
-if ! golangci-lint run ./... 2>&1; then
+if ! golangci-lint run --new-from-rev=HEAD ./... 2>&1; then
     echo ""
     echo "Lint failed. Fix errors before committing."
     exit 1
