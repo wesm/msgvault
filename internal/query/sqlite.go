@@ -294,6 +294,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		joins = append(joins, `
 			LEFT JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
 			LEFT JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
+			LEFT JOIN participants p_direct_sender ON p_direct_sender.id = m.sender_id
 		`)
 		conditions = append(conditions, "((mr_filter_from.id IS NULL OR p_filter_from.email_address IS NULL OR p_filter_from.email_address = '') AND m.sender_id IS NULL)")
 	}
@@ -896,7 +897,10 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	// Build JOIN clauses based on filter type
 	var joins []string
 
-	// Also checks phone_number for phone-based lookups (e.g., from:+447...)
+	// Scope to Gmail sources only — this function is used for Gmail-specific
+	// deletion/staging workflows and must not return WhatsApp or other source IDs.
+	joins = append(joins, `JOIN sources s_gmail ON s_gmail.id = m.source_id AND s_gmail.source_type = 'gmail'`)
+
 	if filter.Sender != "" {
 		joins = append(joins, `
 			LEFT JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'

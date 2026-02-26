@@ -1466,14 +1466,17 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	// Always exclude deleted messages
 	conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
 
+	// Scope to Gmail messages only — this function is used for Gmail-specific
+	// deletion/staging workflows and must not return WhatsApp or other source IDs.
+	// In the Parquet fallback, we filter by message_type since sources aren't in the cache.
+	conditions = append(conditions, "(msg.message_type = '' OR msg.message_type = 'email' OR msg.message_type IS NULL)")
+
 	if filter.SourceID != nil {
 		conditions = append(conditions, "msg.source_id = ?")
 		args = append(args, *filter.SourceID)
 	}
 
 	// Use EXISTS subqueries for filtering (becomes semi-joins, no duplicates)
-	// Check both message_recipients (email) and direct sender_id (WhatsApp/chat)
-	// Also checks phone_number for phone-based lookups (e.g., from:+447...)
 	if filter.Sender != "" {
 		conditions = append(conditions, `(EXISTS (
 			SELECT 1 FROM mr

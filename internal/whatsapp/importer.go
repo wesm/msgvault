@@ -98,13 +98,17 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 		batchSize = 1000
 	}
 
-	// Track key_id → message_id for reply threading.
+	// Track key_id → message_id for reply threading within each chat.
+	// Scoped per chat to bound memory; cross-chat quotes won't thread
+	// but that's rare and the quoted text is still in the message body.
 	keyIDToMsgID := make(map[string]int64)
 
 	totalLimit := opts.Limit
 	totalAdded := int64(0)
 
 	for _, chat := range chats {
+		// Clear reply map per chat to prevent unbounded growth.
+		clear(keyIDToMsgID)
 		if ctx.Err() != nil {
 			syncErr = ctx.Err()
 			return nil, ctx.Err()
@@ -350,9 +354,10 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 				if quoted, ok := quotedMap[waMsg.RowID]; ok {
 					if replyToMsgID, found := keyIDToMsgID[quoted.QuotedKeyID]; found {
 						imp.setReplyTo(messageID, replyToMsgID)
+					} else if dbMsgID, lookupErr := imp.lookupMessageByKeyID(source.ID, quoted.QuotedKeyID); lookupErr == nil && dbMsgID > 0 {
+						// Found in DB from a previous import run or another chat.
+						imp.setReplyTo(messageID, dbMsgID)
 					}
-					// If not found, the quoted message hasn't been imported yet (or is in another chat).
-					// This is expected for cross-chat quotes or forward-references.
 				}
 
 				// Handle reactions.
@@ -402,9 +407,9 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 				}
 			}
 
-			// Update checkpoint after each batch.
+			// Update sync run progress counters (for monitoring, not resume).
+			// Resume is not implemented yet — re-running is safe due to upsert dedup.
 			_ = imp.store.UpdateSyncCheckpoint(syncID, &store.Checkpoint{
-				PageToken:         fmt.Sprintf("%d", afterID),
 				MessagesProcessed: summary.MessagesProcessed,
 				MessagesAdded:     summary.MessagesAdded,
 			})
@@ -561,6 +566,20 @@ func (imp *Importer) updateAttachmentMetadata(messageID int64, contentHash, medi
 		UPDATE attachments SET media_type = ?, width = ?, height = ?, duration_ms = ?
 		WHERE message_id = ? AND (content_hash = ? OR content_hash IS NULL)
 	`, mediaType, width, height, durationMS, messageID, contentHash)
+}
+
+// lookupMessageByKeyID looks up a previously imported message by its WhatsApp key_id.
+// Returns 0 if not found.
+func (imp *Importer) lookupMessageByKeyID(sourceID int64, keyID string) (int64, error) {
+	var msgID int64
+	err := imp.store.DB().QueryRow(
+		`SELECT id FROM messages WHERE source_id = ? AND source_message_id = ?`,
+		sourceID, keyID,
+	).Scan(&msgID)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return msgID, err
 }
 
 // setReplyTo sets the reply_to_message_id on a message.
