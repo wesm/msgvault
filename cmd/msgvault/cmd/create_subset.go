@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -76,11 +75,10 @@ func runCreateSubset(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("create subset: %w", err)
 	}
 
-	copyConfigToml(cfg.HomeDir, dstDir)
-
 	fmt.Fprintf(os.Stderr,
 		"Created subset in %s\n", result.Elapsed.Round(time.Millisecond),
 	)
+	fmt.Printf("Sources:       %d\n", result.Sources)
 	fmt.Printf("Messages:      %d\n", result.Messages)
 	fmt.Printf("Conversations: %d\n", result.Conversations)
 	fmt.Printf("Participants:  %d\n", result.Participants)
@@ -99,39 +97,4 @@ func runCreateSubset(cmd *cobra.Command, _ []string) error {
 	)
 
 	return nil
-}
-
-// copyConfigToml copies config.toml from srcDir to dstDir if it
-// exists. Errors are logged as warnings, not fatal.
-func copyConfigToml(srcDir, dstDir string) {
-	src := filepath.Join(srcDir, "config.toml")
-	dst := filepath.Join(dstDir, "config.toml")
-
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return // file doesn't exist or isn't readable
-	}
-	defer func() { _ = srcFile.Close() }()
-
-	dstFile, err := os.Create(dst)
-	if err != nil {
-		fmt.Fprintf(os.Stderr,
-			"warning: could not copy config.toml: %v\n", err,
-		)
-		return
-	}
-
-	if _, err := io.Copy(dstFile, srcFile); err != nil {
-		_ = dstFile.Close()
-		fmt.Fprintf(os.Stderr,
-			"warning: could not copy config.toml: %v\n", err,
-		)
-		return
-	}
-
-	if err := dstFile.Close(); err != nil {
-		fmt.Fprintf(os.Stderr,
-			"warning: could not copy config.toml: %v\n", err,
-		)
-	}
 }

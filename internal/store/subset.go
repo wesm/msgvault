@@ -17,6 +17,7 @@ type CopyResult struct {
 	Conversations int64
 	Participants  int64
 	Labels        int64
+	Sources       int64
 	DBSize        int64
 	Elapsed       time.Duration
 }
@@ -207,17 +208,24 @@ func verifyForeignKeys(db *sql.DB) error {
 func copyData(tx *sql.Tx, rowCount int) (*CopyResult, error) {
 	result := &CopyResult{}
 
-	if _, err := tx.Exec(
-		"INSERT INTO sources SELECT * FROM src.sources",
-	); err != nil {
-		return nil, fmt.Errorf("copy sources: %w", err)
-	}
-
 	if _, err := tx.Exec(`
 		CREATE TEMP TABLE selected_messages AS
 		SELECT id FROM src.messages
 		ORDER BY sent_at DESC LIMIT ?`, rowCount); err != nil {
 		return nil, fmt.Errorf("select messages: %w", err)
+	}
+
+	res, err := tx.Exec(`
+		INSERT INTO sources SELECT * FROM src.sources
+		WHERE id IN (
+			SELECT DISTINCT source_id FROM src.messages
+			WHERE id IN (SELECT id FROM selected_messages)
+		)`)
+	if err != nil {
+		return nil, fmt.Errorf("copy sources: %w", err)
+	}
+	if result.Sources, err = res.RowsAffected(); err != nil {
+		return nil, fmt.Errorf("sources rows affected: %w", err)
 	}
 
 	if err := tx.QueryRow(
@@ -226,7 +234,7 @@ func copyData(tx *sql.Tx, rowCount int) (*CopyResult, error) {
 		return nil, fmt.Errorf("count selected messages: %w", err)
 	}
 
-	res, err := tx.Exec(`
+	res, err = tx.Exec(`
 		INSERT INTO conversations SELECT * FROM src.conversations
 		WHERE id IN (
 			SELECT DISTINCT conversation_id FROM src.messages

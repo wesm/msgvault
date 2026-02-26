@@ -396,6 +396,195 @@ func TestCopySubset_SQLInjectionInPath(t *testing.T) {
 	}
 }
 
+func TestCopySubset_MultiSourceScoping(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := filepath.Join(t.TempDir(), "dst")
+
+	dbPath := filepath.Join(srcDir, "msgvault.db")
+
+	st, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := st.InitSchema(); err != nil {
+		t.Fatalf("InitSchema: %v", err)
+	}
+	_ = st.Close()
+
+	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=OFF")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	// Two sources: only source 1 will have recent messages
+	_, err = db.Exec(`
+		INSERT INTO sources (id, source_type, identifier) VALUES
+			(1, 'gmail', 'alice@example.com'),
+			(2, 'gmail', 'bob@example.com')`)
+	if err != nil {
+		t.Fatalf("insert sources: %v", err)
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO participants
+			(id, email_address, display_name, domain)
+		VALUES
+			(1, 'alice@example.com', 'Alice', 'example.com'),
+			(2, 'bob@example.com', 'Bob', 'example.com')`)
+	if err != nil {
+		t.Fatalf("insert participants: %v", err)
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO conversations
+			(id, source_id, conversation_type, title,
+			 message_count, participant_count)
+		VALUES
+			(1, 1, 'email_thread', 'Alice thread', 2, 1),
+			(2, 2, 'email_thread', 'Bob thread', 2, 1)`)
+	if err != nil {
+		t.Fatalf("insert conversations: %v", err)
+	}
+
+	// Labels for both sources
+	_, err = db.Exec(`
+		INSERT INTO labels (id, source_id, name, label_type) VALUES
+			(1, 1, 'INBOX', 'system'),
+			(2, 1, 'Work', 'user'),
+			(3, 2, 'INBOX', 'system'),
+			(4, 2, 'Personal', 'user')`)
+	if err != nil {
+		t.Fatalf("insert labels: %v", err)
+	}
+
+	// Source 1 messages: recent (will be selected)
+	for i := 1; i <= 3; i++ {
+		_, err = db.Exec(`
+			INSERT INTO messages
+				(id, conversation_id, source_id, source_message_id,
+				 message_type, sent_at, sender_id, subject)
+			VALUES (?, 1, 1, ?, 'email',
+				datetime('2025-01-01', '+' || ? || ' hours'),
+				1, ?)`,
+			i, fmt.Sprintf("msg_%d", i), i,
+			fmt.Sprintf("Alice msg %d", i))
+		if err != nil {
+			t.Fatalf("insert alice message %d: %v", i, err)
+		}
+		_, err = db.Exec(
+			`INSERT INTO message_recipients
+				(message_id, participant_id, recipient_type)
+			 VALUES (?, 1, 'from')`, i)
+		if err != nil {
+			t.Fatalf("insert alice recipient %d: %v", i, err)
+		}
+	}
+
+	// Source 2 messages: older (won't be selected with limit 3)
+	for i := 4; i <= 6; i++ {
+		_, err = db.Exec(`
+			INSERT INTO messages
+				(id, conversation_id, source_id, source_message_id,
+				 message_type, sent_at, sender_id, subject)
+			VALUES (?, 2, 2, ?, 'email',
+				datetime('2020-01-01', '+' || ? || ' hours'),
+				2, ?)`,
+			i, fmt.Sprintf("msg_%d", i), i,
+			fmt.Sprintf("Bob msg %d", i))
+		if err != nil {
+			t.Fatalf("insert bob message %d: %v", i, err)
+		}
+		_, err = db.Exec(
+			`INSERT INTO message_recipients
+				(message_id, participant_id, recipient_type)
+			 VALUES (?, 2, 'from')`, i)
+		if err != nil {
+			t.Fatalf("insert bob recipient %d: %v", i, err)
+		}
+	}
+
+	_ = db.Close()
+
+	// Select only 3 most recent = all Alice, no Bob
+	result, err := CopySubset(dbPath, dstDir, 3)
+	if err != nil {
+		t.Fatalf("CopySubset: %v", err)
+	}
+
+	if result.Sources != 1 {
+		t.Errorf("Sources = %d, want 1 (only Alice's)", result.Sources)
+	}
+	if result.Messages != 3 {
+		t.Errorf("Messages = %d, want 3", result.Messages)
+	}
+
+	dstDB, err := sql.Open("sqlite3",
+		filepath.Join(dstDir, "msgvault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dstDB.Close() }()
+
+	// Only source 1 should be present
+	var srcCount int64
+	if err := dstDB.QueryRow(
+		"SELECT COUNT(*) FROM sources",
+	).Scan(&srcCount); err != nil {
+		t.Fatal(err)
+	}
+	if srcCount != 1 {
+		t.Errorf("sources count = %d, want 1", srcCount)
+	}
+
+	var identifier string
+	if err := dstDB.QueryRow(
+		"SELECT identifier FROM sources",
+	).Scan(&identifier); err != nil {
+		t.Fatal(err)
+	}
+	if identifier != "alice@example.com" {
+		t.Errorf(
+			"source identifier = %q, want alice@example.com",
+			identifier,
+		)
+	}
+
+	// Only source 1 labels should be present
+	var labelCount int64
+	if err := dstDB.QueryRow(
+		"SELECT COUNT(*) FROM labels",
+	).Scan(&labelCount); err != nil {
+		t.Fatal(err)
+	}
+	if labelCount != 2 {
+		t.Errorf("labels count = %d, want 2 (Alice's labels only)",
+			labelCount)
+	}
+
+	// No Bob conversations
+	var convCount int64
+	if err := dstDB.QueryRow(
+		"SELECT COUNT(*) FROM conversations",
+	).Scan(&convCount); err != nil {
+		t.Fatal(err)
+	}
+	if convCount != 1 {
+		t.Errorf("conversations = %d, want 1 (Alice's only)",
+			convCount)
+	}
+
+	// FK integrity check
+	fkRows, err := dstDB.Query("PRAGMA foreign_key_check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasViolation := fkRows.Next()
+	_ = fkRows.Close()
+	if hasViolation {
+		t.Error("foreign key violations in multi-source subset")
+	}
+}
+
 func TestCopySubset_ControlCharInPath(t *testing.T) {
 	dstDir := filepath.Join(t.TempDir(), "dst")
 	base := t.TempDir()
