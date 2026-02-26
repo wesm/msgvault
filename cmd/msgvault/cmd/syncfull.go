@@ -21,6 +21,8 @@ var (
 	syncBefore   string
 	syncAfter    string
 	syncLimit    int
+	syncClean    bool
+	syncCleanYes bool
 )
 
 var syncFullCmd = &cobra.Command{
@@ -37,16 +39,28 @@ Date filters:
   --after 2024-01-01     Only messages on or after this date
   --before 2024-12-31    Only messages before this date
 
+Clean sync:
+  --clean                Delete all local data for the account and re-sync
+                         from scratch. Use this to reset staging/deletion
+                         state or recover from a corrupted local database.
+                         Requires confirmation (use --yes to skip).
+
 Examples:
   msgvault sync-full                             # Sync all accounts
   msgvault sync-full you@gmail.com
   msgvault sync-full you@gmail.com --after 2024-01-01
   msgvault sync-full you@gmail.com --query "from:someone@example.com"
-  msgvault sync-full you@gmail.com --noresume    # Force fresh sync`,
+  msgvault sync-full you@gmail.com --noresume    # Force fresh sync
+  msgvault sync-full you@gmail.com --clean       # Delete local data and re-sync
+  msgvault sync-full you@gmail.com --clean --yes # Skip confirmation`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if syncLimit < 0 {
 			return fmt.Errorf("--limit must be a non-negative number")
+		}
+
+		if syncClean && len(args) == 0 {
+			return fmt.Errorf("--clean requires specifying an account email")
 		}
 
 		// Validate config
@@ -100,14 +114,98 @@ Examples:
 		ctx, cancel := context.WithCancel(cmd.Context())
 		defer cancel()
 
-		// Handle Ctrl+C gracefully
+		// Handle Ctrl+C gracefully (first = graceful, second = force exit)
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		go func() {
 			<-sigChan
-			fmt.Println("\nInterrupted. Saving checkpoint...")
+			fmt.Println("\nInterrupted. Saving checkpoint... (press Ctrl+C again to force quit)")
 			cancel()
+			// Wait for second signal to force exit
+			<-sigChan
+			fmt.Println("\nForce quit.")
+			os.Exit(1)
 		}()
+
+		// Handle --clean: delete all local data for the account before syncing
+		if syncClean {
+			email := emails[0] // Already validated that exactly one email is specified
+			source, err := s.GetSourceByIdentifier(email)
+			if err != nil {
+				return fmt.Errorf("lookup account: %w", err)
+			}
+			if source == nil {
+				return fmt.Errorf("account %s not found in database", email)
+			}
+
+			// Count what will be deleted
+			fmt.Printf("Preparing to clean local data for %s...\n", email)
+			var msgCount, convCount, labelCount int64
+			_ = s.DB().QueryRow("SELECT COUNT(*) FROM messages WHERE source_id = ?", source.ID).Scan(&msgCount)
+			_ = s.DB().QueryRow("SELECT COUNT(*) FROM conversations WHERE source_id = ?", source.ID).Scan(&convCount)
+			_ = s.DB().QueryRow("SELECT COUNT(*) FROM labels WHERE source_id = ?", source.ID).Scan(&labelCount)
+
+			fmt.Println()
+			fmt.Println("This will permanently delete from the LOCAL database:")
+			fmt.Printf("  • %d messages\n", msgCount)
+			fmt.Printf("  • %d conversations\n", convCount)
+			fmt.Printf("  • %d labels\n", labelCount)
+			fmt.Printf("  • All sync history and checkpoints\n")
+			fmt.Println()
+			fmt.Println("Note: This does NOT delete anything from Gmail.")
+			fmt.Println("      After cleaning, a full re-sync will download all messages again.")
+			fmt.Println()
+
+			// Require confirmation unless --yes is provided
+			if !syncCleanYes {
+				fmt.Print("Proceed with clean? [y/N]: ")
+				var response string
+				_, _ = fmt.Scanln(&response)
+				if response != "y" && response != "Y" {
+					fmt.Println("Cancelled.")
+					return nil
+				}
+				fmt.Println()
+			}
+
+			// Perform the clean with progress reporting
+			fmt.Println("Deleting local data...")
+			lastTable := ""
+			lastPrint := time.Now()
+			deleted, err := s.ResetSourceDataWithProgress(source.ID, func(p store.ResetProgress) {
+				// Throttle output to avoid spamming
+				if time.Since(lastPrint) < 500*time.Millisecond && p.Phase != "complete" {
+					return
+				}
+				lastPrint = time.Now()
+
+				switch p.Phase {
+				case "counting":
+					fmt.Printf("  Found %d messages to delete\n", p.TotalMessages)
+				case "deleting":
+					if p.CurrentTable != lastTable {
+						if lastTable != "" {
+							fmt.Println(" done")
+						}
+						fmt.Printf("  Cleaning %s...", p.CurrentTable)
+						lastTable = p.CurrentTable
+					}
+					if p.CurrentTable == "messages" {
+						pct := float64(p.DeletedMessages) / float64(p.TotalMessages) * 100
+						fmt.Printf("\r  Cleaning messages... %d/%d (%.1f%%)   ", p.DeletedMessages, p.TotalMessages, pct)
+					}
+				case "complete":
+					if lastTable != "" {
+						fmt.Println(" done")
+					}
+				}
+			})
+			if err != nil {
+				fmt.Println("\nClean failed:", err)
+				return fmt.Errorf("reset account data: %w", err)
+			}
+			fmt.Printf("Deleted %d messages from local database.\n\n", deleted)
+		}
 
 		var syncErrors []string
 		for _, email := range emails {
@@ -332,5 +430,7 @@ func init() {
 	syncFullCmd.Flags().StringVar(&syncBefore, "before", "", "Only messages before this date (YYYY-MM-DD)")
 	syncFullCmd.Flags().StringVar(&syncAfter, "after", "", "Only messages after this date (YYYY-MM-DD)")
 	syncFullCmd.Flags().IntVar(&syncLimit, "limit", 0, "Limit number of messages (for testing)")
+	syncFullCmd.Flags().BoolVar(&syncClean, "clean", false, "Delete all local data for the account and re-sync from scratch")
+	syncFullCmd.Flags().BoolVarP(&syncCleanYes, "yes", "y", false, "Skip confirmation prompt for --clean")
 	rootCmd.AddCommand(syncFullCmd)
 }
