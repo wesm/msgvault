@@ -8,6 +8,40 @@ import (
 	"github.com/wesm/msgvault/internal/testutil/storetest"
 )
 
+func TestStore_GetSourcesByIdentifier(t *testing.T) {
+	st := testutil.NewTestStore(t)
+
+	// Create two sources with same identifier, different types
+	_, err := st.GetOrCreateSource("gmail", "user@example.com")
+	testutil.MustNoErr(t, err, "create gmail source")
+	_, err = st.GetOrCreateSource("mbox", "user@example.com")
+	testutil.MustNoErr(t, err, "create mbox source")
+
+	sources, err := st.GetSourcesByIdentifier("user@example.com")
+	testutil.MustNoErr(t, err, "GetSourcesByIdentifier")
+	if len(sources) != 2 {
+		t.Fatalf("got %d sources, want 2", len(sources))
+	}
+
+	// Verify ordering by source_type
+	if sources[0].SourceType != "gmail" {
+		t.Errorf("sources[0].SourceType = %q, want gmail", sources[0].SourceType)
+	}
+	if sources[1].SourceType != "mbox" {
+		t.Errorf("sources[1].SourceType = %q, want mbox", sources[1].SourceType)
+	}
+}
+
+func TestStore_GetSourcesByIdentifier_NotFound(t *testing.T) {
+	st := testutil.NewTestStore(t)
+
+	sources, err := st.GetSourcesByIdentifier("nobody@example.com")
+	testutil.MustNoErr(t, err, "GetSourcesByIdentifier")
+	if len(sources) != 0 {
+		t.Errorf("got %d sources, want 0", len(sources))
+	}
+}
+
 func TestStore_RemoveSource(t *testing.T) {
 	f := storetest.New(t)
 
