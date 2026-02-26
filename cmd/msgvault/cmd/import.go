@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/store"
+	"github.com/wesm/msgvault/internal/textutil"
 	"github.com/wesm/msgvault/internal/whatsapp"
 )
 
@@ -200,8 +201,8 @@ func (p *ImportCLIProgress) OnProgress(processed, added, skipped int64) {
 
 	chatStr := ""
 	if p.currentChat != "" {
-		// Truncate long chat names.
-		name := p.currentChat
+		// Truncate long chat names and sanitize to prevent terminal injection.
+		name := textutil.SanitizeTerminal(p.currentChat)
 		if len(name) > 30 {
 			name = name[:27] + "..."
 		}

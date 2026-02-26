@@ -87,6 +87,20 @@ func parseVCardFile(path string) ([]vcardContact, error) {
 		return nil, fmt.Errorf("scan vcard: %w", err)
 	}
 
+	// Handle QUOTED-PRINTABLE soft line breaks: a trailing '=' means the
+	// value continues on the next line (vCard 2.1 convention). The scanner
+	// already consumed the newline, so we rejoin here.
+	var qpJoined []string
+	for i := 0; i < len(rawLines); i++ {
+		line := rawLines[i]
+		for strings.HasSuffix(line, "=") && i+1 < len(rawLines) {
+			line = line[:len(line)-1] + rawLines[i+1]
+			i++
+		}
+		qpJoined = append(qpJoined, line)
+	}
+	rawLines = qpJoined
+
 	var contacts []vcardContact
 	var current *vcardContact
 
@@ -218,11 +232,8 @@ func normalizeVCardPhone(raw string) string {
 	// and cannot be reliably normalized without knowing the country code.
 	// Skip these rather than hardcoding a country assumption.
 
-	// If long enough to be an international number without prefix, assume it has a country code.
-	if len(digits) >= 10 && !strings.HasPrefix(digits, "0") {
-		return "+" + digits
-	}
-
-	// Too short, local format, or ambiguous — skip.
+	// Without an explicit country code indicator (+ or 00), we cannot
+	// reliably determine the country code. Skip ambiguous numbers rather
+	// than guessing — a wrong prefix would match the wrong participant.
 	return ""
 }

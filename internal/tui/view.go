@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/textutil"
 )
 
 // Monochrome theme - adaptive for light and dark terminals
@@ -527,16 +528,17 @@ func (m Model) messageListView() string {
 		date := msg.SentAt.Format("2006-01-02 15:04")
 
 		// Format from (rune-aware for international names)
-		from := msg.FromEmail
+		// Sanitize untrusted metadata to prevent terminal control-sequence injection.
+		from := textutil.SanitizeTerminal(msg.FromEmail)
 		if msg.FromName != "" {
-			from = msg.FromName
+			from = textutil.SanitizeTerminal(msg.FromName)
 		}
 		// For chat messages: fall back to phone number, then group title
 		if from == "" && msg.FromPhone != "" {
-			from = msg.FromPhone
+			from = textutil.SanitizeTerminal(msg.FromPhone)
 		}
 		if from == "" && msg.ConversationTitle != "" {
-			from = msg.ConversationTitle
+			from = textutil.SanitizeTerminal(msg.ConversationTitle)
 		}
 		from = truncateRunes(from, fromWidth)
 		from = fmt.Sprintf("%-*s", fromWidth, from)
@@ -544,12 +546,14 @@ func (m Model) messageListView() string {
 
 		// Format subject with indicators (rune-aware)
 		// For chat messages without a subject, show snippet or group title
-		subject := msg.Subject
+		subject := textutil.SanitizeTerminal(msg.Subject)
 		if subject == "" && msg.MessageType == "whatsapp" {
-			if msg.ConversationTitle != "" {
-				subject = msg.ConversationTitle + ": " + msg.Snippet
+			title := textutil.SanitizeTerminal(msg.ConversationTitle)
+			snippet := textutil.SanitizeTerminal(msg.Snippet)
+			if title != "" {
+				subject = title + ": " + snippet
 			} else {
-				subject = msg.Snippet
+				subject = snippet
 			}
 		}
 		if msg.DeletedAt != nil {
@@ -893,18 +897,19 @@ func (m Model) threadView() string {
 		dateStr := msg.SentAt.Format("2006-01-02 15:04")
 
 		// Format from/subject with deleted indicator
-		fromSubject := msg.FromEmail
+		// Sanitize untrusted metadata to prevent terminal control-sequence injection.
+		fromSubject := textutil.SanitizeTerminal(msg.FromEmail)
 		if msg.FromName != "" {
-			fromSubject = msg.FromName
+			fromSubject = textutil.SanitizeTerminal(msg.FromName)
 		}
 		// For chat messages: fall back to phone number
 		if fromSubject == "" && msg.FromPhone != "" {
-			fromSubject = msg.FromPhone
+			fromSubject = textutil.SanitizeTerminal(msg.FromPhone)
 		}
 		if msg.Subject != "" {
-			fromSubject = truncateRunes(fromSubject, 18) + ": " + msg.Subject
+			fromSubject = truncateRunes(fromSubject, 18) + ": " + textutil.SanitizeTerminal(msg.Subject)
 		} else if msg.MessageType == "whatsapp" && msg.Snippet != "" {
-			fromSubject = truncateRunes(fromSubject, 18) + ": " + msg.Snippet
+			fromSubject = truncateRunes(fromSubject, 18) + ": " + textutil.SanitizeTerminal(msg.Snippet)
 		}
 		if msg.DeletedAt != nil {
 			fromSubject = "🗑 " + fromSubject // Deleted from server indicator

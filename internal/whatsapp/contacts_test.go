@@ -30,8 +30,9 @@ func TestNormalizeVCardPhone(t *testing.T) {
 		{"07738006043", ""},
 		{"077-380-06043", ""},
 
-		// Already international without +
-		{"447700900000", "+447700900000"},
+		// No explicit country code indicator — ambiguous, skip
+		{"447700900000", ""},
+		{"2025551234", ""},
 
 		// Empty/invalid
 		{"", ""},
@@ -160,6 +161,38 @@ func TestParseVCardFile_FoldedAndEncoded(t *testing.T) {
 	// QUOTED-PRINTABLE encoded name
 	if contacts[1].FullName != "René Dupont" {
 		t.Errorf("QP name = %q, want %q", contacts[1].FullName, "René Dupont")
+	}
+}
+
+func TestParseVCardFile_QPSoftBreaks(t *testing.T) {
+	// Test QUOTED-PRINTABLE soft line breaks (= at end of line).
+	// vCard 2.1 uses = at EOL to wrap long QP values across lines.
+	vcf := "BEGIN:VCARD\r\n" +
+		"VERSION:2.1\r\n" +
+		"FN;ENCODING=QUOTED-PRINTABLE:Jo=C3=A3o da =\r\n" +
+		"Silva\r\n" +
+		"TEL;CELL:+5511999887766\r\n" +
+		"END:VCARD\r\n"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "qp-soft.vcf")
+	if err := os.WriteFile(path, []byte(vcf), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	contacts, err := parseVCardFile(path)
+	if err != nil {
+		t.Fatalf("parseVCardFile() error: %v", err)
+	}
+
+	if len(contacts) != 1 {
+		t.Fatalf("got %d contacts, want 1", len(contacts))
+	}
+
+	// Soft break should be stripped, continuation joined, then QP decoded.
+	want := "João da Silva"
+	if contacts[0].FullName != want {
+		t.Errorf("QP soft break name = %q, want %q", contacts[0].FullName, want)
 	}
 }
 

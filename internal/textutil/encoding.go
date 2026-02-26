@@ -146,3 +146,67 @@ func FirstLine(s string) string {
 	}
 	return s
 }
+
+// SanitizeTerminal strips ANSI escape sequences and C0/C1 control characters
+// from a string, preventing terminal injection via untrusted data (e.g.,
+// WhatsApp chat names, message snippets). Preserves printable characters,
+// tabs, and newlines.
+func SanitizeTerminal(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		// Strip ESC-initiated sequences (CSI, OSC, etc.).
+		if c == 0x1b && i+1 < len(s) {
+			next := s[i+1]
+			switch {
+			case next == '[': // CSI sequence: ESC [ ... <final byte 0x40-0x7E>
+				i += 2
+				for i < len(s) && (s[i] < 0x40 || s[i] > 0x7E) {
+					i++
+				}
+				if i < len(s) {
+					i++ // skip final byte
+				}
+				continue
+			case next == ']': // OSC sequence: ESC ] ... (ST or BEL)
+				i += 2
+				for i < len(s) {
+					if s[i] == 0x07 { // BEL terminates OSC
+						i++
+						break
+					}
+					if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\' { // ST terminates OSC
+						i += 2
+						break
+					}
+					i++
+				}
+				continue
+			default: // Other ESC sequences (2-byte): skip both
+				i += 2
+				continue
+			}
+		}
+		// Allow tab, newline, carriage return; strip other C0/C1 control chars.
+		if c == '\t' || c == '\n' || c == '\r' {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		if c < 0x20 || (c >= 0x7f && c <= 0x9f) {
+			i++
+			continue
+		}
+		// Printable or multi-byte UTF-8: pass through.
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			i++
+			continue
+		}
+		b.WriteString(s[i : i+size])
+		i += size
+	}
+	return b.String()
+}
