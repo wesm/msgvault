@@ -92,12 +92,15 @@ func parseVCardFile(path string) ([]vcardContact, error) {
 
 	for _, line := range rawLines {
 		line = strings.TrimSpace(line)
+		// vCard field names are case-insensitive (RFC 2426).
+		// Uppercase the key portion for matching, but preserve original value bytes.
+		upper := strings.ToUpper(line)
 
 		switch {
-		case line == "BEGIN:VCARD":
+		case upper == "BEGIN:VCARD":
 			current = &vcardContact{}
 
-		case line == "END:VCARD":
+		case upper == "END:VCARD":
 			if current != nil && (current.FullName != "" || len(current.Phones) > 0) {
 				contacts = append(contacts, *current)
 			}
@@ -106,7 +109,7 @@ func parseVCardFile(path string) ([]vcardContact, error) {
 		case current == nil:
 			continue
 
-		case strings.HasPrefix(line, "FN:") || strings.HasPrefix(line, "FN;"):
+		case strings.HasPrefix(upper, "FN:") || strings.HasPrefix(upper, "FN;"):
 			// FN (formatted name) — preferred over N because it's the display name.
 			name := extractVCardValue(line)
 			if isQuotedPrintable(line) {
@@ -116,7 +119,7 @@ func parseVCardFile(path string) ([]vcardContact, error) {
 				current.FullName = name
 			}
 
-		case strings.HasPrefix(line, "TEL"):
+		case strings.HasPrefix(upper, "TEL"):
 			// TEL;CELL:+447... or TEL;TYPE=CELL:+447... or TEL:+447...
 			raw := extractVCardValue(line)
 			phone := normalizeVCardPhone(raw)
