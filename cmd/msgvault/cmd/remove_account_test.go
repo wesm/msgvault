@@ -335,7 +335,10 @@ func TestRemoveAccountCmd_ClosedStdinReturnsError(t *testing.T) {
 
 	origStdin := os.Stdin
 	os.Stdin = r
-	defer func() { os.Stdin = origStdin }()
+	defer func() {
+		os.Stdin = origStdin
+		_ = r.Close()
+	}()
 
 	// Run WITHOUT --yes so it tries to read confirmation
 	root := newTestRootCmd()
