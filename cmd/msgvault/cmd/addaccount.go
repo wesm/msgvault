@@ -23,7 +23,8 @@ By default, opens a browser for authorization. Use --headless to see instruction
 for authorizing on headless servers (Google does not support Gmail in device flow).
 
 If a token already exists, the command skips authorization. Use --force to delete
-the existing token and re-authorize (useful when a token has expired or been revoked).
+the existing token and start a fresh OAuth flow (most token issues are handled
+automatically during sync and verify).
 
 Examples:
   msgvault add-account you@gmail.com
@@ -95,7 +96,6 @@ Examples:
 			}
 			fmt.Printf("Account %s is already authorized.\n", email)
 			fmt.Println("Next step: msgvault sync-full", email)
-			fmt.Println("To re-authorize (e.g., expired token), run: msgvault add-account", email, "--force")
 			return nil
 		}
 
@@ -128,7 +128,7 @@ Examples:
 
 func init() {
 	addAccountCmd.Flags().BoolVar(&headless, "headless", false, "Show instructions for headless server setup")
-	addAccountCmd.Flags().BoolVar(&forceReauth, "force", false, "Delete existing token and re-authorize (use when token is expired or revoked)")
+	addAccountCmd.Flags().BoolVar(&forceReauth, "force", false, "Delete existing token and re-authorize")
 	addAccountCmd.Flags().StringVar(&accountDisplayName, "display-name", "", "Display name for the account (e.g., \"Work\", \"Personal\")")
 	rootCmd.AddCommand(addAccountCmd)
 }

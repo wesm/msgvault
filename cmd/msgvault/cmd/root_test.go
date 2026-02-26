@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/oauth2"
 )
 
 func TestErrOAuthNotConfigured(t *testing.T) {
@@ -316,4 +318,306 @@ func TestExecute_UsesBackgroundContextInHandler(t *testing.T) {
 	default:
 		// Expected: context is not done
 	}
+}
+
+func TestIsAuthInvalidError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "generic error",
+			err:  errors.New("something went wrong"),
+			want: false,
+		},
+		{
+			name: "invalid_grant RetrieveError",
+			err:  &oauth2.RetrieveError{ErrorCode: "invalid_grant"},
+			want: true,
+		},
+		{
+			name: "other RetrieveError code",
+			err:  &oauth2.RetrieveError{ErrorCode: "invalid_client"},
+			want: false,
+		},
+		{
+			name: "empty ErrorCode RetrieveError",
+			err:  &oauth2.RetrieveError{},
+			want: false,
+		},
+		{
+			name: "wrapped invalid_grant",
+			err: fmt.Errorf(
+				"refresh token: %w",
+				&oauth2.RetrieveError{ErrorCode: "invalid_grant"},
+			),
+			want: true,
+		},
+		{
+			name: "network error",
+			err: &net.OpError{
+				Op:  "dial",
+				Net: "tcp",
+				Err: errors.New("connection refused"),
+			},
+			want: false,
+		},
+		{
+			name: "context.Canceled",
+			err:  context.Canceled,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isAuthInvalidError(tt.err)
+			if got != tt.want {
+				t.Errorf("isAuthInvalidError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// mockReauthorizer implements tokenReauthorizer for testing.
+type mockReauthorizer struct {
+	tokenSourceFn func(ctx context.Context, email string) (oauth2.TokenSource, error)
+	hasTokenVal   bool
+	deleteTokenFn func(email string) error
+	authorizeFn   func(ctx context.Context, email string) error
+
+	deleteCount    int
+	authorizeCount int
+
+	// tokenSourceCall tracks how many times TokenSource was called,
+	// allowing the mock to return different results on each call.
+	tokenSourceCall int
+}
+
+func (m *mockReauthorizer) TokenSource(ctx context.Context, email string) (oauth2.TokenSource, error) {
+	m.tokenSourceCall++
+	return m.tokenSourceFn(ctx, email)
+}
+
+func (m *mockReauthorizer) HasToken(email string) bool {
+	return m.hasTokenVal
+}
+
+func (m *mockReauthorizer) DeleteToken(email string) error {
+	m.deleteCount++
+	if m.deleteTokenFn != nil {
+		return m.deleteTokenFn(email)
+	}
+	return nil
+}
+
+func (m *mockReauthorizer) Authorize(ctx context.Context, email string) error {
+	m.authorizeCount++
+	if m.authorizeFn != nil {
+		return m.authorizeFn(ctx, email)
+	}
+	return nil
+}
+
+// fakeTokenSource implements oauth2.TokenSource for tests.
+type fakeTokenSource struct{}
+
+func (fakeTokenSource) Token() (*oauth2.Token, error) {
+	return &oauth2.Token{AccessToken: "fake"}, nil
+}
+
+func TestGetTokenSourceWithReauth(t *testing.T) {
+	invalidGrant := &oauth2.RetrieveError{ErrorCode: "invalid_grant"}
+	genericErr := errors.New("transient network error")
+
+	tests := []struct {
+		name          string
+		mock          *mockReauthorizer
+		interactive   bool
+		wantErr       bool
+		errContains   string
+		wantDelete    int
+		wantAuthorize int
+	}{
+		{
+			name: "token valid",
+			mock: &mockReauthorizer{
+				tokenSourceFn: func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+					return fakeTokenSource{}, nil
+				},
+				hasTokenVal: true,
+			},
+			interactive:   true,
+			wantErr:       false,
+			wantDelete:    0,
+			wantAuthorize: 0,
+		},
+		{
+			name: "no token at all",
+			mock: &mockReauthorizer{
+				tokenSourceFn: func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+					return nil, errors.New("no token")
+				},
+				hasTokenVal: false,
+			},
+			interactive: true,
+			wantErr:     true,
+			errContains: "add-account",
+			wantDelete:  0,
+		},
+		{
+			name: "transient error, token exists",
+			mock: &mockReauthorizer{
+				tokenSourceFn: func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+					return nil, genericErr
+				},
+				hasTokenVal: true,
+			},
+			interactive:   true,
+			wantErr:       true,
+			errContains:   "transient network error",
+			wantDelete:    0,
+			wantAuthorize: 0,
+		},
+		{
+			name: "invalid_grant, interactive — full reauth",
+			mock: func() *mockReauthorizer {
+				m := &mockReauthorizer{hasTokenVal: true}
+				m.tokenSourceFn = func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+					if m.tokenSourceCall == 1 {
+						return nil, fmt.Errorf("refresh: %w", invalidGrant)
+					}
+					return fakeTokenSource{}, nil
+				}
+				return m
+			}(),
+			interactive:   true,
+			wantErr:       false,
+			wantDelete:    1,
+			wantAuthorize: 1,
+		},
+		{
+			name: "invalid_grant, non-interactive",
+			mock: &mockReauthorizer{
+				tokenSourceFn: func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+					return nil, invalidGrant
+				},
+				hasTokenVal: true,
+			},
+			interactive:   false,
+			wantErr:       true,
+			errContains:   "non-interactive session",
+			wantDelete:    0,
+			wantAuthorize: 0,
+		},
+		{
+			name: "invalid_grant, reauth fails",
+			mock: &mockReauthorizer{
+				tokenSourceFn: func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+					return nil, invalidGrant
+				},
+				hasTokenVal: true,
+				authorizeFn: func(_ context.Context, _ string) error {
+					return errors.New("browser flow failed")
+				},
+			},
+			interactive:   true,
+			wantErr:       true,
+			errContains:   "browser flow failed",
+			wantDelete:    1,
+			wantAuthorize: 1,
+		},
+		{
+			name: "invalid_grant, delete fails",
+			mock: &mockReauthorizer{
+				tokenSourceFn: func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+					return nil, invalidGrant
+				},
+				hasTokenVal: true,
+				deleteTokenFn: func(_ string) error {
+					return errors.New("permission denied")
+				},
+			},
+			interactive:   true,
+			wantErr:       true,
+			errContains:   "permission denied",
+			wantDelete:    1,
+			wantAuthorize: 0,
+		},
+		{
+			name: "invalid_grant, retry TokenSource fails",
+			mock: func() *mockReauthorizer {
+				m := &mockReauthorizer{hasTokenVal: true}
+				m.tokenSourceFn = func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+					if m.tokenSourceCall == 1 {
+						return nil, invalidGrant
+					}
+					return nil, errors.New("still broken")
+				}
+				return m
+			}(),
+			interactive:   true,
+			wantErr:       true,
+			errContains:   "after re-authorization",
+			wantDelete:    1,
+			wantAuthorize: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			ts, err := getTokenSourceWithReauth(ctx, tt.mock, "test@gmail.com", tt.interactive)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.errContains)
+				}
+				if ts != nil {
+					t.Error("expected nil token source on error")
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if ts == nil {
+					t.Fatal("expected non-nil token source")
+				}
+			}
+
+			if tt.mock.deleteCount != tt.wantDelete {
+				t.Errorf("DeleteToken called %d times, want %d", tt.mock.deleteCount, tt.wantDelete)
+			}
+			if tt.mock.authorizeCount != tt.wantAuthorize {
+				t.Errorf("Authorize called %d times, want %d", tt.mock.authorizeCount, tt.wantAuthorize)
+			}
+		})
+	}
+
+	// Additional assertion for non-interactive case: verify the error
+	// mentions running from an interactive terminal
+	t.Run("non-interactive error mentions interactive terminal", func(t *testing.T) {
+		mock := &mockReauthorizer{
+			tokenSourceFn: func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+				return nil, invalidGrant
+			},
+			hasTokenVal: true,
+		}
+		_, err := getTokenSourceWithReauth(context.Background(), mock, "x@gmail.com", false)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "interactive terminal") {
+			t.Errorf("error should mention 'interactive terminal': %q", err.Error())
+		}
+	})
 }

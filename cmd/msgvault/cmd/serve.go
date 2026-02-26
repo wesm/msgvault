@@ -244,7 +244,7 @@ func runScheduledSync(ctx context.Context, email string, s *store.Store, oauthMg
 	tokenSource, err := oauthMgr.TokenSource(ctx, email)
 	if err != nil {
 		if oauthMgr.HasToken(email) {
-			return fmt.Errorf("get token source: %w (token may be expired; run 'add-account %s --force' to re-authorize)", err, email)
+			return fmt.Errorf("get token source: %w (token may be expired; run 'sync %s' or 'verify %s' from an interactive terminal to re-authorize)", err, email, email)
 		}
 		return fmt.Errorf("get token source: %w (run 'add-account %s' first)", err, email)
 	}

@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/mime"
@@ -67,7 +68,9 @@ Examples:
 			cancel()
 		}()
 
-		tokenSource, err := getTokenSourceWithReauth(ctx, oauthMgr, email)
+		interactive := isatty.IsTerminal(os.Stdin.Fd()) ||
+			isatty.IsCygwinTerminal(os.Stdin.Fd())
+		tokenSource, err := getTokenSourceWithReauth(ctx, oauthMgr, email, interactive)
 		if err != nil {
 			return err
 		}

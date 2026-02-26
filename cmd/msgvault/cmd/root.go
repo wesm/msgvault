@@ -8,10 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/config"
-	"github.com/wesm/msgvault/internal/oauth"
 	"golang.org/x/oauth2"
 )
 
@@ -158,22 +156,35 @@ func isAuthInvalidError(err error) bool {
 	return false
 }
 
+// tokenReauthorizer abstracts the oauth.Manager methods used by
+// getTokenSourceWithReauth, making the function testable without real OAuth.
+type tokenReauthorizer interface {
+	TokenSource(ctx context.Context, email string) (oauth2.TokenSource, error)
+	HasToken(email string) bool
+	DeleteToken(email string) error
+	Authorize(ctx context.Context, email string) error
+}
+
 // getTokenSourceWithReauth tries to get a token source for the given email.
 // If the token exists but is expired/revoked (invalid_grant), it automatically
 // deletes the old token and re-initiates the OAuth browser flow.
 // Transient errors (network, context cancellation) are returned as-is without
 // deleting the token.
-// NOTE: This function requires a browser and an interactive terminal for
-// re-authorization. Only use from interactive CLI commands (sync, sync-full,
-// verify), not from daemon mode (serve).
-func getTokenSourceWithReauth(ctx context.Context, oauthMgr *oauth.Manager, email string) (oauth2.TokenSource, error) {
-	tokenSource, err := oauthMgr.TokenSource(ctx, email)
+// The interactive parameter controls whether the function can open a browser
+// for re-authorization. Callers should pass the result of an isatty check.
+func getTokenSourceWithReauth(
+	ctx context.Context,
+	mgr tokenReauthorizer,
+	email string,
+	interactive bool,
+) (oauth2.TokenSource, error) {
+	tokenSource, err := mgr.TokenSource(ctx, email)
 	if err == nil {
 		return tokenSource, nil
 	}
 
 	// No token at all — user needs to run add-account
-	if !oauthMgr.HasToken(email) {
+	if !mgr.HasToken(email) {
 		return nil, fmt.Errorf("get token source: %w (run 'add-account %s' first)", err, email)
 	}
 
@@ -183,22 +194,27 @@ func getTokenSourceWithReauth(ctx context.Context, oauthMgr *oauth.Manager, emai
 	}
 
 	// Non-interactive session cannot open a browser for reauth
-	if !isatty.IsTerminal(os.Stdin.Fd()) && !isatty.IsCygwinTerminal(os.Stdin.Fd()) {
-		return nil, fmt.Errorf("token for %s is expired or revoked, but cannot re-authorize in a non-interactive session (run 'add-account --force %s' from a terminal)", email, email)
+	if !interactive {
+		return nil, fmt.Errorf(
+			"token for %s is expired or revoked, but cannot re-authorize "+
+				"in a non-interactive session (run this command from an "+
+				"interactive terminal to re-authorize automatically)",
+			email,
+		)
 	}
 
 	fmt.Printf("Token for %s is expired or revoked. Re-authorizing...\n", email)
 
-	if delErr := oauthMgr.DeleteToken(email); delErr != nil {
+	if delErr := mgr.DeleteToken(email); delErr != nil {
 		return nil, fmt.Errorf("delete expired token: %w", delErr)
 	}
 
-	if authErr := oauthMgr.Authorize(ctx, email); authErr != nil {
+	if authErr := mgr.Authorize(ctx, email); authErr != nil {
 		return nil, fmt.Errorf("re-authorize %s: %w", email, authErr)
 	}
 
 	// Retry with the new token
-	tokenSource, err = oauthMgr.TokenSource(ctx, email)
+	tokenSource, err = mgr.TokenSource(ctx, email)
 	if err != nil {
 		return nil, fmt.Errorf("get token source after re-authorization: %w", err)
 	}

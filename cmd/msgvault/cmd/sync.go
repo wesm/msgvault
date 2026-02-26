@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/oauth"
@@ -137,7 +138,9 @@ func runIncrementalSync(ctx context.Context, s *store.Store, oauthMgr *oauth.Man
 		return fmt.Errorf("no history ID - run 'sync-full' first")
 	}
 
-	tokenSource, err := getTokenSourceWithReauth(ctx, oauthMgr, email)
+	interactive := isatty.IsTerminal(os.Stdin.Fd()) ||
+		isatty.IsCygwinTerminal(os.Stdin.Fd())
+	tokenSource, err := getTokenSourceWithReauth(ctx, oauthMgr, email, interactive)
 	if err != nil {
 		return err
 	}
