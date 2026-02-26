@@ -16,6 +16,7 @@ import (
 	"github.com/wesm/msgvault/internal/api"
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/oauth"
+	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/scheduler"
 	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/sync"
@@ -82,6 +83,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("init schema: %w", err)
 	}
 
+	// Create query engine for TUI aggregate support
+	analyticsDir := cfg.AnalyticsDir()
+	engine, err := query.NewDuckDBEngine(analyticsDir, dbPath, nil)
+	if err != nil {
+		logger.Warn("query engine not available - aggregate endpoints will return 503", "error", err)
+		// Continue without engine - basic endpoints still work
+	}
+	if engine != nil {
+		defer engine.Close()
+	}
+
 	// Create OAuth manager
 	oauthMgr, err := oauth.NewManager(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger)
 	if err != nil {
@@ -122,7 +134,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	schedAdapter := &schedulerAdapter{scheduler: sched}
 
 	// Create and start API server
-	apiServer := api.NewServer(cfg, storeAdapter, schedAdapter, logger)
+	apiServer := api.NewServerWithOptions(api.ServerOptions{
+		Config:    cfg,
+		Store:     storeAdapter,
+		Engine:    engine,
+		Scheduler: schedAdapter,
+		Logger:    logger,
+	})
 
 	// Start API server in goroutine
 	serverErr := make(chan error, 1)

@@ -81,15 +81,20 @@ msgvault tui
 | `add-account EMAIL` | Authorize a Gmail account (use `--headless` for servers) |
 | `sync-full EMAIL` | Full sync (`--limit N`, `--after`/`--before` for date ranges) |
 | `sync EMAIL` | Sync only new/changed messages |
-| `tui` | Launch the interactive TUI (`--account` to filter) |
+| `tui` | Launch the interactive TUI (`--account` to filter, `--local` to force local) |
 | `search QUERY` | Search messages (`--json` for machine output) |
+| `show-message ID` | View full message details (`--json` for machine output) |
 | `mcp` | Start the MCP server for AI assistant integration |
+| `serve` | Run daemon with scheduled sync and HTTP API for remote TUI |
 | `stats` | Show archive statistics |
+| `list-accounts` | List synced email accounts |
 | `verify EMAIL` | Verify archive integrity against Gmail |
 | `export-eml` | Export a message as `.eml` |
 | `import-mbox` | Import email from an MBOX export or `.zip` of MBOX files |
 | `import-emlx` | Import email from an Apple Mail directory tree |
 | `build-cache` | Rebuild the Parquet analytics cache |
+| `update` | Update msgvault to the latest version |
+| `setup` | Interactive first-run configuration wizard |
 | `repair-encoding` | Fix UTF-8 encoding issues |
 | `list-senders` / `list-domains` / `list-labels` | Explore metadata |
 
@@ -124,6 +129,30 @@ See the [Configuration Guide](https://msgvault.io/configuration/) for all option
 ## MCP Server
 
 msgvault includes an MCP server that lets AI assistants search, analyze, and read your archived messages. Connect it to Claude Desktop or any MCP-capable agent and query your full message history conversationally. See the [MCP documentation](https://msgvault.io/usage/chat/) for setup instructions.
+
+## Daemon Mode (NAS/Server)
+
+Run msgvault as a long-running daemon for scheduled syncs and remote access:
+
+```bash
+msgvault serve
+```
+
+Configure scheduled syncs in `config.toml`:
+
+```toml
+[[accounts]]
+email = "you@gmail.com"
+schedule = "0 2 * * *"   # 2am daily (cron)
+enabled = true
+
+[server]
+api_port = 8080
+bind_addr = "0.0.0.0"
+api_key = "your-secret-key"
+```
+
+The TUI can connect to a remote server by configuring `[remote].url`. Use `--local` to force local database when remote is configured. See [docs/api.md](docs/api.md) for the HTTP API reference.
 
 ## Documentation
 

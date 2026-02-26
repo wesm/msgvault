@@ -75,7 +75,7 @@ Fetches only changes since the last sync using the Gmail History API. Much
 faster than a full sync. Requires a prior full sync.
 
 ```bash
-msgvault sync-incremental user@gmail.com
+msgvault sync user@gmail.com
 ```
 
 If Gmail's history has expired (~7 days), it will suggest running a full sync.
@@ -260,7 +260,24 @@ msgvault tui
 
 # Filter by account
 msgvault tui --account user@gmail.com
+
+# Force local database (override remote config)
+msgvault tui --local
 ```
+
+### Remote mode
+
+When `[remote].url` is configured in `config.toml`, the TUI connects to a remote
+msgvault server instead of the local database. This is useful for accessing an
+archive on a NAS or server from another machine.
+
+```toml
+[remote]
+url = "http://nas.local:8080"
+api_key = "your-api-key"
+```
+
+In remote mode, deletion staging and attachment export are disabled for safety.
 
 ### TUI keybindings
 
@@ -291,7 +308,7 @@ msgvault tui --account user@gmail.com
 2. **Search**: `msgvault search <query> --json` — find relevant messages.
 3. **Read details**: `msgvault show-message <id> --json` — get full message content.
 4. **Analyze**: `list-senders`, `list-domains`, `list-labels` with `--json` for patterns.
-5. **Sync new mail**: `msgvault sync-incremental user@gmail.com` if archive is stale.
+5. **Sync new mail**: `msgvault sync user@gmail.com` if archive is stale.
 
 ## Tips
 

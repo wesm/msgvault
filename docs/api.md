@@ -303,6 +303,212 @@ Returns the current scheduler status and all scheduled accounts.
 
 The `running` field at the top level reflects the actual scheduler lifecycle state (true after `Start()`, false after `Stop()`). Per-account `running` indicates whether a sync is currently in progress for that account.
 
+---
+
+## TUI Support Endpoints
+
+These endpoints support the remote TUI feature, allowing `msgvault tui` to work against a remote server.
+
+### Get Aggregates
+
+```
+GET /api/v1/aggregates
+```
+
+Returns aggregate data grouped by a specified view type (senders, domains, labels, etc.).
+
+**Query Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `view_type` | string | required | `senders`, `sender_names`, `recipients`, `recipient_names`, `domains`, `labels`, `time` |
+| `sort` | string | `count` | `count`, `size`, `attachment_size`, `name` |
+| `direction` | string | `desc` | `asc`, `desc` |
+| `limit` | int | 100 | Maximum rows to return |
+| `time_granularity` | string | `month` | `year`, `month`, `day` (for time view) |
+| `source_id` | int | - | Filter by account |
+| `attachments_only` | bool | false | Only messages with attachments |
+| `hide_deleted` | bool | false | Exclude deleted messages |
+| `search_query` | string | - | Filter by search query |
+
+**Response:**
+```json
+{
+  "view_type": "senders",
+  "rows": [
+    {
+      "key": "alice@example.com",
+      "count": 150,
+      "total_size": 2048000,
+      "attachment_size": 512000,
+      "attachment_count": 25,
+      "total_unique": 1
+    }
+  ]
+}
+```
+
+---
+
+### Get Sub-Aggregates
+
+```
+GET /api/v1/aggregates/sub
+```
+
+Returns aggregates for a filtered subset of messages (drill-down navigation).
+
+**Query Parameters:**
+All parameters from `/aggregates`, plus filter parameters:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `sender` | string | Filter by sender email |
+| `sender_name` | string | Filter by sender name |
+| `recipient` | string | Filter by recipient email |
+| `recipient_name` | string | Filter by recipient name |
+| `domain` | string | Filter by domain |
+| `label` | string | Filter by label |
+| `time_period` | string | Filter by time period |
+
+---
+
+### Get Filtered Messages
+
+```
+GET /api/v1/messages/filter
+```
+
+Returns a filtered list of messages with pagination.
+
+**Query Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `sender` | string | - | Filter by sender |
+| `domain` | string | - | Filter by domain |
+| `label` | string | - | Filter by label |
+| `conversation_id` | int | - | Filter by thread (for thread view) |
+| `offset` | int | 0 | Pagination offset |
+| `limit` | int | 100 | Pagination limit (max 500) |
+| `sort` | string | `date` | `date`, `size`, `subject` |
+| `direction` | string | `desc` | `asc`, `desc` |
+
+**Response:**
+```json
+{
+  "total": 150,
+  "offset": 0,
+  "limit": 100,
+  "messages": [
+    {
+      "id": 12345,
+      "subject": "Meeting Tomorrow",
+      "from": "sender@example.com",
+      "to": ["recipient@example.com"],
+      "sent_at": "2024-01-15T10:30:00Z",
+      "snippet": "Hi, just wanted to confirm...",
+      "labels": ["INBOX"],
+      "has_attachments": false,
+      "size_bytes": 2048
+    }
+  ]
+}
+```
+
+---
+
+### Get Total Stats
+
+```
+GET /api/v1/stats/total
+```
+
+Returns detailed statistics with optional filters.
+
+**Query Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `source_id` | int | Filter by account |
+| `attachments_only` | bool | Only messages with attachments |
+| `hide_deleted` | bool | Exclude deleted messages |
+| `search_query` | string | Filter by search query |
+
+**Response:**
+```json
+{
+  "message_count": 125000,
+  "total_size": 5242880000,
+  "attachment_count": 8500,
+  "attachment_size": 1048576000,
+  "label_count": 35,
+  "account_count": 2
+}
+```
+
+---
+
+### Fast Search
+
+```
+GET /api/v1/search/fast
+```
+
+Fast metadata search (subject, sender, recipient). Does not search message body.
+
+**Query Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `q` | string | Yes | Search query |
+| `offset` | int | No | Pagination offset |
+| `limit` | int | No | Pagination limit (default 100) |
+
+Plus all filter parameters from `/messages/filter`.
+
+**Response:**
+```json
+{
+  "query": "invoice",
+  "messages": [...],
+  "total_count": 42,
+  "stats": {
+    "message_count": 42,
+    "total_size": 1048576,
+    "attachment_count": 5,
+    "attachment_size": 524288,
+    "label_count": 3,
+    "account_count": 1
+  }
+}
+```
+
+---
+
+### Deep Search
+
+```
+GET /api/v1/search/deep
+```
+
+Full-text search including message body (uses FTS5).
+
+**Query Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `q` | string | Yes | Search query |
+| `offset` | int | No | Pagination offset |
+| `limit` | int | No | Pagination limit (default 100) |
+
+**Response:**
+```json
+{
+  "query": "project proposal",
+  "messages": [...],
+  "total_count": 15,
+  "offset": 0,
+  "limit": 100
+}
+```
+
+---
+
 ## Error Responses
 
 All errors return a consistent JSON format:

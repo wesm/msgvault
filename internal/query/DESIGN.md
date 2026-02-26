@@ -12,21 +12,29 @@ It supports two use cases:
 
 The package defines an `Engine` interface that can be implemented by:
 
-### SQLiteEngine (Current)
+### SQLiteEngine
 
 - Uses direct SQLite queries with JOINs
 - Flexible: supports all filters and sorting options
 - Performance: adequate for small-medium databases (<100k messages)
 - Always available as fallback
 
-### ParquetEngine (Future)
+### DuckDBEngine (Preferred)
 
-- Uses Arrow/Parquet files for denormalized analytics data
+- Uses DuckDB to query Parquet files for denormalized analytics
 - Much faster for aggregates (~3000x vs SQLite JOINs)
-- Read-only, requires periodic rebuild from SQLite
+- Automatically falls back to SQLite for message detail queries
 - Best for large databases (100k+ messages)
+- Built using `msgvault build-cache` command
 
-## Parquet Schema (Planned)
+### RemoteEngine
+
+- Implements Engine interface over HTTP API
+- Used by TUI when `[remote].url` is configured
+- Connects to a remote msgvault daemon (`msgvault serve`)
+- Disables deletion and attachment export for safety
+
+## Parquet Schema
 
 ```
 messages.parquet (partitioned by year):
@@ -45,39 +53,38 @@ messages.parquet (partitioned by year):
 
 This denormalized schema avoids JOINs, enabling fast scans.
 
-## Hybrid Approach
+## DuckDB Hybrid Approach
 
-For production use with large databases:
+The DuckDBEngine handles this automatically:
 
 ```go
-// Create hybrid engine that uses Parquet for aggregates, SQLite for details
-engine := query.NewHybridEngine(
-    query.NewParquetEngine(parquetDir),
-    query.NewSQLiteEngine(db),
-)
+// Create DuckDB engine with SQLite fallback for message details
+engine, err := query.NewDuckDBEngine(analyticsDir, dbPath, sqliteDB, opts)
 ```
 
-The hybrid engine routes queries to the appropriate backend:
-- Aggregate queries → Parquet (fast scans)
+The engine routes queries to the appropriate backend:
+- Aggregate queries → DuckDB over Parquet (fast scans)
 - Message detail queries → SQLite (has body, raw MIME)
+- Full-text search → SQLite FTS5 virtual table
 
 ## Build Process
 
 ```bash
 # Build/rebuild Parquet files from SQLite
-msgvault build-analytics [--full-rebuild]
+msgvault build-cache [--full-rebuild]
 
 # Files stored in ~/.msgvault/analytics/
 # - messages/year=2024/*.parquet
+# - participants/
+# - message_recipients/
+# - labels/
+# - message_labels/
+# - attachments/
 # - _last_sync.json (incremental state)
 ```
 
 ## Go Libraries
 
-Potential libraries for Parquet support:
-- `github.com/apache/arrow/go` - Official Arrow implementation
-- `github.com/xitongsys/parquet-go` - Pure Go Parquet
-- `github.com/marcboeker/go-duckdb` - DuckDB via CGO (SQL interface)
-
-DuckDB is attractive because it provides a SQL interface over Parquet,
-similar to the Python implementation which uses DuckDB for ETL.
+The implementation uses:
+- `github.com/marcboeker/go-duckdb` - DuckDB via CGO (SQL interface over Parquet)
+- SQLite FTS5 for full-text search (body content not in Parquet)
