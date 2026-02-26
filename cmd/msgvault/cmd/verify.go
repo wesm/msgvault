@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/mime"
@@ -67,9 +68,11 @@ Examples:
 			cancel()
 		}()
 
-		tokenSource, err := oauthMgr.TokenSource(ctx, email)
+		interactive := isatty.IsTerminal(os.Stdin.Fd()) ||
+			isatty.IsCygwinTerminal(os.Stdin.Fd())
+		tokenSource, err := getTokenSourceWithReauth(ctx, oauthMgr, email, interactive)
 		if err != nil {
-			return fmt.Errorf("get token source: %w (run 'add-account' first)", err)
+			return err
 		}
 
 		// Create Gmail client (no rate limiter needed for single call)

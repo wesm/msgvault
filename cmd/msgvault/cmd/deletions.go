@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/deletion"
 	"github.com/wesm/msgvault/internal/gmail"
@@ -410,9 +411,11 @@ Examples:
 			// If no scope metadata at all (legacy token), fall through to reactive detection
 		}
 
-		tokenSource, err := oauthMgr.TokenSource(ctx, account)
+		interactive := isatty.IsTerminal(os.Stdin.Fd()) ||
+			isatty.IsCygwinTerminal(os.Stdin.Fd())
+		tokenSource, err := getTokenSourceWithReauth(ctx, oauthMgr, account, interactive)
 		if err != nil {
-			return fmt.Errorf("get token source: %w", err)
+			return err
 		}
 
 		// Create Gmail client

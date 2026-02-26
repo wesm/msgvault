@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/oauth"
@@ -135,9 +136,11 @@ Examples:
 }
 
 func runFullSync(ctx context.Context, s *store.Store, oauthMgr *oauth.Manager, email string) error {
-	tokenSource, err := oauthMgr.TokenSource(ctx, email)
+	interactive := isatty.IsTerminal(os.Stdin.Fd()) ||
+		isatty.IsCygwinTerminal(os.Stdin.Fd())
+	tokenSource, err := getTokenSourceWithReauth(ctx, oauthMgr, email, interactive)
 	if err != nil {
-		return fmt.Errorf("get token source: %w (run 'add-account' first)", err)
+		return err
 	}
 
 	// Create Gmail client

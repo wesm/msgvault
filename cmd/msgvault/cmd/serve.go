@@ -239,10 +239,14 @@ func runScheduledSync(ctx context.Context, email string, s *store.Store, oauthMg
 	logger.Info("starting scheduled sync", "email", email)
 	startTime := time.Now()
 
-	// Get token source
+	// Get token source — intentionally not using getTokenSourceWithReauth here
+	// because serve runs as a daemon and cannot open a browser for OAuth.
 	tokenSource, err := oauthMgr.TokenSource(ctx, email)
 	if err != nil {
-		return fmt.Errorf("get token source: %w (run 'add-account' first)", err)
+		if oauthMgr.HasToken(email) {
+			return fmt.Errorf("get token source: %w (token may be expired; run 'sync %s' or 'verify %s' from an interactive terminal to re-authorize)", err, email, email)
+		}
+		return fmt.Errorf("get token source: %w (run 'add-account %s' first)", err, email)
 	}
 
 	// Create Gmail client
