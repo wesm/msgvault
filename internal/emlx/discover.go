@@ -13,10 +13,15 @@ type Mailbox struct {
 	// Path is the absolute path to the .mbox or .imapmbox directory.
 	Path string
 
+	// MsgDir is the absolute path to the Messages/ directory
+	// containing .emlx files. In legacy layouts this is Path/Messages;
+	// in modern V10 layouts it is Path/<GUID>/Data/Messages.
+	MsgDir string
+
 	// Label is the derived label for messages in this mailbox.
 	Label string
 
-	// Files contains sorted .emlx filenames within Messages/.
+	// Files contains sorted .emlx filenames within MsgDir.
 	Files []string
 }
 
@@ -44,14 +49,15 @@ func DiscoverMailboxes(rootDir string) ([]Mailbox, error) {
 
 	// Auto-detect: if the path itself is a mailbox, import just that one.
 	if isMailboxDir(abs) {
-		files, err := listEmlxFiles(abs)
+		msgDir, files, err := listEmlxFiles(abs)
 		if err != nil {
 			return nil, err
 		}
 		if len(files) > 0 {
 			label := LabelFromPath(filepath.Dir(abs), abs)
 			return []Mailbox{{
-				Path: abs, Label: label, Files: files,
+				Path: abs, MsgDir: msgDir,
+				Label: label, Files: files,
 			}}, nil
 		}
 	}
@@ -75,14 +81,15 @@ func DiscoverMailboxes(rootDir string) ([]Mailbox, error) {
 			return nil
 		}
 
-		files, listErr := listEmlxFiles(path)
+		msgDir, files, listErr := listEmlxFiles(path)
 		if listErr != nil || len(files) == 0 {
 			return nil
 		}
 
 		label := LabelFromPath(abs, path)
 		mailboxes = append(mailboxes, Mailbox{
-			Path: path, Label: label, Files: files,
+			Path: path, MsgDir: msgDir,
+			Label: label, Files: files,
 		})
 
 		return nil
@@ -124,6 +131,10 @@ func LabelFromPath(rootDir, mailboxPath string) string {
 		if strings.HasPrefix(p, "IMAP-") || strings.HasPrefix(p, "POP-") {
 			continue
 		}
+		// V10 account GUID directories (e.g. 13C9A646-...-E07FFBDDEED3).
+		if isUUID(p) {
+			continue
+		}
 		filtered = append(filtered, p)
 	}
 
@@ -147,10 +158,61 @@ func isMailboxDir(path string) bool {
 		return false
 	}
 
-	// Must have a Messages/ subdirectory.
-	msgDir := filepath.Join(path, "Messages")
-	info, err := os.Stat(msgDir)
-	return err == nil && info.IsDir()
+	return findMessagesDir(path) != ""
+}
+
+// findMessagesDir locates the Messages/ directory within a .mbox.
+// Returns "" if none found. Checks both legacy (Messages/) and
+// modern V10 (<GUID>/Data/Messages/) layouts.
+func findMessagesDir(mailboxPath string) string {
+	// Legacy: direct Messages/ subdirectory.
+	legacy := filepath.Join(mailboxPath, "Messages")
+	if info, err := os.Stat(legacy); err == nil && info.IsDir() {
+		return legacy
+	}
+
+	// Modern V10: <subdir>/Data/Messages/ subdirectory.
+	entries, err := os.ReadDir(mailboxPath)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		modern := filepath.Join(
+			mailboxPath, e.Name(), "Data", "Messages",
+		)
+		info, statErr := os.Stat(modern)
+		if statErr == nil && info.IsDir() {
+			return modern
+		}
+	}
+
+	return ""
+}
+
+// isUUID returns true if s matches UUID format (8-4-4-4-12 hex).
+func isUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			isHex := (c >= '0' && c <= '9') ||
+				(c >= 'a' && c <= 'f') ||
+				(c >= 'A' && c <= 'F')
+			if !isHex {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func stripMailboxSuffix(name string) string {
@@ -164,16 +226,23 @@ func stripMailboxSuffix(name string) string {
 	return name
 }
 
-// listEmlxFiles returns sorted .emlx filenames (not paths) within
-// the Messages/ subdirectory of a mailbox, excluding .partial.emlx.
-func listEmlxFiles(mailboxPath string) ([]string, error) {
-	msgDir := filepath.Join(mailboxPath, "Messages")
+// listEmlxFiles returns the Messages directory path and sorted .emlx
+// filenames within it, excluding .partial.emlx. Returns ("", nil, nil)
+// if no Messages directory is found.
+func listEmlxFiles(
+	mailboxPath string,
+) (string, []string, error) {
+	msgDir := findMessagesDir(mailboxPath)
+	if msgDir == "" {
+		return "", nil, nil
+	}
+
 	entries, err := os.ReadDir(msgDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return "", nil, nil
 		}
-		return nil, fmt.Errorf("read Messages dir: %w", err)
+		return "", nil, fmt.Errorf("read Messages dir: %w", err)
 	}
 
 	var files []string
@@ -186,12 +255,14 @@ func listEmlxFiles(mailboxPath string) ([]string, error) {
 			continue
 		}
 		// Skip .partial.emlx files (Apple Mail temp files).
-		if strings.HasSuffix(strings.ToLower(name), ".partial.emlx") {
+		if strings.HasSuffix(
+			strings.ToLower(name), ".partial.emlx",
+		) {
 			continue
 		}
 		files = append(files, name)
 	}
 
 	sort.Strings(files)
-	return files, nil
+	return msgDir, files, nil
 }
