@@ -154,7 +154,10 @@ func IngestRawMessage(
 		return err
 	}
 
-	// Attachments: best-effort outside the transaction (file I/O)
+	// Attachments: best-effort outside the transaction (file I/O).
+	// Failures are logged but don't fail the ingest — the message,
+	// body, and raw MIME are already committed. The attachment count
+	// correction below updates metadata to reflect what stored.
 	for i := range parsed.Attachments {
 		att := &parsed.Attachments[i]
 		if err := storeAttachment(
@@ -165,7 +168,6 @@ func IngestRawMessage(
 				"filename", att.Filename,
 				"error", err,
 			)
-			return fmt.Errorf("store attachment %q: %w", att.Filename, err)
 		}
 	}
 

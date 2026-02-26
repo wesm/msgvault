@@ -144,7 +144,7 @@ func TestImportMboxCmd_EndToEnd_MboxFile(t *testing.T) {
 	}
 }
 
-func TestImportMboxCmd_ReturnsErrorWhenImportHasErrors(t *testing.T) {
+func TestImportMboxCmd_AttachmentFailureIsBestEffort(t *testing.T) {
 	tmp := t.TempDir()
 
 	// Save/restore global state for cmd package.
@@ -213,12 +213,12 @@ func TestImportMboxCmd_ReturnsErrorWhenImportHasErrors(t *testing.T) {
 		"--no-resume",
 		"--checkpoint-interval", "1",
 	})
+
+	// Attachment storage failures are best-effort: the import
+	// succeeds even though the attachment file can't be written.
 	err := rootCmd.ExecuteContext(context.Background())
-	if err == nil {
-		t.Fatalf("expected error")
-	}
-	if !strings.Contains(err.Error(), "import completed with") {
-		t.Fatalf("unexpected error: %v", err)
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
 	}
 }
 

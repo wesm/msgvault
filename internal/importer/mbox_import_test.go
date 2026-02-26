@@ -568,7 +568,9 @@ func TestImportMbox_RerunRetriesAttachmentsAfterStoreFailure(t *testing.T) {
 		t.Fatalf("write mbox: %v", err)
 	}
 
-	summary, err := ImportMbox(context.Background(), st, mboxPath, MboxImportOptions{
+	// Attachment storage is best-effort: the ingest succeeds even
+	// though the attachment file couldn't be written to disk.
+	_, err = ImportMbox(context.Background(), st, mboxPath, MboxImportOptions{
 		SourceType:         "mbox",
 		Identifier:         "me@example.com",
 		NoResume:           true,
@@ -578,12 +580,8 @@ func TestImportMbox_RerunRetriesAttachmentsAfterStoreFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ImportMbox: %v", err)
 	}
-	if summary.Errors == 0 {
-		t.Fatalf("expected errors > 0")
-	}
 
-	// Raw MIME is persisted inside the atomic transaction, so it
-	// survives even when attachment storage (outside tx) fails.
+	// Message + raw MIME are committed inside the atomic transaction.
 	var rawCount int
 	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM message_raw`).Scan(&rawCount); err != nil {
 		t.Fatalf("count message_raw: %v", err)
@@ -592,24 +590,52 @@ func TestImportMbox_RerunRetriesAttachmentsAfterStoreFailure(t *testing.T) {
 		t.Fatalf("rawCount = %d, want 1", rawCount)
 	}
 
-	// Message and raw MIME are atomically committed, so a rerun
-	// sees the message as fully ingested and skips it. Verify the
-	// message row exists even though attachment storage failed.
-	var msgCount int
-	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&msgCount); err != nil {
-		t.Fatalf("count messages: %v", err)
-	}
-	if msgCount != 1 {
-		t.Fatalf("msgCount = %d, want 1", msgCount)
-	}
-
-	// Attachment was not stored because disk write failed.
+	// Attachment was not stored because disk write failed, but the
+	// attachment count correction updated the metadata to reflect this.
 	var attachmentCount int
 	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM attachments`).Scan(&attachmentCount); err != nil {
 		t.Fatalf("count attachments: %v", err)
 	}
 	if attachmentCount != 0 {
 		t.Fatalf("attachmentCount = %d, want 0", attachmentCount)
+	}
+
+	// Metadata was corrected to reflect zero stored attachments.
+	var hasAttachments bool
+	var metaCount int
+	if err := st.DB().QueryRow(
+		`SELECT has_attachments, attachment_count FROM messages LIMIT 1`,
+	).Scan(&hasAttachments, &metaCount); err != nil {
+		t.Fatalf("select attachment metadata: %v", err)
+	}
+	if hasAttachments {
+		t.Fatalf("has_attachments = true, want false")
+	}
+	if metaCount != 0 {
+		t.Fatalf("attachment_count = %d, want 0", metaCount)
+	}
+
+	// Fix the attachments dir, rerun — the message is already
+	// ingested so it's skipped, but verify no errors.
+	if err := os.Remove(attachmentsDir); err != nil {
+		t.Fatalf("remove attachments file: %v", err)
+	}
+	if err := os.MkdirAll(attachmentsDir, 0700); err != nil {
+		t.Fatalf("mkdir attachments dir: %v", err)
+	}
+
+	summary, err := ImportMbox(context.Background(), st, mboxPath, MboxImportOptions{
+		SourceType:         "mbox",
+		Identifier:         "me@example.com",
+		NoResume:           true,
+		CheckpointInterval: 1,
+		AttachmentsDir:     attachmentsDir,
+	})
+	if err != nil {
+		t.Fatalf("ImportMbox (rerun): %v", err)
+	}
+	if summary.MessagesSkipped != 1 {
+		t.Fatalf("MessagesSkipped = %d, want 1", summary.MessagesSkipped)
 	}
 }
 
