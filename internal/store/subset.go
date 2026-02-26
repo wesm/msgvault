@@ -165,8 +165,10 @@ func CopySubset(
 
 	if ftsErr := populateFTS(db); ftsErr != nil {
 		errMsg := ftsErr.Error()
-		if !strings.Contains(errMsg, "no such table") &&
-			!strings.Contains(errMsg, "messages_fts") {
+		ftsUnavailable :=
+			strings.Contains(errMsg, "no such table: messages_fts") ||
+				strings.Contains(errMsg, "no such module: fts5")
+		if !ftsUnavailable {
 			fmt.Fprintf(
 				os.Stderr,
 				"warning: FTS index population failed: %v\n",
@@ -342,7 +344,11 @@ func copyData(tx *sql.Tx, rowCount int) (*CopyResult, error) {
 
 	res, err = tx.Exec(`
 		INSERT INTO labels SELECT * FROM src.labels
-		WHERE source_id IN (SELECT id FROM sources)`)
+		WHERE source_id IN (SELECT id FROM sources)
+		   OR id IN (
+			SELECT label_id FROM src.message_labels
+			WHERE message_id IN (SELECT id FROM selected_messages)
+		)`)
 	if err != nil {
 		return nil, fmt.Errorf("copy labels: %w", err)
 	}

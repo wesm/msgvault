@@ -537,6 +537,83 @@ func TestCopySubset_ReactionParticipants(t *testing.T) {
 // violations in the source DB (outside the copied subset) don't cause
 // CopySubset to fail. This guards against the regression where src was
 // still attached during PRAGMA foreign_key_check.
+func TestCopySubset_NullSourceIDLabels(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := filepath.Join(t.TempDir(), "dst")
+
+	srcDB := createTestSourceDB(t, srcDir, 5)
+
+	// Add a user-created label with NULL source_id and attach it
+	// to message 1.
+	db, err := sql.Open("sqlite3", srcDB+"?_foreign_keys=OFF")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO labels (id, source_id, name, label_type)
+		VALUES (100, NULL, 'My Custom Label', 'user')`)
+	if err != nil {
+		t.Fatalf("insert null-source label: %v", err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO message_labels (message_id, label_id)
+		VALUES (1, 100)`)
+	if err != nil {
+		t.Fatalf("insert message_label: %v", err)
+	}
+	_ = db.Close()
+
+	result, err := CopySubset(srcDB, dstDir, 5)
+	if err != nil {
+		t.Fatalf("CopySubset: %v", err)
+	}
+
+	// The 3 source-scoped labels + 1 user-created label
+	if result.Labels != 4 {
+		t.Errorf("Labels = %d, want 4", result.Labels)
+	}
+
+	dstDB, err := sql.Open("sqlite3",
+		filepath.Join(dstDir, "msgvault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dstDB.Close() }()
+
+	var labelName string
+	err = dstDB.QueryRow(`
+		SELECT name FROM labels WHERE source_id IS NULL`,
+	).Scan(&labelName)
+	if err != nil {
+		t.Fatalf("query null-source label: %v", err)
+	}
+	if labelName != "My Custom Label" {
+		t.Errorf("label name = %q, want 'My Custom Label'", labelName)
+	}
+
+	// message_labels link must be preserved
+	var mlCount int64
+	if err := dstDB.QueryRow(`
+		SELECT COUNT(*) FROM message_labels WHERE label_id = 100`,
+	).Scan(&mlCount); err != nil {
+		t.Fatal(err)
+	}
+	if mlCount != 1 {
+		t.Errorf("message_labels for label 100 = %d, want 1", mlCount)
+	}
+
+	// FK integrity
+	fkRows, err := dstDB.Query("PRAGMA foreign_key_check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasViolation := fkRows.Next()
+	_ = fkRows.Close()
+	if hasViolation {
+		t.Error("FK violations with null-source-id labels")
+	}
+}
+
 func TestCopySubset_SourceFKViolationIgnored(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := filepath.Join(t.TempDir(), "dst")
