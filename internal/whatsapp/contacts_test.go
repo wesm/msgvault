@@ -25,12 +25,10 @@ func TestNormalizeVCardPhone(t *testing.T) {
 		{"0033624921221", "+33624921221"},
 		{"004-479-35975580", "+447935975580"},
 
-		// 0 prefix (UK local)
-		{"011-585-73843", "+441158573843"},
-
-		// UK local numbers (0 prefix)
-		{"07738006043", "+447738006043"},
-		{"077-380-06043", "+447738006043"},
+		// 0 prefix (local) — skipped, country-ambiguous
+		{"011-585-73843", ""},
+		{"07738006043", ""},
+		{"077-380-06043", ""},
 
 		// Already international without +
 		{"447700900000", "+447700900000"},
@@ -104,12 +102,12 @@ END:VCARD
 		t.Errorf("contact 0 phones = %v, want [+447984959428]", contacts[0].Phones)
 	}
 
-	// Third contact — local UK number
+	// Third contact — local number (0-prefix) is now skipped (country-ambiguous)
 	if contacts[2].FullName != "Claire Mohacek - Amazon Studios" {
 		t.Errorf("contact 2 name = %q", contacts[2].FullName)
 	}
-	if len(contacts[2].Phones) != 1 || contacts[2].Phones[0] != "+447738006043" {
-		t.Errorf("contact 2 phones = %v, want [+447738006043]", contacts[2].Phones)
+	if len(contacts[2].Phones) != 0 {
+		t.Errorf("contact 2 phones = %v, want [] (local numbers skipped)", contacts[2].Phones)
 	}
 
 	// Multi phone contact

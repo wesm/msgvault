@@ -27,6 +27,7 @@ func ImportContacts(s *store.Store, vcfPath string) (matched, total int, err err
 	}
 
 	total = len(contacts)
+	var errCount int
 	for _, c := range contacts {
 		if c.FullName == "" {
 			continue
@@ -37,11 +38,19 @@ func ImportContacts(s *store.Store, vcfPath string) (matched, total int, err err
 			}
 			// Only update display_name for participants that already exist.
 			// Does not create new participants — those are created during message import.
-			updated, err := s.UpdateParticipantDisplayNameByPhone(phone, c.FullName)
-			if err == nil && updated {
+			updated, updateErr := s.UpdateParticipantDisplayNameByPhone(phone, c.FullName)
+			if updateErr != nil {
+				errCount++
+				continue
+			}
+			if updated {
 				matched++
 			}
 		}
+	}
+
+	if errCount > 0 {
+		return matched, total, fmt.Errorf("contact import completed with %d database errors", errCount)
 	}
 
 	return matched, total, nil
@@ -144,16 +153,15 @@ func normalizeVCardPhone(raw string) string {
 		return "+" + digits[2:]
 	}
 
-	// Handle UK-style local numbers starting with 0 (e.g., 07738006043 → +447738006043).
-	if strings.HasPrefix(digits, "0") && len(digits) >= 10 {
-		return "+44" + digits[1:]
-	}
+	// Local numbers starting with 0 (e.g., 07738006043) are country-specific
+	// and cannot be reliably normalized without knowing the country code.
+	// Skip these rather than hardcoding a country assumption.
 
-	// If long enough to be an international number, assume it has a country code.
-	if len(digits) >= 10 {
+	// If long enough to be an international number without prefix, assume it has a country code.
+	if len(digits) >= 10 && !strings.HasPrefix(digits, "0") {
 		return "+" + digits
 	}
 
-	// Too short or ambiguous — skip.
+	// Too short, local format, or ambiguous — skip.
 	return ""
 }
