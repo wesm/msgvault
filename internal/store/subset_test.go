@@ -405,6 +405,134 @@ func TestCopySubset_NonPositiveRowCount(t *testing.T) {
 	}
 }
 
+func TestCopySubset_ExcludesSoftDeleted(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := filepath.Join(t.TempDir(), "dst")
+
+	srcDB := createTestSourceDB(t, srcDir, 10)
+
+	// Soft-delete the 5 most recent messages
+	db, err := sql.Open("sqlite3", srcDB+"?_foreign_keys=OFF")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		UPDATE messages SET deleted_from_source_at = '2025-01-01'
+		WHERE id IN (
+			SELECT id FROM messages ORDER BY sent_at DESC LIMIT 5
+		)`)
+	if err != nil {
+		t.Fatalf("soft-delete messages: %v", err)
+	}
+	_ = db.Close()
+
+	// Request 5 messages — should get the 5 non-deleted ones
+	result, err := CopySubset(srcDB, dstDir, 5)
+	if err != nil {
+		t.Fatalf("CopySubset: %v", err)
+	}
+	if result.Messages != 5 {
+		t.Errorf("Messages = %d, want 5", result.Messages)
+	}
+
+	dstDB, err := sql.Open("sqlite3",
+		filepath.Join(dstDir, "msgvault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dstDB.Close() }()
+
+	// None of the copied messages should be soft-deleted
+	var deletedCount int64
+	if err := dstDB.QueryRow(`
+		SELECT COUNT(*) FROM messages
+		WHERE deleted_from_source_at IS NOT NULL`,
+	).Scan(&deletedCount); err != nil {
+		t.Fatal(err)
+	}
+	if deletedCount != 0 {
+		t.Errorf("found %d soft-deleted messages in subset", deletedCount)
+	}
+}
+
+func TestCopySubset_ReactionParticipants(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := filepath.Join(t.TempDir(), "dst")
+
+	srcDB := createTestSourceDB(t, srcDir, 5)
+
+	// Add a reactor participant who is neither sender nor recipient
+	db, err := sql.Open("sqlite3", srcDB+"?_foreign_keys=OFF")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO participants
+			(id, email_address, display_name, domain)
+		VALUES (100, 'reactor@example.com', 'Reactor', 'example.com')`)
+	if err != nil {
+		t.Fatalf("insert reactor: %v", err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO reactions
+			(id, message_id, participant_id,
+			 reaction_type, reaction_value)
+		VALUES (1, 1, 100, 'emoji', 'thumbsup')`)
+	if err != nil {
+		t.Fatalf("insert reaction: %v", err)
+	}
+	_ = db.Close()
+
+	result, err := CopySubset(srcDB, dstDir, 5)
+	if err != nil {
+		t.Fatalf("CopySubset: %v", err)
+	}
+	if result.Messages != 5 {
+		t.Errorf("Messages = %d, want 5", result.Messages)
+	}
+
+	dstDB, err := sql.Open("sqlite3",
+		filepath.Join(dstDir, "msgvault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dstDB.Close() }()
+
+	// Reactor participant must be present
+	var reactorCount int64
+	if err := dstDB.QueryRow(`
+		SELECT COUNT(*) FROM participants
+		WHERE email_address = 'reactor@example.com'`,
+	).Scan(&reactorCount); err != nil {
+		t.Fatal(err)
+	}
+	if reactorCount != 1 {
+		t.Errorf("reactor participant count = %d, want 1", reactorCount)
+	}
+
+	// Reaction must be present
+	var rxnCount int64
+	if err := dstDB.QueryRow(
+		"SELECT COUNT(*) FROM reactions",
+	).Scan(&rxnCount); err != nil {
+		t.Fatal(err)
+	}
+	if rxnCount != 1 {
+		t.Errorf("reactions count = %d, want 1", rxnCount)
+	}
+
+	// FK integrity
+	fkRows, err := dstDB.Query("PRAGMA foreign_key_check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasViolation := fkRows.Next()
+	_ = fkRows.Close()
+	if hasViolation {
+		t.Error("FK violations with reaction participants")
+	}
+}
+
 // TestCopySubset_SourceFKViolationIgnored verifies that pre-existing FK
 // violations in the source DB (outside the copied subset) don't cause
 // CopySubset to fail. This guards against the regression where src was

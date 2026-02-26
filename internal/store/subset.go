@@ -232,6 +232,7 @@ func copyData(tx *sql.Tx, rowCount int) (*CopyResult, error) {
 	if _, err := tx.Exec(`
 		CREATE TEMP TABLE selected_messages AS
 		SELECT id FROM src.messages
+		WHERE deleted_from_source_at IS NULL
 		ORDER BY sent_at DESC LIMIT ?`, rowCount); err != nil {
 		return nil, fmt.Errorf("select messages: %w", err)
 	}
@@ -275,6 +276,9 @@ func copyData(tx *sql.Tx, rowCount int) (*CopyResult, error) {
 			WHERE id IN (SELECT id FROM selected_messages)
 			UNION
 			SELECT participant_id FROM src.message_recipients
+			WHERE message_id IN (SELECT id FROM selected_messages)
+			UNION
+			SELECT participant_id FROM src.reactions
 			WHERE message_id IN (SELECT id FROM selected_messages)
 		)`)
 	if err != nil {
