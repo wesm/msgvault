@@ -123,6 +123,10 @@ func runRemoveAccount(_ *cobra.Command, args []string) error {
 	fmt.Println(
 		"Run 'msgvault build-cache' to rebuild the analytics cache.",
 	)
+	fmt.Println(
+		"Note: attachment files on disk were not removed." +
+			" Use 'msgvault gc' (when available) to reclaim space.",
+	)
 
 	return nil
 }
