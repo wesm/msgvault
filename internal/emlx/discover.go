@@ -163,33 +163,67 @@ func isMailboxDir(path string) bool {
 
 // findMessagesDir locates the Messages/ directory within a .mbox.
 // Returns "" if none found. Checks both legacy (Messages/) and
-// modern V10 (<GUID>/Data/Messages/) layouts.
+// modern V10 (<GUID>/Data/Messages/) layouts. When both exist,
+// prefers whichever contains .emlx files.
 func findMessagesDir(mailboxPath string) string {
+	var candidates []string
+
 	// Legacy: direct Messages/ subdirectory.
 	legacy := filepath.Join(mailboxPath, "Messages")
 	if info, err := os.Stat(legacy); err == nil && info.IsDir() {
-		return legacy
+		candidates = append(candidates, legacy)
 	}
 
 	// Modern V10: <subdir>/Data/Messages/ subdirectory.
 	entries, err := os.ReadDir(mailboxPath)
-	if err != nil {
-		return ""
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		modern := filepath.Join(
-			mailboxPath, e.Name(), "Data", "Messages",
-		)
-		info, statErr := os.Stat(modern)
-		if statErr == nil && info.IsDir() {
-			return modern
+	if err == nil {
+		for _, e := range entries {
+			if !e.IsDir() || e.Name() == "Messages" {
+				continue
+			}
+			modern := filepath.Join(
+				mailboxPath, e.Name(), "Data", "Messages",
+			)
+			info, statErr := os.Stat(modern)
+			if statErr == nil && info.IsDir() {
+				candidates = append(candidates, modern)
+			}
 		}
 	}
 
-	return ""
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	// Prefer the first candidate that has .emlx files.
+	for _, dir := range candidates {
+		if hasEmlxFiles(dir) {
+			return dir
+		}
+	}
+
+	// No candidate has files; return first for isMailboxDir.
+	return candidates[0]
+}
+
+// hasEmlxFiles returns true if dir contains at least one
+// non-partial .emlx file.
+func hasEmlxFiles(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		lower := strings.ToLower(e.Name())
+		if strings.HasSuffix(lower, ".emlx") &&
+			!strings.HasSuffix(lower, ".partial.emlx") {
+			return true
+		}
+	}
+	return false
 }
 
 // isUUID returns true if s matches UUID format (8-4-4-4-12 hex).

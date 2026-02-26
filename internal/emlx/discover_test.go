@@ -388,6 +388,40 @@ func TestDiscoverMailboxes_V10PartialSkipped(t *testing.T) {
 	}
 }
 
+func TestDiscoverMailboxes_MixedLegacyAndV10(t *testing.T) {
+	root := t.TempDir()
+	guid := "9F0F15DD-4CBC-448A-9EBF-C385A47A3A67"
+	mboxDir := filepath.Join(root, "INBOX.mbox")
+
+	// Create empty legacy Messages/ alongside populated V10 path.
+	if err := os.MkdirAll(
+		filepath.Join(mboxDir, "Messages"), 0700,
+	); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	mkV10Mailbox(t, mboxDir, guid, "1.emlx", "2.emlx")
+
+	mailboxes, err := DiscoverMailboxes(mboxDir)
+	if err != nil {
+		t.Fatalf("DiscoverMailboxes: %v", err)
+	}
+	if len(mailboxes) != 1 {
+		t.Fatalf("got %d mailboxes, want 1", len(mailboxes))
+	}
+	if len(mailboxes[0].Files) != 2 {
+		t.Fatalf("Files = %d, want 2 (should use V10 path)",
+			len(mailboxes[0].Files))
+	}
+
+	// MsgDir should point to the V10 path, not the empty legacy one.
+	wantSuffix := filepath.Join(guid, "Data", "Messages")
+	rel, _ := filepath.Rel(mboxDir, mailboxes[0].MsgDir)
+	if rel != wantSuffix {
+		t.Errorf("MsgDir relative = %q, want %q",
+			rel, wantSuffix)
+	}
+}
+
 func TestIsUUID(t *testing.T) {
 	tests := []struct {
 		input string
