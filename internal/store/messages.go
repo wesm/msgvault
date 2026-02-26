@@ -830,6 +830,19 @@ func (s *Store) EnsureConversationWithType(sourceID int64, sourceConversationID,
 	`, sourceID, sourceConversationID).Scan(&id)
 
 	if err == nil {
+		// Update conversation_type and title if they've changed.
+		// Only update title when the new value is non-empty (don't blank out existing titles).
+		if title != "" {
+			_, _ = s.db.Exec(`
+				UPDATE conversations SET conversation_type = ?, title = ?, updated_at = datetime('now')
+				WHERE id = ? AND (conversation_type != ? OR title != ? OR title IS NULL)
+			`, conversationType, title, id, conversationType, title)
+		} else {
+			_, _ = s.db.Exec(`
+				UPDATE conversations SET conversation_type = ?, updated_at = datetime('now')
+				WHERE id = ? AND conversation_type != ?
+			`, conversationType, id, conversationType)
+		}
 		return id, nil
 	}
 	if err != sql.ErrNoRows {

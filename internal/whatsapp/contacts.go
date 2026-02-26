@@ -57,7 +57,8 @@ func ImportContacts(s *store.Store, vcfPath string) (matched, total int, err err
 }
 
 // parseVCardFile reads a .vcf file and returns parsed contacts.
-// Handles vCard 2.1 and 3.0 formats.
+// Handles vCard 2.1 and 3.0 formats, including RFC 2425 line folding
+// and QUOTED-PRINTABLE encoded values.
 func parseVCardFile(path string) ([]vcardContact, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -65,15 +66,32 @@ func parseVCardFile(path string) ([]vcardContact, error) {
 	}
 	defer f.Close()
 
-	var contacts []vcardContact
-	var current *vcardContact
-
+	// Read all lines and unfold continuation lines (RFC 2425: lines starting
+	// with a space or tab are continuations of the previous line).
+	var rawLines []string
 	scanner := bufio.NewScanner(f)
-	// Increase buffer for long lines (e.g., base64-encoded photos).
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		line := scanner.Text()
+		if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
+			// Continuation line — append to previous.
+			if len(rawLines) > 0 {
+				rawLines[len(rawLines)-1] += strings.TrimLeft(line, " \t")
+				continue
+			}
+		}
+		rawLines = append(rawLines, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan vcard: %w", err)
+	}
+
+	var contacts []vcardContact
+	var current *vcardContact
+
+	for _, line := range rawLines {
+		line = strings.TrimSpace(line)
 
 		switch {
 		case line == "BEGIN:VCARD":
@@ -91,6 +109,9 @@ func parseVCardFile(path string) ([]vcardContact, error) {
 		case strings.HasPrefix(line, "FN:") || strings.HasPrefix(line, "FN;"):
 			// FN (formatted name) — preferred over N because it's the display name.
 			name := extractVCardValue(line)
+			if isQuotedPrintable(line) {
+				name = decodeQuotedPrintable(name)
+			}
 			if name != "" {
 				current.FullName = name
 			}
@@ -105,10 +126,6 @@ func parseVCardFile(path string) ([]vcardContact, error) {
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan vcard: %w", err)
-	}
-
 	return contacts, nil
 }
 
@@ -121,6 +138,47 @@ func extractVCardValue(line string) string {
 		return ""
 	}
 	return strings.TrimSpace(line[idx+1:])
+}
+
+// isQuotedPrintable returns true if a vCard line indicates QUOTED-PRINTABLE encoding.
+func isQuotedPrintable(line string) bool {
+	upper := strings.ToUpper(line)
+	return strings.Contains(upper, "ENCODING=QUOTED-PRINTABLE") ||
+		strings.Contains(upper, ";QUOTED-PRINTABLE")
+}
+
+// decodeQuotedPrintable decodes a QUOTED-PRINTABLE encoded string.
+// Handles =XX hex sequences (e.g., =C3=A9 → é).
+func decodeQuotedPrintable(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '=' && i+2 < len(s) {
+			hi := unhex(s[i+1])
+			lo := unhex(s[i+2])
+			if hi >= 0 && lo >= 0 {
+				b.WriteByte(byte(hi<<4 | lo))
+				i += 2
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// unhex returns the numeric value of a hex digit, or -1 if invalid.
+func unhex(c byte) int {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'A' && c <= 'F':
+		return int(c - 'A' + 10)
+	case c >= 'a' && c <= 'f':
+		return int(c - 'a' + 10)
+	default:
+		return -1
+	}
 }
 
 // nonDigitRe matches any non-digit character.
