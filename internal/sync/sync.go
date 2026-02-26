@@ -334,8 +334,15 @@ func (s *Syncer) Full(ctx context.Context, email string) (summary *gmail.SyncSum
 		}
 	}
 
-	// Update source with final history ID
+	// Update source with final history ID.
+	// Full sync always advances the cursor (it records the starting point
+	// for future incremental syncs), but warn when errors occurred.
 	historyIDStr := strconv.FormatUint(profile.HistoryID, 10)
+	if state.checkpoint.ErrorsCount > 0 {
+		s.logger.Warn("full sync completed with errors",
+			"errors", state.checkpoint.ErrorsCount,
+			"history_id", historyIDStr)
+	}
 	if err := s.store.UpdateSourceSyncCursor(source.ID, historyIDStr); err != nil {
 		s.logger.Warn("failed to update sync cursor", "error", err)
 	}
@@ -520,51 +527,44 @@ func (s *Syncer) parseToModel(sourceID int64, raw *gmail.RawMessage, threadID st
 
 // persistMessage stores a parsed message and all related data.
 func (s *Syncer) persistMessage(data *messageData, labelMap map[string]int64) error {
-	// Upsert message
-	messageID, err := s.store.UpsertMessage(data.message)
-	if err != nil {
-		return fmt.Errorf("upsert message: %w", err)
-	}
-
-	// Store message body in separate table
-	if err := s.store.UpsertMessageBody(messageID,
-		sql.NullString{String: data.bodyText, Valid: data.bodyText != ""},
-		sql.NullString{String: data.bodyHTML, Valid: data.bodyHTML != ""},
-	); err != nil {
-		return fmt.Errorf("upsert message body: %w", err)
-	}
-
-	// Store raw MIME
-	if err := s.store.UpsertMessageRaw(messageID, data.rawMIME); err != nil {
-		return fmt.Errorf("store raw: %w", err)
-	}
-
-	// Store recipients
-	if err := s.storeRecipients(messageID, "from", data.from, data.participantMap); err != nil {
-		return fmt.Errorf("store from: %w", err)
-	}
-	if err := s.storeRecipients(messageID, "to", data.to, data.participantMap); err != nil {
-		return fmt.Errorf("store to: %w", err)
-	}
-	if err := s.storeRecipients(messageID, "cc", data.cc, data.participantMap); err != nil {
-		return fmt.Errorf("store cc: %w", err)
-	}
-	if err := s.storeRecipients(messageID, "bcc", data.bcc, data.participantMap); err != nil {
-		return fmt.Errorf("store bcc: %w", err)
-	}
-
-	// Store labels
+	// Map Gmail label IDs to internal IDs
 	var labelIDs []int64
 	for _, gmailLabelID := range data.gmailLabelIDs {
 		if internalID, ok := labelMap[gmailLabelID]; ok {
 			labelIDs = append(labelIDs, internalID)
 		}
 	}
-	if err := s.store.ReplaceMessageLabels(messageID, labelIDs); err != nil {
-		return fmt.Errorf("store labels: %w", err)
+
+	// Build recipient sets
+	recipients := []struct {
+		typ   string
+		addrs []mime.Address
+	}{
+		{"from", data.from},
+		{"to", data.to},
+		{"cc", data.cc},
+		{"bcc", data.bcc},
+	}
+	var recipientSets []store.RecipientSet
+	for _, r := range recipients {
+		rs := buildRecipientSet(r.typ, r.addrs, data.participantMap)
+		recipientSets = append(recipientSets, rs)
 	}
 
-	// Store attachments
+	// Persist atomically
+	messageID, err := s.store.PersistMessage(&store.MessagePersistData{
+		Message:    data.message,
+		BodyText:   sql.NullString{String: data.bodyText, Valid: data.bodyText != ""},
+		BodyHTML:   sql.NullString{String: data.bodyHTML, Valid: data.bodyHTML != ""},
+		RawMIME:    data.rawMIME,
+		Recipients: recipientSets,
+		LabelIDs:   labelIDs,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Store attachments (best-effort, file I/O outside transaction)
 	if s.opts.AttachmentsDir != "" {
 		for _, att := range data.attachments {
 			if err := s.storeAttachment(messageID, &att); err != nil {
@@ -573,7 +573,7 @@ func (s *Syncer) persistMessage(data *messageData, labelMap map[string]int64) er
 		}
 	}
 
-	// Populate FTS index
+	// Populate FTS index (best-effort outside transaction)
 	if s.store.FTS5Available() {
 		subject := ""
 		if data.message.Subject.Valid {
@@ -607,41 +607,38 @@ func ensureAddressUTF8(addrs []mime.Address) {
 	}
 }
 
-// storeRecipients stores recipient records.
-func (s *Syncer) storeRecipients(messageID int64, recipientType string, addresses []mime.Address, participantMap map[string]int64) error {
+// buildRecipientSet deduplicates addresses and returns a RecipientSet
+// ready for store.PersistMessage.
+func buildRecipientSet(recipientType string, addresses []mime.Address, participantMap map[string]int64) store.RecipientSet {
+	rs := store.RecipientSet{Type: recipientType}
 	if len(addresses) == 0 {
-		return nil
+		return rs
 	}
 
-	// Track participant ID -> display name, preferring non-empty names
-	// This handles duplicates where the first occurrence might have an empty name
-	// but a later occurrence has a better display name
+	// Track participant ID -> display name, preferring non-empty names.
+	// Handles duplicates where the first occurrence might have an empty
+	// name but a later occurrence has a better display name.
 	idToName := make(map[int64]string)
 	var orderedIDs []int64
 
 	for _, addr := range addresses {
 		if id, ok := participantMap[addr.Email]; ok {
-			// Ensure display name is valid UTF-8
 			name := textutil.EnsureUTF8(addr.Name)
 			if _, seen := idToName[id]; !seen {
-				// First occurrence - record the ID order and initial name
 				orderedIDs = append(orderedIDs, id)
 				idToName[id] = name
 			} else if idToName[id] == "" && name != "" {
-				// Duplicate with better name - prefer non-empty
 				idToName[id] = name
 			}
 		}
 	}
 
-	// Build slices in original order
-	participantIDs := orderedIDs
-	displayNames := make([]string, len(orderedIDs))
+	rs.ParticipantIDs = orderedIDs
+	rs.DisplayNames = make([]string, len(orderedIDs))
 	for i, id := range orderedIDs {
-		displayNames[i] = idToName[id]
+		rs.DisplayNames[i] = idToName[id]
 	}
-
-	return s.store.ReplaceMessageRecipients(messageID, recipientType, participantIDs, displayNames)
+	return rs
 }
 
 // storeAttachment stores an attachment to disk and records it in the database.

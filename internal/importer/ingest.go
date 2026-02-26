@@ -51,7 +51,7 @@ func IngestRawMessage(
 	bodyHTML := textutil.EnsureUTF8(parsed.BodyHTML)
 
 	// Sanitize address fields in place so all downstream consumers
-	// (participantMap, senderID lookup, storeRecipients) use consistent keys.
+	// (participantMap, senderID lookup, buildRecipientSet) use consistent keys.
 	for _, addrs := range [][]mime.Address{
 		parsed.From, parsed.To, parsed.Cc, parsed.Bcc,
 	} {
@@ -133,43 +133,28 @@ func IngestRawMessage(
 		AttachmentCount: attachmentCount,
 	}
 
-	messageID, err := st.UpsertMessage(rec)
+	// Build recipient sets
+	recipientSets := []store.RecipientSet{
+		buildRecipientSet("from", parsed.From, participantMap),
+		buildRecipientSet("to", parsed.To, participantMap),
+		buildRecipientSet("cc", parsed.Cc, participantMap),
+		buildRecipientSet("bcc", parsed.Bcc, participantMap),
+	}
+
+	// Persist atomically
+	messageID, err := st.PersistMessage(&store.MessagePersistData{
+		Message:    rec,
+		BodyText:   sql.NullString{String: bodyText, Valid: bodyText != ""},
+		BodyHTML:   sql.NullString{String: bodyHTML, Valid: bodyHTML != ""},
+		RawMIME:    raw,
+		Recipients: recipientSets,
+		LabelIDs:   labelIDs,
+	})
 	if err != nil {
-		return fmt.Errorf("upsert message: %w", err)
+		return err
 	}
 
-	if err := st.UpsertMessageBody(messageID,
-		sql.NullString{String: bodyText, Valid: bodyText != ""},
-		sql.NullString{String: bodyHTML, Valid: bodyHTML != ""},
-	); err != nil {
-		return fmt.Errorf("upsert body: %w", err)
-	}
-
-	if err := storeRecipients(
-		st, messageID, "from", parsed.From, participantMap,
-	); err != nil {
-		return fmt.Errorf("store from: %w", err)
-	}
-	if err := storeRecipients(
-		st, messageID, "to", parsed.To, participantMap,
-	); err != nil {
-		return fmt.Errorf("store to: %w", err)
-	}
-	if err := storeRecipients(
-		st, messageID, "cc", parsed.Cc, participantMap,
-	); err != nil {
-		return fmt.Errorf("store cc: %w", err)
-	}
-	if err := storeRecipients(
-		st, messageID, "bcc", parsed.Bcc, participantMap,
-	); err != nil {
-		return fmt.Errorf("store bcc: %w", err)
-	}
-
-	if err := st.ReplaceMessageLabels(messageID, labelIDs); err != nil {
-		return fmt.Errorf("store labels: %w", err)
-	}
-
+	// Attachments: best-effort outside the transaction (file I/O)
 	for i := range parsed.Attachments {
 		att := &parsed.Attachments[i]
 		if err := storeAttachment(
@@ -184,6 +169,7 @@ func IngestRawMessage(
 		}
 	}
 
+	// Correct attachment count if disk storage filtered some out
 	if attachmentsDir != "" && len(parsed.Attachments) > 0 {
 		var storedCount int
 		if err := st.DB().QueryRow(
@@ -205,10 +191,7 @@ func IngestRawMessage(
 		}
 	}
 
-	if err := st.UpsertMessageRaw(messageID, raw); err != nil {
-		return fmt.Errorf("store raw: %w", err)
-	}
-
+	// FTS: best-effort outside the transaction
 	if st.FTS5Available() {
 		fromAddr := joinEmails(parsed.From)
 		toAddrs := joinEmails(parsed.To)
@@ -269,13 +252,12 @@ func joinEmails(addrs []mime.Address) string {
 	return strings.Join(emails, " ")
 }
 
-func storeRecipients(
-	st *store.Store, messageID int64,
-	recipientType string, addresses []mime.Address,
-	participantMap map[string]int64,
-) error {
+// buildRecipientSet deduplicates addresses and returns a RecipientSet
+// ready for store.PersistMessage.
+func buildRecipientSet(recipientType string, addresses []mime.Address, participantMap map[string]int64) store.RecipientSet {
+	rs := store.RecipientSet{Type: recipientType}
 	if len(addresses) == 0 {
-		return nil
+		return rs
 	}
 
 	idToName := make(map[int64]string)
@@ -300,14 +282,12 @@ func storeRecipients(
 		}
 	}
 
-	displayNames := make([]string, len(orderedIDs))
+	rs.ParticipantIDs = orderedIDs
+	rs.DisplayNames = make([]string, len(orderedIDs))
 	for i, id := range orderedIDs {
-		displayNames[i] = idToName[id]
+		rs.DisplayNames[i] = idToName[id]
 	}
-
-	return st.ReplaceMessageRecipients(
-		messageID, recipientType, orderedIDs, displayNames,
-	)
+	return rs
 }
 
 func storeAttachment(

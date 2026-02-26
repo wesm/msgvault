@@ -67,6 +67,10 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
+	// SQLite is single-writer; one connection eliminates
+	// cross-connection visibility issues with FK checks.
+	db.SetMaxOpenConns(1)
+
 	return &Store{
 		db:     db,
 		dbPath: dbPath,

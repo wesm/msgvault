@@ -13,6 +13,32 @@ import (
 	"github.com/wesm/msgvault/internal/mime"
 )
 
+// querier is satisfied by both *sql.DB and *sql.Tx, allowing
+// helpers to run inside or outside a transaction.
+type querier interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// RecipientSet groups participant IDs and display names for one
+// recipient type (from, to, cc, bcc).
+type RecipientSet struct {
+	Type           string
+	ParticipantIDs []int64
+	DisplayNames   []string
+}
+
+// MessagePersistData bundles everything needed to atomically
+// persist a message and its related rows in a single transaction.
+type MessagePersistData struct {
+	Message    *Message
+	BodyText   sql.NullString
+	BodyHTML   sql.NullString
+	RawMIME    []byte
+	Recipients []RecipientSet
+	LabelIDs   []int64
+}
+
 // Message represents a message in the database.
 type Message struct {
 	ID              int64
@@ -138,6 +164,10 @@ const upsertMessageSQL = `
 
 // UpsertMessage inserts or updates a message.
 func (s *Store) UpsertMessage(msg *Message) (int64, error) {
+	return upsertMessage(s.db, msg)
+}
+
+func upsertMessage(q querier, msg *Message) (int64, error) {
 	args := []any{
 		msg.ConversationID, msg.SourceID, msg.SourceMessageID, msg.MessageType,
 		msg.SentAt, msg.ReceivedAt, msg.InternalDate, msg.SenderID, msg.IsFromMe,
@@ -147,7 +177,7 @@ func (s *Store) UpsertMessage(msg *Message) (int64, error) {
 
 	// Use RETURNING to avoid an extra SELECT per message when supported.
 	var id int64
-	err := s.db.QueryRow(upsertMessageSQL+"\n\t\tRETURNING id\n\t", args...).Scan(&id)
+	err := q.QueryRow(upsertMessageSQL+"\n\t\tRETURNING id\n\t", args...).Scan(&id)
 
 	if err != nil {
 		// SQLite < 3.35 does not support RETURNING. Fall back to an Exec + SELECT.
@@ -155,11 +185,11 @@ func (s *Store) UpsertMessage(msg *Message) (int64, error) {
 			return 0, err
 		}
 
-		if _, execErr := s.db.Exec(upsertMessageSQL, args...); execErr != nil {
+		if _, execErr := q.Exec(upsertMessageSQL, args...); execErr != nil {
 			return 0, execErr
 		}
 
-		if err := s.db.QueryRow(
+		if err := q.QueryRow(
 			`SELECT id FROM messages WHERE source_id = ? AND source_message_id = ?`,
 			msg.SourceID, msg.SourceMessageID,
 		).Scan(&id); err != nil {
@@ -171,7 +201,11 @@ func (s *Store) UpsertMessage(msg *Message) (int64, error) {
 
 // UpsertMessageBody stores the body text and HTML for a message in the separate message_bodies table.
 func (s *Store) UpsertMessageBody(messageID int64, bodyText, bodyHTML sql.NullString) error {
-	_, err := s.db.Exec(`
+	return upsertMessageBody(s.db, messageID, bodyText, bodyHTML)
+}
+
+func upsertMessageBody(q querier, messageID int64, bodyText, bodyHTML sql.NullString) error {
+	_, err := q.Exec(`
 		INSERT INTO message_bodies (message_id, body_text, body_html)
 		VALUES (?, ?, ?)
 		ON CONFLICT(message_id) DO UPDATE SET
@@ -183,6 +217,10 @@ func (s *Store) UpsertMessageBody(messageID int64, bodyText, bodyHTML sql.NullSt
 
 // UpsertMessageRaw stores the compressed raw MIME data for a message.
 func (s *Store) UpsertMessageRaw(messageID int64, rawData []byte) error {
+	return upsertMessageRaw(s.db, messageID, rawData)
+}
+
+func upsertMessageRaw(q querier, messageID int64, rawData []byte) error {
 	// Compress with zlib
 	var compressed bytes.Buffer
 	w := zlib.NewWriter(&compressed)
@@ -193,7 +231,7 @@ func (s *Store) UpsertMessageRaw(messageID int64, rawData []byte) error {
 		return fmt.Errorf("close compressor: %w", err)
 	}
 
-	_, err := s.db.Exec(`
+	_, err := q.Exec(`
 		INSERT INTO message_raw (message_id, raw_data, raw_format, compression)
 		VALUES (?, ?, 'mime', 'zlib')
 		ON CONFLICT(message_id) DO UPDATE SET
@@ -226,6 +264,42 @@ func (s *Store) GetMessageRaw(messageID int64) ([]byte, error) {
 	}
 
 	return compressed, nil
+}
+
+// PersistMessage atomically stores a message plus its body, raw MIME,
+// recipients, and labels in a single transaction. Returns the message ID.
+func (s *Store) PersistMessage(data *MessagePersistData) (int64, error) {
+	var messageID int64
+	err := s.withTx(func(tx *sql.Tx) error {
+		id, err := upsertMessage(tx, data.Message)
+		if err != nil {
+			return fmt.Errorf("upsert message: %w", err)
+		}
+		messageID = id
+
+		if err := upsertMessageBody(tx, messageID, data.BodyText, data.BodyHTML); err != nil {
+			return fmt.Errorf("upsert body: %w", err)
+		}
+
+		if len(data.RawMIME) > 0 {
+			if err := upsertMessageRaw(tx, messageID, data.RawMIME); err != nil {
+				return fmt.Errorf("store raw: %w", err)
+			}
+		}
+
+		for _, rs := range data.Recipients {
+			if err := replaceMessageRecipientsTx(tx, messageID, rs.Type, rs.ParticipantIDs, rs.DisplayNames); err != nil {
+				return fmt.Errorf("store %s recipients: %w", rs.Type, err)
+			}
+		}
+
+		if err := replaceMessageLabelsTx(tx, messageID, data.LabelIDs); err != nil {
+			return fmt.Errorf("store labels: %w", err)
+		}
+
+		return nil
+	})
+	return messageID, err
 }
 
 // Participant represents a person in the participants table.
@@ -318,33 +392,37 @@ func (s *Store) EnsureParticipantsBatch(addresses []mime.Address) (map[string]in
 // ReplaceMessageRecipients replaces all recipients for a message atomically.
 func (s *Store) ReplaceMessageRecipients(messageID int64, recipientType string, participantIDs []int64, displayNames []string) error {
 	return s.withTx(func(tx *sql.Tx) error {
-		_, err := tx.Exec(`
-			DELETE FROM message_recipients WHERE message_id = ? AND recipient_type = ?
-		`, messageID, recipientType)
-		if err != nil {
-			return err
-		}
-
-		if len(participantIDs) == 0 {
-			return nil
-		}
-
-		return insertInChunks(tx, len(participantIDs), 4,
-			"INSERT INTO message_recipients (message_id, participant_id, recipient_type, display_name) VALUES ",
-			func(start, end int) ([]string, []interface{}) {
-				values := make([]string, end-start)
-				args := make([]interface{}, 0, (end-start)*4)
-				for i := start; i < end; i++ {
-					values[i-start] = "(?, ?, ?, ?)"
-					displayName := ""
-					if i < len(displayNames) {
-						displayName = displayNames[i]
-					}
-					args = append(args, messageID, participantIDs[i], recipientType, displayName)
-				}
-				return values, args
-			})
+		return replaceMessageRecipientsTx(tx, messageID, recipientType, participantIDs, displayNames)
 	})
+}
+
+func replaceMessageRecipientsTx(tx *sql.Tx, messageID int64, recipientType string, participantIDs []int64, displayNames []string) error {
+	_, err := tx.Exec(`
+		DELETE FROM message_recipients WHERE message_id = ? AND recipient_type = ?
+	`, messageID, recipientType)
+	if err != nil {
+		return err
+	}
+
+	if len(participantIDs) == 0 {
+		return nil
+	}
+
+	return insertInChunks(tx, len(participantIDs), 4,
+		"INSERT INTO message_recipients (message_id, participant_id, recipient_type, display_name) VALUES ",
+		func(start, end int) ([]string, []interface{}) {
+			values := make([]string, end-start)
+			args := make([]interface{}, 0, (end-start)*4)
+			for i := start; i < end; i++ {
+				values[i-start] = "(?, ?, ?, ?)"
+				displayName := ""
+				if i < len(displayNames) {
+					displayName = displayNames[i]
+				}
+				args = append(args, messageID, participantIDs[i], recipientType, displayName)
+			}
+			return values, args
+		})
 }
 
 // Label represents a Gmail label.
@@ -416,29 +494,33 @@ func (s *Store) EnsureLabelsBatch(sourceID int64, labels map[string]LabelInfo) (
 // ReplaceMessageLabels replaces all labels for a message atomically.
 func (s *Store) ReplaceMessageLabels(messageID int64, labelIDs []int64) error {
 	return s.withTx(func(tx *sql.Tx) error {
-		_, err := tx.Exec(`
-			DELETE FROM message_labels WHERE message_id = ?
-		`, messageID)
-		if err != nil {
-			return err
-		}
-
-		if len(labelIDs) == 0 {
-			return nil
-		}
-
-		return insertInChunks(tx, len(labelIDs), 2,
-			"INSERT INTO message_labels (message_id, label_id) VALUES ",
-			func(start, end int) ([]string, []interface{}) {
-				values := make([]string, end-start)
-				args := make([]interface{}, 0, (end-start)*2)
-				for i := start; i < end; i++ {
-					values[i-start] = "(?, ?)"
-					args = append(args, messageID, labelIDs[i])
-				}
-				return values, args
-			})
+		return replaceMessageLabelsTx(tx, messageID, labelIDs)
 	})
+}
+
+func replaceMessageLabelsTx(tx *sql.Tx, messageID int64, labelIDs []int64) error {
+	_, err := tx.Exec(`
+		DELETE FROM message_labels WHERE message_id = ?
+	`, messageID)
+	if err != nil {
+		return err
+	}
+
+	if len(labelIDs) == 0 {
+		return nil
+	}
+
+	return insertInChunks(tx, len(labelIDs), 2,
+		"INSERT INTO message_labels (message_id, label_id) VALUES ",
+		func(start, end int) ([]string, []interface{}) {
+			values := make([]string, end-start)
+			args := make([]interface{}, 0, (end-start)*2)
+			for i := start; i < end; i++ {
+				values[i-start] = "(?, ?)"
+				args = append(args, messageID, labelIDs[i])
+			}
+			return values, args
+		})
 }
 
 // AddMessageLabels adds labels to a message without removing existing ones.

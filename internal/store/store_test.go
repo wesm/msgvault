@@ -1241,3 +1241,141 @@ func TestStore_MarkMessagesDeletedBatch(t *testing.T) {
 	err = f.Store.MarkMessagesDeletedBatch(f.Source.ID, []string{})
 	testutil.MustNoErr(t, err, "MarkMessagesDeletedBatch(empty)")
 }
+
+func TestStore_PersistMessage(t *testing.T) {
+	f := storetest.New(t)
+
+	pid1 := f.EnsureParticipant("alice@example.com", "Alice", "example.com")
+	pid2 := f.EnsureParticipant("bob@example.org", "Bob", "example.org")
+
+	labels := f.EnsureLabels(map[string]string{
+		"INBOX":   "Inbox",
+		"STARRED": "Starred",
+	}, "system")
+
+	msg := storetest.NewMessage(f.Source.ID, f.ConvID).
+		WithSourceMessageID("persist-1").
+		WithSubject("Hello").
+		WithSnippet("preview").
+		WithSize(1024).
+		Build()
+
+	data := &store.MessagePersistData{
+		Message:  msg,
+		BodyText: sql.NullString{String: "body text", Valid: true},
+		BodyHTML: sql.NullString{String: "<p>body</p>", Valid: true},
+		RawMIME:  sampleRawMessage,
+		Recipients: []store.RecipientSet{
+			{Type: "from", ParticipantIDs: []int64{pid1}, DisplayNames: []string{"Alice"}},
+			{Type: "to", ParticipantIDs: []int64{pid2}, DisplayNames: []string{"Bob"}},
+		},
+		LabelIDs: []int64{labels["INBOX"], labels["STARRED"]},
+	}
+
+	messageID, err := f.Store.PersistMessage(data)
+	testutil.MustNoErr(t, err, "PersistMessage")
+	if messageID == 0 {
+		t.Fatal("message ID should be non-zero")
+	}
+
+	// Verify message fields
+	got := f.GetMessageFields(messageID)
+	if got.Subject != "Hello" {
+		t.Errorf("subject = %q, want %q", got.Subject, "Hello")
+	}
+
+	// Verify body
+	bodyText, bodyHTML := f.GetMessageBody(messageID)
+	if bodyText.String != "body text" {
+		t.Errorf("body_text = %q, want %q", bodyText.String, "body text")
+	}
+	if bodyHTML.String != "<p>body</p>" {
+		t.Errorf("body_html = %q, want %q", bodyHTML.String, "<p>body</p>")
+	}
+
+	// Verify raw MIME
+	raw, err := f.Store.GetMessageRaw(messageID)
+	testutil.MustNoErr(t, err, "GetMessageRaw")
+	if string(raw) != string(sampleRawMessage) {
+		t.Errorf("raw = %q, want %q", raw, sampleRawMessage)
+	}
+
+	// Verify recipients
+	f.AssertRecipientCount(messageID, "from", 1)
+	f.AssertRecipientCount(messageID, "to", 1)
+
+	// Verify labels
+	f.AssertLabelCount(messageID, 2)
+}
+
+func TestStore_PersistMessage_Atomicity(t *testing.T) {
+	f := storetest.New(t)
+
+	msg := storetest.NewMessage(f.Source.ID, f.ConvID).
+		WithSourceMessageID("persist-atomic").
+		WithSubject("Atomic Test").
+		Build()
+
+	// Use a non-existent label ID to trigger an FK violation
+	// during replaceMessageLabelsTx, which should roll back
+	// the entire transaction including the message insert.
+	data := &store.MessagePersistData{
+		Message:  msg,
+		BodyText: sql.NullString{String: "text", Valid: true},
+		RawMIME:  sampleRawMessage,
+		LabelIDs: []int64{999999},
+	}
+
+	_, err := f.Store.PersistMessage(data)
+	if err == nil {
+		t.Fatal("PersistMessage should fail with invalid label ID")
+	}
+
+	// Verify the message was NOT committed
+	existing, err := f.Store.MessageExistsBatch(f.Source.ID, []string{"persist-atomic"})
+	testutil.MustNoErr(t, err, "MessageExistsBatch")
+	if len(existing) != 0 {
+		t.Errorf("message should not exist after failed PersistMessage, found %d", len(existing))
+	}
+}
+
+func TestStore_PersistMessage_Upsert(t *testing.T) {
+	f := storetest.New(t)
+
+	msg := storetest.NewMessage(f.Source.ID, f.ConvID).
+		WithSourceMessageID("persist-upsert").
+		WithSubject("Original").
+		WithSnippet("preview").
+		Build()
+
+	data := &store.MessagePersistData{
+		Message:  msg,
+		BodyText: sql.NullString{String: "original body", Valid: true},
+		RawMIME:  sampleRawMessage,
+	}
+
+	msgID1, err := f.Store.PersistMessage(data)
+	testutil.MustNoErr(t, err, "PersistMessage first call")
+
+	// Update the message with different body
+	msg.Subject = sql.NullString{String: "Updated", Valid: true}
+	data.BodyText = sql.NullString{String: "updated body", Valid: true}
+
+	msgID2, err := f.Store.PersistMessage(data)
+	testutil.MustNoErr(t, err, "PersistMessage second call")
+
+	if msgID2 != msgID1 {
+		t.Errorf("second call ID = %d, want %d", msgID2, msgID1)
+	}
+
+	// Verify updated fields
+	got := f.GetMessageFields(msgID1)
+	if got.Subject != "Updated" {
+		t.Errorf("subject = %q, want %q", got.Subject, "Updated")
+	}
+
+	bodyText, _ := f.GetMessageBody(msgID1)
+	if bodyText.String != "updated body" {
+		t.Errorf("body_text = %q, want %q", bodyText.String, "updated body")
+	}
+}

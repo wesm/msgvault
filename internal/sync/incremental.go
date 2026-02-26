@@ -197,10 +197,16 @@ func (s *Syncer) Incremental(ctx context.Context, email string) (summary *gmail.
 		}
 	}
 
-	// Update source with final history ID
+	// Only advance sync cursor when no errors occurred, so failed
+	// messages are retried on the next incremental sync.
 	historyIDStr := strconv.FormatUint(profile.HistoryID, 10)
-	if err := s.store.UpdateSourceSyncCursor(source.ID, historyIDStr); err != nil {
-		s.logger.Warn("failed to update sync cursor", "error", err)
+	if checkpoint.ErrorsCount == 0 {
+		if err := s.store.UpdateSourceSyncCursor(source.ID, historyIDStr); err != nil {
+			s.logger.Warn("failed to update sync cursor", "error", err)
+		}
+	} else {
+		s.logger.Warn("not advancing sync cursor due to errors",
+			"errors", checkpoint.ErrorsCount, "history_id", historyIDStr)
 	}
 
 	// Mark sync complete
