@@ -405,6 +405,40 @@ func TestCopySubset_NonPositiveRowCount(t *testing.T) {
 	}
 }
 
+// TestCopySubset_SourceFKViolationIgnored verifies that pre-existing FK
+// violations in the source DB (outside the copied subset) don't cause
+// CopySubset to fail. This guards against the regression where src was
+// still attached during PRAGMA foreign_key_check.
+func TestCopySubset_SourceFKViolationIgnored(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := filepath.Join(t.TempDir(), "dst")
+
+	srcDB := createTestSourceDB(t, srcDir, 5)
+
+	// Inject an FK violation in the source: a message_labels row
+	// referencing a non-existent label_id.
+	db, err := sql.Open("sqlite3", srcDB+"?_foreign_keys=OFF")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO message_labels (message_id, label_id)
+		VALUES (1, 9999)`)
+	if err != nil {
+		t.Fatalf("inject FK violation: %v", err)
+	}
+	_ = db.Close()
+
+	// CopySubset should succeed — FK check must only scan destination
+	result, err := CopySubset(srcDB, dstDir, 3)
+	if err != nil {
+		t.Fatalf("CopySubset failed (source FK leak): %v", err)
+	}
+	if result.Messages != 3 {
+		t.Errorf("Messages = %d, want 3", result.Messages)
+	}
+}
+
 func TestCopySubset_MissingSourceDB(t *testing.T) {
 	dstDir := filepath.Join(t.TempDir(), "dst")
 	fakeSrc := filepath.Join(t.TempDir(), "nonexistent.db")
