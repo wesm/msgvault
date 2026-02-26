@@ -538,6 +538,105 @@ func TestCopySubset_TimestampFallback(t *testing.T) {
 	}
 }
 
+func TestCopySubset_TieBreaker(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := filepath.Join(t.TempDir(), "dst")
+
+	dbPath := filepath.Join(srcDir, "msgvault.db")
+	st, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := st.InitSchema(); err != nil {
+		t.Fatalf("InitSchema: %v", err)
+	}
+	_ = st.Close()
+
+	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=OFF")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO sources (id, source_type, identifier)
+		VALUES (1, 'gmail', 'test@example.com')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO participants (id, email_address, domain)
+		VALUES (1, 'alice@example.com', 'example.com')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO conversations
+			(id, source_id, conversation_type, title,
+			 message_count, participant_count)
+		VALUES (1, 1, 'email_thread', 'Thread', 4, 1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 4 messages with identical timestamps; higher IDs should win
+	sameTime := "2025-06-01 12:00:00"
+	for i := 1; i <= 4; i++ {
+		_, err = db.Exec(`
+			INSERT INTO messages
+				(id, conversation_id, source_id, source_message_id,
+				 message_type, sent_at, sender_id, subject)
+			VALUES (?, 1, 1, ?, 'email', ?, 1, ?)`,
+			i, fmt.Sprintf("msg_%d", i), sameTime,
+			fmt.Sprintf("Msg %d", i))
+		if err != nil {
+			t.Fatalf("insert message %d: %v", i, err)
+		}
+		_, err = db.Exec(`
+			INSERT INTO message_recipients
+				(message_id, participant_id, recipient_type)
+			VALUES (?, 1, 'from')`, i)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = db.Close()
+
+	// Select 2 of 4 — should get IDs 4 and 3 (highest IDs)
+	result, err := CopySubset(dbPath, dstDir, 2)
+	if err != nil {
+		t.Fatalf("CopySubset: %v", err)
+	}
+	if result.Messages != 2 {
+		t.Errorf("Messages = %d, want 2", result.Messages)
+	}
+
+	dstDB, err := sql.Open("sqlite3",
+		filepath.Join(dstDir, "msgvault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dstDB.Close() }()
+
+	rows, err := dstDB.Query(
+		"SELECT id FROM messages ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	_ = rows.Close()
+
+	if len(ids) != 2 || ids[0] != 3 || ids[1] != 4 {
+		t.Errorf("selected IDs = %v, want [3, 4]", ids)
+	}
+}
+
 func TestCopySubset_ReplyToOrphanNulled(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := filepath.Join(t.TempDir(), "dst")
