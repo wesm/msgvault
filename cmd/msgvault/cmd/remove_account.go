@@ -85,7 +85,14 @@ func runRemoveAccount(_ *cobra.Command, args []string) error {
 	if !removeAccountYes {
 		fmt.Print("\nRemove this account and all its data? [y/N] ")
 		scanner := bufio.NewScanner(os.Stdin)
-		scanner.Scan()
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return fmt.Errorf("read confirmation: %w", err)
+			}
+			return fmt.Errorf(
+				"no confirmation input (stdin closed); use --yes",
+			)
+		}
 		answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
 		if answer != "y" && answer != "yes" {
 			fmt.Println("Aborted.")
