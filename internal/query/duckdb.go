@@ -174,7 +174,10 @@ func (e *DuckDBEngine) parquetCTEs() string {
 				CAST(subject AS VARCHAR) AS subject,
 				CAST(snippet AS VARCHAR) AS snippet,
 				CAST(size_estimate AS BIGINT) AS size_estimate,
-				COALESCE(TRY_CAST(has_attachments AS BOOLEAN), false) AS has_attachments
+				COALESCE(TRY_CAST(has_attachments AS BOOLEAN), false) AS has_attachments,
+				COALESCE(TRY_CAST(attachment_count AS INTEGER), 0) AS attachment_count,
+				TRY_CAST(sender_id AS BIGINT) AS sender_id,
+				COALESCE(CAST(message_type AS VARCHAR), '') AS message_type
 			) FROM read_parquet('%s', hive_partitioning=true)
 		),
 		mr AS (
@@ -190,7 +193,8 @@ func (e *DuckDBEngine) parquetCTEs() string {
 				CAST(id AS BIGINT) AS id,
 				CAST(email_address AS VARCHAR) AS email_address,
 				CAST(domain AS VARCHAR) AS domain,
-				CAST(display_name AS VARCHAR) AS display_name
+				CAST(display_name AS VARCHAR) AS display_name,
+				COALESCE(CAST(phone_number AS VARCHAR), '') AS phone_number
 			) FROM read_parquet('%s')
 		),
 		lbl AS (
@@ -220,7 +224,8 @@ func (e *DuckDBEngine) parquetCTEs() string {
 		conv AS (
 			SELECT * REPLACE (
 				CAST(id AS BIGINT) AS id,
-				CAST(source_conversation_id AS VARCHAR) AS source_conversation_id
+				CAST(source_conversation_id AS VARCHAR) AS source_conversation_id,
+				COALESCE(CAST(title AS VARCHAR), '') AS title
 			) FROM read_parquet('%s')
 		)
 	`, e.parquetGlob(),
@@ -686,45 +691,60 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 		conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
 	}
 
-	// Sender filter - use EXISTS subquery (becomes semi-join)
+	// Sender filter - check both message_recipients (email) and direct sender_id (WhatsApp/chat)
+	// Also checks phone_number for phone-based lookups (e.g., from:+447...)
 	if filter.Sender != "" {
-		conditions = append(conditions, `EXISTS (
+		conditions = append(conditions, `(EXISTS (
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.message_id = msg.id
 			  AND mr.recipient_type = 'from'
-			  AND p.email_address = ?
-		)`)
-		args = append(args, filter.Sender)
+			  AND (p.email_address = ? OR p.phone_number = ?)
+		) OR EXISTS (
+			SELECT 1 FROM p
+			WHERE p.id = msg.sender_id
+			  AND (p.email_address = ? OR p.phone_number = ?)
+		))`)
+		args = append(args, filter.Sender, filter.Sender, filter.Sender, filter.Sender)
 	} else if filter.MatchesEmpty(ViewSenders) {
-		conditions = append(conditions, `NOT EXISTS (
+		// A message has an "empty sender" only if it has no from-recipient AND no direct sender_id.
+		conditions = append(conditions, `(NOT EXISTS (
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.message_id = msg.id
 			  AND mr.recipient_type = 'from'
 			  AND p.email_address IS NOT NULL
 			  AND p.email_address != ''
-		)`)
+		) AND msg.sender_id IS NULL)`)
 	}
 
-	// Sender name filter - use EXISTS subquery (becomes semi-join)
+	// Sender name filter - check both message_recipients (email) and direct sender_id (WhatsApp/chat)
 	if filter.SenderName != "" {
-		conditions = append(conditions, `EXISTS (
+		conditions = append(conditions, `(EXISTS (
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.message_id = msg.id
 			  AND mr.recipient_type = 'from'
 			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) = ?
-		)`)
-		args = append(args, filter.SenderName)
+		) OR EXISTS (
+			SELECT 1 FROM p
+			WHERE p.id = msg.sender_id
+			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) = ?
+		))`)
+		args = append(args, filter.SenderName, filter.SenderName)
 	} else if filter.MatchesEmpty(ViewSenderNames) {
-		conditions = append(conditions, `NOT EXISTS (
+		// A message has an "empty sender name" only if it has no from-recipient name AND no direct sender_id with a name.
+		conditions = append(conditions, `(NOT EXISTS (
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.message_id = msg.id
 			  AND mr.recipient_type = 'from'
 			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) IS NOT NULL
-		)`)
+		) AND NOT EXISTS (
+			SELECT 1 FROM p
+			WHERE p.id = msg.sender_id
+			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) IS NOT NULL
+		))`)
 	}
 
 	// Recipient filter - use EXISTS subquery (becomes semi-join)
@@ -1053,12 +1073,24 @@ func (e *DuckDBEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 		msg_sender AS (
 			SELECT mr.message_id,
 				   FIRST(p.email_address) as from_email,
-				   FIRST(COALESCE(mr.display_name, p.display_name, '')) as from_name
+				   FIRST(COALESCE(mr.display_name, p.display_name, '')) as from_name,
+				   FIRST(COALESCE(p.phone_number, '')) as from_phone
 			FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.recipient_type = 'from'
 			  AND mr.message_id IN (SELECT id FROM filtered_msgs)
 			GROUP BY mr.message_id
+		),
+		direct_sender AS (
+			SELECT msg.id as message_id,
+				   COALESCE(p.email_address, '') as from_email,
+				   COALESCE(p.display_name, '') as from_name,
+				   COALESCE(p.phone_number, '') as from_phone
+			FROM msg
+			JOIN filtered_msgs fm ON fm.id = msg.id
+			JOIN p ON p.id = msg.sender_id
+			WHERE msg.sender_id IS NOT NULL
+			  AND msg.id NOT IN (SELECT message_id FROM msg_sender)
 		)
 		SELECT
 			msg.id,
@@ -1067,15 +1099,20 @@ func (e *DuckDBEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 			COALESCE(c.source_conversation_id, '') as source_conversation_id,
 			COALESCE(msg.subject, '') as subject,
 			COALESCE(msg.snippet, '') as snippet,
-			COALESCE(ms.from_email, '') as from_email,
-			COALESCE(ms.from_name, '') as from_name,
+			COALESCE(ms.from_email, ds.from_email, '') as from_email,
+			COALESCE(ms.from_name, ds.from_name, '') as from_name,
+			COALESCE(ms.from_phone, ds.from_phone, '') as from_phone,
 			msg.sent_at,
 			COALESCE(msg.size_estimate, 0) as size_estimate,
 			COALESCE(msg.has_attachments, false) as has_attachments,
-			msg.deleted_from_source_at
+			COALESCE(msg.attachment_count, 0) as attachment_count,
+			msg.deleted_from_source_at,
+			COALESCE(msg.message_type, '') as message_type,
+			COALESCE(c.title, '') as conv_title
 		FROM msg
 		JOIN filtered_msgs fm ON fm.id = msg.id
 		LEFT JOIN msg_sender ms ON ms.message_id = msg.id
+		LEFT JOIN direct_sender ds ON ds.message_id = msg.id
 		LEFT JOIN conv c ON c.id = msg.conversation_id
 		ORDER BY %s
 	`, e.parquetCTEs(), where, orderBy, orderBy)
@@ -1102,10 +1139,14 @@ func (e *DuckDBEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 			&msg.Snippet,
 			&msg.FromEmail,
 			&msg.FromName,
+			&msg.FromPhone,
 			&sentAt,
 			&msg.SizeEstimate,
 			&msg.HasAttachments,
+			&msg.AttachmentCount,
 			&deletedAt,
+			&msg.MessageType,
+			&msg.ConversationTitle,
 		); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
@@ -1431,26 +1472,36 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	}
 
 	// Use EXISTS subqueries for filtering (becomes semi-joins, no duplicates)
+	// Check both message_recipients (email) and direct sender_id (WhatsApp/chat)
+	// Also checks phone_number for phone-based lookups (e.g., from:+447...)
 	if filter.Sender != "" {
-		conditions = append(conditions, `EXISTS (
+		conditions = append(conditions, `(EXISTS (
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.message_id = msg.id
 			  AND mr.recipient_type = 'from'
-			  AND p.email_address = ?
-		)`)
-		args = append(args, filter.Sender)
+			  AND (p.email_address = ? OR p.phone_number = ?)
+		) OR EXISTS (
+			SELECT 1 FROM p
+			WHERE p.id = msg.sender_id
+			  AND (p.email_address = ? OR p.phone_number = ?)
+		))`)
+		args = append(args, filter.Sender, filter.Sender, filter.Sender, filter.Sender)
 	}
 
 	if filter.SenderName != "" {
-		conditions = append(conditions, `EXISTS (
+		conditions = append(conditions, `(EXISTS (
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.message_id = msg.id
 			  AND mr.recipient_type = 'from'
 			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) = ?
-		)`)
-		args = append(args, filter.SenderName)
+		) OR EXISTS (
+			SELECT 1 FROM p
+			WHERE p.id = msg.sender_id
+			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) = ?
+		))`)
+		args = append(args, filter.SenderName, filter.SenderName)
 	}
 
 	if filter.Recipient != "" {

@@ -531,12 +531,27 @@ func (m Model) messageListView() string {
 		if msg.FromName != "" {
 			from = msg.FromName
 		}
+		// For chat messages: fall back to phone number, then group title
+		if from == "" && msg.FromPhone != "" {
+			from = msg.FromPhone
+		}
+		if from == "" && msg.ConversationTitle != "" {
+			from = msg.ConversationTitle
+		}
 		from = truncateRunes(from, fromWidth)
 		from = fmt.Sprintf("%-*s", fromWidth, from)
 		from = highlightTerms(from, m.searchQuery)
 
 		// Format subject with indicators (rune-aware)
+		// For chat messages without a subject, show snippet or group title
 		subject := msg.Subject
+		if subject == "" && msg.MessageType == "whatsapp" {
+			if msg.ConversationTitle != "" {
+				subject = msg.ConversationTitle + ": " + msg.Snippet
+			} else {
+				subject = msg.Snippet
+			}
+		}
 		if msg.DeletedAt != nil {
 			subject = "🗑 " + subject // Deleted from server indicator
 		}
@@ -882,8 +897,14 @@ func (m Model) threadView() string {
 		if msg.FromName != "" {
 			fromSubject = msg.FromName
 		}
+		// For chat messages: fall back to phone number
+		if fromSubject == "" && msg.FromPhone != "" {
+			fromSubject = msg.FromPhone
+		}
 		if msg.Subject != "" {
 			fromSubject = truncateRunes(fromSubject, 18) + ": " + msg.Subject
+		} else if msg.MessageType == "whatsapp" && msg.Snippet != "" {
+			fromSubject = truncateRunes(fromSubject, 18) + ": " + msg.Snippet
 		}
 		if msg.DeletedAt != nil {
 			fromSubject = "🗑 " + fromSubject // Deleted from server indicator

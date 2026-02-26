@@ -27,10 +27,17 @@ var fullRebuild bool
 // files (_last_sync.json, parquet directories) can corrupt the cache.
 var buildCacheMu sync.Mutex
 
+// cacheSchemaVersion tracks the Parquet schema layout. Bump this whenever
+// columns are added/removed/renamed in the COPY queries below so that
+// incremental builds automatically trigger a full rebuild instead of
+// producing Parquet files with mismatched schemas.
+const cacheSchemaVersion = 2 // v2: added sender_id, message_type, attachment_count, phone_number, title
+
 // syncState tracks the last exported message ID for incremental updates.
 type syncState struct {
 	LastMessageID int64     `json:"last_message_id"`
 	LastSyncAt    time.Time `json:"last_sync_at"`
+	SchemaVersion int       `json:"schema_version,omitempty"`
 }
 
 var buildCacheCmd = &cobra.Command{
@@ -101,8 +108,16 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 		if data, err := os.ReadFile(stateFile); err == nil {
 			var state syncState
 			if json.Unmarshal(data, &state) == nil {
-				lastMessageID = state.LastMessageID
-				fmt.Printf("Incremental export from message_id > %d\n", lastMessageID)
+				if state.SchemaVersion != cacheSchemaVersion {
+					// Schema has changed — force a full rebuild.
+					fmt.Printf("Cache schema version mismatch (have v%d, need v%d). Forcing full rebuild.\n",
+						state.SchemaVersion, cacheSchemaVersion)
+					fullRebuild = true
+					lastMessageID = 0
+				} else {
+					lastMessageID = state.LastMessageID
+					fmt.Printf("Incremental export from message_id > %d\n", lastMessageID)
+				}
 			}
 		}
 	}
@@ -231,7 +246,10 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 			m.sent_at,
 			m.size_estimate,
 			m.has_attachments,
+			COALESCE(TRY_CAST(m.attachment_count AS INTEGER), 0) as attachment_count,
 			m.deleted_from_source_at,
+			m.sender_id,
+			COALESCE(TRY_CAST(m.message_type AS VARCHAR), '') as message_type,
 			CAST(EXTRACT(YEAR FROM m.sent_at) AS INTEGER) as year,
 			CAST(EXTRACT(MONTH FROM m.sent_at) AS INTEGER) as month
 		FROM sqlite_db.messages m
@@ -321,7 +339,8 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 			id,
 			COALESCE(TRY_CAST(email_address AS VARCHAR), '') as email_address,
 			COALESCE(TRY_CAST(domain AS VARCHAR), '') as domain,
-			COALESCE(TRY_CAST(display_name AS VARCHAR), '') as display_name
+			COALESCE(TRY_CAST(display_name AS VARCHAR), '') as display_name,
+			COALESCE(TRY_CAST(phone_number AS VARCHAR), '') as phone_number
 		FROM sqlite_db.participants
 	) TO '%s/participants.parquet' (
 		FORMAT PARQUET,
@@ -372,7 +391,8 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 	COPY (
 		SELECT
 			id,
-			COALESCE(TRY_CAST(source_conversation_id AS VARCHAR), '') as source_conversation_id
+			COALESCE(TRY_CAST(source_conversation_id AS VARCHAR), '') as source_conversation_id,
+			COALESCE(TRY_CAST(title AS VARCHAR), '') as title
 		FROM sqlite_db.conversations
 	) TO '%s/conversations.parquet' (
 		FORMAT PARQUET,
@@ -391,10 +411,11 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 		exportedCount = 0
 	}
 
-	// Save sync state
+	// Save sync state with schema version for compatibility detection.
 	state := syncState{
 		LastMessageID: maxID,
 		LastSyncAt:    time.Now(),
+		SchemaVersion: cacheSchemaVersion,
 	}
 	stateData, _ := json.Marshal(state)
 	if err := os.WriteFile(stateFile, stateData, 0644); err != nil {
@@ -592,15 +613,15 @@ func setupSQLiteSource(duckDB *sql.DB, dbPath string) (cleanup func(), err error
 		query         string
 		typeOverrides string // DuckDB types parameter for read_csv_auto (empty = infer all)
 	}{
-		{"messages", "SELECT id, source_id, source_message_id, conversation_id, subject, snippet, sent_at, size_estimate, has_attachments, deleted_from_source_at FROM messages WHERE sent_at IS NOT NULL",
+		{"messages", "SELECT id, source_id, source_message_id, conversation_id, subject, snippet, sent_at, size_estimate, has_attachments, attachment_count, deleted_from_source_at, sender_id, message_type FROM messages WHERE sent_at IS NOT NULL",
 			"types={'sent_at': 'TIMESTAMP', 'deleted_from_source_at': 'TIMESTAMP'}"},
 		{"message_recipients", "SELECT message_id, participant_id, recipient_type, display_name FROM message_recipients", ""},
 		{"message_labels", "SELECT message_id, label_id FROM message_labels", ""},
 		{"attachments", "SELECT message_id, size, filename FROM attachments", ""},
-		{"participants", "SELECT id, email_address, domain, display_name FROM participants", ""},
+		{"participants", "SELECT id, email_address, domain, display_name, phone_number FROM participants", ""},
 		{"labels", "SELECT id, name FROM labels", ""},
 		{"sources", "SELECT id, identifier FROM sources", ""},
-		{"conversations", "SELECT id, source_conversation_id FROM conversations", ""},
+		{"conversations", "SELECT id, source_conversation_id, title FROM conversations", ""},
 	}
 
 	for _, t := range tables {

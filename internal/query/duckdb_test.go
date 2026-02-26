@@ -2156,16 +2156,16 @@ func TestDuckDBEngine_AggregateByRecipientName_EmptyStringFallback(t *testing.T)
 	// Build Parquet data with empty-string and whitespace display_names on recipients
 	engine := createEngineFromBuilder(t, newParquetBuilder(t).
 		addTable("messages", "messages/year=2024", "data.parquet", messagesCols, `
-			(1::BIGINT, 1::BIGINT, 'msg1', 100::BIGINT, 'Hello', 'Snippet', TIMESTAMP '2024-01-15 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1),
-			(2::BIGINT, 1::BIGINT, 'msg2', 101::BIGINT, 'World', 'Snippet', TIMESTAMP '2024-01-16 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1)
+			(1::BIGINT, 1::BIGINT, 'msg1', 100::BIGINT, 'Hello', 'Snippet', TIMESTAMP '2024-01-15 10:00:00', 1000::BIGINT, false, 0, NULL::TIMESTAMP, NULL::BIGINT, 'email', 2024, 1),
+			(2::BIGINT, 1::BIGINT, 'msg2', 101::BIGINT, 'World', 'Snippet', TIMESTAMP '2024-01-16 10:00:00', 1000::BIGINT, false, 0, NULL::TIMESTAMP, NULL::BIGINT, 'email', 2024, 1)
 		`).
 		addTable("sources", "sources", "sources.parquet", sourcesCols, `
 			(1::BIGINT, 'test@gmail.com')
 		`).
 		addTable("participants", "participants", "participants.parquet", participantsCols, `
-			(1::BIGINT, 'sender@test.com', 'test.com', 'Sender'),
-			(2::BIGINT, 'empty@test.com', 'test.com', ''),
-			(3::BIGINT, 'spaces@test.com', 'test.com', '   ')
+			(1::BIGINT, 'sender@test.com', 'test.com', 'Sender', ''),
+			(2::BIGINT, 'empty@test.com', 'test.com', '', ''),
+			(3::BIGINT, 'spaces@test.com', 'test.com', '   ', '')
 		`).
 		addTable("message_recipients", "message_recipients", "message_recipients.parquet", messageRecipientsCols, `
 			(1::BIGINT, 1::BIGINT, 'from', 'Sender'),
@@ -2177,8 +2177,8 @@ func TestDuckDBEngine_AggregateByRecipientName_EmptyStringFallback(t *testing.T)
 		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
 		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`).
 		addTable("conversations", "conversations", "conversations.parquet", conversationsCols, `
-			(100::BIGINT, 'thread100'),
-			(101::BIGINT, 'thread101')
+			(100::BIGINT, 'thread100', ''),
+			(101::BIGINT, 'thread101', '')
 		`))
 
 	ctx := context.Background()
@@ -2208,15 +2208,15 @@ func TestDuckDBEngine_ListMessages_MatchEmptyRecipientName(t *testing.T) {
 	// Build Parquet data with a message that has no recipients
 	engine := createEngineFromBuilder(t, newParquetBuilder(t).
 		addTable("messages", "messages/year=2024", "data.parquet", messagesCols, `
-			(1::BIGINT, 1::BIGINT, 'msg1', 100::BIGINT, 'Has Recipient', 'Snippet', TIMESTAMP '2024-01-15 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1),
-			(2::BIGINT, 1::BIGINT, 'msg2', 101::BIGINT, 'No Recipient', 'Snippet', TIMESTAMP '2024-01-16 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1)
+			(1::BIGINT, 1::BIGINT, 'msg1', 100::BIGINT, 'Has Recipient', 'Snippet', TIMESTAMP '2024-01-15 10:00:00', 1000::BIGINT, false, 0, NULL::TIMESTAMP, NULL::BIGINT, 'email', 2024, 1),
+			(2::BIGINT, 1::BIGINT, 'msg2', 101::BIGINT, 'No Recipient', 'Snippet', TIMESTAMP '2024-01-16 10:00:00', 1000::BIGINT, false, 0, NULL::TIMESTAMP, NULL::BIGINT, 'email', 2024, 1)
 		`).
 		addTable("sources", "sources", "sources.parquet", sourcesCols, `
 			(1::BIGINT, 'test@gmail.com')
 		`).
 		addTable("participants", "participants", "participants.parquet", participantsCols, `
-			(1::BIGINT, 'alice@test.com', 'test.com', 'Alice'),
-			(2::BIGINT, 'bob@test.com', 'test.com', 'Bob')
+			(1::BIGINT, 'alice@test.com', 'test.com', 'Alice', ''),
+			(2::BIGINT, 'bob@test.com', 'test.com', 'Bob', '')
 		`).
 		addTable("message_recipients", "message_recipients", "message_recipients.parquet", messageRecipientsCols, `
 			(1::BIGINT, 1::BIGINT, 'from', 'Alice'),
@@ -2226,8 +2226,8 @@ func TestDuckDBEngine_ListMessages_MatchEmptyRecipientName(t *testing.T) {
 		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
 		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`).
 		addTable("conversations", "conversations", "conversations.parquet", conversationsCols, `
-			(100::BIGINT, 'thread100'),
-			(101::BIGINT, 'thread101')
+			(100::BIGINT, 'thread100', ''),
+			(101::BIGINT, 'thread101', '')
 		`))
 
 	ctx := context.Background()
@@ -2805,14 +2805,14 @@ func TestDuckDBEngine_VARCHARParquetColumns(t *testing.T) {
 	// string, to reproduce type mismatches in COALESCE, JOINs, and TRY_CAST paths.
 	engine := createEngineFromBuilder(t, newParquetBuilder(t).
 		addTable("messages", "messages/year=2024", "data.parquet", messagesCols, `
-			(1::BIGINT, 1::BIGINT, 'msg1', '100', 'Hello World', 'snippet1', TIMESTAMP '2024-01-15 10:00:00', '1000', '0', NULL::TIMESTAMP, 2024, 1),
-			(2::BIGINT, 1::BIGINT, 'msg2', '101', 'Goodbye', 'snippet2', TIMESTAMP '2024-01-16 10:00:00', '2000', '1', NULL::TIMESTAMP, 2024, 1)
+			(1::BIGINT, 1::BIGINT, 'msg1', '100', 'Hello World', 'snippet1', TIMESTAMP '2024-01-15 10:00:00', '1000', '0', '0', NULL::TIMESTAMP, NULL::BIGINT, 'email', 2024, 1),
+			(2::BIGINT, 1::BIGINT, 'msg2', '101', 'Goodbye', 'snippet2', TIMESTAMP '2024-01-16 10:00:00', '2000', '1', '0', NULL::TIMESTAMP, NULL::BIGINT, 'email', 2024, 1)
 		`).
 		addTable("sources", "sources", "sources.parquet", sourcesCols, `
 			(1::BIGINT, 'test@gmail.com')
 		`).
 		addTable("participants", "participants", "participants.parquet", participantsCols, `
-			(1::BIGINT, 'alice@test.com', 'test.com', 'Alice')
+			(1::BIGINT, 'alice@test.com', 'test.com', 'Alice', '')
 		`).
 		addTable("message_recipients", "message_recipients", "message_recipients.parquet", messageRecipientsCols, `
 			(1::BIGINT, 1::BIGINT, 'from', 'Alice'),
@@ -2822,8 +2822,8 @@ func TestDuckDBEngine_VARCHARParquetColumns(t *testing.T) {
 		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
 		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, '100', 'x')`).
 		addTable("conversations", "conversations", "conversations.parquet", conversationsCols, `
-			(100::BIGINT, 'thread100'),
-			(101::BIGINT, 'thread101')
+			(100::BIGINT, 'thread100', ''),
+			(101::BIGINT, 'thread101', '')
 		`))
 
 	ctx := context.Background()

@@ -28,12 +28,15 @@ type MessageSummary struct {
 	Snippet              string
 	FromEmail            string
 	FromName             string
+	FromPhone            string // Phone number (for WhatsApp/chat sources)
 	SentAt               time.Time
 	SizeEstimate         int64
 	HasAttachments       bool
 	AttachmentCount      int
 	Labels               []string
 	DeletedAt            *time.Time // When message was deleted from server (nil if not deleted)
+	MessageType          string     // e.g., "email", "whatsapp" — from messages.message_type
+	ConversationTitle    string     // Group/chat name from conversations.title
 }
 
 // MessageDetail represents a full message with body and attachments.
