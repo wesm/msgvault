@@ -31,7 +31,7 @@ var buildCacheMu sync.Mutex
 // columns are added/removed/renamed in the COPY queries below so that
 // incremental builds automatically trigger a full rebuild instead of
 // producing Parquet files with mismatched schemas.
-const cacheSchemaVersion = 2 // v2: added sender_id, message_type, attachment_count, phone_number, title
+const cacheSchemaVersion = 3 // v3: schema migration adds phone_number etc. to existing DBs; force Parquet rebuild
 
 // syncState tracks the last exported message ID for incremental updates.
 type syncState struct {
