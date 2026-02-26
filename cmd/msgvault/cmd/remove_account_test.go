@@ -13,7 +13,7 @@ import (
 
 func TestRemoveAccountCmd_RequiresEmail(t *testing.T) {
 	root := newTestRootCmd()
-	root.AddCommand(removeAccountCmd)
+	root.AddCommand(newRemoveAccountCmd())
 	root.SetArgs([]string{"remove-account"})
 
 	err := root.Execute()
@@ -44,8 +44,7 @@ func TestRemoveAccountCmd_NotFound(t *testing.T) {
 	}
 
 	root := newTestRootCmd()
-	cmd := *removeAccountCmd // shallow copy to avoid mutation
-	root.AddCommand(&cmd)
+	root.AddCommand(newRemoveAccountCmd())
 	root.SetArgs([]string{
 		"remove-account", "nobody@example.com", "--yes",
 	})
@@ -86,8 +85,7 @@ func TestRemoveAccountCmd_WithYesFlag(t *testing.T) {
 	}
 
 	root := newTestRootCmd()
-	cmd := *removeAccountCmd
-	root.AddCommand(&cmd)
+	root.AddCommand(newRemoveAccountCmd())
 	root.SetArgs([]string{
 		"remove-account", "test@example.com", "--yes",
 	})
@@ -119,7 +117,6 @@ func TestRemoveAccountCmd_WithYesFlag(t *testing.T) {
 func TestRemoveAccountCmd_DuplicateIdentifierRequiresType(
 	t *testing.T,
 ) {
-	defer func() { removeAccountType = "" }()
 	tmpDir := t.TempDir()
 	dbPath := tmpDir + "/msgvault.db"
 
@@ -151,8 +148,7 @@ func TestRemoveAccountCmd_DuplicateIdentifierRequiresType(
 
 	// Without --type should fail
 	root := newTestRootCmd()
-	cmd := *removeAccountCmd
-	root.AddCommand(&cmd)
+	root.AddCommand(newRemoveAccountCmd())
 	root.SetArgs([]string{
 		"remove-account", "dup@example.com", "--yes",
 	})
@@ -167,8 +163,7 @@ func TestRemoveAccountCmd_DuplicateIdentifierRequiresType(
 
 	// With --type should succeed
 	root2 := newTestRootCmd()
-	cmd2 := *removeAccountCmd
-	root2.AddCommand(&cmd2)
+	root2.AddCommand(newRemoveAccountCmd())
 	root2.SetArgs([]string{
 		"remove-account", "dup@example.com",
 		"--yes", "--type", "mbox",
@@ -240,8 +235,7 @@ func TestRemoveAccountCmd_GmailRemovesToken(t *testing.T) {
 	}
 
 	root := newTestRootCmd()
-	cmd := *removeAccountCmd
-	root.AddCommand(&cmd)
+	root.AddCommand(newRemoveAccountCmd())
 	root.SetArgs([]string{
 		"remove-account", "tok@example.com", "--yes",
 	})
@@ -292,8 +286,7 @@ func TestRemoveAccountCmd_NonGmailSkipsToken(t *testing.T) {
 	}
 
 	root := newTestRootCmd()
-	cmd := *removeAccountCmd
-	root.AddCommand(&cmd)
+	root.AddCommand(newRemoveAccountCmd())
 	root.SetArgs([]string{
 		"remove-account", "imp@example.com", "--yes",
 	})
@@ -309,7 +302,6 @@ func TestRemoveAccountCmd_NonGmailSkipsToken(t *testing.T) {
 }
 
 func TestRemoveAccountCmd_ClosedStdinReturnsError(t *testing.T) {
-	removeAccountYes = false
 	tmpDir := t.TempDir()
 	dbPath := tmpDir + "/msgvault.db"
 
@@ -347,8 +339,7 @@ func TestRemoveAccountCmd_ClosedStdinReturnsError(t *testing.T) {
 
 	// Run WITHOUT --yes so it tries to read confirmation
 	root := newTestRootCmd()
-	cmd := *removeAccountCmd
-	root.AddCommand(&cmd)
+	root.AddCommand(newRemoveAccountCmd())
 	root.SetArgs([]string{"remove-account", "eof@example.com"})
 
 	err = root.Execute()

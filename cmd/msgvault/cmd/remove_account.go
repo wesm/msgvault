@@ -11,15 +11,11 @@ import (
 	"github.com/wesm/msgvault/internal/store"
 )
 
-var (
-	removeAccountYes  bool
-	removeAccountType string
-)
-
-var removeAccountCmd = &cobra.Command{
-	Use:   "remove-account <email>",
-	Short: "Remove an account and all its data",
-	Long: `Remove an account and all associated messages, labels, and sync data
+func newRemoveAccountCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "remove-account <email>",
+		Short: "Remove an account and all its data",
+		Long: `Remove an account and all associated messages, labels, and sync data
 from the local database. This is irreversible.
 
 If the same identifier exists for multiple source types (e.g., gmail
@@ -35,13 +31,29 @@ Examples:
   msgvault remove-account you@gmail.com
   msgvault remove-account you@gmail.com --yes
   msgvault remove-account you@gmail.com --type mbox`,
-	Args: cobra.ExactArgs(1),
-	RunE: runRemoveAccount,
+		Args: cobra.ExactArgs(1),
+		RunE: runRemoveAccount,
+	}
+	cmd.Flags().BoolP("yes", "y", false, "Skip confirmation prompt")
+	cmd.Flags().String(
+		"type", "",
+		"Source type to remove (gmail, mbox, etc.)",
+	)
+	return cmd
 }
 
-func runRemoveAccount(_ *cobra.Command, args []string) error {
+func runRemoveAccount(cmd *cobra.Command, args []string) error {
 	if err := MustBeLocal("remove-account"); err != nil {
 		return err
+	}
+
+	yes, err := cmd.Flags().GetBool("yes")
+	if err != nil {
+		return fmt.Errorf("read --yes flag: %w", err)
+	}
+	sourceType, err := cmd.Flags().GetString("type")
+	if err != nil {
+		return fmt.Errorf("read --type flag: %w", err)
 	}
 
 	email := args[0]
@@ -57,7 +69,7 @@ func runRemoveAccount(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("init schema: %w", err)
 	}
 
-	source, err := resolveSource(s, email)
+	source, err := resolveSource(s, email, sourceType)
 	if err != nil {
 		return err
 	}
@@ -66,7 +78,7 @@ func runRemoveAccount(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("check active sync: %w", err)
 	}
-	if activeSync != nil && !removeAccountYes {
+	if activeSync != nil && !yes {
 		return fmt.Errorf(
 			"account %s has an active sync in progress\n"+
 				"Use --yes to force removal", email,
@@ -82,7 +94,7 @@ func runRemoveAccount(_ *cobra.Command, args []string) error {
 	fmt.Printf("Type:     %s\n", source.SourceType)
 	fmt.Printf("Messages: %s\n", formatCount(msgCount))
 
-	if !removeAccountYes {
+	if !yes {
 		fmt.Print("\nRemove this account and all its data? [y/N] ")
 		scanner := bufio.NewScanner(os.Stdin)
 		if !scanner.Scan() {
@@ -139,10 +151,10 @@ func runRemoveAccount(_ *cobra.Command, args []string) error {
 }
 
 // resolveSource finds the unique source for the given identifier.
-// If multiple source types share the identifier, --type is required
-// to disambiguate.
+// If multiple source types share the identifier, sourceType is
+// required to disambiguate.
 func resolveSource(
-	s *store.Store, identifier string,
+	s *store.Store, identifier, sourceType string,
 ) (*store.Source, error) {
 	sources, err := s.GetSourcesByIdentifier(identifier)
 	if err != nil {
@@ -152,15 +164,15 @@ func resolveSource(
 		return nil, fmt.Errorf("account %q not found", identifier)
 	}
 
-	if removeAccountType != "" {
+	if sourceType != "" {
 		for _, src := range sources {
-			if src.SourceType == removeAccountType {
+			if src.SourceType == sourceType {
 				return src, nil
 			}
 		}
 		return nil, fmt.Errorf(
 			"account %q with type %q not found",
-			identifier, removeAccountType,
+			identifier, sourceType,
 		)
 	}
 
@@ -181,13 +193,5 @@ func resolveSource(
 }
 
 func init() {
-	removeAccountCmd.Flags().BoolVarP(
-		&removeAccountYes, "yes", "y", false,
-		"Skip confirmation prompt",
-	)
-	removeAccountCmd.Flags().StringVar(
-		&removeAccountType, "type", "",
-		"Source type to remove (gmail, mbox, etc.)",
-	)
-	rootCmd.AddCommand(removeAccountCmd)
+	rootCmd.AddCommand(newRemoveAccountCmd())
 }
