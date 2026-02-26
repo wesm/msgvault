@@ -166,8 +166,8 @@ func CopySubset(
 	if ftsErr := populateFTS(db); ftsErr != nil {
 		errMsg := ftsErr.Error()
 		ftsUnavailable :=
-			strings.Contains(errMsg, "no such table: messages_fts") ||
-				strings.Contains(errMsg, "no such module: fts5")
+			strings.HasSuffix(errMsg, "no such table: messages_fts") ||
+				strings.HasSuffix(errMsg, "no such module: fts5")
 		if !ftsUnavailable {
 			fmt.Fprintf(
 				os.Stderr,

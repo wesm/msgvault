@@ -533,10 +533,8 @@ func TestCopySubset_ReactionParticipants(t *testing.T) {
 	}
 }
 
-// TestCopySubset_SourceFKViolationIgnored verifies that pre-existing FK
-// violations in the source DB (outside the copied subset) don't cause
-// CopySubset to fail. This guards against the regression where src was
-// still attached during PRAGMA foreign_key_check.
+// TestCopySubset_NullSourceIDLabels verifies that user-created labels
+// with NULL source_id are preserved when attached to selected messages.
 func TestCopySubset_NullSourceIDLabels(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := filepath.Join(t.TempDir(), "dst")
@@ -614,6 +612,10 @@ func TestCopySubset_NullSourceIDLabels(t *testing.T) {
 	}
 }
 
+// TestCopySubset_SourceFKViolationIgnored verifies that pre-existing FK
+// violations in the source DB (outside the copied subset) don't cause
+// CopySubset to fail. This guards against the regression where src was
+// still attached during PRAGMA foreign_key_check.
 func TestCopySubset_SourceFKViolationIgnored(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := filepath.Join(t.TempDir(), "dst")
