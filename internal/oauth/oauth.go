@@ -485,6 +485,14 @@ func parseClientSecrets(data []byte, scopes []string) (*oauth2.Config, error) {
 	return config, nil
 }
 
+// TokenFilePath returns the token file path for an email within the
+// given tokens directory. Use this when you need the path without a
+// full Manager instance (e.g., cleanup during account removal).
+func TokenFilePath(tokensDir, email string) string {
+	safe := sanitizeEmail(email)
+	return filepath.Join(tokensDir, safe+".json")
+}
+
 // DeleteToken removes the token file for the given email.
 func (m *Manager) DeleteToken(email string) error {
 	path := m.tokenPath(email)
