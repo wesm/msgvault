@@ -525,6 +525,17 @@ func TestCopySubset_TimestampFallback(t *testing.T) {
 			t.Error("oldest message (sent_at only) should not be selected")
 		}
 	}
+
+	// last_message_at must use the fallback timestamp, not be NULL
+	var lastMsg sql.NullString
+	if err := dstDB.QueryRow(
+		"SELECT last_message_at FROM conversations",
+	).Scan(&lastMsg); err != nil {
+		t.Fatal(err)
+	}
+	if !lastMsg.Valid {
+		t.Error("last_message_at is NULL; should use fallback timestamp")
+	}
 }
 
 func TestCopySubset_ReplyToOrphanNulled(t *testing.T) {

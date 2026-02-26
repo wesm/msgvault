@@ -236,7 +236,7 @@ func copyData(tx *sql.Tx, rowCount int) (*CopyResult, error) {
 		SELECT id FROM src.messages
 		WHERE deleted_from_source_at IS NULL
 		ORDER BY COALESCE(sent_at, received_at, internal_date)
-			DESC LIMIT ?`, rowCount); err != nil {
+			DESC, id DESC LIMIT ?`, rowCount); err != nil {
 		return nil, fmt.Errorf("select messages: %w", err)
 	}
 
@@ -398,7 +398,8 @@ func updateConversationCounts(db *sql.DB) error {
 				WHERE conversation_id = conversations.id
 			),
 			last_message_at = (
-				SELECT MAX(sent_at) FROM messages
+				SELECT MAX(COALESCE(sent_at, received_at, internal_date))
+				FROM messages
 				WHERE conversation_id = conversations.id
 			)`)
 	return err
