@@ -235,7 +235,8 @@ func copyData(tx *sql.Tx, rowCount int) (*CopyResult, error) {
 		CREATE TEMP TABLE selected_messages AS
 		SELECT id FROM src.messages
 		WHERE deleted_from_source_at IS NULL
-		ORDER BY sent_at DESC LIMIT ?`, rowCount); err != nil {
+		ORDER BY COALESCE(sent_at, received_at, internal_date)
+			DESC LIMIT ?`, rowCount); err != nil {
 		return nil, fmt.Errorf("select messages: %w", err)
 	}
 
@@ -309,6 +310,17 @@ func copyData(tx *sql.Tx, rowCount int) (*CopyResult, error) {
 		INSERT INTO messages SELECT * FROM src.messages
 		WHERE id IN (SELECT id FROM selected_messages)`); err != nil {
 		return nil, fmt.Errorf("copy messages: %w", err)
+	}
+
+	// Null out reply_to_message_id when the parent message wasn't
+	// selected, to avoid FK violations from dangling references.
+	if _, err := tx.Exec(`
+		UPDATE messages SET reply_to_message_id = NULL
+		WHERE reply_to_message_id IS NOT NULL
+		  AND reply_to_message_id NOT IN (
+			SELECT id FROM messages
+		)`); err != nil {
+		return nil, fmt.Errorf("clear orphan reply refs: %w", err)
 	}
 
 	if _, err := tx.Exec(`

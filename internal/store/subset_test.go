@@ -405,6 +405,246 @@ func TestCopySubset_NonPositiveRowCount(t *testing.T) {
 	}
 }
 
+func TestCopySubset_TimestampFallback(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := filepath.Join(t.TempDir(), "dst")
+
+	dbPath := filepath.Join(srcDir, "msgvault.db")
+	st, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := st.InitSchema(); err != nil {
+		t.Fatalf("InitSchema: %v", err)
+	}
+	_ = st.Close()
+
+	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=OFF")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO sources (id, source_type, identifier)
+		VALUES (1, 'gmail', 'test@example.com')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO participants (id, email_address, domain)
+		VALUES (1, 'alice@example.com', 'example.com')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO conversations
+			(id, source_id, conversation_type, title,
+			 message_count, participant_count)
+		VALUES (1, 1, 'email_thread', 'Thread', 3, 1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// msg 1: only received_at (no sent_at), most recent
+	_, err = db.Exec(`
+		INSERT INTO messages
+			(id, conversation_id, source_id, source_message_id,
+			 message_type, received_at, sender_id, subject)
+		VALUES (1, 1, 1, 'msg_1', 'email', '2025-06-01', 1,
+			'Received only')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// msg 2: only internal_date (no sent_at), second most recent
+	_, err = db.Exec(`
+		INSERT INTO messages
+			(id, conversation_id, source_id, source_message_id,
+			 message_type, internal_date, sender_id, subject)
+		VALUES (2, 1, 1, 'msg_2', 'email', '2025-05-01', 1,
+			'Internal only')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// msg 3: has sent_at, oldest
+	_, err = db.Exec(`
+		INSERT INTO messages
+			(id, conversation_id, source_id, source_message_id,
+			 message_type, sent_at, sender_id, subject)
+		VALUES (3, 1, 1, 'msg_3', 'email', '2025-04-01', 1,
+			'Sent only')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 1; i <= 3; i++ {
+		_, err = db.Exec(`
+			INSERT INTO message_recipients
+				(message_id, participant_id, recipient_type)
+			VALUES (?, 1, 'from')`, i)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = db.Close()
+
+	// Request 2 most recent — should get msg 1 and 2 (by fallback
+	// timestamps), not just msg 3 (the only one with sent_at).
+	result, err := CopySubset(dbPath, dstDir, 2)
+	if err != nil {
+		t.Fatalf("CopySubset: %v", err)
+	}
+	if result.Messages != 2 {
+		t.Errorf("Messages = %d, want 2", result.Messages)
+	}
+
+	dstDB, err := sql.Open("sqlite3",
+		filepath.Join(dstDir, "msgvault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dstDB.Close() }()
+
+	var subjects []string
+	rows, err := dstDB.Query("SELECT subject FROM messages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		subjects = append(subjects, s)
+	}
+	_ = rows.Close()
+
+	for _, s := range subjects {
+		if s == "Sent only" {
+			t.Error("oldest message (sent_at only) should not be selected")
+		}
+	}
+}
+
+func TestCopySubset_ReplyToOrphanNulled(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := filepath.Join(t.TempDir(), "dst")
+
+	dbPath := filepath.Join(srcDir, "msgvault.db")
+	st, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := st.InitSchema(); err != nil {
+		t.Fatalf("InitSchema: %v", err)
+	}
+	_ = st.Close()
+
+	db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=OFF")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO sources (id, source_type, identifier)
+		VALUES (1, 'gmail', 'test@example.com')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO participants (id, email_address, domain)
+		VALUES (1, 'alice@example.com', 'example.com')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO conversations
+			(id, source_id, conversation_type, title,
+			 message_count, participant_count)
+		VALUES (1, 1, 'email_thread', 'Thread', 2, 1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Old parent message (won't be selected with limit 1)
+	_, err = db.Exec(`
+		INSERT INTO messages
+			(id, conversation_id, source_id, source_message_id,
+			 message_type, sent_at, sender_id, subject)
+		VALUES (1, 1, 1, 'parent', 'email', '2020-01-01', 1,
+			'Parent')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Recent reply referencing the parent
+	_, err = db.Exec(`
+		INSERT INTO messages
+			(id, conversation_id, source_id, source_message_id,
+			 message_type, sent_at, sender_id, subject,
+			 reply_to_message_id)
+		VALUES (2, 1, 1, 'reply', 'email', '2025-06-01', 1,
+			'Reply', 1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 1; i <= 2; i++ {
+		_, err = db.Exec(`
+			INSERT INTO message_recipients
+				(message_id, participant_id, recipient_type)
+			VALUES (?, 1, 'from')`, i)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = db.Close()
+
+	// Select only 1 most recent — the reply, not the parent
+	result, err := CopySubset(dbPath, dstDir, 1)
+	if err != nil {
+		t.Fatalf("CopySubset: %v", err)
+	}
+	if result.Messages != 1 {
+		t.Errorf("Messages = %d, want 1", result.Messages)
+	}
+
+	dstDB, err := sql.Open("sqlite3",
+		filepath.Join(dstDir, "msgvault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dstDB.Close() }()
+
+	// reply_to_message_id should be nulled out since parent
+	// wasn't included
+	var replyTo sql.NullInt64
+	if err := dstDB.QueryRow(`
+		SELECT reply_to_message_id FROM messages
+		WHERE subject = 'Reply'`,
+	).Scan(&replyTo); err != nil {
+		t.Fatal(err)
+	}
+	if replyTo.Valid {
+		t.Errorf(
+			"reply_to_message_id = %d, want NULL (parent excluded)",
+			replyTo.Int64,
+		)
+	}
+
+	// FK integrity must pass
+	fkRows, err := dstDB.Query("PRAGMA foreign_key_check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasViolation := fkRows.Next()
+	_ = fkRows.Close()
+	if hasViolation {
+		t.Error("FK violations with orphaned reply_to_message_id")
+	}
+}
+
 func TestCopySubset_ExcludesSoftDeleted(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := filepath.Join(t.TempDir(), "dst")
