@@ -134,7 +134,7 @@ func runWhatsAppImport(cmd *cobra.Command, sourcePath string) error {
 		fmt.Printf("\nImporting contacts from %s...\n", importContacts)
 		matched, total, err := whatsapp.ImportContacts(s, importContacts)
 		if err != nil {
-			fmt.Printf("Warning: contact import failed: %v\n", err)
+			return fmt.Errorf("contact import: %w", err)
 		} else {
 			fmt.Printf("  Contacts: %d in file, %d phone numbers matched to participants\n", total, matched)
 		}

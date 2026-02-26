@@ -713,8 +713,10 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.message_id = msg.id
 			  AND mr.recipient_type = 'from'
-			  AND p.email_address IS NOT NULL
-			  AND p.email_address != ''
+			  AND (
+			    (p.email_address IS NOT NULL AND p.email_address != '') OR
+			    (p.phone_number IS NOT NULL AND p.phone_number != '')
+			  )
 		) AND msg.sender_id IS NULL)`)
 	}
 

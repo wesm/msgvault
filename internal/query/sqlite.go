@@ -296,7 +296,10 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 			LEFT JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
 			LEFT JOIN participants p_direct_sender ON p_direct_sender.id = m.sender_id
 		`)
-		conditions = append(conditions, "((mr_filter_from.id IS NULL OR p_filter_from.email_address IS NULL OR p_filter_from.email_address = '') AND m.sender_id IS NULL)")
+		conditions = append(conditions, `((mr_filter_from.id IS NULL OR (
+			(p_filter_from.email_address IS NULL OR p_filter_from.email_address = '') AND
+			(p_filter_from.phone_number IS NULL OR p_filter_from.phone_number = '')
+		)) AND m.sender_id IS NULL)`)
 	}
 
 	// Sender name filter - check both message_recipients (email) and direct sender_id (WhatsApp/chat)
