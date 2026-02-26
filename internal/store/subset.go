@@ -31,6 +31,10 @@ type CopyResult struct {
 func CopySubset(
 	srcDBPath, dstDir string, rowCount int,
 ) (*CopyResult, error) {
+	if rowCount <= 0 {
+		return nil, fmt.Errorf("rowCount must be positive, got %d", rowCount)
+	}
+
 	start := time.Now()
 
 	dstDBPath := filepath.Join(dstDir, "msgvault.db")

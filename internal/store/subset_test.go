@@ -396,6 +396,15 @@ func TestCopySubset_SQLInjectionInPath(t *testing.T) {
 	}
 }
 
+func TestCopySubset_NonPositiveRowCount(t *testing.T) {
+	for _, n := range []int{0, -1, -100} {
+		_, err := CopySubset("/tmp/fake.db", t.TempDir(), n)
+		if err == nil {
+			t.Errorf("CopySubset(rowCount=%d) = nil error, want error", n)
+		}
+	}
+}
+
 func TestCopySubset_MultiSourceScoping(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := filepath.Join(t.TempDir(), "dst")
