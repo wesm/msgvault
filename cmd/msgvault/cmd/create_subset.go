@@ -76,7 +76,7 @@ func runCreateSubset(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr,
-		"Created subset in %s\n", result.Elapsed.Round(time.Millisecond),
+		"Created subset (%s)\n", result.Elapsed.Round(time.Millisecond),
 	)
 	fmt.Printf("Sources:       %d\n", result.Sources)
 	fmt.Printf("Messages:      %d\n", result.Messages)

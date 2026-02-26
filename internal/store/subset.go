@@ -60,6 +60,8 @@ func CopySubset(
 			_ = os.RemoveAll(dstDir)
 		} else {
 			_ = os.Remove(dstDBPath)
+			_ = os.Remove(dstDBPath + "-wal")
+			_ = os.Remove(dstDBPath + "-shm")
 		}
 	}
 
@@ -79,22 +81,13 @@ func CopySubset(
 		return nil, fmt.Errorf("close schema database: %w", err)
 	}
 
-	// Phase 2: re-open with foreign keys OFF for bulk copy
-	dsn := dstDBPath +
-		"?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=OFF"
-	db, err := sql.Open("sqlite3", dsn)
-	if err != nil {
-		cleanup()
-		return nil, fmt.Errorf("reopen database: %w", err)
-	}
-	defer func() { _ = db.Close() }()
-
+	// Validate source path before opening destination DB, so
+	// ATTACH doesn't silently create an empty file for a bad path.
 	srcDBPath, err = filepath.Abs(filepath.Clean(srcDBPath))
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("canonicalize source path: %w", err)
 	}
-
 	for _, r := range srcDBPath {
 		if r < 0x20 || r == 0x7F {
 			cleanup()
@@ -103,19 +96,39 @@ func CopySubset(
 			)
 		}
 	}
-	escapedSrcPath := strings.ReplaceAll(srcDBPath, "'", "''")
+	if _, err := os.Stat(srcDBPath); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("source database not found: %w", err)
+	}
 
+	// Phase 2: re-open with foreign keys OFF for bulk copy
+	dsn := dstDBPath +
+		"?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=OFF"
+	db, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("reopen database: %w", err)
+	}
+
+	// closeAndCleanup closes db before cleanup to ensure WAL/SHM
+	// files are released before removal.
+	closeAndCleanup := func() {
+		_ = db.Close()
+		cleanup()
+	}
+
+	escapedSrcPath := strings.ReplaceAll(srcDBPath, "'", "''")
 	attachSQL := fmt.Sprintf(
 		"ATTACH DATABASE '%s' AS src", escapedSrcPath,
 	)
 	if _, err := db.Exec(attachSQL); err != nil {
-		cleanup()
+		closeAndCleanup()
 		return nil, fmt.Errorf("attach source database: %w", err)
 	}
 
 	tx, err := db.Begin()
 	if err != nil {
-		cleanup()
+		closeAndCleanup()
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
 
@@ -123,23 +136,30 @@ func CopySubset(
 	if err != nil {
 		_ = tx.Rollback()
 		_, _ = db.Exec("DETACH DATABASE src")
-		cleanup()
+		closeAndCleanup()
 		return nil, err
 	}
 
 	if err := tx.Commit(); err != nil {
 		_, _ = db.Exec("DETACH DATABASE src")
-		cleanup()
+		closeAndCleanup()
 		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
 
+	// Detach source before post-copy operations so PRAGMA
+	// foreign_key_check only scans the destination database.
+	if _, err := db.Exec("DETACH DATABASE src"); err != nil {
+		closeAndCleanup()
+		return nil, fmt.Errorf("detach source database: %w", err)
+	}
+
 	if err := verifyForeignKeys(db); err != nil {
-		cleanup()
+		closeAndCleanup()
 		return nil, err
 	}
 
 	if err := updateConversationCounts(db); err != nil {
-		cleanup()
+		closeAndCleanup()
 		return nil, fmt.Errorf("update conversation counts: %w", err)
 	}
 
@@ -155,10 +175,7 @@ func CopySubset(
 		}
 	}
 
-	if _, err := db.Exec("DETACH DATABASE src"); err != nil {
-		cleanup()
-		return nil, fmt.Errorf("detach source database: %w", err)
-	}
+	_ = db.Close()
 
 	if info, err := os.Stat(dstDBPath); err == nil {
 		result.DBSize = info.Size()

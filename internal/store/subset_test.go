@@ -405,6 +405,29 @@ func TestCopySubset_NonPositiveRowCount(t *testing.T) {
 	}
 }
 
+func TestCopySubset_MissingSourceDB(t *testing.T) {
+	dstDir := filepath.Join(t.TempDir(), "dst")
+	fakeSrc := filepath.Join(t.TempDir(), "nonexistent.db")
+
+	_, err := CopySubset(fakeSrc, dstDir, 5)
+	if err == nil {
+		t.Fatal("expected error for missing source DB")
+	}
+	if !strings.Contains(err.Error(), "source database not found") {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// ATTACH on a missing path would create a file; verify it wasn't
+	if _, statErr := os.Stat(fakeSrc); !os.IsNotExist(statErr) {
+		t.Errorf("missing source path was created as a side effect")
+	}
+
+	// Destination should be cleaned up
+	if _, statErr := os.Stat(dstDir); !os.IsNotExist(statErr) {
+		t.Errorf("destination directory was not cleaned up")
+	}
+}
+
 func TestCopySubset_MultiSourceScoping(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := filepath.Join(t.TempDir(), "dst")
