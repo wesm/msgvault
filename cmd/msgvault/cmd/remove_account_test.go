@@ -307,3 +307,55 @@ func TestRemoveAccountCmd_NonGmailSkipsToken(t *testing.T) {
 		t.Error("token file should NOT be removed for non-gmail source")
 	}
 }
+
+func TestRemoveAccountCmd_ClosedStdinReturnsError(t *testing.T) {
+	removeAccountYes = false
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/msgvault.db"
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := s.InitSchema(); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+	_, err = s.GetOrCreateSource("gmail", "eof@example.com")
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	_ = s.Close()
+
+	savedCfg := cfg
+	defer func() { cfg = savedCfg }()
+
+	cfg = &config.Config{
+		HomeDir: tmpDir,
+		Data:    config.DataConfig{DataDir: tmpDir},
+	}
+
+	// Replace stdin with a closed pipe to simulate EOF
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create pipe: %v", err)
+	}
+	_ = w.Close()
+
+	origStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = origStdin }()
+
+	// Run WITHOUT --yes so it tries to read confirmation
+	root := newTestRootCmd()
+	cmd := *removeAccountCmd
+	root.AddCommand(&cmd)
+	root.SetArgs([]string{"remove-account", "eof@example.com"})
+
+	err = root.Execute()
+	if err == nil {
+		t.Fatal("expected error when stdin is closed")
+	}
+	if !strings.Contains(err.Error(), "use --yes") {
+		t.Errorf("error = %q, want 'use --yes'", err.Error())
+	}
+}
