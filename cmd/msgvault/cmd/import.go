@@ -222,7 +222,7 @@ func (p *ImportCLIProgress) OnComplete(summary *whatsapp.ImportSummary) {
 }
 
 func (p *ImportCLIProgress) OnError(err error) {
-	fmt.Printf("\nWarning: %v\n", err)
+	fmt.Printf("\nWarning: %s\n", textutil.SanitizeTerminal(err.Error()))
 }
 
 func init() {

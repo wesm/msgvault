@@ -250,6 +250,13 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 					continue
 				}
 
+				// Skip messages with empty key_id — they can't be uniquely
+				// identified for upsert and would collide with each other.
+				if waMsg.KeyID == "" {
+					summary.MessagesSkipped++
+					continue
+				}
+
 				// Resolve sender.
 				var senderID sql.NullInt64
 				if waMsg.FromMe == 1 {
