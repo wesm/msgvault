@@ -42,6 +42,10 @@ func runExportAttachments(cmd *cobra.Command, args []string) error {
 	}
 	defer s.Close()
 
+	if err := s.InitSchema(); err != nil {
+		return fmt.Errorf("init schema: %w", err)
+	}
+
 	engine := query.NewSQLiteEngine(s.DB())
 
 	// Resolve message ID — try numeric first, fallback to Gmail ID

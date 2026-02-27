@@ -279,40 +279,56 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		conditions = append(conditions, prefix+"deleted_from_source_at IS NULL")
 	}
 
-	// Sender filter
+	// Sender filter - check both message_recipients (email) and direct sender_id (WhatsApp/chat)
+	// Also checks phone_number for phone-based lookups (e.g., from:+447...)
 	if filter.Sender != "" {
-		joins = append(joins, `
-			JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
-			JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
-		`)
-		conditions = append(conditions, "p_filter_from.email_address = ?")
-		args = append(args, filter.Sender)
-	} else if filter.MatchesEmpty(ViewSenders) {
 		joins = append(joins, `
 			LEFT JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
 			LEFT JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
+			LEFT JOIN participants p_direct_sender ON p_direct_sender.id = m.sender_id
 		`)
-		conditions = append(conditions, "(mr_filter_from.id IS NULL OR p_filter_from.email_address IS NULL OR p_filter_from.email_address = '')")
+		conditions = append(conditions, "(p_filter_from.email_address = ? OR p_filter_from.phone_number = ? OR p_direct_sender.email_address = ? OR p_direct_sender.phone_number = ?)")
+		args = append(args, filter.Sender, filter.Sender, filter.Sender, filter.Sender)
+	} else if filter.MatchesEmpty(ViewSenders) {
+		// A message has an "empty sender" only if it has no from-recipient AND no direct sender_id.
+		joins = append(joins, `
+			LEFT JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
+			LEFT JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
+			LEFT JOIN participants p_direct_sender ON p_direct_sender.id = m.sender_id
+		`)
+		conditions = append(conditions, `((mr_filter_from.id IS NULL OR (
+			(p_filter_from.email_address IS NULL OR p_filter_from.email_address = '') AND
+			(p_filter_from.phone_number IS NULL OR p_filter_from.phone_number = '')
+		)) AND m.sender_id IS NULL)`)
 	}
 
-	// Sender name filter
+	// Sender name filter - check both message_recipients (email) and direct sender_id (WhatsApp/chat)
 	if filter.SenderName != "" {
 		if filter.Sender == "" && !filter.MatchesEmpty(ViewSenders) {
 			joins = append(joins, `
-				JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
-				JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
+				LEFT JOIN message_recipients mr_filter_from ON mr_filter_from.message_id = m.id AND mr_filter_from.recipient_type = 'from'
+				LEFT JOIN participants p_filter_from ON p_filter_from.id = mr_filter_from.participant_id
+				LEFT JOIN participants p_direct_sender ON p_direct_sender.id = m.sender_id
 			`)
 		}
-		conditions = append(conditions, "COALESCE(NULLIF(TRIM(p_filter_from.display_name), ''), p_filter_from.email_address) = ?")
-		args = append(args, filter.SenderName)
+		conditions = append(conditions, `(
+			COALESCE(NULLIF(TRIM(p_filter_from.display_name), ''), p_filter_from.email_address) = ?
+			OR COALESCE(NULLIF(TRIM(p_direct_sender.display_name), ''), p_direct_sender.email_address) = ?
+		)`)
+		args = append(args, filter.SenderName, filter.SenderName)
 	} else if filter.MatchesEmpty(ViewSenderNames) {
-		conditions = append(conditions, `NOT EXISTS (
+		// A message has an "empty sender name" only if it has no from-recipient name AND no direct sender_id with a name.
+		conditions = append(conditions, `(NOT EXISTS (
 			SELECT 1 FROM message_recipients mr_sn
 			JOIN participants p_sn ON p_sn.id = mr_sn.participant_id
 			WHERE mr_sn.message_id = m.id
 			  AND mr_sn.recipient_type = 'from'
 			  AND COALESCE(NULLIF(TRIM(p_sn.display_name), ''), p_sn.email_address) IS NOT NULL
-		)`)
+		) AND NOT EXISTS (
+			SELECT 1 FROM participants p_ds
+			WHERE p_ds.id = m.sender_id
+			  AND COALESCE(NULLIF(TRIM(p_ds.display_name), ''), p_ds.email_address) IS NOT NULL
+		))`)
 	}
 
 	// Recipient filter
@@ -599,14 +615,17 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 			COALESCE(m.snippet, ''),
 			COALESCE(p_sender.email_address, ''),
 			COALESCE(p_sender.display_name, ''),
+			COALESCE(p_sender.phone_number, ''),
 			m.sent_at,
 			COALESCE(m.size_estimate, 0),
 			m.has_attachments,
 			m.attachment_count,
-			m.deleted_from_source_at
+			m.deleted_from_source_at,
+			COALESCE(m.message_type, ''),
+			COALESCE(conv.title, '')
 		FROM messages m
 		LEFT JOIN message_recipients mr_sender ON mr_sender.message_id = m.id AND mr_sender.recipient_type = 'from'
-		LEFT JOIN participants p_sender ON p_sender.id = mr_sender.participant_id
+		LEFT JOIN participants p_sender ON p_sender.id = COALESCE(mr_sender.participant_id, m.sender_id)
 		LEFT JOIN conversations conv ON conv.id = m.conversation_id
 		%s
 		WHERE %s
@@ -636,11 +655,14 @@ func (e *SQLiteEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 			&msg.Snippet,
 			&msg.FromEmail,
 			&msg.FromName,
+			&msg.FromPhone,
 			&sentAt,
 			&msg.SizeEstimate,
 			&msg.HasAttachments,
 			&msg.AttachmentCount,
 			&deletedAt,
+			&msg.MessageType,
+			&msg.ConversationTitle,
 		); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
@@ -878,24 +900,33 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	// Build JOIN clauses based on filter type
 	var joins []string
 
+	// Scope to Gmail sources only — this function is used for Gmail-specific
+	// deletion/staging workflows and must not return WhatsApp or other source IDs.
+	joins = append(joins, `JOIN sources s_gmail ON s_gmail.id = m.source_id AND s_gmail.source_type = 'gmail'`)
+
 	if filter.Sender != "" {
 		joins = append(joins, `
-			JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
-			JOIN participants p_from ON p_from.id = mr_from.participant_id
+			LEFT JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
+			LEFT JOIN participants p_from ON p_from.id = mr_from.participant_id
+			LEFT JOIN participants p_ds ON p_ds.id = m.sender_id
 		`)
-		conditions = append(conditions, "p_from.email_address = ?")
-		args = append(args, filter.Sender)
+		conditions = append(conditions, "(p_from.email_address = ? OR p_from.phone_number = ? OR p_ds.email_address = ? OR p_ds.phone_number = ?)")
+		args = append(args, filter.Sender, filter.Sender, filter.Sender, filter.Sender)
 	}
 
 	if filter.SenderName != "" {
 		if filter.Sender == "" {
 			joins = append(joins, `
-				JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
-				JOIN participants p_from ON p_from.id = mr_from.participant_id
+				LEFT JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
+				LEFT JOIN participants p_from ON p_from.id = mr_from.participant_id
+				LEFT JOIN participants p_ds ON p_ds.id = m.sender_id
 			`)
 		}
-		conditions = append(conditions, "COALESCE(NULLIF(TRIM(p_from.display_name), ''), p_from.email_address) = ?")
-		args = append(args, filter.SenderName)
+		conditions = append(conditions, `(
+			COALESCE(NULLIF(TRIM(p_from.display_name), ''), p_from.email_address) = ?
+			OR COALESCE(NULLIF(TRIM(p_ds.display_name), ''), p_ds.email_address) = ?
+		)`)
+		args = append(args, filter.SenderName, filter.SenderName)
 	}
 
 	if filter.Recipient != "" {
@@ -1193,14 +1224,17 @@ func (e *SQLiteEngine) executeSearchQuery(ctx context.Context, conditions []stri
 			COALESCE(m.snippet, ''),
 			COALESCE(p_sender.email_address, ''),
 			COALESCE(p_sender.display_name, ''),
+			COALESCE(p_sender.phone_number, ''),
 			m.sent_at,
 			COALESCE(m.size_estimate, 0),
 			m.has_attachments,
 			m.attachment_count,
-			m.deleted_from_source_at
+			m.deleted_from_source_at,
+			COALESCE(m.message_type, ''),
+			COALESCE(conv.title, '')
 		FROM messages m
 		LEFT JOIN message_recipients mr_sender ON mr_sender.message_id = m.id AND mr_sender.recipient_type = 'from'
-		LEFT JOIN participants p_sender ON p_sender.id = mr_sender.participant_id
+		LEFT JOIN participants p_sender ON p_sender.id = COALESCE(mr_sender.participant_id, m.sender_id)
 		LEFT JOIN conversations conv ON conv.id = m.conversation_id
 		%s
 		%s
@@ -1231,11 +1265,14 @@ func (e *SQLiteEngine) executeSearchQuery(ctx context.Context, conditions []stri
 			&msg.Snippet,
 			&msg.FromEmail,
 			&msg.FromName,
+			&msg.FromPhone,
 			&sentAt,
 			&msg.SizeEstimate,
 			&msg.HasAttachments,
 			&msg.AttachmentCount,
 			&deletedAt,
+			&msg.MessageType,
+			&msg.ConversationTitle,
 		); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
