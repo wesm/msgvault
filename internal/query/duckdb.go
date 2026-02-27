@@ -40,6 +40,12 @@ type DuckDBEngine struct {
 	hasSQLiteScanner bool          // true if DuckDB's sqlite extension is loaded
 	tempTableSeq     atomic.Uint64 // Unique suffix for temp tables to avoid concurrent collisions
 
+	// optionalCols tracks which columns exist in each Parquet table's schema.
+	// Used to gracefully handle stale cache files that lack newer columns
+	// (e.g. phone_number, attachment_count, sender_id, message_type added in PR #160).
+	// Map: table_name -> column_name -> exists_in_parquet
+	optionalCols map[string]map[string]bool
+
 	// Search result cache: keeps the materialized temp table alive across
 	// pagination calls for the same search query, avoiding repeated Parquet scans.
 	searchCacheMu    sync.Mutex  // protects cache fields from concurrent goroutines
@@ -122,14 +128,39 @@ func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB, o
 		sqliteEngine = NewSQLiteEngine(sqliteDB)
 	}
 
-	return &DuckDBEngine{
+	engine := &DuckDBEngine{
 		db:               db,
 		analyticsDir:     analyticsDir,
 		sqlitePath:       sqlitePath,
 		sqliteDB:         sqliteDB,
 		sqliteEngine:     sqliteEngine,
 		hasSQLiteScanner: hasSQLiteScanner,
-	}, nil
+	}
+
+	// Probe Parquet schemas for optional columns added in PR #160 (WhatsApp import).
+	// Old cache files may lack these columns; we'll supply defaults in parquetCTEs().
+	engine.optionalCols = map[string]map[string]bool{
+		"participants":  engine.probeParquetColumns(engine.parquetPath("participants"), false),
+		"messages":      engine.probeParquetColumns(engine.parquetGlob(), true),
+		"conversations": engine.probeParquetColumns(engine.parquetPath("conversations"), false),
+	}
+	var missing []string
+	for _, col := range []struct{ table, col string }{
+		{"participants", "phone_number"},
+		{"messages", "attachment_count"},
+		{"messages", "sender_id"},
+		{"messages", "message_type"},
+		{"conversations", "title"},
+	} {
+		if !engine.optionalCols[col.table][col.col] {
+			missing = append(missing, col.table+"."+col.col)
+		}
+	}
+	if len(missing) > 0 {
+		log.Printf("[warn] Parquet cache missing columns %v — run 'msgvault build-cache --full-rebuild' to update", missing)
+	}
+
+	return engine, nil
 }
 
 // Close releases DuckDB resources, including any cached search temp table.
@@ -156,6 +187,48 @@ func (e *DuckDBEngine) parquetPath(table string) string {
 	return filepath.Join(e.analyticsDir, table, "*.parquet")
 }
 
+// probeParquetColumns checks which columns exist in a Parquet table's files.
+// Returns a map of column_name -> true for columns that exist.
+// On any error (files missing, unreadable, etc.), returns an empty map — callers
+// should treat absent keys as "column does not exist" and supply defaults.
+func (e *DuckDBEngine) probeParquetColumns(pathPattern string, hivePartitioning bool) map[string]bool {
+	cols := make(map[string]bool)
+	hiveOpt := ""
+	if hivePartitioning {
+		hiveOpt = ", hive_partitioning=true"
+	}
+	escapedPath := strings.ReplaceAll(pathPattern, "'", "''")
+	query := fmt.Sprintf("DESCRIBE SELECT * FROM read_parquet('%s'%s)", escapedPath, hiveOpt)
+	rows, err := e.db.Query(query)
+	if err != nil {
+		// No Parquet files or unreadable — treat all optional cols as missing.
+		return cols
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var colName, colType, isNull, key, dflt, extra sql.NullString
+		if err := rows.Scan(&colName, &colType, &isNull, &key, &dflt, &extra); err != nil {
+			continue
+		}
+		if colName.Valid {
+			cols[colName.String] = true
+		}
+	}
+	return cols
+}
+
+// hasCol returns true if the named column exists in the Parquet schema for the given table.
+func (e *DuckDBEngine) hasCol(table, col string) bool {
+	if e.optionalCols == nil {
+		return true // no probe data — assume present (backwards compatible)
+	}
+	tbl, ok := e.optionalCols[table]
+	if !ok {
+		return true // table not probed — assume present
+	}
+	return tbl[col]
+}
+
 // parquetCTEs returns common CTEs for reading all Parquet tables.
 // This is used by aggregate queries that need to join across tables.
 // parquetCTEs returns the WITH clause body that defines CTEs for all Parquet
@@ -163,22 +236,83 @@ func (e *DuckDBEngine) parquetPath(table string) string {
 // REPLACE syntax, because Parquet schema inference from SQLite can store
 // integer/boolean columns as VARCHAR, causing type mismatch errors in JOINs
 // and COALESCE expressions.
+//
+// Optional columns (phone_number, attachment_count, sender_id, message_type)
+// are handled gracefully: if the Parquet file predates their addition, they
+// are synthesised with sensible defaults instead of causing a binder error.
 func (e *DuckDBEngine) parquetCTEs() string {
+	// --- messages CTE ---
+	msgReplace := []string{
+		"CAST(id AS BIGINT) AS id",
+		"CAST(source_id AS BIGINT) AS source_id",
+		"CAST(source_message_id AS VARCHAR) AS source_message_id",
+		"CAST(conversation_id AS BIGINT) AS conversation_id",
+		"CAST(subject AS VARCHAR) AS subject",
+		"CAST(snippet AS VARCHAR) AS snippet",
+		"CAST(size_estimate AS BIGINT) AS size_estimate",
+		"COALESCE(TRY_CAST(has_attachments AS BOOLEAN), false) AS has_attachments",
+	}
+	var msgExtra []string
+	if e.hasCol("messages", "attachment_count") {
+		msgReplace = append(msgReplace, "COALESCE(TRY_CAST(attachment_count AS INTEGER), 0) AS attachment_count")
+	} else {
+		msgExtra = append(msgExtra, "0 AS attachment_count")
+	}
+	if e.hasCol("messages", "sender_id") {
+		msgReplace = append(msgReplace, "TRY_CAST(sender_id AS BIGINT) AS sender_id")
+	} else {
+		msgExtra = append(msgExtra, "NULL::BIGINT AS sender_id")
+	}
+	if e.hasCol("messages", "message_type") {
+		msgReplace = append(msgReplace, "COALESCE(CAST(message_type AS VARCHAR), '') AS message_type")
+	} else {
+		msgExtra = append(msgExtra, "'' AS message_type")
+	}
+	msgCTE := fmt.Sprintf("SELECT * REPLACE (\n\t\t\t\t%s\n\t\t\t)", strings.Join(msgReplace, ",\n\t\t\t\t"))
+	if len(msgExtra) > 0 {
+		msgCTE += ", " + strings.Join(msgExtra, ", ")
+	}
+	msgCTE += fmt.Sprintf(" FROM read_parquet('%s', hive_partitioning=true)", e.parquetGlob())
+
+	// --- participants CTE ---
+	pReplace := []string{
+		"CAST(id AS BIGINT) AS id",
+		"CAST(email_address AS VARCHAR) AS email_address",
+		"CAST(domain AS VARCHAR) AS domain",
+		"CAST(display_name AS VARCHAR) AS display_name",
+	}
+	var pExtra []string
+	if e.hasCol("participants", "phone_number") {
+		pReplace = append(pReplace, "COALESCE(CAST(phone_number AS VARCHAR), '') AS phone_number")
+	} else {
+		pExtra = append(pExtra, "'' AS phone_number")
+	}
+	pCTE := fmt.Sprintf("SELECT * REPLACE (\n\t\t\t\t%s\n\t\t\t)", strings.Join(pReplace, ",\n\t\t\t\t"))
+	if len(pExtra) > 0 {
+		pCTE += ", " + strings.Join(pExtra, ", ")
+	}
+	pCTE += fmt.Sprintf(" FROM read_parquet('%s')", e.parquetPath("participants"))
+
+	// --- conversations CTE ---
+	convReplace := []string{
+		"CAST(id AS BIGINT) AS id",
+		"CAST(source_conversation_id AS VARCHAR) AS source_conversation_id",
+	}
+	var convExtra []string
+	if e.hasCol("conversations", "title") {
+		convReplace = append(convReplace, "COALESCE(CAST(title AS VARCHAR), '') AS title")
+	} else {
+		convExtra = append(convExtra, "'' AS title")
+	}
+	convCTE := fmt.Sprintf("SELECT * REPLACE (\n\t\t\t\t%s\n\t\t\t)", strings.Join(convReplace, ",\n\t\t\t\t"))
+	if len(convExtra) > 0 {
+		convCTE += ", " + strings.Join(convExtra, ", ")
+	}
+	convCTE += fmt.Sprintf(" FROM read_parquet('%s')", e.parquetPath("conversations"))
+
 	return fmt.Sprintf(`
 		msg AS (
-			SELECT * REPLACE (
-				CAST(id AS BIGINT) AS id,
-				CAST(source_id AS BIGINT) AS source_id,
-				CAST(source_message_id AS VARCHAR) AS source_message_id,
-				CAST(conversation_id AS BIGINT) AS conversation_id,
-				CAST(subject AS VARCHAR) AS subject,
-				CAST(snippet AS VARCHAR) AS snippet,
-				CAST(size_estimate AS BIGINT) AS size_estimate,
-				COALESCE(TRY_CAST(has_attachments AS BOOLEAN), false) AS has_attachments,
-				COALESCE(TRY_CAST(attachment_count AS INTEGER), 0) AS attachment_count,
-				TRY_CAST(sender_id AS BIGINT) AS sender_id,
-				COALESCE(CAST(message_type AS VARCHAR), '') AS message_type
-			) FROM read_parquet('%s', hive_partitioning=true)
+			%s
 		),
 		mr AS (
 			SELECT * REPLACE (
@@ -189,13 +323,7 @@ func (e *DuckDBEngine) parquetCTEs() string {
 			) FROM read_parquet('%s')
 		),
 		p AS (
-			SELECT * REPLACE (
-				CAST(id AS BIGINT) AS id,
-				CAST(email_address AS VARCHAR) AS email_address,
-				CAST(domain AS VARCHAR) AS domain,
-				CAST(display_name AS VARCHAR) AS display_name,
-				COALESCE(CAST(phone_number AS VARCHAR), '') AS phone_number
-			) FROM read_parquet('%s')
+			%s
 		),
 		lbl AS (
 			SELECT * REPLACE (
@@ -222,20 +350,16 @@ func (e *DuckDBEngine) parquetCTEs() string {
 			) FROM read_parquet('%s')
 		),
 		conv AS (
-			SELECT * REPLACE (
-				CAST(id AS BIGINT) AS id,
-				CAST(source_conversation_id AS VARCHAR) AS source_conversation_id,
-				COALESCE(CAST(title AS VARCHAR), '') AS title
-			) FROM read_parquet('%s')
+			%s
 		)
-	`, e.parquetGlob(),
+	`, msgCTE,
 		e.parquetPath("message_recipients"),
-		e.parquetPath("participants"),
+		pCTE,
 		e.parquetPath("labels"),
 		e.parquetPath("message_labels"),
 		e.parquetPath("attachments"),
 		e.parquetPath("sources"),
-		e.parquetPath("conversations"))
+		convCTE)
 }
 
 // escapeILIKE escapes ILIKE wildcard characters (% and _) in user input.

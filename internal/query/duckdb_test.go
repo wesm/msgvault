@@ -3208,3 +3208,109 @@ func TestDuckDBEngine_HideDeletedFromSource(t *testing.T) {
 		t.Errorf("GetTotalStats with hide-deleted: expected 2 messages, got %d", stats.MessageCount)
 	}
 }
+
+// TestDuckDBEngine_StaleParquetSchema verifies that a DuckDB engine can query
+// Parquet files written BEFORE PR #160 added phone_number, attachment_count,
+// sender_id, and message_type columns. The engine should synthesise sensible
+// defaults instead of failing with a binder error.
+func TestDuckDBEngine_StaleParquetSchema(t *testing.T) {
+	// Old-style column definitions (pre-WhatsApp).
+	const oldMessagesCols = "id, source_id, source_message_id, conversation_id, subject, snippet, sent_at, size_estimate, has_attachments, deleted_from_source_at, year, month"
+	const oldParticipantsCols = "id, email_address, domain, display_name"
+	const oldConversationsCols = "id, source_conversation_id"
+
+	engine := createEngineFromBuilder(t, newParquetBuilder(t).
+		addTable("messages", "messages/year=2024", "data.parquet", oldMessagesCols, `
+			(1::BIGINT, 1::BIGINT, 'msg1', 100::BIGINT, 'Stale Hello', 'snip1', TIMESTAMP '2024-01-15 10:00:00', 1000::BIGINT, false, NULL::TIMESTAMP, 2024, 1),
+			(2::BIGINT, 1::BIGINT, 'msg2', 101::BIGINT, 'Stale Goodbye', 'snip2', TIMESTAMP '2024-01-16 10:00:00', 2000::BIGINT, true, NULL::TIMESTAMP, 2024, 1)
+		`).
+		addTable("sources", "sources", "sources.parquet", sourcesCols, `
+			(1::BIGINT, 'test@gmail.com')
+		`).
+		addTable("participants", "participants", "participants.parquet", oldParticipantsCols, `
+			(1::BIGINT, 'alice@test.com', 'test.com', 'Alice')
+		`).
+		addTable("message_recipients", "message_recipients", "message_recipients.parquet", messageRecipientsCols, `
+			(1::BIGINT, 1::BIGINT, 'from', 'Alice'),
+			(2::BIGINT, 1::BIGINT, 'from', 'Alice')
+		`).
+		addEmptyTable("labels", "labels", "labels.parquet", labelsCols, `(1::BIGINT, 'x')`).
+		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
+		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`).
+		addTable("conversations", "conversations", "conversations.parquet", oldConversationsCols, `
+			(100::BIGINT, 'thread100'),
+			(101::BIGINT, 'thread101')
+		`))
+
+	ctx := context.Background()
+
+	t.Run("ListMessages", func(t *testing.T) {
+		results, err := engine.ListMessages(ctx, MessageFilter{})
+		if err != nil {
+			t.Fatalf("ListMessages with stale Parquet schema: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("expected 2 messages, got %d", len(results))
+		}
+	})
+
+	t.Run("SearchFast", func(t *testing.T) {
+		q := search.Parse("Stale Hello")
+		results, err := engine.SearchFast(ctx, q, MessageFilter{}, 100, 0)
+		if err != nil {
+			t.Fatalf("SearchFast with stale Parquet schema: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Subject != "Stale Hello" {
+			t.Fatalf("unexpected subject: %s", results[0].Subject)
+		}
+	})
+
+	t.Run("SearchFastCount", func(t *testing.T) {
+		q := search.Parse("Stale")
+		count, err := engine.SearchFastCount(ctx, q, MessageFilter{})
+		if err != nil {
+			t.Fatalf("SearchFastCount with stale Parquet schema: %v", err)
+		}
+		if count != 2 {
+			t.Fatalf("expected count 2, got %d", count)
+		}
+	})
+
+	t.Run("Aggregate", func(t *testing.T) {
+		results, err := engine.Aggregate(ctx, ViewSenders, DefaultAggregateOptions())
+		if err != nil {
+			t.Fatalf("Aggregate with stale Parquet schema: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 sender, got %d", len(results))
+		}
+	})
+
+	t.Run("GetTotalStats", func(t *testing.T) {
+		stats, err := engine.GetTotalStats(ctx, StatsOptions{})
+		if err != nil {
+			t.Fatalf("GetTotalStats with stale Parquet schema: %v", err)
+		}
+		if stats.MessageCount != 2 {
+			t.Fatalf("expected 2 messages, got %d", stats.MessageCount)
+		}
+	})
+
+	// Verify that optionalCols correctly detected the missing columns.
+	t.Run("ProbeDetectedMissing", func(t *testing.T) {
+		for _, col := range []struct{ table, col string }{
+			{"participants", "phone_number"},
+			{"messages", "attachment_count"},
+			{"messages", "sender_id"},
+			{"messages", "message_type"},
+			{"conversations", "title"},
+		} {
+			if engine.hasCol(col.table, col.col) {
+				t.Errorf("expected %s.%s to be detected as missing", col.table, col.col)
+			}
+		}
+	})
+}
