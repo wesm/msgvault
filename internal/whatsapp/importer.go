@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,7 +40,14 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 	summary := &ImportSummary{}
 
 	// Open WhatsApp DB read-only.
-	waDB, err := sql.Open("sqlite3", waDBPath+"?mode=ro&_journal_mode=WAL&_busy_timeout=5000")
+	// Use file: URI to safely handle paths containing '?' or other special characters.
+	dsn := (&url.URL{
+		Scheme:   "file",
+		OmitHost: true,
+		Path:     waDBPath,
+		RawQuery: "mode=ro&_journal_mode=WAL&_busy_timeout=5000",
+	}).String()
+	waDB, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open whatsapp db: %w", err)
 	}

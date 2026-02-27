@@ -212,6 +212,10 @@ func normalizeVCardPhone(raw string) string {
 	// Check if it starts with + (already has country code).
 	hasPlus := strings.HasPrefix(raw, "+")
 
+	// Strip trunk prefix "(0)" before digit extraction.
+	// Common in UK/European numbers: +44 (0)7700 means +447700, not +4407700.
+	raw = strings.ReplaceAll(raw, "(0)", "")
+
 	// Strip everything except digits.
 	digits := nonDigitRe.ReplaceAllString(raw, "")
 	if digits == "" {
