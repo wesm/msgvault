@@ -30,7 +30,7 @@ func TestMapMediaType(t *testing.T) {
 		waType int
 		want   string
 	}{
-		{0, ""},       // text
+		{0, ""}, // text
 		{1, "image"},
 		{2, "video"},
 		{3, "audio"},

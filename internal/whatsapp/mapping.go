@@ -97,9 +97,9 @@ func isMediaType(waMessageType int) bool {
 // System messages, calls, locations, contacts, and polls are not imported.
 func isSkippedType(waMessageType int) bool {
 	switch waMessageType {
-	case 7:  // system message
+	case 7: // system message
 		return true
-	case 9:  // location share
+	case 9: // location share
 		return true
 	case 10: // contact card
 		return true

@@ -151,6 +151,10 @@ func FirstLine(s string) string {
 // from a string, preventing terminal injection via untrusted data (e.g.,
 // WhatsApp chat names, message snippets). Preserves printable characters,
 // tabs, and newlines.
+//
+// C1 control characters (U+0080–U+009F) are checked on the decoded rune, not
+// the raw leading byte, so that UTF-8 encoded C1 chars (e.g., U+009B CSI
+// encoded as 0xC2 0x9B) are correctly stripped.
 func SanitizeTerminal(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -189,22 +193,27 @@ func SanitizeTerminal(s string) string {
 				continue
 			}
 		}
-		// Allow tab, newline, carriage return; strip other C0/C1 control chars.
-		if c == '\t' || c == '\n' || c == '\r' {
-			b.WriteByte(c)
-			i++
-			continue
-		}
-		if c < 0x20 || (c >= 0x7f && c <= 0x9f) {
-			i++
-			continue
-		}
-		// Printable or multi-byte UTF-8: pass through.
+
+		// Decode the full rune so we can check C1 control characters that
+		// span multiple bytes in UTF-8 (e.g., U+009B is 0xC2 0x9B).
 		r, size := utf8.DecodeRuneInString(s[i:])
 		if r == utf8.RuneError && size == 1 {
+			// Invalid UTF-8 byte — skip it.
 			i++
 			continue
 		}
+
+		// Allow tab, newline, carriage return; strip other C0/C1 control chars.
+		if r == '\t' || r == '\n' || r == '\r' {
+			b.WriteRune(r)
+			i += size
+			continue
+		}
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			i += size
+			continue
+		}
+
 		b.WriteString(s[i : i+size])
 		i += size
 	}

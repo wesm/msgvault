@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/config"
 	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/store"
 )
 
 var fullRebuild bool
@@ -68,6 +69,20 @@ Use --full-rebuild to recreate all cache files from scratch.`,
 		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 			return fmt.Errorf("database not found: %s\nRun 'msgvault init-db' first", dbPath)
 		}
+
+		// Ensure schema is up to date before building cache.
+		// Legacy databases may be missing columns (e.g. attachment_count,
+		// sender_id, message_type, phone_number) that the export queries
+		// reference. Running migrations first adds them.
+		s, err := store.Open(dbPath)
+		if err != nil {
+			return fmt.Errorf("open database: %w", err)
+		}
+		if err := s.InitSchema(); err != nil {
+			s.Close()
+			return fmt.Errorf("init schema: %w", err)
+		}
+		s.Close()
 
 		result, err := buildCache(dbPath, analyticsDir, fullRebuild)
 		if err != nil {

@@ -10,14 +10,14 @@ import (
 
 // waChat represents a chat/conversation from the WhatsApp jid + chat tables.
 type waChat struct {
-	RowID               int64          // chat._id
-	JIDRowID            int64          // chat.jid_row_id → jid._id
-	RawString           string         // jid.raw_string (e.g., "447700900000@s.whatsapp.net")
-	User                string         // jid.user (phone number part)
-	Server              string         // jid.server (s.whatsapp.net or g.us)
-	Subject             sql.NullString // chat.subject (group name)
-	GroupType           int            // chat.group_type: 0=individual, >0=group
-	Hidden              int            // chat.hidden
+	RowID                int64          // chat._id
+	JIDRowID             int64          // chat.jid_row_id → jid._id
+	RawString            string         // jid.raw_string (e.g., "447700900000@s.whatsapp.net")
+	User                 string         // jid.user (phone number part)
+	Server               string         // jid.server (s.whatsapp.net or g.us)
+	Subject              sql.NullString // chat.subject (group name)
+	GroupType            int            // chat.group_type: 0=individual, >0=group
+	Hidden               int            // chat.hidden
 	LastMessageTimestamp int64          // chat.sort_timestamp
 }
 
@@ -40,14 +40,14 @@ type waMessage struct {
 
 // waMedia represents media metadata from the message_media table.
 type waMedia struct {
-	MessageRowID int64          // message_media.message_row_id
-	MimeType     sql.NullString // message_media.mime_type
-	MediaCaption sql.NullString // message_media.media_caption
-	FileSize     sql.NullInt64  // message_media.file_size
-	FilePath     sql.NullString // message_media.file_path
-	Width        sql.NullInt64  // message_media.width
-	Height       sql.NullInt64  // message_media.height
-	MediaDuration sql.NullInt64 // message_media.media_duration (seconds)
+	MessageRowID  int64          // message_media.message_row_id
+	MimeType      sql.NullString // message_media.mime_type
+	MediaCaption  sql.NullString // message_media.media_caption
+	FileSize      sql.NullInt64  // message_media.file_size
+	FilePath      sql.NullString // message_media.file_path
+	Width         sql.NullInt64  // message_media.width
+	Height        sql.NullInt64  // message_media.height
+	MediaDuration sql.NullInt64  // message_media.media_duration (seconds)
 }
 
 // waReaction represents a reaction from the message_add_on table.
@@ -63,11 +63,11 @@ type waReaction struct {
 
 // waGroupMember represents a member of a group chat.
 type waGroupMember struct {
-	GroupJID        string // group_participants.gjid (text, raw JID string)
-	MemberJID       string // group_participants.jid (text, raw JID string)
-	MemberUser      string // jid.user (parsed from MemberJID)
-	MemberServer    string // jid.server (parsed from MemberJID)
-	Admin           int    // group_participants.admin (0=member, 1=admin, 2=superadmin)
+	GroupJID     string // group_participants.gjid (text, raw JID string)
+	MemberJID    string // group_participants.jid (text, raw JID string)
+	MemberUser   string // jid.user (parsed from MemberJID)
+	MemberServer string // jid.server (parsed from MemberJID)
+	Admin        int    // group_participants.admin (0=member, 1=admin, 2=superadmin)
 }
 
 // waQuoted represents a quoted/replied-to message reference.
@@ -139,9 +139,9 @@ type ImportProgress interface {
 // NullProgress is a no-op implementation of ImportProgress.
 type NullProgress struct{}
 
-func (NullProgress) OnStart()                                              {}
-func (NullProgress) OnChatStart(string, string, int)                       {}
-func (NullProgress) OnProgress(int64, int64, int64)                        {}
-func (NullProgress) OnChatComplete(string, int64)                          {}
-func (NullProgress) OnComplete(*ImportSummary)                             {}
-func (NullProgress) OnError(error)                                         {}
+func (NullProgress) OnStart()                        {}
+func (NullProgress) OnChatStart(string, string, int) {}
+func (NullProgress) OnProgress(int64, int64, int64)  {}
+func (NullProgress) OnChatComplete(string, int64)    {}
+func (NullProgress) OnComplete(*ImportSummary)       {}
+func (NullProgress) OnError(error)                   {}

@@ -42,7 +42,7 @@ func TestNormalizeVCardPhone(t *testing.T) {
 		{"", ""},
 		{"   ", ""},
 		{"abc", ""},
-		{"12", ""},  // too short
+		{"12", ""}, // too short
 	}
 
 	for _, tt := range tests {

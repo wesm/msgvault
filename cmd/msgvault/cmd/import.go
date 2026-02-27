@@ -169,8 +169,8 @@ func runWhatsAppImport(cmd *cobra.Command, sourcePath string) error {
 
 // ImportCLIProgress implements whatsapp.ImportProgress for terminal output.
 type ImportCLIProgress struct {
-	startTime time.Time
-	lastPrint time.Time
+	startTime   time.Time
+	lastPrint   time.Time
 	currentChat string
 }
 
