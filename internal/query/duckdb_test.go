@@ -2030,7 +2030,7 @@ func TestBuildSearchConditions_EscapedWildcards(t *testing.T) {
 			query: &search.Query{
 				FromAddrs: []string{"test_user%"},
 			},
-			wantClauses: []string{"ms.from_email ILIKE", "ESCAPE"},
+			wantClauses: []string{"p.email_address ILIKE", "ESCAPE"},
 			wantInArgs:  []string{"test\\_user\\%"},
 		},
 		{

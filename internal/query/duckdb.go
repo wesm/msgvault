@@ -272,7 +272,7 @@ func (e *DuckDBEngine) parquetCTEs() string {
 	if len(msgExtra) > 0 {
 		msgCTE += ", " + strings.Join(msgExtra, ", ")
 	}
-	msgCTE += fmt.Sprintf(" FROM read_parquet('%s', hive_partitioning=true)", e.parquetGlob())
+	msgCTE += fmt.Sprintf(" FROM read_parquet('%s', hive_partitioning=true, union_by_name=true)", e.parquetGlob())
 
 	// --- participants CTE ---
 	pReplace := []string{
@@ -1792,11 +1792,22 @@ func (e *DuckDBEngine) SearchFast(ctx context.Context, q *search.Query, filter M
 		msg_sender AS (
 			SELECT mr.message_id,
 				   FIRST(p.email_address) as from_email,
-				   FIRST(COALESCE(mr.display_name, p.display_name, '')) as from_name
+				   FIRST(COALESCE(mr.display_name, p.display_name, '')) as from_name,
+				   FIRST(COALESCE(p.phone_number, '')) as from_phone
 			FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.recipient_type = 'from'
 			GROUP BY mr.message_id
+		),
+		direct_sender AS (
+			SELECT msg.id as message_id,
+				   COALESCE(p.email_address, '') as from_email,
+				   COALESCE(p.display_name, '') as from_name,
+				   COALESCE(p.phone_number, '') as from_phone
+			FROM msg
+			JOIN p ON p.id = msg.sender_id
+			WHERE msg.sender_id IS NOT NULL
+			  AND msg.id NOT IN (SELECT message_id FROM msg_sender)
 		)
 		SELECT
 			COALESCE(msg.id, 0) as id,
@@ -1805,8 +1816,9 @@ func (e *DuckDBEngine) SearchFast(ctx context.Context, q *search.Query, filter M
 			COALESCE(c.source_conversation_id, '') as source_conversation_id,
 			COALESCE(msg.subject, '') as subject,
 			COALESCE(msg.snippet, '') as snippet,
-			COALESCE(ms.from_email, '') as from_email,
-			COALESCE(ms.from_name, '') as from_name,
+			COALESCE(ms.from_email, ds.from_email, '') as from_email,
+			COALESCE(ms.from_name, ds.from_name, '') as from_name,
+			COALESCE(ms.from_phone, ds.from_phone, '') as from_phone,
 			msg.sent_at,
 			COALESCE(msg.size_estimate, 0) as size_estimate,
 			COALESCE(msg.has_attachments, false) as has_attachments,
@@ -1815,6 +1827,7 @@ func (e *DuckDBEngine) SearchFast(ctx context.Context, q *search.Query, filter M
 			msg.deleted_from_source_at
 		FROM msg
 		LEFT JOIN msg_sender ms ON ms.message_id = msg.id
+		LEFT JOIN direct_sender ds ON ds.message_id = msg.id
 		LEFT JOIN att ON att.message_id = msg.id
 		LEFT JOIN msg_labels mlbl ON mlbl.message_id = msg.id
 		LEFT JOIN conv c ON c.id = msg.conversation_id
@@ -1846,6 +1859,7 @@ func (e *DuckDBEngine) SearchFast(ctx context.Context, q *search.Query, filter M
 			&msg.Snippet,
 			&msg.FromEmail,
 			&msg.FromName,
+			&msg.FromPhone,
 			&sentAt,
 			&msg.SizeEstimate,
 			&msg.HasAttachments,
@@ -1882,15 +1896,29 @@ func (e *DuckDBEngine) SearchFastCount(ctx context.Context, q *search.Query, fil
 	query := fmt.Sprintf(`
 		WITH %s,
 		msg_sender AS (
-			SELECT mr.message_id, FIRST(p.email_address) as from_email, FIRST(p.display_name) as from_name
+			SELECT mr.message_id,
+				   FIRST(p.email_address) as from_email,
+				   FIRST(COALESCE(mr.display_name, p.display_name, '')) as from_name,
+				   FIRST(COALESCE(p.phone_number, '')) as from_phone
 			FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.recipient_type = 'from'
 			GROUP BY mr.message_id
+		),
+		direct_sender AS (
+			SELECT msg.id as message_id,
+				   COALESCE(p.email_address, '') as from_email,
+				   COALESCE(p.display_name, '') as from_name,
+				   COALESCE(p.phone_number, '') as from_phone
+			FROM msg
+			JOIN p ON p.id = msg.sender_id
+			WHERE msg.sender_id IS NOT NULL
+			  AND msg.id NOT IN (SELECT message_id FROM msg_sender)
 		)
 		SELECT COUNT(*) as cnt
 		FROM msg
 		LEFT JOIN msg_sender ms ON ms.message_id = msg.id
+		LEFT JOIN direct_sender ds ON ds.message_id = msg.id
 		WHERE %s
 	`, e.parquetCTEs(), strings.Join(conditions, " AND "))
 
@@ -1959,6 +1987,7 @@ func (e *DuckDBEngine) searchPageFromCache(ctx context.Context, limit, offset in
 			sm.snippet,
 			sm.from_email,
 			sm.from_name,
+			COALESCE(sm.from_phone, '') as from_phone,
 			sm.sent_at,
 			sm.size_estimate,
 			sm.has_attachments,
@@ -2005,6 +2034,7 @@ func (e *DuckDBEngine) searchPageFromCache(ctx context.Context, limit, offset in
 			&msg.Snippet,
 			&msg.FromEmail,
 			&msg.FromName,
+			&msg.FromPhone,
 			&sentAt,
 			&msg.SizeEstimate,
 			&msg.HasAttachments,
@@ -2126,11 +2156,22 @@ func (e *DuckDBEngine) SearchFastWithStats(ctx context.Context, q *search.Query,
 		msg_sender AS (
 			SELECT mr.message_id,
 				   FIRST(p.email_address) as from_email,
-				   FIRST(COALESCE(mr.display_name, p.display_name, '')) as from_name
+				   FIRST(COALESCE(mr.display_name, p.display_name, '')) as from_name,
+				   FIRST(COALESCE(p.phone_number, '')) as from_phone
 			FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.recipient_type = 'from'
 			GROUP BY mr.message_id
+		),
+		direct_sender AS (
+			SELECT msg.id as message_id,
+				   COALESCE(p.email_address, '') as from_email,
+				   COALESCE(p.display_name, '') as from_name,
+				   COALESCE(p.phone_number, '') as from_phone
+			FROM msg
+			JOIN p ON p.id = msg.sender_id
+			WHERE msg.sender_id IS NOT NULL
+			  AND msg.id NOT IN (SELECT message_id FROM msg_sender)
 		)
 		SELECT
 			msg.id,
@@ -2138,8 +2179,9 @@ func (e *DuckDBEngine) SearchFastWithStats(ctx context.Context, q *search.Query,
 			COALESCE(msg.conversation_id, 0) as conversation_id,
 			COALESCE(msg.subject, '') as subject,
 			COALESCE(msg.snippet, '') as snippet,
-			COALESCE(ms.from_email, '') as from_email,
-			COALESCE(ms.from_name, '') as from_name,
+			COALESCE(ms.from_email, ds.from_email, '') as from_email,
+			COALESCE(ms.from_name, ds.from_name, '') as from_name,
+			COALESCE(ms.from_phone, ds.from_phone, '') as from_phone,
 			msg.sent_at,
 			COALESCE(CAST(msg.size_estimate AS BIGINT), 0) as size_estimate,
 			COALESCE(msg.has_attachments, false) as has_attachments,
@@ -2147,6 +2189,7 @@ func (e *DuckDBEngine) SearchFastWithStats(ctx context.Context, q *search.Query,
 			CAST(msg.source_id AS BIGINT) as source_id
 		FROM msg
 		LEFT JOIN msg_sender ms ON ms.message_id = msg.id
+		LEFT JOIN direct_sender ds ON ds.message_id = msg.id
 		WHERE %s
 	`, tempTable, e.parquetCTEs(), strings.Join(conditions, " AND "))
 
@@ -2202,24 +2245,35 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 	if filter.HideDeletedFromSource {
 		conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
 	}
+	// Sender filter - check both message_recipients (email/phone) and direct sender_id (WhatsApp/chat)
 	if filter.Sender != "" {
-		conditions = append(conditions, "ms.from_email = ?")
-		args = append(args, filter.Sender)
+		conditions = append(conditions, `(EXISTS (
+			SELECT 1 FROM mr
+			JOIN p ON p.id = mr.participant_id
+			WHERE mr.message_id = msg.id
+			  AND mr.recipient_type = 'from'
+			  AND (p.email_address = ? OR p.phone_number = ?)
+		) OR EXISTS (
+			SELECT 1 FROM p
+			WHERE p.id = msg.sender_id
+			  AND (p.email_address = ? OR p.phone_number = ?)
+		))`)
+		args = append(args, filter.Sender, filter.Sender, filter.Sender, filter.Sender)
 	}
 	if filter.Domain != "" {
 		conditions = append(conditions, "ms.from_email ILIKE ?")
 		args = append(args, "%@"+filter.Domain)
 	}
-	// Recipient filter - use EXISTS subquery for drill-down context
+	// Recipient filter - use EXISTS subquery for drill-down context (checks email and phone)
 	if filter.Recipient != "" {
 		conditions = append(conditions, `EXISTS (
 			SELECT 1 FROM mr
 			JOIN p ON p.id = mr.participant_id
 			WHERE mr.message_id = msg.id
 			  AND mr.recipient_type IN ('to', 'cc', 'bcc')
-			  AND p.email_address = ?
+			  AND (p.email_address = ? OR p.phone_number = ?)
 		)`)
-		args = append(args, filter.Recipient)
+		args = append(args, filter.Recipient, filter.Recipient)
 	}
 	// Label filter - use EXISTS subquery for drill-down context
 	if filter.Label != "" {
@@ -2243,31 +2297,44 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 			termPattern := "%" + escapeILIKE(term) + "%"
 			conditions = append(conditions, `(
 				msg.subject ILIKE ? ESCAPE '\' OR
-				ms.from_email ILIKE ? ESCAPE '\' OR
-				ms.from_name ILIKE ? ESCAPE '\'
+				COALESCE(ms.from_email, ds.from_email, '') ILIKE ? ESCAPE '\' OR
+				COALESCE(ms.from_name, ds.from_name, '') ILIKE ? ESCAPE '\' OR
+				COALESCE(ms.from_phone, ds.from_phone, '') ILIKE ? ESCAPE '\'
 			)`)
-			args = append(args, termPattern, termPattern, termPattern)
+			args = append(args, termPattern, termPattern, termPattern, termPattern)
 		}
 	}
 
-	// From filter
+	// From filter - check email, phone, display name via message_recipients and direct sender_id
 	if len(q.FromAddrs) > 0 {
 		for _, addr := range q.FromAddrs {
-			conditions = append(conditions, "ms.from_email ILIKE ? ESCAPE '\\'")
-			args = append(args, "%"+escapeILIKE(addr)+"%")
+			pattern := "%" + escapeILIKE(addr) + "%"
+			conditions = append(conditions, `(EXISTS (
+				SELECT 1 FROM mr
+				JOIN p ON p.id = mr.participant_id
+				WHERE mr.message_id = msg.id
+				  AND mr.recipient_type = 'from'
+				  AND (p.email_address ILIKE ? ESCAPE '\' OR p.phone_number ILIKE ? ESCAPE '\' OR p.display_name ILIKE ? ESCAPE '\')
+			) OR EXISTS (
+				SELECT 1 FROM p
+				WHERE p.id = msg.sender_id
+				  AND (p.email_address ILIKE ? ESCAPE '\' OR p.phone_number ILIKE ? ESCAPE '\' OR p.display_name ILIKE ? ESCAPE '\')
+			))`)
+			args = append(args, pattern, pattern, pattern, pattern, pattern, pattern)
 		}
 	}
 
-	// To filter - use EXISTS subquery to check recipients
+	// To filter - use EXISTS subquery to check recipients (email and phone)
 	if len(q.ToAddrs) > 0 {
 		for _, addr := range q.ToAddrs {
+			pattern := "%" + escapeILIKE(addr) + "%"
 			conditions = append(conditions, `EXISTS (
 				SELECT 1 FROM mr
 				JOIN p ON p.id = mr.participant_id
 				WHERE mr.message_id = msg.id AND mr.recipient_type IN ('to', 'cc', 'bcc')
-				AND p.email_address ILIKE ? ESCAPE '\'
+				AND (p.email_address ILIKE ? ESCAPE '\' OR p.phone_number ILIKE ? ESCAPE '\')
 			)`)
-			args = append(args, "%"+escapeILIKE(addr)+"%")
+			args = append(args, pattern, pattern)
 		}
 	}
 
