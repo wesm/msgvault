@@ -416,7 +416,7 @@ func ImportEmlxDir(
 				}
 			}
 
-			filePath := filepath.Join(mb.MsgDir, fileName)
+			filePath := mb.FilePath(fileName)
 
 			// Check file size before reading to avoid OOM on oversized files.
 			fi, statErr := os.Stat(filePath)
