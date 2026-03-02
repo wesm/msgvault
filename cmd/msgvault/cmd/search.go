@@ -18,6 +18,7 @@ var (
 	searchLimit  int
 	searchOffset int
 	searchJSON   bool
+	searchAccount string
 )
 
 var searchCmd = &cobra.Command{
@@ -117,6 +118,18 @@ func runLocalSearch(cmd *cobra.Command, queryStr string) error {
 	if err := s.InitSchema(); err != nil {
 		return fmt.Errorf("init schema: %w", err)
 	}
+
+	if searchAccount != "" {
+		src, err := s.GetSourceByIdentifier(searchAccount)
+		if err != nil {
+			return fmt.Errorf("look up account: %w", err)
+		}
+		if src == nil {
+			return fmt.Errorf("account %q not found", searchAccount)
+		}
+		q.AccountID = &src.ID
+	}
+
 	if err := ensureFTSIndex(s); err != nil {
 		return err
 	}
@@ -234,6 +247,7 @@ func init() {
 	searchCmd.Flags().IntVarP(&searchLimit, "limit", "n", 50, "Maximum number of results")
 	searchCmd.Flags().IntVar(&searchOffset, "offset", 0, "Skip first N results")
 	searchCmd.Flags().BoolVar(&searchJSON, "json", false, "Output as JSON")
+	searchCmd.Flags().StringVar(&searchAccount, "account", "", "Limit results to a specific account (email address)")
 }
 
 // ensureFTSIndex checks if the FTS search index needs to be built and
