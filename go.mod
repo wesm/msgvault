@@ -13,7 +13,8 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/jhillyerd/enmime v1.3.0
 	github.com/marcboeker/go-duckdb v1.8.5
-	github.com/mark3labs/mcp-go v0.44.0
+	github.com/mark3labs/mcp-go v0.44.1
+	github.com/mattn/go-isatty v0.0.20
 	github.com/mattn/go-runewidth v0.0.20
 	github.com/mattn/go-sqlite3 v1.14.34
 	github.com/muesli/termenv v0.16.0
@@ -53,7 +54,6 @@ require (
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
