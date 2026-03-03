@@ -9,12 +9,21 @@ import (
 	"github.com/wesm/msgvault/internal/store"
 )
 
+// isGroupChat returns true if the chat represents a group conversation.
+// A chat is a group if group_type > 0 OR if the JID server is "g.us".
+// Some groups (e.g. WhatsApp Communities and their sub-groups) have
+// group_type = 0 despite being groups; the JID server is the
+// definitive signal.
+func isGroupChat(chat waChat) bool {
+	return chat.GroupType > 0 || chat.Server == "g.us"
+}
+
 // mapConversation maps a WhatsApp chat to a msgvault conversation.
 // Returns the source_conversation_id, conversation_type, and title.
 func mapConversation(chat waChat) (sourceConvID, convType, title string) {
 	sourceConvID = chat.RawString
 
-	if chat.GroupType > 0 {
+	if isGroupChat(chat) {
 		convType = "group_chat"
 		if chat.Subject.Valid {
 			title = chat.Subject.String
@@ -151,6 +160,20 @@ func normalizePhone(user, server string) string {
 
 	// Prepend + for E.164.
 	return "+" + user
+}
+
+// resolveLidSender resolves a "lid" JID sender to a phone number via the
+// jid_map lookup table. Only activates when the sender's server is "lid".
+// Returns a normalised E.164 phone number, or empty string if unresolvable.
+func resolveLidSender(jidRowID sql.NullInt64, server string, lidMap map[int64]waLidMapping) string {
+	if server != "lid" || !jidRowID.Valid {
+		return ""
+	}
+	mapping, ok := lidMap[jidRowID.Int64]
+	if !ok {
+		return ""
+	}
+	return normalizePhone(mapping.PhoneUser, mapping.PhoneServer)
 }
 
 // mapReaction maps a WhatsApp reaction to reaction_type and reaction_value.

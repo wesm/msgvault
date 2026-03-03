@@ -79,6 +79,44 @@ func TestIsSkippedType(t *testing.T) {
 	}
 }
 
+func TestIsGroupChat(t *testing.T) {
+	tests := []struct {
+		name string
+		chat waChat
+		want bool
+	}{
+		{
+			name: "direct chat",
+			chat: waChat{Server: "s.whatsapp.net", GroupType: 0},
+			want: false,
+		},
+		{
+			name: "standard group",
+			chat: waChat{Server: "g.us", GroupType: 1},
+			want: true,
+		},
+		{
+			name: "community sub-group (g.us + type=0)",
+			chat: waChat{Server: "g.us", GroupType: 0},
+			want: true,
+		},
+		{
+			name: "broadcast",
+			chat: waChat{Server: "broadcast", GroupType: 0},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isGroupChat(tt.chat)
+			if got != tt.want {
+				t.Errorf("isGroupChat() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMapConversation(t *testing.T) {
 	// Direct chat.
 	direct := waChat{
@@ -99,6 +137,7 @@ func TestMapConversation(t *testing.T) {
 	// Group chat.
 	group := waChat{
 		RawString: "120363001234567890@g.us",
+		Server:    "g.us",
 		GroupType: 1,
 		Subject:   sql.NullString{String: "Family Group", Valid: true},
 	}
@@ -111,6 +150,21 @@ func TestMapConversation(t *testing.T) {
 	}
 	if title != "Family Group" {
 		t.Errorf("group chat title = %q, want %q", title, "Family Group")
+	}
+
+	// Group with group_type=0 but g.us server (e.g. WhatsApp Community sub-groups).
+	community := waChat{
+		RawString: "120363377259312783@g.us",
+		Server:    "g.us",
+		GroupType: 0,
+		Subject:   sql.NullString{String: "AI Impact", Valid: true},
+	}
+	id, typ, title = mapConversation(community)
+	if typ != "group_chat" {
+		t.Errorf("g.us with group_type=0: convType = %q, want %q", typ, "group_chat")
+	}
+	if title != "AI Impact" {
+		t.Errorf("g.us with group_type=0: title = %q, want %q", title, "AI Impact")
 	}
 }
 
@@ -218,6 +272,54 @@ func TestMapReaction(t *testing.T) {
 	_, val = mapReaction(empty)
 	if val != "" {
 		t.Errorf("empty reaction value = %q, want empty", val)
+	}
+}
+
+func TestResolveLidSender(t *testing.T) {
+	lidMap := map[int64]waLidMapping{
+		100: {LidRowID: 100, PhoneUser: "447957366403", PhoneServer: "s.whatsapp.net"},
+		200: {LidRowID: 200, PhoneUser: "12025551234", PhoneServer: "s.whatsapp.net"},
+	}
+
+	tests := []struct {
+		name     string
+		jidRowID sql.NullInt64
+		server   string
+		want     string
+	}{
+		{
+			name:     "lid sender found in map",
+			jidRowID: sql.NullInt64{Int64: 100, Valid: true},
+			server:   "lid",
+			want:     "+447957366403",
+		},
+		{
+			name:     "lid sender not in map",
+			jidRowID: sql.NullInt64{Int64: 999, Valid: true},
+			server:   "lid",
+			want:     "",
+		},
+		{
+			name:     "non-lid server ignored",
+			jidRowID: sql.NullInt64{Int64: 100, Valid: true},
+			server:   "s.whatsapp.net",
+			want:     "",
+		},
+		{
+			name:     "null jid row id",
+			jidRowID: sql.NullInt64{Valid: false},
+			server:   "lid",
+			want:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveLidSender(tt.jidRowID, tt.server, lidMap)
+			if got != tt.want {
+				t.Errorf("resolveLidSender() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

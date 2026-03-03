@@ -101,6 +101,13 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 		return nil, fmt.Errorf("fetch chats: %w", err)
 	}
 
+	// Load lid → phone mapping for resolving "lid" senders.
+	lidMap, err := fetchLidMap(waDB)
+	if err != nil {
+		syncErr = err
+		return nil, fmt.Errorf("fetch lid map: %w", err)
+	}
+
 	batchSize := opts.BatchSize
 	if batchSize <= 0 {
 		batchSize = 1000
@@ -141,7 +148,7 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 		imp.progress.OnChatStart(chat.RawString, chatTitle(chat), 0)
 
 		// For direct chats: add the remote participant.
-		if chat.GroupType == 0 && chat.User != "" {
+		if !isGroupChat(chat) && chat.User != "" {
 			phone := normalizePhone(chat.User, chat.Server)
 			if phone == "" {
 				// Non-phone JID (e.g., lid:..., broadcast) — skip.
@@ -156,7 +163,7 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 		}
 
 		// For group chats: add all group participants.
-		if chat.GroupType > 0 {
+		if isGroupChat(chat) {
 			members, err := fetchGroupParticipants(waDB, chat.RawString)
 			if err != nil {
 				summary.Errors++
@@ -178,6 +185,11 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 				}
 			}
 		}
+
+		// Track resolved sender participant IDs for participant fallback.
+		// After the message loop, we ensure each sender is a conversation
+		// participant — covers groups where group_participants is empty.
+		chatSenderIDs := make(map[int64]struct{})
 
 		// Process messages in batches.
 		chatAdded := int64(0)
@@ -261,6 +273,20 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 				var senderID sql.NullInt64
 				if waMsg.FromMe == 1 {
 					senderID = sql.NullInt64{Int64: selfParticipantID, Valid: true}
+				} else if waMsg.SenderServer.Valid && waMsg.SenderServer.String == "lid" {
+					// Lid JID — resolve via jid_map before trying normalizePhone,
+					// because lid user strings can be 15 digits and pass E.164
+					// validation despite not being real phone numbers.
+					phone := resolveLidSender(waMsg.SenderJIDRowID, waMsg.SenderServer.String, lidMap)
+					if phone != "" {
+						pid, err := imp.store.EnsureParticipantByPhone(phone, "")
+						if err != nil {
+							summary.Errors++
+							imp.progress.OnError(fmt.Errorf("ensure sender participant %s: %w", phone, err))
+						} else {
+							senderID = sql.NullInt64{Int64: pid, Valid: true}
+						}
+					}
 				} else if waMsg.SenderUser.Valid && waMsg.SenderUser.String != "" {
 					phone := normalizePhone(waMsg.SenderUser.String, waMsg.SenderServer.String)
 					if phone != "" {
@@ -272,7 +298,7 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 							senderID = sql.NullInt64{Int64: pid, Valid: true}
 						}
 					}
-				} else if chat.GroupType == 0 && waMsg.FromMe == 0 {
+				} else if !isGroupChat(chat) && waMsg.FromMe == 0 {
 					// In a direct chat, the other person is the sender.
 					phone := normalizePhone(chat.User, chat.Server)
 					if phone != "" {
@@ -281,6 +307,11 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 							senderID = sql.NullInt64{Int64: pid, Valid: true}
 						}
 					}
+				}
+
+				// Track sender for participant fallback.
+				if senderID.Valid {
+					chatSenderIDs[senderID.Int64] = struct{}{}
 				}
 
 				// Build and upsert the message.
@@ -384,7 +415,19 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 						}
 
 						var reactorID int64
-						if r.SenderUser.Valid && r.SenderUser.String != "" {
+						if r.SenderServer.Valid && r.SenderServer.String == "lid" {
+							// Lid JID — resolve via jid_map first.
+							phone := resolveLidSender(r.SenderJIDRowID, r.SenderServer.String, lidMap)
+							if phone == "" {
+								continue
+							}
+							pid, err := imp.store.EnsureParticipantByPhone(phone, "")
+							if err != nil {
+								summary.Errors++
+								continue
+							}
+							reactorID = pid
+						} else if r.SenderUser.Valid && r.SenderUser.String != "" {
 							phone := normalizePhone(r.SenderUser.String, r.SenderServer.String)
 							if phone == "" {
 								continue // Non-phone JID — skip reaction.
@@ -415,6 +458,8 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 					senderAddr := ""
 					if waMsg.FromMe == 1 {
 						senderAddr = opts.Phone
+					} else if waMsg.SenderServer.Valid && waMsg.SenderServer.String == "lid" {
+						senderAddr = resolveLidSender(waMsg.SenderJIDRowID, waMsg.SenderServer.String, lidMap)
 					} else if waMsg.SenderUser.Valid {
 						senderAddr = normalizePhone(waMsg.SenderUser.String, waMsg.SenderServer.String)
 					}
@@ -437,8 +482,36 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 			}
 		}
 
+		// Participant fallback: ensure every resolved sender is a conversation
+		// participant. Covers groups where group_participants is empty (newer
+		// WhatsApp versions) and any senders discovered via lid resolution.
+		for pid := range chatSenderIDs {
+			_ = imp.store.EnsureConversationParticipant(conversationID, pid, "member")
+		}
+		// Always include self as participant.
+		_ = imp.store.EnsureConversationParticipant(conversationID, selfParticipantID, "member")
+
 		imp.progress.OnChatComplete(chat.RawString, chatAdded)
 	}
+
+	// Update denormalised conversation counts for the WhatsApp source.
+	_, _ = imp.store.DB().Exec(`
+		UPDATE conversations SET
+			message_count = (
+				SELECT COUNT(*) FROM messages
+				WHERE conversation_id = conversations.id
+			),
+			participant_count = (
+				SELECT COUNT(*) FROM conversation_participants
+				WHERE conversation_id = conversations.id
+			),
+			last_message_at = (
+				SELECT MAX(COALESCE(sent_at, received_at, internal_date))
+				FROM messages
+				WHERE conversation_id = conversations.id
+			)
+		WHERE source_id = ?
+	`, source.ID)
 
 	summary.Duration = time.Since(startTime)
 	imp.progress.OnComplete(summary)

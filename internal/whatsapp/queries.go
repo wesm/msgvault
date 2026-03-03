@@ -325,6 +325,40 @@ func fetchQuotedMessages(db *sql.DB, messageRowIDs []int64) (map[int64]waQuoted,
 	return result, nil
 }
 
+// fetchLidMap reads the WhatsApp jid_map table to build a mapping from
+// lid JID row IDs to their corresponding phone JIDs. The jid_map table
+// links two jid rows: one with server="lid" and one with the real phone
+// (server="s.whatsapp.net"). Returns an empty map gracefully if the
+// jid_map table doesn't exist (older WhatsApp DB versions).
+func fetchLidMap(db *sql.DB) (map[int64]waLidMapping, error) {
+	result := make(map[int64]waLidMapping)
+
+	rows, err := db.Query(`
+		SELECT
+			jm.lid_row_id,
+			COALESCE(phone_jid.user, ''),
+			COALESCE(phone_jid.server, '')
+		FROM jid_map jm
+		JOIN jid phone_jid ON jm.jid_row_id = phone_jid._id
+	`)
+	if err != nil {
+		if isTableNotFound(err) {
+			return result, nil
+		}
+		return nil, fmt.Errorf("fetch lid map: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var m waLidMapping
+		if err := rows.Scan(&m.LidRowID, &m.PhoneUser, &m.PhoneServer); err != nil {
+			return nil, fmt.Errorf("scan lid mapping: %w", err)
+		}
+		result[m.LidRowID] = m
+	}
+	return result, rows.Err()
+}
+
 // isTableNotFound returns true if the error indicates a missing table.
 func isTableNotFound(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "no such table")

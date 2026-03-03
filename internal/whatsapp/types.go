@@ -16,7 +16,7 @@ type waChat struct {
 	User                 string         // jid.user (phone number part)
 	Server               string         // jid.server (s.whatsapp.net or g.us)
 	Subject              sql.NullString // chat.subject (group name)
-	GroupType            int            // chat.group_type: 0=individual, >0=group
+	GroupType            int            // chat.group_type: 0=individual (but see Server), >0=group
 	Hidden               int            // chat.hidden
 	LastMessageTimestamp int64          // chat.sort_timestamp
 }
@@ -74,6 +74,14 @@ type waGroupMember struct {
 type waQuoted struct {
 	MessageRowID int64  // the message that quotes
 	QuotedKeyID  string // message_quoted.key_id of the quoted message
+}
+
+// waLidMapping maps a "lid" JID row to its corresponding phone JID,
+// populated from the WhatsApp jid_map table.
+type waLidMapping struct {
+	LidRowID    int64  // jid._id for the lid entry
+	PhoneUser   string // jid.user for the phone entry (e.g., "447700900000")
+	PhoneServer string // jid.server for the phone entry (e.g., "s.whatsapp.net")
 }
 
 // ImportOptions configures the WhatsApp import process.
