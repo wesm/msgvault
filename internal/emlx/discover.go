@@ -153,7 +153,7 @@ func LabelFromPath(rootDir, mailboxPath string) string {
 			continue
 		}
 		// V10 account GUID directories (e.g. 13C9A646-...-E07FFBDDEED3).
-		if isUUID(p) {
+		if IsUUID(p) {
 			continue
 		}
 		filtered = append(filtered, p)
@@ -281,8 +281,8 @@ func hasEmlxFilesInPartitions(dir string) bool {
 	return false
 }
 
-// isUUID returns true if s matches UUID format (8-4-4-4-12 hex).
-func isUUID(s string) bool {
+// IsUUID returns true if s matches UUID format (8-4-4-4-12 hex).
+func IsUUID(s string) bool {
 	if len(s) != 36 {
 		return false
 	}

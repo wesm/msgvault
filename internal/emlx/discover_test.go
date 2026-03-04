@@ -621,9 +621,9 @@ func TestIsUUID(t *testing.T) {
 		{"not-a-uuid-at-all-nope-definitely", false},
 	}
 	for _, tc := range tests {
-		got := isUUID(tc.input)
+		got := IsUUID(tc.input)
 		if got != tc.want {
-			t.Errorf("isUUID(%q) = %v, want %v",
+			t.Errorf("IsUUID(%q) = %v, want %v",
 				tc.input, got, tc.want)
 		}
 	}

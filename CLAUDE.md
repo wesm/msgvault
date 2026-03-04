@@ -57,6 +57,12 @@ make lint                     # Run linter
 ./msgvault build-cache --full-rebuild                 # Full rebuild
 ./msgvault stats                                      # Show archive stats
 
+# Apple Mail import
+./msgvault import-emlx                                # Auto-discover accounts
+./msgvault import-emlx ~/Library/Mail                 # Explicit mail directory
+./msgvault import-emlx --account me@gmail.com         # Specific account(s)
+./msgvault import-emlx /path/to/dir --identifier me@gmail.com  # Manual fallback
+
 # Maintenance
 ./msgvault repair-encoding                            # Fix UTF-8 encoding issues
 ```
@@ -70,6 +76,8 @@ make lint                     # Run linter
 - `tui.go` - TUI command, cache auto-build
 - `build_cache.go` - Parquet cache builder (DuckDB)
 - `repair_encoding.go` - UTF-8 encoding repair
+
+- `import_emlx.go` - Apple Mail .emlx import command
 
 ### Core (`internal/`)
 - `tui/model.go` - Bubble Tea TUI model and update logic
