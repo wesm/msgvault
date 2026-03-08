@@ -1,6 +1,10 @@
 package templates
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+	"strings"
+)
 
 // formatBytes formats a byte count into a human-readable string.
 func formatBytes(b int64) string {
@@ -42,4 +46,28 @@ func formatCount(n int64) string {
 		result = append(result, s[i:i+3]...)
 	}
 	return string(result)
+}
+
+// addParam appends a query parameter to a URL string.
+func addParam(base, key, value string) string {
+	if value == "" {
+		return base
+	}
+	sep := "&"
+	if !strings.Contains(base, "?") {
+		sep = "?"
+	}
+	return base + sep + url.QueryEscape(key) + "=" + url.QueryEscape(value)
+}
+
+// deleteParam removes a query parameter from a URL string.
+func deleteParam(base, key string) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		return base
+	}
+	q := u.Query()
+	q.Del(key)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
