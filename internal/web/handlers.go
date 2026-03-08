@@ -208,7 +208,7 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Build filter map for template URL construction
 	filters := make(map[string]string)
-	filterKeys := []string{"sender", "sender_name", "recipient", "recipient_name", "domain", "label", "time_period", "conversation"}
+	filterKeys := []string{"sender", "sender_name", "recipient", "recipient_name", "domain", "label", "time_period", "granularity", "conversation"}
 	for _, key := range filterKeys {
 		if _, ok := r.URL.Query()[key]; ok {
 			filters[key] = r.URL.Query().Get(key)

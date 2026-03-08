@@ -222,7 +222,9 @@ templ selectionBar() {
 templ messageRow(msg query.MessageSummary) {
 	<tr>
 		<td class="sel-cell">
-			<input type="checkbox" name="gmail_id" value={ msg.SourceMessageID } class="msg-checkbox"/>
+			if msg.SourceMessageID != "" {
+				<input type="checkbox" name="gmail_id" value={ msg.SourceMessageID } class="msg-checkbox"/>
+			}
 		</td>
 		<td class="date-cell">
 			{ formatMessageDate(msg.SentAt) }

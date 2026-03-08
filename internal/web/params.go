@@ -102,7 +102,7 @@ func parseTimeGranularity(r *http.Request) query.TimeGranularity {
 	case "day":
 		return query.TimeDay
 	default:
-		return query.TimeMonth
+		return query.TimeYear
 	}
 }
 

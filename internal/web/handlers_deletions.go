@@ -85,18 +85,38 @@ func (h *Handler) handleStageBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Filter out empty Gmail IDs (messages without a source ID).
+	filtered := gmailIDs[:0]
+	for _, id := range gmailIDs {
+		if id != "" {
+			filtered = append(filtered, id)
+		}
+	}
+	gmailIDs = filtered
+	if len(gmailIDs) == 0 {
+		http.Redirect(w, r, "/messages", http.StatusSeeOther)
+		return
+	}
+
 	const maxBatchSize = 10000
 	if len(gmailIDs) > maxBatchSize {
 		http.Error(w, fmt.Sprintf("Too many messages (max %d)", maxBatchSize), http.StatusBadRequest)
 		return
 	}
 
-	// Look up account from the first message; leave empty if lookup fails
-	// (the CLI will resolve per-ID at execution time)
+	// Determine account from selected messages. Sample first and last to
+	// detect mixed-account selections (which cannot be executed correctly).
 	var account string
 	msg, err := h.engine.GetMessageBySourceID(ctx, gmailIDs[0])
 	if err == nil && msg != nil {
 		account = msg.AccountEmail
+	}
+	if len(gmailIDs) > 1 && account != "" {
+		lastMsg, err := h.engine.GetMessageBySourceID(ctx, gmailIDs[len(gmailIDs)-1])
+		if err == nil && lastMsg != nil && lastMsg.AccountEmail != account {
+			http.Error(w, "Selection contains messages from multiple accounts. Stage each account separately.", http.StatusBadRequest)
+			return
+		}
 	}
 
 	description := fmt.Sprintf("Web selection (%d messages)", len(gmailIDs))

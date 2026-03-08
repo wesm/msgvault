@@ -147,6 +147,11 @@ func (d BrowseData) messagesURL(key string) string {
 		q.Set(filterKey, key)
 	}
 	d.addDrillParams(q)
+	// Include granularity for time views so the messages query uses the
+	// correct time precision (year/month/day) instead of defaulting to month.
+	if d.ViewType == "time" && d.Granularity != "" {
+		q.Set("granularity", d.Granularity)
+	}
 	d.addFilterParams(q)
 	return "/messages?" + q.Encode()
 }
