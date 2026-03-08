@@ -295,7 +295,7 @@ build: generate
 - No user authentication system (API key only, same as existing)
 - No real-time sync status (poll or manual refresh is fine)
 - No inline email composition or reply
-- No attachment download (CLI `export-attachment` command exists)
+- No inline attachment preview (download only)
 - No settings/config UI (edit `config.toml` directly)
 - No WebSocket connections
 

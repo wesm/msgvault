@@ -23,10 +23,22 @@ func (h *Handler) handleDeletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pending, _ := h.deletions.ListPending()
-	inProgress, _ := h.deletions.ListInProgress()
-	completed, _ := h.deletions.ListCompleted()
-	failed, _ := h.deletions.ListFailed()
+	pending, err := h.deletions.ListPending()
+	if err != nil {
+		slog.Error("failed to list pending deletions", "error", err)
+	}
+	inProgress, err := h.deletions.ListInProgress()
+	if err != nil {
+		slog.Error("failed to list in-progress deletions", "error", err)
+	}
+	completed, err := h.deletions.ListCompleted()
+	if err != nil {
+		slog.Error("failed to list completed deletions", "error", err)
+	}
+	failed, err := h.deletions.ListFailed()
+	if err != nil {
+		slog.Error("failed to list failed deletions", "error", err)
+	}
 
 	flash := r.URL.Query().Get("flash")
 	flashCount, _ := strconv.Atoi(r.URL.Query().Get("count"))

@@ -205,29 +205,6 @@ templ pagination(data MessagesData) {
 	}
 }
 
-// messageListTable renders a simple (non-sortable) message table.
-// Shared between search results and other simple message lists.
-templ messageListTable(messages []query.MessageSummary) {
-	<form method="POST" action="/deletions/stage-batch" id="sel-form">
-		<table class="data-table">
-			<thead>
-				<tr>
-					<th class="sel-cell"><input type="checkbox" id="select-all" title="Select all"/></th>
-					<th>Date</th>
-					<th>From</th>
-					<th>Subject</th>
-					<th class="num">Size</th>
-				</tr>
-			</thead>
-			<tbody>
-				for _, msg := range messages {
-					@messageRow(msg)
-				}
-			</tbody>
-		</table>
-		@selectionBar()
-	</form>
-}
 
 templ selectionBar() {
 	<div id="sel-bar" class="selection-bar">

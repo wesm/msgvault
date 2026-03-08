@@ -310,7 +310,7 @@ templ AggregateTable(data BrowseData) {
 						if row.AttachmentCount > 0 {
 							{ formatCount(row.AttachmentCount) } ({ formatBytes(row.AttachmentSize) })
 						} else {
-							{ fmt.Sprintf("-") }
+							{ "-" }
 						}
 					</td>
 				</tr>
