@@ -13,11 +13,14 @@ templ Layout(title string, activePage string) {
 			<div class="app">
 				<header class="header">
 					<span class="header-title">msgvault</span>
-					<nav class="header-nav">
-						<a href="/" class={ templ.KV("active", activePage == "dashboard") }>Dashboard</a>
-						<a href="/browse" class={ templ.KV("active", activePage == "browse") }>Browse</a>
-						<a href="/search" class={ templ.KV("active", activePage == "search") }>Search</a>
-					</nav>
+					<div class="header-right">
+						<nav class="header-nav">
+							<a href="/" class={ templ.KV("active", activePage == "dashboard") }>Dashboard</a>
+							<a href="/browse" class={ templ.KV("active", activePage == "browse") }>Browse</a>
+							<a href="/search" class={ templ.KV("active", activePage == "search") }>Search</a>
+						</nav>
+						<button id="theme-toggle" class="theme-toggle" title="Toggle dark mode" aria-label="Toggle dark mode"></button>
+					</div>
 				</header>
 				{ children... }
 				<footer class="footer">

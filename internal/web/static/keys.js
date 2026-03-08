@@ -171,7 +171,39 @@
     }
   });
 
+  // Theme toggle: cycles auto → dark → light → auto
+  function setupThemeToggle() {
+    var btn = document.getElementById('theme-toggle');
+    if (!btn) return;
+
+    var saved = localStorage.getItem('msgvault-theme') || 'auto';
+    applyTheme(saved);
+
+    btn.addEventListener('click', function () {
+      var current = localStorage.getItem('msgvault-theme') || 'auto';
+      var next = current === 'auto' ? 'dark' : current === 'dark' ? 'light' : 'auto';
+      localStorage.setItem('msgvault-theme', next);
+      applyTheme(next);
+    });
+  }
+
+  function applyTheme(theme) {
+    var root = document.documentElement;
+    var btn = document.getElementById('theme-toggle');
+    if (theme === 'dark') {
+      root.setAttribute('data-theme', 'dark');
+      if (btn) btn.textContent = '\u263E';  // moon
+    } else if (theme === 'light') {
+      root.setAttribute('data-theme', 'light');
+      if (btn) btn.textContent = '\u2600';  // sun
+    } else {
+      root.removeAttribute('data-theme');
+      if (btn) btn.textContent = '\u25D1';  // half circle (auto)
+    }
+  }
+
   // Reset active row on page load
   activeRow = -1;
   setupSearchLoading();
+  setupThemeToggle();
 })();

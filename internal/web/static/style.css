@@ -1,21 +1,22 @@
+/* Solarized light */
 :root {
-  --bg: #fff;
-  --bg-alt: #f7f7f8;
-  --bg-hover: #ededef;
-  --fg: #1a1a1a;
-  --fg-muted: #6b6b6b;
-  --border: #d4d4d8;
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --danger: #dc2626;
+  --bg: #f5f3ef;
+  --bg-alt: #eae8e3;
+  --bg-hover: #dfddd7;
+  --fg: #657b83;
+  --fg-muted: #93a1a1;
+  --border: #ccc9c0;
+  --accent: #268bd2;
+  --accent-hover: #2aa198;
+  --danger: #dc322f;
   --font: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace;
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --radius: 4px;
 }
 
-/* Solarized dark */
+/* Solarized dark — auto (OS preference) */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #002b36;
     --bg-alt: #073642;
     --bg-hover: #0a4050;
@@ -26,6 +27,19 @@
     --accent-hover: #2aa198;
     --danger: #dc322f;
   }
+}
+
+/* Solarized dark — forced via toggle */
+:root[data-theme="dark"] {
+  --bg: #002b36;
+  --bg-alt: #073642;
+  --bg-hover: #0a4050;
+  --fg: #93a1a1;
+  --fg-muted: #657b83;
+  --border: #2a4a53;
+  --accent: #268bd2;
+  --accent-hover: #2aa198;
+  --danger: #dc322f;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -60,10 +74,32 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
   color: var(--fg);
 }
 
+.header-right {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
 .header-nav {
   display: flex;
   gap: 16px;
   align-items: center;
+}
+
+/* Theme toggle */
+.theme-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--fg-muted);
+}
+.theme-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
 .header-nav a {

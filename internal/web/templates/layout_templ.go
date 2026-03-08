@@ -42,7 +42,7 @@ func Layout(title string, activePage string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " - msgvault</title><link rel=\"stylesheet\" href=\"/static/style.css\"></head><body><div class=\"app\"><header class=\"header\"><span class=\"header-title\">msgvault</span><nav class=\"header-nav\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " - msgvault</title><link rel=\"stylesheet\" href=\"/static/style.css\"></head><body><div class=\"app\"><header class=\"header\"><span class=\"header-title\">msgvault</span><div class=\"header-right\"><nav class=\"header-nav\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -108,7 +108,7 @@ func Layout(title string, activePage string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "\">Search</a></nav></header>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "\">Search</a></nav><button id=\"theme-toggle\" class=\"theme-toggle\" title=\"Toggle dark mode\" aria-label=\"Toggle dark mode\"></button></div></header>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
