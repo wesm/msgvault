@@ -18,6 +18,7 @@ templ Layout(title string, activePage string) {
 							<a href="/" class={ templ.KV("active", activePage == "dashboard") }>Dashboard</a>
 							<a href="/browse" class={ templ.KV("active", activePage == "browse") }>Browse</a>
 							<a href="/search" class={ templ.KV("active", activePage == "search") }>Search</a>
+							<a href="/deletions" class={ templ.KV("active", activePage == "deletions") }>Deletions</a>
 						</nav>
 						<button id="theme-toggle" class="theme-toggle" title="Toggle dark mode" aria-label="Toggle dark mode"></button>
 					</div>
@@ -66,6 +67,22 @@ templ helpOverlay() {
 				<tr>
 					<td><kbd>Esc</kbd></td>
 					<td>Blur search / close help</td>
+				</tr>
+				<tr>
+					<td><kbd>d</kbd></td>
+					<td>Enter delete mode</td>
+				</tr>
+				<tr>
+					<td><kbd>Space</kbd></td>
+					<td>Toggle selection (delete mode)</td>
+				</tr>
+				<tr>
+					<td><kbd>A</kbd></td>
+					<td>Select all (delete mode)</td>
+				</tr>
+				<tr>
+					<td><kbd>x</kbd></td>
+					<td>Clear selection (delete mode)</td>
 				</tr>
 				<tr>
 					<td><kbd>Bksp</kbd></td>

@@ -68,11 +68,16 @@
   }
 
   document.addEventListener('keydown', function (e) {
-    // Always allow Escape to close help
+    // Always allow Escape to close help / exit delete mode
     if (e.key === 'Escape') {
       var overlay = document.getElementById('help-overlay');
       if (overlay && overlay.classList.contains('visible')) {
         hideHelp();
+        e.preventDefault();
+        return;
+      }
+      if (isDeleteMode()) {
+        exitDeleteMode();
         e.preventDefault();
         return;
       }
@@ -179,6 +184,41 @@
           prevLink.click();
         }
         break;
+
+      case 'd':
+        // Enter delete mode
+        if (!isDeleteMode()) {
+          e.preventDefault();
+          enterDeleteMode();
+        }
+        break;
+
+      case ' ':
+        // Toggle selection on active row (delete mode only)
+        if (isDeleteMode() && activeRow >= 0) {
+          e.preventDefault();
+          toggleActiveRowCheckbox();
+        }
+        break;
+
+      case 'x':
+        // Clear selection (delete mode)
+        if (isDeleteMode()) {
+          var boxes = document.querySelectorAll('.msg-checkbox');
+          for (var i = 0; i < boxes.length; i++) boxes[i].checked = false;
+          var selectAll = document.getElementById('select-all');
+          if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
+          updateSelectionInfo();
+        }
+        break;
+
+      case 'A':
+        // Select all (delete mode)
+        if (isDeleteMode()) {
+          e.preventDefault();
+          selectAllMessages();
+        }
+        break;
     }
   });
 
@@ -221,8 +261,86 @@
     }
   }
 
+  // Delete mode — toggled by 'd' key
+  var deleteMode = false;
+
+  function isDeleteMode() {
+    return deleteMode;
+  }
+
+  function enterDeleteMode() {
+    if (!document.querySelector('.msg-checkbox')) return; // no checkboxes on page
+    deleteMode = true;
+    document.body.classList.add('delete-mode');
+    updateSelectionInfo();
+  }
+
+  window.exitDeleteMode = function () {
+    deleteMode = false;
+    document.body.classList.remove('delete-mode');
+    // Uncheck everything
+    var boxes = document.querySelectorAll('.msg-checkbox');
+    for (var i = 0; i < boxes.length; i++) boxes[i].checked = false;
+    var selectAll = document.getElementById('select-all');
+    if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
+    updateSelectionInfo();
+  };
+
+  window.selectAllMessages = function () {
+    var boxes = document.querySelectorAll('.msg-checkbox');
+    for (var i = 0; i < boxes.length; i++) boxes[i].checked = true;
+    var selectAll = document.getElementById('select-all');
+    if (selectAll) { selectAll.checked = true; selectAll.indeterminate = false; }
+    updateSelectionInfo();
+  };
+
+  function updateSelectionInfo() {
+    var info = document.getElementById('sel-info');
+    var submit = document.getElementById('sel-submit');
+    if (!info) return;
+    var checked = document.querySelectorAll('.msg-checkbox:checked');
+    var total = document.querySelectorAll('.msg-checkbox');
+    if (checked.length === 0) {
+      info.textContent = 'Select messages to stage for deletion';
+      if (submit) { submit.disabled = true; submit.textContent = 'Stage for Deletion'; }
+    } else {
+      info.textContent = checked.length + ' of ' + total.length + ' selected';
+      if (submit) { submit.disabled = false; submit.textContent = 'Stage ' + checked.length + ' for Deletion'; }
+    }
+    // Update select-all checkbox state
+    var selectAll = document.getElementById('select-all');
+    if (selectAll) {
+      selectAll.checked = total.length > 0 && checked.length === total.length;
+      selectAll.indeterminate = checked.length > 0 && checked.length < total.length;
+    }
+  }
+
+  function setupSelection() {
+    document.addEventListener('change', function (e) {
+      if (e.target.classList.contains('msg-checkbox') || e.target.id === 'select-all') {
+        if (e.target.id === 'select-all') {
+          var boxes = document.querySelectorAll('.msg-checkbox');
+          for (var i = 0; i < boxes.length; i++) boxes[i].checked = e.target.checked;
+        }
+        updateSelectionInfo();
+      }
+    });
+  }
+
+  function toggleActiveRowCheckbox() {
+    if (!isDeleteMode()) return;
+    var rows = getRows();
+    if (activeRow < 0 || activeRow >= rows.length) return;
+    var cb = rows[activeRow].querySelector('.msg-checkbox');
+    if (cb) {
+      cb.checked = !cb.checked;
+      updateSelectionInfo();
+    }
+  }
+
   // Reset active row on page load
   activeRow = -1;
   setupSearchLoading();
   setupThemeToggle();
+  setupSelection();
 })();

@@ -156,33 +156,37 @@ templ Messages(data MessagesData) {
 }
 
 templ MessageTable(data MessagesData) {
-	<table class="data-table">
-		<thead>
-			<tr>
-				<th>
-					<a href={ templ.SafeURL(data.sortURL("date")) }>
-						Date{ data.sortIndicator("date") }
-					</a>
-				</th>
-				<th>From</th>
-				<th>
-					<a href={ templ.SafeURL(data.sortURL("subject")) }>
-						Subject{ data.sortIndicator("subject") }
-					</a>
-				</th>
-				<th class="num">
-					<a href={ templ.SafeURL(data.sortURL("size")) }>
-						Size{ data.sortIndicator("size") }
-					</a>
-				</th>
-			</tr>
-		</thead>
-		<tbody>
-			for _, msg := range data.Messages {
-				@messageRow(msg)
-			}
-		</tbody>
-	</table>
+	<form method="POST" action="/deletions/stage-batch" id="sel-form">
+		<table class="data-table">
+			<thead>
+				<tr>
+					<th class="sel-cell"><input type="checkbox" id="select-all" title="Select all"/></th>
+					<th>
+						<a href={ templ.SafeURL(data.sortURL("date")) }>
+							Date{ data.sortIndicator("date") }
+						</a>
+					</th>
+					<th>From</th>
+					<th>
+						<a href={ templ.SafeURL(data.sortURL("subject")) }>
+							Subject{ data.sortIndicator("subject") }
+						</a>
+					</th>
+					<th class="num">
+						<a href={ templ.SafeURL(data.sortURL("size")) }>
+							Size{ data.sortIndicator("size") }
+						</a>
+					</th>
+				</tr>
+			</thead>
+			<tbody>
+				for _, msg := range data.Messages {
+					@messageRow(msg)
+				}
+			</tbody>
+		</table>
+		@selectionBar()
+	</form>
 }
 
 templ pagination(data MessagesData) {
@@ -204,26 +208,45 @@ templ pagination(data MessagesData) {
 // messageListTable renders a simple (non-sortable) message table.
 // Shared between search results and other simple message lists.
 templ messageListTable(messages []query.MessageSummary) {
-	<table class="data-table">
-		<thead>
-			<tr>
-				<th>Date</th>
-				<th>From</th>
-				<th>Subject</th>
-				<th class="num">Size</th>
-			</tr>
-		</thead>
-		<tbody>
-			for _, msg := range messages {
-				@messageRow(msg)
-			}
-		</tbody>
-	</table>
+	<form method="POST" action="/deletions/stage-batch" id="sel-form">
+		<table class="data-table">
+			<thead>
+				<tr>
+					<th class="sel-cell"><input type="checkbox" id="select-all" title="Select all"/></th>
+					<th>Date</th>
+					<th>From</th>
+					<th>Subject</th>
+					<th class="num">Size</th>
+				</tr>
+			</thead>
+			<tbody>
+				for _, msg := range messages {
+					@messageRow(msg)
+				}
+			</tbody>
+		</table>
+		@selectionBar()
+	</form>
+}
+
+templ selectionBar() {
+	<div id="sel-bar" class="selection-bar">
+		<span id="sel-info">Select messages to stage for deletion</span>
+		<button type="button" class="pill-sm" onclick="selectAllMessages()">Select All</button>
+		<span style="flex: 1;"></span>
+		<button type="submit" class="btn-danger-sm" id="sel-submit" disabled onclick="return confirm('Stage selected messages for deletion?')">
+			Stage for Deletion
+		</button>
+		<button type="button" class="pill-sm" onclick="exitDeleteMode()">Cancel</button>
+	</div>
 }
 
 // messageRow renders a single message row, shared across all message tables.
 templ messageRow(msg query.MessageSummary) {
 	<tr>
+		<td class="sel-cell">
+			<input type="checkbox" name="gmail_id" value={ msg.SourceMessageID } class="msg-checkbox"/>
+		</td>
 		<td class="date-cell">
 			{ formatMessageDate(msg.SentAt) }
 		</td>

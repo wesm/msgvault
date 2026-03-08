@@ -108,7 +108,29 @@ func Layout(title string, activePage string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "\">Search</a></nav><button id=\"theme-toggle\" class=\"theme-toggle\" title=\"Toggle dark mode\" aria-label=\"Toggle dark mode\"></button></div></header>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "\">Search</a> ")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var9 = []any{templ.KV("active", activePage == "deletions")}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var9...)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<a href=\"/deletions\" class=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var10 string
+		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var9).String())
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/layout.templ`, Line: 1, Col: 0}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "\">Deletions</a></nav><button id=\"theme-toggle\" class=\"theme-toggle\" title=\"Toggle dark mode\" aria-label=\"Toggle dark mode\"></button></div></header>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -116,7 +138,7 @@ func Layout(title string, activePage string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<footer class=\"footer\">msgvault <span style=\"margin-left: 8px; opacity: 0.6;\"><kbd>?</kbd> shortcuts</span></footer></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "<footer class=\"footer\">msgvault <span style=\"margin-left: 8px; opacity: 0.6;\"><kbd>?</kbd> shortcuts</span></footer></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -124,7 +146,7 @@ func Layout(title string, activePage string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "<script src=\"/static/keys.js\"></script></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "<script src=\"/static/keys.js\"></script></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -148,12 +170,12 @@ func helpOverlay() templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var9 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var9 == nil {
-			templ_7745c5c3_Var9 = templ.NopComponent
+		templ_7745c5c3_Var11 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var11 == nil {
+			templ_7745c5c3_Var11 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "<div id=\"help-overlay\" class=\"help-overlay\"><div class=\"help-dialog\"><h3>Keyboard Shortcuts</h3><table><tr><td><kbd>j</kbd> <kbd>k</kbd></td><td>Navigate rows up / down</td></tr><tr><td><kbd>Enter</kbd></td><td>Drill into selected row</td></tr><tr><td><kbd>o</kbd></td><td>Open messages for row</td></tr><tr><td><kbd>g</kbd> <kbd>G</kbd></td><td>Jump to first / last row</td></tr><tr><td><kbd>n</kbd> <kbd>p</kbd></td><td>Next / previous page</td></tr><tr><td><kbd>/</kbd></td><td>Focus search (or go to search)</td></tr><tr><td><kbd>Esc</kbd></td><td>Blur search / close help</td></tr><tr><td><kbd>Bksp</kbd></td><td>Go back (breadcrumb)</td></tr><tr><td><kbd>H</kbd></td><td>Go to Dashboard</td></tr><tr><td><kbd>B</kbd></td><td>Go to Browse</td></tr><tr><td><kbd>?</kbd></td><td>Toggle this help</td></tr></table><div class=\"help-close\">Press <kbd>?</kbd> or <kbd>Esc</kbd> to close</div></div></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "<div id=\"help-overlay\" class=\"help-overlay\"><div class=\"help-dialog\"><h3>Keyboard Shortcuts</h3><table><tr><td><kbd>j</kbd> <kbd>k</kbd></td><td>Navigate rows up / down</td></tr><tr><td><kbd>Enter</kbd></td><td>Drill into selected row</td></tr><tr><td><kbd>o</kbd></td><td>Open messages for row</td></tr><tr><td><kbd>g</kbd> <kbd>G</kbd></td><td>Jump to first / last row</td></tr><tr><td><kbd>n</kbd> <kbd>p</kbd></td><td>Next / previous page</td></tr><tr><td><kbd>/</kbd></td><td>Focus search (or go to search)</td></tr><tr><td><kbd>Esc</kbd></td><td>Blur search / close help</td></tr><tr><td><kbd>d</kbd></td><td>Enter delete mode</td></tr><tr><td><kbd>Space</kbd></td><td>Toggle selection (delete mode)</td></tr><tr><td><kbd>A</kbd></td><td>Select all (delete mode)</td></tr><tr><td><kbd>x</kbd></td><td>Clear selection (delete mode)</td></tr><tr><td><kbd>Bksp</kbd></td><td>Go back (breadcrumb)</td></tr><tr><td><kbd>H</kbd></td><td>Go to Dashboard</td></tr><tr><td><kbd>B</kbd></td><td>Go to Browse</td></tr><tr><td><kbd>?</kbd></td><td>Toggle this help</td></tr></table><div class=\"help-close\">Press <kbd>?</kbd> or <kbd>Esc</kbd> to close</div></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

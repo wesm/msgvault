@@ -548,6 +548,86 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
   color: var(--fg-muted);
 }
 
+/* Danger button (small) */
+.btn-danger-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  background: none;
+  color: var(--danger);
+  cursor: pointer;
+  text-decoration: none;
+}
+.btn-danger-sm:hover {
+  background: var(--danger);
+  color: #fff;
+  text-decoration: none;
+}
+
+/* Command reference table */
+.cmd-table {
+  width: 100%;
+  font-size: 13px;
+  border-collapse: collapse;
+}
+.cmd-table td {
+  padding: 4px 0;
+}
+.cmd-table td:first-child {
+  padding-right: 16px;
+  white-space: nowrap;
+}
+.cmd-table td:last-child {
+  color: var(--fg-muted);
+}
+.cmd-table code {
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 2px 6px;
+  background: var(--bg-alt);
+  border-radius: var(--radius);
+}
+
+/* Selection / delete mode */
+.sel-cell {
+  width: 0;
+  padding: 0 !important;
+  overflow: hidden;
+  transition: width 0.15s, padding 0.15s;
+}
+.sel-cell input[type="checkbox"] {
+  display: none;
+}
+.delete-mode .sel-cell {
+  width: 28px;
+  padding: 4px 6px !important;
+}
+.delete-mode .sel-cell input[type="checkbox"] {
+  display: inline;
+  cursor: pointer;
+  margin: 0;
+}
+.selection-bar {
+  display: none;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 10px 24px;
+  background: var(--bg-alt);
+  border-top: 2px solid var(--danger);
+  font-size: 13px;
+  font-weight: 600;
+  align-items: center;
+  gap: 12px;
+  z-index: 100;
+}
+.delete-mode .selection-bar {
+  display: flex;
+}
+
 /* Footer */
 .footer {
   padding: 16px 0;
