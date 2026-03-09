@@ -68,10 +68,11 @@ type EmlxImportSummary struct {
 }
 
 type emlxCheckpoint struct {
-	RootDir      string `json:"root_dir"`
-	MailboxIndex int    `json:"mailbox_index"`
-	MailboxPath  string `json:"mailbox_path,omitempty"`
-	LastFile     string `json:"last_file"`
+	RootDir       string `json:"root_dir"`
+	MailboxIndex  int    `json:"mailbox_index"`
+	MailboxPath   string `json:"mailbox_path,omitempty"`
+	MailboxMsgDir string `json:"mailbox_msgdir,omitempty"`
+	LastFile      string `json:"last_file"`
 }
 
 const defaultMaxEmlxBytes int64 = 128 << 20 // 128 MiB
@@ -173,6 +174,16 @@ func ImportEmlxDir(
 							mailboxes[ecp.MailboxIndex].Path,
 						)
 					}
+					// Validate MsgDir if present (sharded V10 layouts
+					// produce multiple entries per .mbox path).
+					if ecp.MailboxMsgDir != "" &&
+						mailboxes[ecp.MailboxIndex].MsgDir != ecp.MailboxMsgDir {
+						return nil, fmt.Errorf(
+							"mailbox at index %d MsgDir changed (%q -> %q); rerun with --no-resume to start fresh",
+							ecp.MailboxIndex, ecp.MailboxMsgDir,
+							mailboxes[ecp.MailboxIndex].MsgDir,
+						)
+					}
 					syncID = active.ID
 					cp.MessagesProcessed = active.MessagesProcessed
 					cp.MessagesAdded = active.MessagesAdded
@@ -202,14 +213,15 @@ func ImportEmlxDir(
 	hardErrors := false
 
 	type pendingEmlxMsg struct {
-		Raw       []byte
-		RawHash   string
-		SourceMsg string
-		LabelIDs  []int64
-		Fallback  time.Time
-		MboxIdx   int
-		MboxPath  string
-		FileName  string
+		Raw        []byte
+		RawHash    string
+		SourceMsg  string
+		LabelIDs   []int64
+		Fallback   time.Time
+		MboxIdx    int
+		MboxPath   string
+		MboxMsgDir string
+		FileName   string
 	}
 
 	const (
@@ -222,8 +234,10 @@ func ImportEmlxDir(
 	pendingIdx := make(map[string]int) // SourceMsg → index in pending
 	lastCpMbox := startMbox
 	lastCpMboxPath := ""
+	lastCpMboxMsgDir := ""
 	if startMbox < len(mailboxes) {
 		lastCpMboxPath = mailboxes[startMbox].Path
+		lastCpMboxMsgDir = mailboxes[startMbox].MsgDir
 	}
 	lastCpFile := startAfter
 	checkpointBlocked := false
@@ -231,7 +245,7 @@ func ImportEmlxDir(
 	// Save initial checkpoint.
 	if err := saveEmlxCheckpoint(
 		st, syncID, absRoot, startMbox, lastCpMboxPath,
-		startAfter, &cp,
+		lastCpMboxMsgDir, startAfter, &cp,
 	); err != nil {
 		cp.ErrorsCount++
 		summary.Errors++
@@ -269,7 +283,7 @@ func ImportEmlxDir(
 				summary.Duration = time.Since(start)
 				if err := saveEmlxCheckpoint(
 					st, syncID, absRoot, lastCpMbox,
-					lastCpMboxPath, lastCpFile, &cp,
+					lastCpMboxPath, lastCpMboxMsgDir, lastCpFile, &cp,
 				); err != nil {
 					log.Warn("checkpoint save failed", "error", err)
 				}
@@ -322,11 +336,12 @@ func ImportEmlxDir(
 				if !checkpointBlocked {
 					lastCpMbox = p.MboxIdx
 					lastCpMboxPath = p.MboxPath
+					lastCpMboxMsgDir = p.MboxMsgDir
 					lastCpFile = p.FileName
 					checkpointIfDue(
 						&cp, summary, opts.CheckpointInterval,
 						st, syncID, absRoot, lastCpMbox,
-						lastCpMboxPath, lastCpFile, log,
+						lastCpMboxPath, lastCpMboxMsgDir, lastCpFile, log,
 					)
 				}
 				continue
@@ -366,11 +381,12 @@ func ImportEmlxDir(
 			if !checkpointBlocked {
 				lastCpMbox = p.MboxIdx
 				lastCpMboxPath = p.MboxPath
+				lastCpMboxMsgDir = p.MboxMsgDir
 				lastCpFile = p.FileName
 				checkpointIfDue(
 					&cp, summary, opts.CheckpointInterval,
 					st, syncID, absRoot, lastCpMbox,
-					lastCpMboxPath, lastCpFile, log,
+					lastCpMboxPath, lastCpMboxMsgDir, lastCpFile, log,
 				)
 			}
 		}
@@ -479,14 +495,15 @@ func ImportEmlxDir(
 			} else {
 				pendingIdx[sourceMsgID] = len(pending)
 				pending = append(pending, pendingEmlxMsg{
-					Raw:       msg.Raw,
-					RawHash:   rawHash,
-					SourceMsg: sourceMsgID,
-					LabelIDs:  labelIDs,
-					Fallback:  fallbackDate,
-					MboxIdx:   mboxIdx,
-					MboxPath:  mb.Path,
-					FileName:  fileName,
+					Raw:        msg.Raw,
+					RawHash:    rawHash,
+					SourceMsg:  sourceMsgID,
+					LabelIDs:   labelIDs,
+					Fallback:   fallbackDate,
+					MboxIdx:    mboxIdx,
+					MboxPath:   mb.Path,
+					MboxMsgDir: mb.MsgDir,
+					FileName:   fileName,
 				})
 				pendingBytes += int64(len(msg.Raw))
 			}
@@ -522,7 +539,7 @@ func ImportEmlxDir(
 	// Final checkpoint.
 	if err := saveEmlxCheckpoint(
 		st, syncID, absRoot, lastCpMbox, lastCpMboxPath,
-		lastCpFile, &cp,
+		lastCpMboxMsgDir, lastCpFile, &cp,
 	); err != nil {
 		cp.ErrorsCount++
 		summary.Errors++
@@ -563,14 +580,15 @@ func ImportEmlxDir(
 
 func saveEmlxCheckpoint(
 	st *store.Store, syncID int64,
-	rootDir string, mboxIdx int, mboxPath string,
+	rootDir string, mboxIdx int, mboxPath, mboxMsgDir string,
 	lastFile string, cp *store.Checkpoint,
 ) error {
 	b, err := json.Marshal(emlxCheckpoint{
-		RootDir:      rootDir,
-		MailboxIndex: mboxIdx,
-		MailboxPath:  mboxPath,
-		LastFile:     lastFile,
+		RootDir:       rootDir,
+		MailboxIndex:  mboxIdx,
+		MailboxPath:   mboxPath,
+		MailboxMsgDir: mboxMsgDir,
+		LastFile:      lastFile,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal checkpoint: %w", err)
@@ -583,14 +601,14 @@ func checkpointIfDue(
 	cp *store.Checkpoint, summary *EmlxImportSummary,
 	interval int,
 	st *store.Store, syncID int64,
-	rootDir string, mboxIdx int, mboxPath string,
+	rootDir string, mboxIdx int, mboxPath, mboxMsgDir string,
 	lastFile string, log *slog.Logger,
 ) {
 	if cp.MessagesProcessed%int64(interval) != 0 {
 		return
 	}
 	if err := saveEmlxCheckpoint(
-		st, syncID, rootDir, mboxIdx, mboxPath, lastFile, cp,
+		st, syncID, rootDir, mboxIdx, mboxPath, mboxMsgDir, lastFile, cp,
 	); err != nil {
 		cp.ErrorsCount++
 		summary.Errors++

@@ -622,7 +622,7 @@ func TestImportEmlxDir_MailboxPathMismatchRejectsResume(t *testing.T) {
 	}
 	if err := saveEmlxCheckpoint(
 		st, syncID, absRoot, 0,
-		"/old/path/to/OtherMailbox.mbox", "",
+		"/old/path/to/OtherMailbox.mbox", "", "",
 		&store.Checkpoint{},
 	); err != nil {
 		t.Fatalf("save checkpoint: %v", err)
@@ -730,7 +730,7 @@ func TestImportEmlxDir_RootMismatchRejectsResume(t *testing.T) {
 		t.Fatalf("abs root A: %v", err)
 	}
 	if err := saveEmlxCheckpoint(
-		st, syncID, absRootA, 0, "", "", &store.Checkpoint{},
+		st, syncID, absRootA, 0, "", "", "", &store.Checkpoint{},
 	); err != nil {
 		t.Fatalf("save checkpoint: %v", err)
 	}

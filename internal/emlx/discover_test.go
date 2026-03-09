@@ -422,6 +422,113 @@ func TestDiscoverMailboxes_MixedLegacyAndV10(t *testing.T) {
 	}
 }
 
+// mkV10ShardedMailbox creates a V10-style mailbox with the sharded
+// numeric directory layout: <GUID>/Data/<num>/<num>/<num>/Messages/*.emlx
+// Each shard is specified as a path like "7/8/1" with its .emlx files.
+func mkV10ShardedMailbox(
+	t *testing.T, base, guid string,
+	shards map[string][]string, // shard path → emlx filenames
+) {
+	t.Helper()
+	for shard, files := range shards {
+		msgDir := filepath.Join(base, guid, "Data", shard, "Messages")
+		if err := os.MkdirAll(msgDir, 0700); err != nil {
+			t.Fatalf("mkdir %q: %v", msgDir, err)
+		}
+		for _, name := range files {
+			data := "10\nFrom: x\r\n\r\n"
+			path := filepath.Join(msgDir, name)
+			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+				t.Fatalf("write %q: %v", path, err)
+			}
+		}
+	}
+}
+
+func TestDiscoverMailboxes_V10ShardedLayout(t *testing.T) {
+	root := t.TempDir()
+	v10 := filepath.Join(root, "V10")
+	acctGUID := "4D2B4360-8B60-47A1-877F-A598BDB2175E"
+	mboxGUID := "62CDA93A-BD7E-4582-A5A7-78BA9EBB4E70"
+	acctDir := filepath.Join(v10, acctGUID)
+
+	// Simulate a sharded V10 layout like macOS Ventura+.
+	mkV10ShardedMailbox(t,
+		filepath.Join(acctDir, "INBOX.mbox"),
+		mboxGUID,
+		map[string][]string{
+			"7/8/1": {"186735.emlx"},
+			"5/7/1": {"175577.emlx", "175578.emlx"},
+			"1/9/1": {"190001.emlx"},
+		},
+	)
+	mkV10ShardedMailbox(t,
+		filepath.Join(acctDir, "Sent.mbox"),
+		mboxGUID,
+		map[string][]string{
+			"3/9/1": {"200001.emlx", "200002.emlx"},
+		},
+	)
+
+	mailboxes, err := DiscoverMailboxes(v10)
+	if err != nil {
+		t.Fatalf("DiscoverMailboxes: %v", err)
+	}
+
+	// Count total files per label.
+	labelFiles := make(map[string]int)
+	for _, mb := range mailboxes {
+		labelFiles[mb.Label] += len(mb.Files)
+	}
+
+	if labelFiles["INBOX"] != 4 {
+		t.Errorf("INBOX: got %d files, want 4", labelFiles["INBOX"])
+	}
+	if labelFiles["Sent"] != 2 {
+		t.Errorf("Sent: got %d files, want 2", labelFiles["Sent"])
+	}
+
+	// Verify each Mailbox has a valid MsgDir that ends in Messages.
+	for _, mb := range mailboxes {
+		if filepath.Base(mb.MsgDir) != "Messages" {
+			t.Errorf("MsgDir %q does not end in Messages", mb.MsgDir)
+		}
+		if len(mb.Files) == 0 {
+			t.Errorf("Mailbox %q has no files", mb.Label)
+		}
+	}
+}
+
+func TestDiscoverMailboxes_V10ShardedSingleMailbox(t *testing.T) {
+	root := t.TempDir()
+	mboxGUID := "62CDA93A-BD7E-4582-A5A7-78BA9EBB4E70"
+	mboxDir := filepath.Join(root, "INBOX.mbox")
+
+	mkV10ShardedMailbox(t, mboxDir, mboxGUID,
+		map[string][]string{
+			"7/8/1": {"1.emlx", "2.emlx"},
+			"3/9/1": {"3.emlx"},
+		},
+	)
+
+	// Point directly at the .mbox directory.
+	mailboxes, err := DiscoverMailboxes(mboxDir)
+	if err != nil {
+		t.Fatalf("DiscoverMailboxes: %v", err)
+	}
+
+	totalFiles := 0
+	for _, mb := range mailboxes {
+		totalFiles += len(mb.Files)
+		if mb.Label != "INBOX" {
+			t.Errorf("Label = %q, want %q", mb.Label, "INBOX")
+		}
+	}
+	if totalFiles != 3 {
+		t.Errorf("total files = %d, want 3", totalFiles)
+	}
+}
+
 func TestIsUUID(t *testing.T) {
 	tests := []struct {
 		input string
