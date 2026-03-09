@@ -15,7 +15,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/wesm/msgvault/internal/config"
 	"github.com/wesm/msgvault/internal/fileutil"
+	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/scheduler"
+	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/store"
 	"golang.org/x/oauth2"
 )
@@ -581,5 +583,530 @@ func (s *Server) handleAddAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"status":  "created",
 		"message": "Account added for " + req.Email,
+	})
+}
+
+// ============================================================================
+// TUI Aggregate Endpoints
+// ============================================================================
+
+// AggregateResponse represents aggregate query results.
+type AggregateResponse struct {
+	ViewType string             `json:"view_type"`
+	Rows     []AggregateRowJSON `json:"rows"`
+}
+
+// AggregateRowJSON represents a single aggregate row in JSON format.
+type AggregateRowJSON struct {
+	Key             string `json:"key"`
+	Count           int64  `json:"count"`
+	TotalSize       int64  `json:"total_size"`
+	AttachmentSize  int64  `json:"attachment_size"`
+	AttachmentCount int64  `json:"attachment_count"`
+	TotalUnique     int64  `json:"total_unique"`
+}
+
+// TotalStatsResponse represents detailed stats with filters.
+type TotalStatsResponse struct {
+	MessageCount    int64 `json:"message_count"`
+	TotalSize       int64 `json:"total_size"`
+	AttachmentCount int64 `json:"attachment_count"`
+	AttachmentSize  int64 `json:"attachment_size"`
+	LabelCount      int64 `json:"label_count"`
+	AccountCount    int64 `json:"account_count"`
+}
+
+// SearchFastResponse represents fast search results with stats.
+type SearchFastResponse struct {
+	Query      string              `json:"query"`
+	Messages   []MessageSummary    `json:"messages"`
+	TotalCount int64               `json:"total_count"`
+	Stats      *TotalStatsResponse `json:"stats,omitempty"`
+}
+
+// parseViewType parses a view type string into query.ViewType.
+func parseViewType(s string) (query.ViewType, bool) {
+	switch strings.ToLower(s) {
+	case "senders":
+		return query.ViewSenders, true
+	case "sender_names":
+		return query.ViewSenderNames, true
+	case "recipients":
+		return query.ViewRecipients, true
+	case "recipient_names":
+		return query.ViewRecipientNames, true
+	case "domains":
+		return query.ViewDomains, true
+	case "labels":
+		return query.ViewLabels, true
+	case "time":
+		return query.ViewTime, true
+	default:
+		return query.ViewSenders, false
+	}
+}
+
+// viewTypeString converts a query.ViewType to its API string representation.
+func viewTypeString(v query.ViewType) string {
+	switch v {
+	case query.ViewSenders:
+		return "senders"
+	case query.ViewSenderNames:
+		return "sender_names"
+	case query.ViewRecipients:
+		return "recipients"
+	case query.ViewRecipientNames:
+		return "recipient_names"
+	case query.ViewDomains:
+		return "domains"
+	case query.ViewLabels:
+		return "labels"
+	case query.ViewTime:
+		return "time"
+	default:
+		return "unknown"
+	}
+}
+
+// parseSortField parses a sort field string into query.SortField.
+func parseSortField(s string) query.SortField {
+	switch strings.ToLower(s) {
+	case "count":
+		return query.SortByCount
+	case "size":
+		return query.SortBySize
+	case "attachment_size":
+		return query.SortByAttachmentSize
+	case "name":
+		return query.SortByName
+	default:
+		return query.SortByCount
+	}
+}
+
+// parseSortDirection parses a direction string into query.SortDirection.
+func parseSortDirection(s string) query.SortDirection {
+	if strings.ToLower(s) == "asc" {
+		return query.SortAsc
+	}
+	return query.SortDesc
+}
+
+// parseTimeGranularity parses a granularity string into query.TimeGranularity.
+func parseTimeGranularity(s string) query.TimeGranularity {
+	switch strings.ToLower(s) {
+	case "year":
+		return query.TimeYear
+	case "day":
+		return query.TimeDay
+	default:
+		return query.TimeMonth
+	}
+}
+
+// parseAggregateOptions extracts common aggregate options from query parameters.
+func parseAggregateOptions(r *http.Request) query.AggregateOptions {
+	opts := query.DefaultAggregateOptions()
+
+	if v := r.URL.Query().Get("sort"); v != "" {
+		opts.SortField = parseSortField(v)
+	}
+	if v := r.URL.Query().Get("direction"); v != "" {
+		opts.SortDirection = parseSortDirection(v)
+	}
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if limit, err := strconv.Atoi(v); err == nil && limit > 0 {
+			opts.Limit = limit
+		}
+	}
+	if v := r.URL.Query().Get("time_granularity"); v != "" {
+		opts.TimeGranularity = parseTimeGranularity(v)
+	}
+	if v := r.URL.Query().Get("source_id"); v != "" {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			opts.SourceID = &id
+		}
+	}
+	if r.URL.Query().Get("attachments_only") == "true" {
+		opts.WithAttachmentsOnly = true
+	}
+	if r.URL.Query().Get("hide_deleted") == "true" {
+		opts.HideDeletedFromSource = true
+	}
+	if v := r.URL.Query().Get("search_query"); v != "" {
+		opts.SearchQuery = v
+	}
+
+	return opts
+}
+
+// parseMessageFilter extracts filter parameters from query parameters.
+func parseMessageFilter(r *http.Request) query.MessageFilter {
+	var filter query.MessageFilter
+
+	filter.Sender = r.URL.Query().Get("sender")
+	filter.SenderName = r.URL.Query().Get("sender_name")
+	filter.Recipient = r.URL.Query().Get("recipient")
+	filter.RecipientName = r.URL.Query().Get("recipient_name")
+	filter.Domain = r.URL.Query().Get("domain")
+	filter.Label = r.URL.Query().Get("label")
+
+	if v := r.URL.Query().Get("time_period"); v != "" {
+		filter.TimeRange.Period = v
+	}
+	if v := r.URL.Query().Get("time_granularity"); v != "" {
+		filter.TimeRange.Granularity = parseTimeGranularity(v)
+	}
+	if v := r.URL.Query().Get("conversation_id"); v != "" {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			filter.ConversationID = &id
+		}
+	}
+	if v := r.URL.Query().Get("source_id"); v != "" {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			filter.SourceID = &id
+		}
+	}
+	if r.URL.Query().Get("attachments_only") == "true" {
+		filter.WithAttachmentsOnly = true
+	}
+	if r.URL.Query().Get("hide_deleted") == "true" {
+		filter.HideDeletedFromSource = true
+	}
+
+	// Pagination
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if offset, err := strconv.Atoi(v); err == nil && offset >= 0 {
+			filter.Pagination.Offset = offset
+		}
+	}
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if limit, err := strconv.Atoi(v); err == nil && limit > 0 {
+			filter.Pagination.Limit = limit
+		}
+	}
+	if filter.Pagination.Limit == 0 {
+		filter.Pagination.Limit = 500 // Default limit for message lists
+	}
+
+	// Sorting
+	if v := r.URL.Query().Get("sort"); v != "" {
+		switch strings.ToLower(v) {
+		case "date":
+			filter.Sorting.Field = query.MessageSortByDate
+		case "size":
+			filter.Sorting.Field = query.MessageSortBySize
+		case "subject":
+			filter.Sorting.Field = query.MessageSortBySubject
+		}
+	}
+	if v := r.URL.Query().Get("direction"); v != "" {
+		filter.Sorting.Direction = parseSortDirection(v)
+	}
+
+	return filter
+}
+
+// toAggregateRowJSON converts query.AggregateRow to JSON format.
+func toAggregateRowJSON(row query.AggregateRow) AggregateRowJSON {
+	return AggregateRowJSON{
+		Key:             row.Key,
+		Count:           row.Count,
+		TotalSize:       row.TotalSize,
+		AttachmentSize:  row.AttachmentSize,
+		AttachmentCount: row.AttachmentCount,
+		TotalUnique:     row.TotalUnique,
+	}
+}
+
+// toTotalStatsResponse converts query.TotalStats to JSON format.
+func toTotalStatsResponse(stats *query.TotalStats) *TotalStatsResponse {
+	if stats == nil {
+		return nil
+	}
+	return &TotalStatsResponse{
+		MessageCount:    stats.MessageCount,
+		TotalSize:       stats.TotalSize,
+		AttachmentCount: stats.AttachmentCount,
+		AttachmentSize:  stats.AttachmentSize,
+		LabelCount:      stats.LabelCount,
+		AccountCount:    stats.AccountCount,
+	}
+}
+
+// toMessageSummaryFromQuery converts query.MessageSummary to API MessageSummary.
+func toMessageSummaryFromQuery(m query.MessageSummary) MessageSummary {
+	labels := m.Labels
+	if labels == nil {
+		labels = []string{}
+	}
+	return MessageSummary{
+		ID:        m.ID,
+		Subject:   m.Subject,
+		From:      m.FromEmail,
+		To:        []string{}, // Query summary doesn't include recipients
+		SentAt:    m.SentAt.UTC().Format(time.RFC3339),
+		Snippet:   m.Snippet,
+		Labels:    labels,
+		HasAttach: m.HasAttachments,
+		SizeBytes: m.SizeEstimate,
+	}
+}
+
+// handleAggregates returns aggregate data for a view type.
+// GET /api/v1/aggregates?view_type=senders&sort=count&direction=desc&limit=100
+func (s *Server) handleAggregates(w http.ResponseWriter, r *http.Request) {
+	if s.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine_unavailable", "Query engine not available")
+		return
+	}
+
+	viewTypeStr := r.URL.Query().Get("view_type")
+	if viewTypeStr == "" {
+		viewTypeStr = "senders" // Default
+	}
+	viewType, ok := parseViewType(viewTypeStr)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_view_type",
+			"Invalid view_type. Must be one of: senders, sender_names, recipients, recipient_names, domains, labels, time")
+		return
+	}
+
+	opts := parseAggregateOptions(r)
+
+	rows, err := s.engine.Aggregate(r.Context(), viewType, opts)
+	if err != nil {
+		s.logger.Error("aggregate query failed", "view_type", viewTypeStr, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Aggregate query failed")
+		return
+	}
+
+	jsonRows := make([]AggregateRowJSON, len(rows))
+	for i, row := range rows {
+		jsonRows[i] = toAggregateRowJSON(row)
+	}
+
+	writeJSON(w, http.StatusOK, AggregateResponse{
+		ViewType: viewTypeString(viewType),
+		Rows:     jsonRows,
+	})
+}
+
+// handleSubAggregates returns sub-aggregate data after drill-down.
+// GET /api/v1/aggregates/sub?view_type=labels&sender=foo@example.com
+func (s *Server) handleSubAggregates(w http.ResponseWriter, r *http.Request) {
+	if s.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine_unavailable", "Query engine not available")
+		return
+	}
+
+	viewTypeStr := r.URL.Query().Get("view_type")
+	if viewTypeStr == "" {
+		writeError(w, http.StatusBadRequest, "missing_view_type", "view_type parameter is required")
+		return
+	}
+	viewType, ok := parseViewType(viewTypeStr)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_view_type",
+			"Invalid view_type. Must be one of: senders, sender_names, recipients, recipient_names, domains, labels, time")
+		return
+	}
+
+	filter := parseMessageFilter(r)
+	opts := parseAggregateOptions(r)
+
+	rows, err := s.engine.SubAggregate(r.Context(), filter, viewType, opts)
+	if err != nil {
+		s.logger.Error("sub-aggregate query failed", "view_type", viewTypeStr, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Sub-aggregate query failed")
+		return
+	}
+
+	jsonRows := make([]AggregateRowJSON, len(rows))
+	for i, row := range rows {
+		jsonRows[i] = toAggregateRowJSON(row)
+	}
+
+	writeJSON(w, http.StatusOK, AggregateResponse{
+		ViewType: viewTypeString(viewType),
+		Rows:     jsonRows,
+	})
+}
+
+// handleFilteredMessages returns a filtered list of messages.
+// GET /api/v1/messages/filter?sender=foo@example.com&offset=0&limit=500
+func (s *Server) handleFilteredMessages(w http.ResponseWriter, r *http.Request) {
+	if s.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine_unavailable", "Query engine not available")
+		return
+	}
+
+	filter := parseMessageFilter(r)
+
+	messages, err := s.engine.ListMessages(r.Context(), filter)
+	if err != nil {
+		s.logger.Error("filtered messages query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Message query failed")
+		return
+	}
+
+	summaries := make([]MessageSummary, len(messages))
+	for i, m := range messages {
+		summaries[i] = toMessageSummaryFromQuery(m)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"total":    len(summaries), // Note: This is the returned count, not total matching
+		"offset":   filter.Pagination.Offset,
+		"limit":    filter.Pagination.Limit,
+		"messages": summaries,
+	})
+}
+
+// handleTotalStats returns detailed stats with optional filters.
+// GET /api/v1/stats/total?source_id=1&attachments_only=true
+func (s *Server) handleTotalStats(w http.ResponseWriter, r *http.Request) {
+	if s.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine_unavailable", "Query engine not available")
+		return
+	}
+
+	var opts query.StatsOptions
+
+	if v := r.URL.Query().Get("source_id"); v != "" {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			opts.SourceID = &id
+		}
+	}
+	if r.URL.Query().Get("attachments_only") == "true" {
+		opts.WithAttachmentsOnly = true
+	}
+	if r.URL.Query().Get("hide_deleted") == "true" {
+		opts.HideDeletedFromSource = true
+	}
+	if v := r.URL.Query().Get("search_query"); v != "" {
+		opts.SearchQuery = v
+	}
+	if v := r.URL.Query().Get("group_by"); v != "" {
+		if viewType, ok := parseViewType(v); ok {
+			opts.GroupBy = viewType
+		}
+	}
+
+	stats, err := s.engine.GetTotalStats(r.Context(), opts)
+	if err != nil {
+		s.logger.Error("total stats query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Stats query failed")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toTotalStatsResponse(stats))
+}
+
+// handleFastSearch performs fast metadata search (subject, sender, recipient).
+// GET /api/v1/search/fast?q=invoice&offset=0&limit=100
+func (s *Server) handleFastSearch(w http.ResponseWriter, r *http.Request) {
+	if s.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine_unavailable", "Query engine not available")
+		return
+	}
+
+	queryStr := r.URL.Query().Get("q")
+	if queryStr == "" {
+		writeError(w, http.StatusBadRequest, "missing_query", "Query parameter 'q' is required")
+		return
+	}
+
+	filter := parseMessageFilter(r)
+
+	// Get view type for stats grouping (optional, defaults to senders)
+	var statsGroupBy query.ViewType
+	if v := r.URL.Query().Get("view_type"); v != "" {
+		var ok bool
+		statsGroupBy, ok = parseViewType(v)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid_view_type",
+				"Invalid view_type. Must be one of: senders, sender_names, recipients, recipient_names, domains, labels, time")
+			return
+		}
+	}
+
+	offset := filter.Pagination.Offset
+	limit := filter.Pagination.Limit
+	if limit == 0 || limit > 500 {
+		limit = 100
+	}
+
+	q := search.Parse(queryStr)
+
+	result, err := s.engine.SearchFastWithStats(r.Context(), q, queryStr, filter, statsGroupBy, limit, offset)
+	if err != nil {
+		s.logger.Error("fast search failed", "query", queryStr, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Search failed")
+		return
+	}
+
+	summaries := make([]MessageSummary, len(result.Messages))
+	for i, m := range result.Messages {
+		summaries[i] = toMessageSummaryFromQuery(m)
+	}
+
+	writeJSON(w, http.StatusOK, SearchFastResponse{
+		Query:      queryStr,
+		Messages:   summaries,
+		TotalCount: result.TotalCount,
+		Stats:      toTotalStatsResponse(result.Stats),
+	})
+}
+
+// handleDeepSearch performs full-text body search via FTS5.
+// GET /api/v1/search/deep?q=invoice&offset=0&limit=100
+func (s *Server) handleDeepSearch(w http.ResponseWriter, r *http.Request) {
+	if s.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine_unavailable", "Query engine not available")
+		return
+	}
+
+	queryStr := r.URL.Query().Get("q")
+	if queryStr == "" {
+		writeError(w, http.StatusBadRequest, "missing_query", "Query parameter 'q' is required")
+		return
+	}
+
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if offset < 0 {
+		offset = 0
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+
+	q := search.Parse(queryStr)
+
+	messages, err := s.engine.Search(r.Context(), q, limit, offset)
+	if err != nil {
+		s.logger.Error("deep search failed", "query", queryStr, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Search failed")
+		return
+	}
+
+	summaries := make([]MessageSummary, len(messages))
+	for i, m := range messages {
+		summaries[i] = toMessageSummaryFromQuery(m)
+	}
+
+	// For deep search, we don't have a fast count, so use -1 to indicate unknown
+	totalCount := int64(len(summaries))
+	if len(summaries) == limit {
+		totalCount = -1 // Indicates more results may exist
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"query":       queryStr,
+		"messages":    summaries,
+		"total_count": totalCount,
+		"offset":      offset,
+		"limit":       limit,
 	})
 }
