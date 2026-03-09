@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/search"
@@ -90,15 +91,16 @@ type filteredMessagesResponse struct {
 
 // messageSummaryJSON represents a message summary in JSON format.
 type messageSummaryJSON struct {
-	ID        int64    `json:"id"`
-	Subject   string   `json:"subject"`
-	From      string   `json:"from"`
-	To        []string `json:"to"`
-	SentAt    string   `json:"sent_at"`
-	Snippet   string   `json:"snippet"`
-	Labels    []string `json:"labels"`
-	HasAttach bool     `json:"has_attachments"`
-	SizeBytes int64    `json:"size_bytes"`
+	ID             int64    `json:"id"`
+	ConversationID int64    `json:"conversation_id,omitempty"`
+	Subject        string   `json:"subject"`
+	From           string   `json:"from"`
+	To             []string `json:"to"`
+	SentAt         string   `json:"sent_at"`
+	Snippet        string   `json:"snippet"`
+	Labels         []string `json:"labels"`
+	HasAttach      bool     `json:"has_attachments"`
+	SizeBytes      int64    `json:"size_bytes"`
 }
 
 // searchFastResponse matches the API fast search response format.
@@ -276,6 +278,19 @@ func buildFilterQuery(filter query.MessageFilter) url.Values {
 	params.Set("sort", messageSortFieldToString(filter.Sorting.Field))
 	params.Set("direction", sortDirectionToString(filter.Sorting.Direction))
 
+	// EmptyValueTargets — serialize active view types as comma-separated list
+	if filter.HasEmptyTargets() {
+		var targets []string
+		for vt, active := range filter.EmptyValueTargets {
+			if active {
+				targets = append(targets, viewTypeToString(vt))
+			}
+		}
+		if len(targets) > 0 {
+			params.Set("empty_targets", strings.Join(targets, ","))
+		}
+	}
+
 	return params
 }
 
@@ -330,6 +345,7 @@ func parseMessageSummaries(msgs []messageSummaryJSON) []query.MessageSummary {
 		sentAt := parseTime(m.SentAt)
 		result[i] = query.MessageSummary{
 			ID:             m.ID,
+			ConversationID: m.ConversationID,
 			Subject:        m.Subject,
 			FromEmail:      m.From,
 			SentAt:         sentAt,
@@ -441,13 +457,14 @@ func (e *Engine) GetMessage(ctx context.Context, id int64) (*query.MessageDetail
 
 	// Convert store.APIMessage to query.MessageDetail
 	detail := &query.MessageDetail{
-		ID:           msg.ID,
-		Subject:      msg.Subject,
-		Snippet:      msg.Snippet,
-		SentAt:       msg.SentAt,
-		SizeEstimate: msg.SizeEstimate,
-		Labels:       msg.Labels,
-		BodyText:     msg.Body, // API returns combined body
+		ID:             msg.ID,
+		ConversationID: msg.ConversationID,
+		Subject:        msg.Subject,
+		Snippet:        msg.Snippet,
+		SentAt:         msg.SentAt,
+		SizeEstimate:   msg.SizeEstimate,
+		Labels:         msg.Labels,
+		BodyText:       msg.Body, // API returns combined body
 	}
 
 	// Parse From address
@@ -601,6 +618,7 @@ func (e *Engine) ListAccounts(ctx context.Context) ([]query.AccountInfo, error) 
 	result := make([]query.AccountInfo, len(accounts))
 	for i, acc := range accounts {
 		result[i] = query.AccountInfo{
+			ID:          acc.ID,
 			Identifier:  acc.Email,
 			DisplayName: acc.DisplayName,
 		}

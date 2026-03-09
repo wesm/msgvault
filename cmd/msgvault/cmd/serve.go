@@ -83,12 +83,22 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("init schema: %w", err)
 	}
 
-	// Create query engine for TUI aggregate support
+	// Create query engine for TUI aggregate support.
+	// Requires a complete Parquet cache; without one the engine
+	// would succeed at creation but fail on first query.
 	analyticsDir := cfg.AnalyticsDir()
-	engine, err := query.NewDuckDBEngine(analyticsDir, dbPath, nil)
-	if err != nil {
-		logger.Warn("query engine not available - aggregate endpoints will return 503", "error", err)
-		// Continue without engine - basic endpoints still work
+	var engine *query.DuckDBEngine
+	if query.HasCompleteParquetData(analyticsDir) {
+		var engineErr error
+		engine, engineErr = query.NewDuckDBEngine(
+			analyticsDir, dbPath, s.DB(),
+		)
+		if engineErr != nil {
+			logger.Warn("query engine not available - aggregate endpoints will return 503",
+				"error", engineErr)
+		}
+	} else {
+		logger.Warn("parquet cache not built - run 'msgvault build-cache' to enable aggregate endpoints")
 	}
 	if engine != nil {
 		defer engine.Close()

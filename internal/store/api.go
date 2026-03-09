@@ -10,6 +10,7 @@ import (
 // APIMessage represents a message for API responses.
 type APIMessage struct {
 	ID             int64
+	ConversationID int64
 	Subject        string
 	From           string
 	To             []string
@@ -99,6 +100,7 @@ func (s *Store) GetMessage(id int64) (*APIMessage, error) {
 	query := `
 		SELECT
 			m.id,
+			COALESCE(m.conversation_id, 0) as conversation_id,
 			COALESCE(m.subject, '') as subject,
 			COALESCE(p.email_address, '') as from_email,
 			COALESCE(m.sent_at, m.received_at, m.internal_date) as sent_at,
@@ -113,7 +115,7 @@ func (s *Store) GetMessage(id int64) (*APIMessage, error) {
 
 	var m APIMessage
 	var sentAtStr sql.NullString
-	err := s.db.QueryRow(query, id).Scan(&m.ID, &m.Subject, &m.From, &sentAtStr, &m.Snippet, &m.HasAttachments, &m.SizeEstimate)
+	err := s.db.QueryRow(query, id).Scan(&m.ID, &m.ConversationID, &m.Subject, &m.From, &sentAtStr, &m.Snippet, &m.HasAttachments, &m.SizeEstimate)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

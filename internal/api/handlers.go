@@ -41,6 +41,7 @@ type APIAttachment = store.APIAttachment
 
 // AccountInfo represents an account in list responses.
 type AccountInfo struct {
+	ID          int64  `json:"id"`
 	Email       string `json:"email"`
 	DisplayName string `json:"display_name,omitempty"`
 	LastSyncAt  string `json:"last_sync_at,omitempty"`
@@ -63,15 +64,16 @@ type ErrorResponse struct {
 
 // MessageSummary represents a message in list responses.
 type MessageSummary struct {
-	ID        int64    `json:"id"`
-	Subject   string   `json:"subject"`
-	From      string   `json:"from"`
-	To        []string `json:"to"`
-	SentAt    string   `json:"sent_at"`
-	Snippet   string   `json:"snippet"`
-	Labels    []string `json:"labels"`
-	HasAttach bool     `json:"has_attachments"`
-	SizeBytes int64    `json:"size_bytes"`
+	ID             int64    `json:"id"`
+	ConversationID int64    `json:"conversation_id,omitempty"`
+	Subject        string   `json:"subject"`
+	From           string   `json:"from"`
+	To             []string `json:"to"`
+	SentAt         string   `json:"sent_at"`
+	Snippet        string   `json:"snippet"`
+	Labels         []string `json:"labels"`
+	HasAttach      bool     `json:"has_attachments"`
+	SizeBytes      int64    `json:"size_bytes"`
 }
 
 // MessageDetail represents a full message response.
@@ -120,15 +122,16 @@ func toMessageSummary(m APIMessage) MessageSummary {
 		labels = []string{}
 	}
 	return MessageSummary{
-		ID:        m.ID,
-		Subject:   m.Subject,
-		From:      m.From,
-		To:        to,
-		SentAt:    m.SentAt.UTC().Format(time.RFC3339),
-		Snippet:   m.Snippet,
-		Labels:    labels,
-		HasAttach: m.HasAttachments,
-		SizeBytes: m.SizeEstimate,
+		ID:             m.ID,
+		ConversationID: m.ConversationID,
+		Subject:        m.Subject,
+		From:           m.From,
+		To:             to,
+		SentAt:         m.SentAt.UTC().Format(time.RFC3339),
+		Snippet:        m.Snippet,
+		Labels:         labels,
+		HasAttach:      m.HasAttachments,
+		SizeBytes:      m.SizeEstimate,
 	}
 }
 
@@ -292,11 +295,22 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	copy(cfgAccounts, s.cfg.Accounts)
 	s.cfgMu.RUnlock()
 
+	// Build source ID lookup from the engine (database sources table).
+	sourceIDs := make(map[string]int64)
+	if s.engine != nil {
+		if engineAccounts, err := s.engine.ListAccounts(r.Context()); err == nil {
+			for _, ea := range engineAccounts {
+				sourceIDs[ea.Identifier] = ea.ID
+			}
+		}
+	}
+
 	var accounts []AccountInfo
 
 	// Get schedule info from config
 	for _, acc := range cfgAccounts {
 		info := AccountInfo{
+			ID:       sourceIDs[acc.Email],
 			Email:    acc.Email,
 			Schedule: acc.Schedule,
 			Enabled:  acc.Enabled,
@@ -774,6 +788,15 @@ func parseMessageFilter(r *http.Request) query.MessageFilter {
 		filter.HideDeletedFromSource = true
 	}
 
+	// EmptyValueTargets — comma-separated view type names
+	if v := r.URL.Query().Get("empty_targets"); v != "" {
+		for _, name := range strings.Split(v, ",") {
+			if vt, ok := parseViewType(strings.TrimSpace(name)); ok {
+				filter.SetEmptyTarget(vt)
+			}
+		}
+	}
+
 	// Pagination
 	if v := r.URL.Query().Get("offset"); v != "" {
 		if offset, err := strconv.Atoi(v); err == nil && offset >= 0 {
@@ -841,15 +864,16 @@ func toMessageSummaryFromQuery(m query.MessageSummary) MessageSummary {
 		labels = []string{}
 	}
 	return MessageSummary{
-		ID:        m.ID,
-		Subject:   m.Subject,
-		From:      m.FromEmail,
-		To:        []string{}, // Query summary doesn't include recipients
-		SentAt:    m.SentAt.UTC().Format(time.RFC3339),
-		Snippet:   m.Snippet,
-		Labels:    labels,
-		HasAttach: m.HasAttachments,
-		SizeBytes: m.SizeEstimate,
+		ID:             m.ID,
+		ConversationID: m.ConversationID,
+		Subject:        m.Subject,
+		From:           m.FromEmail,
+		To:             []string{}, // Query summary doesn't include recipients
+		SentAt:         m.SentAt.UTC().Format(time.RFC3339),
+		Snippet:        m.Snippet,
+		Labels:         labels,
+		HasAttach:      m.HasAttachments,
+		SizeBytes:      m.SizeEstimate,
 	}
 }
 
