@@ -84,25 +84,26 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create query engine for TUI aggregate support.
-	// Requires a complete Parquet cache; without one the engine
-	// would succeed at creation but fail on first query.
+	// Prefer DuckDB over Parquet when the cache is complete; otherwise
+	// fall back to SQLite so remote endpoints still work on fresh installs.
 	analyticsDir := cfg.AnalyticsDir()
-	var engine *query.DuckDBEngine
+	var engine query.Engine
 	if query.HasCompleteParquetData(analyticsDir) {
-		var engineErr error
-		engine, engineErr = query.NewDuckDBEngine(
+		duckEngine, engineErr := query.NewDuckDBEngine(
 			analyticsDir, dbPath, s.DB(),
 		)
 		if engineErr != nil {
-			logger.Warn("query engine not available - aggregate endpoints will return 503",
+			logger.Warn("DuckDB engine failed, falling back to SQLite",
 				"error", engineErr)
+			engine = query.NewSQLiteEngine(s.DB())
+		} else {
+			engine = duckEngine
 		}
 	} else {
-		logger.Warn("parquet cache not built - run 'msgvault build-cache' to enable aggregate endpoints")
+		logger.Info("parquet cache not built - using SQLite engine (run 'msgvault build-cache' for faster aggregates)")
+		engine = query.NewSQLiteEngine(s.DB())
 	}
-	if engine != nil {
-		defer engine.Close()
-	}
+	defer engine.Close()
 
 	// Create OAuth manager
 	oauthMgr, err := oauth.NewManager(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger)
