@@ -2,6 +2,7 @@
 package remote
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -77,9 +78,14 @@ func (s *Store) Close() error {
 
 // doRequest performs an authenticated HTTP request.
 func (s *Store) doRequest(method, path string, body io.Reader) (*http.Response, error) {
+	return s.doRequestWithContext(context.Background(), method, path, body)
+}
+
+// doRequestWithContext performs an authenticated HTTP request with context support.
+func (s *Store) doRequestWithContext(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
 	reqURL := s.baseURL + path
 
-	req, err := http.NewRequest(method, reqURL, body)
+	req, err := http.NewRequestWithContext(ctx, method, reqURL, body)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
