@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/wesm/msgvault/internal/config"
+	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/scheduler"
 	"github.com/wesm/msgvault/internal/store"
 )
@@ -45,6 +46,7 @@ type AccountStatus = scheduler.AccountStatus
 type Server struct {
 	cfg         *config.Config
 	store       MessageStore
+	engine      query.Engine // optional; enables aggregate + engine search endpoints
 	scheduler   SyncScheduler
 	logger      *slog.Logger
 	router      chi.Router
@@ -62,6 +64,13 @@ func NewServer(cfg *config.Config, store MessageStore, sched SyncScheduler, logg
 		logger:    logger,
 	}
 	s.router = s.setupRouter()
+	return s
+}
+
+// WithEngine attaches a query.Engine to enable aggregate and engine-search endpoints.
+// Must be called before Start().
+func (s *Server) WithEngine(e query.Engine) *Server {
+	s.engine = e
 	return s
 }
 
@@ -107,6 +116,11 @@ func (s *Server) setupRouter() chi.Router {
 		// Messages
 		r.Get("/messages", s.handleListMessages)
 		r.Get("/messages/{id}", s.handleGetMessage)
+
+		// Engine-powered endpoints (available when query engine is attached)
+		r.Get("/aggregate", s.handleAggregate)
+		r.Get("/engine/messages", s.handleEngineMessages)
+		r.Get("/engine/search", s.handleEngineSearch)
 
 		// Search
 		r.Get("/search", s.handleSearch)
@@ -207,6 +221,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		if authHeader == "" {
 			// Also check X-API-Key header
 			authHeader = r.Header.Get("X-API-Key")
+		}
+		// Also accept ?api_key= query param (needed for browser window.open() navigations
+		// such as attachment downloads, where custom headers cannot be set).
+		if authHeader == "" {
+			authHeader = r.URL.Query().Get("api_key")
 		}
 
 		// Strip "Bearer " prefix if present
