@@ -62,6 +62,34 @@ func (e *SQLiteEngine) Close() error {
 	return nil
 }
 
+// CountMessages returns the total number of messages matching the filter (ignoring pagination).
+func (e *SQLiteEngine) CountMessages(ctx context.Context, filter MessageFilter) (int64, error) {
+	// Clear pagination so we count all matching rows.
+	filter.Pagination = Pagination{}
+
+	filterJoins, conditions, args := buildFilterJoinsAndConditions(filter, "m")
+
+	whereClause := "1=1"
+	if len(conditions) > 0 {
+		whereClause = strings.Join(conditions, " AND ")
+	}
+
+	query := fmt.Sprintf(`
+		SELECT COUNT(DISTINCT m.id)
+		FROM messages m
+		LEFT JOIN message_recipients mr_sender ON mr_sender.message_id = m.id AND mr_sender.recipient_type = 'from'
+		LEFT JOIN participants p_sender ON p_sender.id = mr_sender.participant_id
+		%s
+		WHERE %s
+	`, filterJoins, whereClause)
+
+	var count int64
+	if err := e.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count messages: %w", err)
+	}
+	return count, nil
+}
+
 // escapeSQLiteLike escapes LIKE wildcard characters (%, _, \) with \.
 func escapeSQLiteLike(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
@@ -274,6 +302,12 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 
 	if filter.WithAttachmentsOnly {
 		conditions = append(conditions, prefix+"has_attachments = 1")
+	}
+	if filter.MimeCategory != "" {
+		if cond, margs, ok := MimeCategoryExistsSQL(filter.MimeCategory, "", "m.id"); ok {
+			conditions = append(conditions, cond)
+			args = append(args, margs...)
+		}
 	}
 	if filter.HideDeletedFromSource {
 		conditions = append(conditions, prefix+"deleted_from_source_at IS NULL")
