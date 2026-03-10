@@ -55,6 +55,10 @@ func (m *MockEngine) ListMessages(ctx context.Context, filter query.MessageFilte
 	return m.ListResults, nil
 }
 
+func (m *MockEngine) CountMessages(_ context.Context, _ query.MessageFilter) (int64, error) {
+	return int64(len(m.ListResults)), nil
+}
+
 func (m *MockEngine) GetMessage(ctx context.Context, id int64) (*query.MessageDetail, error) {
 	if m.GetMessageFunc != nil {
 		return m.GetMessageFunc(ctx, id)
