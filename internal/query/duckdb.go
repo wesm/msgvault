@@ -682,6 +682,15 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 	if filter.WithAttachmentsOnly {
 		conditions = append(conditions, "msg.has_attachments = true")
 	}
+	if filter.MimeCategory != "" {
+		// Use sqlite_db.attachments when the sqlite_scanner extension is loaded;
+		// fall back to sqlite_db. prefix either way (both use the attached DB).
+		tablePrefix := "sqlite_db."
+		if cond, margs, ok := MimeCategoryExistsSQL(filter.MimeCategory, tablePrefix, "msg.id"); ok {
+			conditions = append(conditions, cond)
+			args = append(args, margs...)
+		}
+	}
 	if filter.HideDeletedFromSource {
 		conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
 	}
@@ -1158,6 +1167,31 @@ func (e *DuckDBEngine) fetchLabelsForMessages(ctx context.Context, messages []Me
 	}
 
 	return fetchLabelsForMessageList(ctx, e.db, "sqlite_db.", messages)
+}
+
+// CountMessages returns the total number of messages matching the filter.
+// Delegates to the SQLiteEngine when available, otherwise uses DuckDB Parquet.
+func (e *DuckDBEngine) CountMessages(ctx context.Context, filter MessageFilter) (int64, error) {
+	if e.sqliteEngine != nil {
+		return e.sqliteEngine.CountMessages(ctx, filter)
+	}
+
+	// Parquet-based count (no pagination)
+	filter.Pagination = Pagination{}
+	where, args := e.buildFilterConditions(filter)
+
+	query := fmt.Sprintf(`
+		WITH %s
+		SELECT COUNT(DISTINCT msg.id)
+		FROM msg
+		WHERE %s
+	`, e.parquetCTEs(), where)
+
+	var count int64
+	if err := e.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count messages (duckdb): %w", err)
+	}
+	return count, nil
 }
 
 // GetMessage retrieves a full message from SQLite.
