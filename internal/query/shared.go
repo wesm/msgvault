@@ -265,6 +265,75 @@ func getMessageByQueryShared(ctx context.Context, db *sql.DB, tablePrefix string
 	return &msg, nil
 }
 
+// MimeCategoryPatterns returns LIKE patterns for an attachment MIME category.
+// Recognised category names: image, pdf, calendar, document, spreadsheet,
+// presentation, media, zip.  Returns nil for unknown categories.
+func MimeCategoryPatterns(category string) []string {
+	switch strings.ToLower(category) {
+	case "image":
+		return []string{"image/%"}
+	case "pdf":
+		return []string{"application/pdf"}
+	case "calendar":
+		return []string{"text/calendar", "text/x-vcalendar", "application/ics"}
+	case "document":
+		return []string{
+			"application/msword",
+			"application/vnd.openxmlformats-officedocument.wordprocessingml.%",
+			"application/vnd.oasis.opendocument.text%",
+			"text/rtf",
+			"application/rtf",
+		}
+	case "spreadsheet":
+		return []string{
+			"application/vnd.ms-excel",
+			"application/vnd.openxmlformats-officedocument.spreadsheetml.%",
+			"application/vnd.oasis.opendocument.spreadsheet%",
+		}
+	case "presentation":
+		return []string{
+			"application/vnd.ms-powerpoint",
+			"application/vnd.openxmlformats-officedocument.presentationml.%",
+			"application/vnd.oasis.opendocument.presentation%",
+		}
+	case "media":
+		return []string{"audio/%", "video/%"}
+	case "zip":
+		return []string{
+			"application/zip",
+			"application/x-zip%",
+			"application/x-rar%",
+			"application/x-7z-compressed",
+			"application/gzip",
+			"application/x-tar",
+		}
+	}
+	return nil
+}
+
+// MimeCategoryExistsSQL returns an EXISTS condition that restricts to messages
+// having at least one attachment matching the given MIME category.
+// tablePrefix is "" for SQLite or "sqlite_db." for DuckDB-via-sqlite_scanner;
+// messageIDExpr is the SQL expression for the current row's message id (e.g. "m.id").
+// Returns ("", nil, false) when the category is unknown.
+func MimeCategoryExistsSQL(category, tablePrefix, messageIDExpr string) (string, []interface{}, bool) {
+	patterns := MimeCategoryPatterns(category)
+	if len(patterns) == 0 {
+		return "", nil, false
+	}
+	placeHolders := make([]string, len(patterns))
+	args := make([]interface{}, len(patterns))
+	for i, p := range patterns {
+		placeHolders[i] = "a.mime_type LIKE ?"
+		args[i] = p
+	}
+	sql := fmt.Sprintf(
+		"EXISTS (SELECT 1 FROM %sattachments a WHERE a.message_id = %s AND (%s))",
+		tablePrefix, messageIDExpr, strings.Join(placeHolders, " OR "),
+	)
+	return sql, args, true
+}
+
 // collectGmailIDs scans rows for source_message_id strings.
 func collectGmailIDs(rows *sql.Rows) ([]string, error) {
 	defer rows.Close()
