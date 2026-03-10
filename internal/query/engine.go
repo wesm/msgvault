@@ -23,6 +23,7 @@ type Engine interface {
 
 	// Message queries
 	ListMessages(ctx context.Context, filter MessageFilter) ([]MessageSummary, error)
+	CountMessages(ctx context.Context, filter MessageFilter) (int64, error)
 	GetMessage(ctx context.Context, id int64) (*MessageDetail, error)
 	GetMessageBySourceID(ctx context.Context, sourceMessageID string) (*MessageDetail, error)
 	GetAttachment(ctx context.Context, id int64) (*AttachmentInfo, error)

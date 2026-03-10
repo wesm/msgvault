@@ -214,8 +214,9 @@ type MessageFilter struct {
 	Before *time.Time
 
 	// Content filter
-	WithAttachmentsOnly   bool // only return messages with attachments
-	HideDeletedFromSource bool // exclude messages where deleted_from_source_at IS NOT NULL
+	WithAttachmentsOnly   bool   // only return messages with attachments
+	MimeCategory          string // filter by attachment MIME category ("image","pdf","calendar","document","spreadsheet","presentation","media","zip")
+	HideDeletedFromSource bool   // exclude messages where deleted_from_source_at IS NOT NULL
 
 	// Pagination
 	Pagination Pagination
