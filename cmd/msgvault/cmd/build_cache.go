@@ -297,19 +297,23 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 	if !fullRebuild && lastMessageID > 0 {
 		attachmentsFilter = fmt.Sprintf(" WHERE message_id > %d", lastMessageID)
 	}
+	mimeTypeExpr := "COALESCE(TRY_CAST(mime_type AS VARCHAR), '') as mime_type"
+	if !duckdbHasColumn(db, "sqlite_db", "attachments", "mime_type") {
+		mimeTypeExpr = "'' as mime_type"
+	}
 	if err := runExport("attachments", fmt.Sprintf(`
 	COPY (
 		SELECT
 			message_id,
 			size,
 			COALESCE(TRY_CAST(filename AS VARCHAR), '') as filename,
-			COALESCE(TRY_CAST(mime_type AS VARCHAR), '') as mime_type
+			%s
 		FROM sqlite_db.attachments%s
 	) TO '%s/%s' (
 		FORMAT PARQUET,
 		COMPRESSION 'zstd'
 	)
-	`, attachmentsFilter, escapedAttachmentsDir, junctionFile)); err != nil {
+	`, mimeTypeExpr, attachmentsFilter, escapedAttachmentsDir, junctionFile)); err != nil {
 		return nil, fmt.Errorf("export attachments: %w", err)
 	}
 
@@ -597,7 +601,7 @@ func setupSQLiteSource(duckDB *sql.DB, dbPath string) (cleanup func(), err error
 			"types={'sent_at': 'TIMESTAMP', 'deleted_from_source_at': 'TIMESTAMP'}"},
 		{"message_recipients", "SELECT message_id, participant_id, recipient_type, display_name FROM message_recipients", ""},
 		{"message_labels", "SELECT message_id, label_id FROM message_labels", ""},
-		{"attachments", "SELECT message_id, size, COALESCE(filename, '') as filename, COALESCE(mime_type, '') as mime_type FROM attachments", ""},
+		{"attachments", attachmentsCSVQuery(sqliteDB), ""},
 		{"participants", "SELECT id, email_address, domain, display_name FROM participants", ""},
 		{"labels", "SELECT id, name FROM labels", ""},
 		{"sources", "SELECT id, identifier FROM sources", ""},
@@ -640,6 +644,48 @@ func setupSQLiteSource(duckDB *sql.DB, dbPath string) (cleanup func(), err error
 	}
 
 	return func() { os.RemoveAll(tmpDir) }, nil
+}
+
+// duckdbHasColumn checks if a column exists in a DuckDB-accessible table.
+func duckdbHasColumn(db *sql.DB, schema, table, column string) bool {
+	var count int
+	err := db.QueryRow(
+		`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = ? AND table_name = ? AND column_name = ?`,
+		schema, table, column,
+	).Scan(&count)
+	return err == nil && count > 0
+}
+
+// sqliteHasColumn checks if a column exists in a SQLite table via PRAGMA table_info.
+func sqliteHasColumn(db *sql.DB, table, column string) bool {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dfltValue, &pk); err != nil {
+			continue
+		}
+		if name == column {
+			return true
+		}
+	}
+	return false
+}
+
+// attachmentsCSVQuery returns the appropriate SELECT query for the attachments
+// table, projecting ” AS mime_type when the column is absent.
+func attachmentsCSVQuery(db *sql.DB) string {
+	if sqliteHasColumn(db, "attachments", "mime_type") {
+		return "SELECT message_id, size, COALESCE(filename, '') as filename, COALESCE(mime_type, '') as mime_type FROM attachments"
+	}
+	return "SELECT message_id, size, COALESCE(filename, '') as filename, '' as mime_type FROM attachments"
 }
 
 // csvNullStr is written for NULL values in CSV exports so DuckDB can

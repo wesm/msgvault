@@ -1133,7 +1133,7 @@ func TestBuildCache_EmptyDatabase(t *testing.T) {
 		CREATE TABLE message_recipients (message_id INTEGER, participant_id INTEGER, recipient_type TEXT, display_name TEXT);
 		CREATE TABLE labels (id INTEGER PRIMARY KEY, name TEXT);
 		CREATE TABLE message_labels (message_id INTEGER, label_id INTEGER);
-		CREATE TABLE attachments (message_id INTEGER, size INTEGER, filename TEXT);
+		CREATE TABLE attachments (message_id INTEGER, size INTEGER, filename TEXT, mime_type TEXT);
 		CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_conversation_id TEXT);
 	`)
 	db.Close()
@@ -1333,7 +1333,7 @@ func BenchmarkBuildCache(b *testing.B) {
 		CREATE TABLE message_recipients (message_id INTEGER, participant_id INTEGER, recipient_type TEXT, display_name TEXT);
 		CREATE TABLE labels (id INTEGER PRIMARY KEY, name TEXT);
 		CREATE TABLE message_labels (message_id INTEGER, label_id INTEGER);
-		CREATE TABLE attachments (message_id INTEGER, size INTEGER, filename TEXT);
+		CREATE TABLE attachments (message_id INTEGER, size INTEGER, filename TEXT, mime_type TEXT);
 		CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_conversation_id TEXT);
 		INSERT INTO sources VALUES (1, 'test@gmail.com');
 		INSERT INTO labels VALUES (1, 'INBOX'), (2, 'Work');
@@ -1762,7 +1762,7 @@ func BenchmarkBuildCacheIncremental(b *testing.B) {
 		CREATE TABLE message_recipients (message_id INTEGER, participant_id INTEGER, recipient_type TEXT, display_name TEXT);
 		CREATE TABLE labels (id INTEGER PRIMARY KEY, name TEXT);
 		CREATE TABLE message_labels (message_id INTEGER, label_id INTEGER);
-		CREATE TABLE attachments (message_id INTEGER, size INTEGER, filename TEXT);
+		CREATE TABLE attachments (message_id INTEGER, size INTEGER, filename TEXT, mime_type TEXT);
 		CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_conversation_id TEXT);
 		INSERT INTO sources VALUES (1, 'test@gmail.com');
 		INSERT INTO labels VALUES (1, 'INBOX');
