@@ -16,6 +16,7 @@ import (
 	"github.com/wesm/msgvault/internal/api"
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/oauth"
+	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/scheduler"
 	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/sync"
@@ -121,8 +122,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	storeAdapter := &storeAPIAdapter{store: s}
 	schedAdapter := &schedulerAdapter{scheduler: sched}
 
-	// Create and start API server
-	apiServer := api.NewServer(cfg, storeAdapter, schedAdapter, logger)
+	// Create and start API server with a SQLite query engine for rich aggregate endpoints.
+	apiServer := api.NewServer(cfg, storeAdapter, schedAdapter, logger).
+		WithEngine(query.NewSQLiteEngine(s.DB()))
 
 	// Start API server in goroutine
 	serverErr := make(chan error, 1)
