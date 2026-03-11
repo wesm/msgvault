@@ -516,6 +516,15 @@ func (e *Engine) Search(ctx context.Context, q *search.Query, limit, offset int)
 	params.Set("offset", strconv.Itoa(offset))
 	params.Set("limit", strconv.Itoa(limit))
 
+	// Forward filter-only fields that can't be represented in the
+	// query string syntax (AccountID, HideDeleted).
+	if q.AccountID != nil {
+		params.Set("source_id", strconv.FormatInt(*q.AccountID, 10))
+	}
+	if q.HideDeleted {
+		params.Set("hide_deleted", "true")
+	}
+
 	path := "/api/v1/search/deep?" + params.Encode()
 
 	resp, err := e.store.doRequestWithContext(ctx, "GET", path, nil)

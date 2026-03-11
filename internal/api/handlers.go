@@ -1084,7 +1084,7 @@ func (s *Server) handleFastSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeepSearch performs full-text body search via FTS5.
-// GET /api/v1/search/deep?q=invoice&offset=0&limit=100
+// GET /api/v1/search/deep?q=invoice&offset=0&limit=100&source_id=1&hide_deleted=true
 func (s *Server) handleDeepSearch(w http.ResponseWriter, r *http.Request) {
 	if s.engine == nil {
 		writeError(w, http.StatusServiceUnavailable, "engine_unavailable", "Query engine not available")
@@ -1097,18 +1097,18 @@ func (s *Server) handleDeepSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	if offset < 0 {
-		offset = 0
-	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	filter := parseMessageFilter(r)
+
+	offset := filter.Pagination.Offset
+	limit := filter.Pagination.Limit
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
 
 	q := search.Parse(queryStr)
+	merged := query.MergeFilterIntoQuery(q, filter)
 
-	messages, err := s.engine.Search(r.Context(), q, limit, offset)
+	messages, err := s.engine.Search(r.Context(), merged, limit, offset)
 	if err != nil {
 		s.logger.Error("deep search failed", "query", queryStr, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Search failed")
