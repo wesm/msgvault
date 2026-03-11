@@ -1170,12 +1170,9 @@ func (e *DuckDBEngine) fetchLabelsForMessages(ctx context.Context, messages []Me
 }
 
 // CountMessages returns the total number of messages matching the filter.
-// Delegates to the SQLiteEngine when available, otherwise uses DuckDB Parquet.
+// Always uses Parquet (same backing store as ListMessages) to ensure the count
+// and the page rows are derived from the same dataset, keeping pagination consistent.
 func (e *DuckDBEngine) CountMessages(ctx context.Context, filter MessageFilter) (int64, error) {
-	if e.sqliteEngine != nil {
-		return e.sqliteEngine.CountMessages(ctx, filter)
-	}
-
 	// Parquet-based count (no pagination)
 	filter.Pagination = Pagination{}
 	where, args := e.buildFilterConditions(filter)
