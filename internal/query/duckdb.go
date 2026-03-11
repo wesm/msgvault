@@ -1088,11 +1088,13 @@ func (e *DuckDBEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 			msg.sent_at,
 			COALESCE(msg.size_estimate, 0) as size_estimate,
 			COALESCE(msg.has_attachments, false) as has_attachments,
+			COALESCE(a.attachment_count, 0) as attachment_count,
 			msg.deleted_from_source_at
 		FROM msg
 		JOIN filtered_msgs fm ON fm.id = msg.id
 		LEFT JOIN msg_sender ms ON ms.message_id = msg.id
 		LEFT JOIN conv c ON c.id = msg.conversation_id
+		LEFT JOIN att a ON a.message_id = msg.id
 		ORDER BY %s
 	`, e.parquetCTEs(), where, orderBy, orderBy)
 
@@ -1121,6 +1123,7 @@ func (e *DuckDBEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 			&sentAt,
 			&msg.SizeEstimate,
 			&msg.HasAttachments,
+			&msg.AttachmentCount,
 			&deletedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
@@ -1136,6 +1139,13 @@ func (e *DuckDBEngine) ListMessages(ctx context.Context, filter MessageFilter) (
 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate messages: %w", err)
+	}
+
+	// Enrich messages with labels from SQLite/sqlite_scanner.
+	if len(results) > 0 {
+		if err := e.fetchLabelsForMessages(ctx, results); err != nil {
+			return nil, fmt.Errorf("fetch labels: %w", err)
+		}
 	}
 
 	return results, nil

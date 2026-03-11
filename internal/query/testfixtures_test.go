@@ -436,6 +436,49 @@ func (b *TestDataBuilder) BuildEngine() *DuckDBEngine {
 	return engine
 }
 
+// BuildEngineWithSQLite generates Parquet files and returns a DuckDBEngine
+// backed by both Parquet (for ListMessages) and an in-memory SQLite DB
+// (for label enrichment). The SQLite DB is seeded with labels and message_labels
+// matching the Parquet data.
+func (b *TestDataBuilder) BuildEngineWithSQLite() *DuckDBEngine {
+	b.t.Helper()
+	analyticsDir, cleanup := b.Build()
+	b.t.Cleanup(cleanup)
+
+	sqliteDB, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		b.t.Fatalf("open sqlite: %v", err)
+	}
+	b.t.Cleanup(func() { sqliteDB.Close() })
+
+	// Create minimal schema for label enrichment
+	_, err = sqliteDB.Exec(`
+		CREATE TABLE labels (id INTEGER PRIMARY KEY, name TEXT);
+		CREATE TABLE message_labels (message_id INTEGER, label_id INTEGER);
+	`)
+	if err != nil {
+		b.t.Fatalf("create sqlite schema: %v", err)
+	}
+
+	for _, l := range b.labels {
+		if _, err := sqliteDB.Exec("INSERT INTO labels (id, name) VALUES (?, ?)", l.ID, l.Name); err != nil {
+			b.t.Fatalf("insert label: %v", err)
+		}
+	}
+	for _, ml := range b.msgLabels {
+		if _, err := sqliteDB.Exec("INSERT INTO message_labels (message_id, label_id) VALUES (?, ?)", ml.MessageID, ml.LabelID); err != nil {
+			b.t.Fatalf("insert message_label: %v", err)
+		}
+	}
+
+	engine, err := NewDuckDBEngine(analyticsDir, "", sqliteDB)
+	if err != nil {
+		b.t.Fatalf("NewDuckDBEngine: %v", err)
+	}
+	b.t.Cleanup(func() { engine.Close() })
+	return engine
+}
+
 // ---------------------------------------------------------------------------
 // Low-level Parquet builder (unchanged)
 // ---------------------------------------------------------------------------

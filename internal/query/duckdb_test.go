@@ -3208,3 +3208,77 @@ func TestDuckDBEngine_HideDeletedFromSource(t *testing.T) {
 		t.Errorf("GetTotalStats with hide-deleted: expected 2 messages, got %d", stats.MessageCount)
 	}
 }
+
+// TestDuckDBEngine_ListMessages_LabelsAndAttachmentCount verifies that
+// DuckDBEngine.ListMessages populates Labels and AttachmentCount correctly,
+// matching the SQLite engine behavior.
+//
+// Standard test data:
+//
+//	msg1: no attachments, labels: INBOX+Work
+//	msg2: 2 attachments (document.pdf + image.png), labels: INBOX+IMPORTANT
+//	msg3: no attachments, labels: INBOX
+//	msg4: 1 attachment (report.xlsx), labels: INBOX+Work
+//	msg5: no attachments, labels: INBOX
+func TestDuckDBEngine_ListMessages_LabelsAndAttachmentCount(t *testing.T) {
+	engine := buildStandardTestData(t).BuildEngineWithSQLite()
+	ctx := context.Background()
+
+	filter := MessageFilter{
+		Sorting:    MessageSorting{Field: MessageSortByDate, Direction: SortAsc},
+		Pagination: Pagination{Limit: 100},
+	}
+
+	results, err := engine.ListMessages(ctx, filter)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+
+	if len(results) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(results))
+	}
+
+	// Build lookup by subject
+	bySubject := map[string]MessageSummary{}
+	for _, m := range results {
+		bySubject[m.Subject] = m
+	}
+
+	// Verify attachment counts
+	tests := []struct {
+		subject         string
+		wantAttCount    int
+		wantLabelCount  int
+		wantLabelSubset []string
+	}{
+		{"Hello World", 0, 2, []string{"INBOX", "Work"}},
+		{"Re: Hello", 2, 2, []string{"INBOX", "IMPORTANT"}},
+		{"Follow up", 0, 1, []string{"INBOX"}},
+		{"Question", 1, 2, []string{"INBOX", "Work"}},
+		{"Final", 0, 1, []string{"INBOX"}},
+	}
+
+	for _, tt := range tests {
+		msg, ok := bySubject[tt.subject]
+		if !ok {
+			t.Errorf("message %q not found in results", tt.subject)
+			continue
+		}
+		if msg.AttachmentCount != tt.wantAttCount {
+			t.Errorf("%q: AttachmentCount = %d, want %d", tt.subject, msg.AttachmentCount, tt.wantAttCount)
+		}
+		if len(msg.Labels) != tt.wantLabelCount {
+			t.Errorf("%q: len(Labels) = %d, want %d (labels: %v)", tt.subject, len(msg.Labels), tt.wantLabelCount, msg.Labels)
+		}
+		// Verify expected labels are present (order-independent)
+		labelSet := map[string]bool{}
+		for _, l := range msg.Labels {
+			labelSet[l] = true
+		}
+		for _, want := range tt.wantLabelSubset {
+			if !labelSet[want] {
+				t.Errorf("%q: label %q not found in %v", tt.subject, want, msg.Labels)
+			}
+		}
+	}
+}
