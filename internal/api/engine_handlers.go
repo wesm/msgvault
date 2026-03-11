@@ -93,14 +93,20 @@ func (s *Server) handleAggregate(w http.ResponseWriter, r *http.Request) {
 	opts.SearchQuery = q.Get("q")
 
 	if v := q.Get("after"); v != "" {
-		if t, err := time.Parse("2006-01-02", v); err == nil {
-			opts.After = &t
+		t, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("invalid after date %q, expected YYYY-MM-DD", v))
+			return
 		}
+		opts.After = &t
 	}
 	if v := q.Get("before"); v != "" {
-		if t, err := time.Parse("2006-01-02", v); err == nil {
-			opts.Before = &t
+		t, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("invalid before date %q, expected YYYY-MM-DD", v))
+			return
 		}
+		opts.Before = &t
 	}
 
 	rows, err := s.engine.Aggregate(r.Context(), viewType, opts)
@@ -194,14 +200,20 @@ func (s *Server) handleEngineMessages(w http.ResponseWriter, r *http.Request) {
 		filter.TimeRange = query.TimeRange{Period: v}
 	} else {
 		if v := q.Get("after"); v != "" {
-			if t, err := time.Parse("2006-01-02", v); err == nil {
-				filter.After = &t
+			t, err := time.Parse("2006-01-02", v)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("invalid after date %q, expected YYYY-MM-DD", v))
+				return
 			}
+			filter.After = &t
 		}
 		if v := q.Get("before"); v != "" {
-			if t, err := time.Parse("2006-01-02", v); err == nil {
-				filter.Before = &t
+			t, err := time.Parse("2006-01-02", v)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("invalid before date %q, expected YYYY-MM-DD", v))
+				return
 			}
+			filter.Before = &t
 		}
 	}
 

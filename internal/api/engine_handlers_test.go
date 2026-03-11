@@ -96,6 +96,29 @@ func TestHandleAggregate_Success(t *testing.T) {
 	}
 }
 
+func TestHandleAggregate_InvalidDates(t *testing.T) {
+	eng := &querytest.MockEngine{}
+	srv := newTestServerWithEngine(t, eng)
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"bad after", "/api/v1/aggregate?group_by=sender&after=not-a-date"},
+		{"bad before", "/api/v1/aggregate?group_by=sender&before=2024-13-01"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tt.url, nil)
+			w := httptest.NewRecorder()
+			srv.Router().ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
 func TestHandleAggregate_GroupByVariants(t *testing.T) {
 	tests := []struct {
 		groupBy string
@@ -230,6 +253,29 @@ func TestHandleEngineMessages_PeriodFilter(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestHandleEngineMessages_InvalidDates(t *testing.T) {
+	eng := &querytest.MockEngine{}
+	srv := newTestServerWithEngine(t, eng)
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"bad after", "/api/v1/engine/messages?after=not-a-date"},
+		{"bad before", "/api/v1/engine/messages?before=yesterday"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tt.url, nil)
+			w := httptest.NewRecorder()
+			srv.Router().ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+			}
+		})
 	}
 }
 
