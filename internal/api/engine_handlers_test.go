@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -312,6 +313,23 @@ func TestHandleEngineMessages_PageSizeClamped(t *testing.T) {
 				t.Errorf("page_size = %v, want %v", ps, tt.wantPageSize)
 			}
 		})
+	}
+}
+
+func TestHandleEngineMessages_CountFailure(t *testing.T) {
+	eng := &querytest.MockEngine{
+		CountMessagesFunc: func(_ context.Context, _ query.MessageFilter) (int64, error) {
+			return 0, fmt.Errorf("database locked")
+		},
+	}
+	srv := newTestServerWithEngine(t, eng)
+
+	req := httptest.NewRequest("GET", "/api/v1/engine/messages", nil)
+	w := httptest.NewRecorder()
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
 	}
 }
 

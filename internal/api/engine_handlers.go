@@ -218,7 +218,12 @@ func (s *Server) handleEngineMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Count total matching messages for pagination (ignores Limit/Offset).
-	total, _ := s.engine.CountMessages(r.Context(), filter)
+	total, err := s.engine.CountMessages(r.Context(), filter)
+	if err != nil {
+		s.logger.Error("engine count messages failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "query_error", "Count query failed")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"page":      page,
