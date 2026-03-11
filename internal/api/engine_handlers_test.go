@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -232,16 +233,51 @@ func TestHandleEngineMessages_PeriodFilter(t *testing.T) {
 }
 
 func TestHandleEngineMessages_FileTypeFilter(t *testing.T) {
-	eng := &querytest.MockEngine{}
-	srv := newTestServerWithEngine(t, eng)
+	tests := []struct {
+		name           string
+		param          string
+		wantStatus     int
+		wantMimeCat    string
+		wantAttachOnly bool
+	}{
+		// UI-style aliases (plural / capitalized)
+		{"images alias", "file_type=Images", http.StatusOK, "image", true},
+		{"pdfs alias", "file_type=PDFs", http.StatusOK, "pdf", true},
+		{"calendar alias", "file_type=Calendar+invites", http.StatusOK, "calendar", true},
+		// Canonical lowercase values accepted directly
+		{"image canonical", "file_type=image", http.StatusOK, "image", true},
+		{"zip canonical", "file_type=zip", http.StatusOK, "zip", true},
+		// Unknown values → 400
+		{"unknown type", "file_type=foobar", http.StatusBadRequest, "", false},
+	}
 
-	req := httptest.NewRequest("GET", "/api/v1/engine/messages?file_type=Images", nil)
-	w := httptest.NewRecorder()
-	srv.Router().ServeHTTP(w, req)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured query.MessageFilter
+			eng := &querytest.MockEngine{
+				ListMessagesFunc: func(_ context.Context, f query.MessageFilter) ([]query.MessageSummary, error) {
+					captured = f
+					return nil, nil
+				},
+			}
+			srv := newTestServerWithEngine(t, eng)
 
-	// Should succeed; the filter is passed to the engine
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+			req := httptest.NewRequest("GET", "/api/v1/engine/messages?"+tt.param, nil)
+			w := httptest.NewRecorder()
+			srv.Router().ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body: %s)", w.Code, tt.wantStatus, w.Body.String())
+			}
+			if tt.wantStatus == http.StatusOK {
+				if captured.MimeCategory != tt.wantMimeCat {
+					t.Errorf("MimeCategory = %q, want %q", captured.MimeCategory, tt.wantMimeCat)
+				}
+				if captured.WithAttachmentsOnly != tt.wantAttachOnly {
+					t.Errorf("WithAttachmentsOnly = %v, want %v", captured.WithAttachmentsOnly, tt.wantAttachOnly)
+				}
+			}
+		})
 	}
 }
 

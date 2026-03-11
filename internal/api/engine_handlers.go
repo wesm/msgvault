@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -178,7 +179,12 @@ func (s *Server) handleEngineMessages(w http.ResponseWriter, r *http.Request) {
 		filter.WithAttachmentsOnly = true
 	}
 	if v := q.Get("file_type"); v != "" {
-		filter.MimeCategory = v
+		canonical, ok := normalizeMimeCategory(v)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("unknown file_type %q", v))
+			return
+		}
+		filter.MimeCategory = canonical
 		filter.WithAttachmentsOnly = true // implicit
 	}
 	if q.Get("hide_deleted") == "true" {
@@ -357,4 +363,33 @@ func parseSortDirection(s string) query.SortDirection {
 		return query.SortAsc
 	}
 	return query.SortDesc
+}
+
+// mimeUIAliases maps UI-facing file_type labels to canonical MimeCategoryPatterns keys.
+// UI sends plural/capitalized names (e.g. "Images"); the backend uses singular lowercase.
+var mimeUIAliases = map[string]string{
+	"images":           "image",
+	"pdfs":             "pdf",
+	"calendar invites": "calendar",
+	"documents":        "document",
+	"spreadsheets":     "spreadsheet",
+	"presentations":    "presentation",
+	"media":            "media",
+	"zip files":        "zip",
+}
+
+// normalizeMimeCategory maps a raw file_type query param to the canonical
+// MimeCategoryPatterns key.  It accepts both canonical values (e.g. "image")
+// and the UI aliases (e.g. "Images").  Returns ("", false) for unknown values.
+func normalizeMimeCategory(v string) (string, bool) {
+	lower := strings.ToLower(v)
+	// Accept canonical values directly.
+	if patterns := query.MimeCategoryPatterns(lower); patterns != nil {
+		return lower, true
+	}
+	// Try UI alias map.
+	if canonical, ok := mimeUIAliases[lower]; ok {
+		return canonical, true
+	}
+	return "", false
 }
