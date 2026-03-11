@@ -168,9 +168,9 @@ func buildStandardTestData(t *testing.T) *TestDataBuilder {
 	b.AddMessageLabel(msg5, inbox)
 
 	// Attachments
-	b.AddAttachment(msg2, 10000, "document.pdf")
-	b.AddAttachment(msg2, 5000, "image.png")
-	b.AddAttachment(msg4, 20000, "report.xlsx")
+	b.AddAttachment(msg2, 10000, "document.pdf", "application/pdf")
+	b.AddAttachment(msg2, 5000, "image.png", "image/png")
+	b.AddAttachment(msg4, 20000, "report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 	return b
 }
@@ -2175,7 +2175,7 @@ func TestDuckDBEngine_AggregateByRecipientName_EmptyStringFallback(t *testing.T)
 		`).
 		addEmptyTable("labels", "labels", "labels.parquet", labelsCols, `(1::BIGINT, 'x')`).
 		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
-		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`).
+		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x', 'text/plain')`).
 		addTable("conversations", "conversations", "conversations.parquet", conversationsCols, `
 			(100::BIGINT, 'thread100'),
 			(101::BIGINT, 'thread101')
@@ -2224,7 +2224,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptyRecipientName(t *testing.T) {
 		`).
 		addEmptyTable("labels", "labels", "labels.parquet", labelsCols, `(1::BIGINT, 'x')`).
 		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
-		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x')`).
+		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, 100::BIGINT, 'x', 'text/plain')`).
 		addTable("conversations", "conversations", "conversations.parquet", conversationsCols, `
 			(100::BIGINT, 'thread100'),
 			(101::BIGINT, 'thread101')
@@ -2820,7 +2820,7 @@ func TestDuckDBEngine_VARCHARParquetColumns(t *testing.T) {
 		`).
 		addEmptyTable("labels", "labels", "labels.parquet", labelsCols, `(1::BIGINT, 'x')`).
 		addEmptyTable("message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, `(1::BIGINT, 1::BIGINT)`).
-		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, '100', 'x')`).
+		addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols, `(1::BIGINT, '100', 'x', 'text/plain')`).
 		addTable("conversations", "conversations", "conversations.parquet", conversationsCols, `
 			(100::BIGINT, 'thread100'),
 			(101::BIGINT, 'thread101')

@@ -205,11 +205,17 @@ func (e *DuckDBEngine) parquetCTEs() string {
 				CAST(label_id AS BIGINT) AS label_id
 			) FROM read_parquet('%s')
 		),
-		att AS (
+		att_mime AS (
 			SELECT CAST(message_id AS BIGINT) AS message_id,
-				SUM(COALESCE(TRY_CAST(size AS BIGINT), 0)) as attachment_size,
-				COUNT(*) as attachment_count
+				CAST(mime_type AS VARCHAR) AS mime_type,
+				COALESCE(TRY_CAST(size AS BIGINT), 0) AS size
 			FROM read_parquet('%s')
+		),
+		att AS (
+			SELECT message_id,
+				SUM(size) as attachment_size,
+				COUNT(*) as attachment_count
+			FROM att_mime
 			GROUP BY 1
 		),
 		src AS (
@@ -228,7 +234,7 @@ func (e *DuckDBEngine) parquetCTEs() string {
 		e.parquetPath("participants"),
 		e.parquetPath("labels"),
 		e.parquetPath("message_labels"),
-		e.parquetPath("attachments"),
+		e.parquetPath("attachments"), // att_mime (per-row, for MIME filtering)
 		e.parquetPath("sources"),
 		e.parquetPath("conversations"))
 }
@@ -683,10 +689,11 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 		conditions = append(conditions, "msg.has_attachments = true")
 	}
 	if filter.MimeCategory != "" {
-		// Use sqlite_db.attachments when the sqlite_scanner extension is loaded;
-		// fall back to sqlite_db. prefix either way (both use the attached DB).
-		tablePrefix := "sqlite_db."
-		if cond, margs, ok := MimeCategoryExistsSQL(filter.MimeCategory, tablePrefix, "msg.id"); ok {
+		// Use the att_mime Parquet CTE so this filter works on all platforms
+		// (including Windows / no sqlite_scanner) and is consistent with ListMessages.
+		if cond, margs, ok := MimeCategoryExistsSQL(filter.MimeCategory, "", "msg.id"); ok {
+			// Replace the generic attachments table reference with att_mime.
+			cond = strings.ReplaceAll(cond, "attachments a", "att_mime a")
 			conditions = append(conditions, cond)
 			args = append(args, margs...)
 		}

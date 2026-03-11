@@ -71,6 +71,7 @@ type AttachmentFixture struct {
 	MessageID int64
 	Size      int64
 	Filename  string
+	MimeType  string
 }
 
 // ConversationFixture defines a conversation row for Parquet test data.
@@ -249,10 +250,10 @@ func (b *TestDataBuilder) AddMessageLabel(messageID, labelID int64) {
 }
 
 // AddAttachment adds an attachment row and sets HasAttachments on the related message.
-func (b *TestDataBuilder) AddAttachment(messageID, size int64, filename string) {
+func (b *TestDataBuilder) AddAttachment(messageID, size int64, filename, mimeType string) {
 	b.t.Helper()
 	b.attachments = append(b.attachments, AttachmentFixture{
-		MessageID: messageID, Size: size, Filename: filename,
+		MessageID: messageID, Size: size, Filename: filename, MimeType: mimeType,
 	})
 	// Ensure the related message has HasAttachments set to true.
 	for i := range b.messages {
@@ -334,8 +335,8 @@ func (b *TestDataBuilder) messageLabelsSQL() string {
 
 func (b *TestDataBuilder) attachmentsSQL() string {
 	return joinRows(b.attachments, func(a AttachmentFixture) string {
-		return fmt.Sprintf("(%d::BIGINT, %d::BIGINT, %s)",
-			a.MessageID, a.Size, sqlStr(a.Filename))
+		return fmt.Sprintf("(%d::BIGINT, %d::BIGINT, %s, %s)",
+			a.MessageID, a.Size, sqlStr(a.Filename), sqlStr(a.MimeType))
 	})
 }
 
@@ -358,7 +359,7 @@ const (
 	messageRecipientsCols = "message_id, participant_id, recipient_type, display_name"
 	labelsCols            = "id, name"
 	messageLabelsCols     = "message_id, label_id"
-	attachmentsCols       = "message_id, size, filename"
+	attachmentsCols       = "message_id, size, filename, mime_type"
 	conversationsCols     = "id, source_conversation_id"
 )
 
@@ -417,7 +418,7 @@ func (b *TestDataBuilder) addAttachmentsTable(pb *parquetBuilder) {
 		pb.addTable("attachments", "attachments", "attachments.parquet", attachmentsCols, b.attachmentsSQL())
 	} else {
 		pb.addEmptyTable("attachments", "attachments", "attachments.parquet", attachmentsCols,
-			"(0::BIGINT, 0::BIGINT, '')")
+			"(0::BIGINT, 0::BIGINT, '', '')")
 	}
 }
 

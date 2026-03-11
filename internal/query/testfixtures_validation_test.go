@@ -46,7 +46,7 @@ func TestTestDataBuilder_ValidationFailures(t *testing.T) {
 			fn: func(b *TestDataBuilder) {
 				b.AddSource("a@test.com")
 				b.AddMessage(MessageOpt{Subject: "ok"})
-				b.AddAttachment(999, 1024, "missing.txt")
+				b.AddAttachment(999, 1024, "missing.txt", "text/plain")
 			},
 		},
 	}
@@ -104,7 +104,7 @@ func TestAddAttachment_SetsHasAttachments(t *testing.T) {
 		t.Error("HasAttachments should be false before AddAttachment")
 	}
 
-	b.AddAttachment(msgID, 1024, "file.txt")
+	b.AddAttachment(msgID, 1024, "file.txt", "text/plain")
 
 	if !b.messages[0].HasAttachments {
 		t.Error("HasAttachments should be true after AddAttachment")

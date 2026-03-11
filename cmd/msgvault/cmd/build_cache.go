@@ -302,7 +302,8 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 		SELECT
 			message_id,
 			size,
-			COALESCE(TRY_CAST(filename AS VARCHAR), '') as filename
+			COALESCE(TRY_CAST(filename AS VARCHAR), '') as filename,
+			COALESCE(TRY_CAST(mime_type AS VARCHAR), '') as mime_type
 		FROM sqlite_db.attachments%s
 	) TO '%s/%s' (
 		FORMAT PARQUET,
@@ -596,7 +597,7 @@ func setupSQLiteSource(duckDB *sql.DB, dbPath string) (cleanup func(), err error
 			"types={'sent_at': 'TIMESTAMP', 'deleted_from_source_at': 'TIMESTAMP'}"},
 		{"message_recipients", "SELECT message_id, participant_id, recipient_type, display_name FROM message_recipients", ""},
 		{"message_labels", "SELECT message_id, label_id FROM message_labels", ""},
-		{"attachments", "SELECT message_id, size, filename FROM attachments", ""},
+		{"attachments", "SELECT message_id, size, COALESCE(filename, '') as filename, COALESCE(mime_type, '') as mime_type FROM attachments", ""},
 		{"participants", "SELECT id, email_address, domain, display_name FROM participants", ""},
 		{"labels", "SELECT id, name FROM labels", ""},
 		{"sources", "SELECT id, identifier FROM sources", ""},
