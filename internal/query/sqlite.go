@@ -304,7 +304,7 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 		conditions = append(conditions, prefix+"has_attachments = 1")
 	}
 	if filter.MimeCategory != "" {
-		if cond, margs, ok := MimeCategoryExistsSQL(filter.MimeCategory, "", "m.id"); ok {
+		if cond, margs, ok := MimeCategoryExistsSQL(filter.MimeCategory, "", prefix+"id"); ok {
 			conditions = append(conditions, cond)
 			args = append(args, margs...)
 		}
