@@ -65,19 +65,6 @@ Examples:
 			cancel()
 		}()
 
-		// Handle IMAP sources: IMAP does not support incremental
-		// sync, so redirect to a full sync.
-		if len(args) == 1 {
-			src, lookupErr := s.GetSourceByIdentifier(args[0])
-			if lookupErr != nil {
-				return fmt.Errorf("look up source: %w", lookupErr)
-			}
-			if src != nil && src.SourceType == "imap" {
-				fmt.Printf("Note: IMAP accounts do not support incremental sync. Running full sync instead.\n\n")
-				return runFullSync(ctx, s, nil, src)
-			}
-		}
-
 		// Lazy OAuth init — only needed for Gmail sources.
 		var oauthMgr *oauth.Manager
 		getOAuthMgr := func() (*oauth.Manager, error) {
@@ -97,14 +84,31 @@ Examples:
 
 		// Determine which accounts to sync.
 		type syncTarget struct {
-			source *store.Source // nil for Gmail-by-email (no source record yet)
+			source *store.Source
 			email  string
 		}
 		var gmailTargets []syncTarget
 		var imapTargets []*store.Source
 
 		if len(args) == 1 {
-			gmailTargets = []syncTarget{{email: args[0]}}
+			// Resolve all sources for the identifier and route
+			// each by type, same as sync-full.
+			allMatches, lookupErr := s.GetSourcesByIdentifier(args[0])
+			if lookupErr != nil {
+				return fmt.Errorf("look up source: %w", lookupErr)
+			}
+			for _, src := range allMatches {
+				switch src.SourceType {
+				case "gmail":
+					gmailTargets = append(gmailTargets, syncTarget{source: src, email: src.Identifier})
+				case "imap":
+					imapTargets = append(imapTargets, src)
+				}
+			}
+			if len(gmailTargets) == 0 && len(imapTargets) == 0 {
+				// Not in DB — assume Gmail (legacy behaviour)
+				gmailTargets = []syncTarget{{email: args[0]}}
+			}
 		} else {
 			// Discover all sources.
 			allSources, err := s.ListSources("")
