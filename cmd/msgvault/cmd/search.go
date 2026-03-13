@@ -51,13 +51,13 @@ Examples:
   msgvault search subject:meeting after:2024-01-01
   msgvault search project report newer_than:30d
   msgvault search '"exact phrase"' label:INBOX`,
-	Args: cobra.MinimumNArgs(1),
+	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Join all args to form the query (allows unquoted multi-term searches)
 		queryStr := strings.Join(args, " ")
 
-		if queryStr == "" {
-			return fmt.Errorf("empty search query")
+		if queryStr == "" && searchAccount == "" {
+			return fmt.Errorf("provide a search query or --account flag")
 		}
 
 		// Use remote search if configured
@@ -105,11 +105,6 @@ func runRemoteSearch(queryStr string) error {
 func runLocalSearch(cmd *cobra.Command, queryStr string) error {
 	// Parse the query
 	q := search.Parse(queryStr)
-	if q.IsEmpty() {
-		return fmt.Errorf("empty search query")
-	}
-
-	fmt.Fprintf(os.Stderr, "Searching...")
 
 	// Open database
 	dbPath := cfg.DatabaseDSN()
@@ -124,6 +119,8 @@ func runLocalSearch(cmd *cobra.Command, queryStr string) error {
 		return fmt.Errorf("init schema: %w", err)
 	}
 
+	// Resolve --account before checking IsEmpty so that
+	// "search --account foo@bar.com" (no query terms) is valid.
 	if searchAccount != "" {
 		src, err := s.GetSourceByIdentifier(searchAccount)
 		if err != nil {
@@ -134,6 +131,12 @@ func runLocalSearch(cmd *cobra.Command, queryStr string) error {
 		}
 		q.AccountID = &src.ID
 	}
+
+	if q.IsEmpty() {
+		return fmt.Errorf("empty search query")
+	}
+
+	fmt.Fprintf(os.Stderr, "Searching...")
 
 	if err := ensureFTSIndex(s); err != nil {
 		return err
