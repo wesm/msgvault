@@ -154,6 +154,106 @@ func TestSearchCmd_AccountFlagWithoutQuery(t *testing.T) {
 	}
 }
 
+func TestSearchCmd_InvalidQueryFailsFastWithoutDB(t *testing.T) {
+	savedCfg := cfg
+	defer func() { cfg = savedCfg; resetSearchFlags() }()
+
+	// Point at a non-existent directory so store.Open would fail
+	// if the code reaches it.
+	cfg = &config.Config{
+		HomeDir: "/nonexistent",
+		Data:    config.DataConfig{DataDir: "/nonexistent"},
+	}
+
+	root := newTestRootCmd()
+	root.AddCommand(searchCmd)
+	root.SetArgs([]string{"search", "before:not-a-date"})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid query")
+	}
+	if !strings.Contains(err.Error(), "empty search query") {
+		t.Errorf(
+			"error = %q, want 'empty search query' (not a DB error)",
+			err,
+		)
+	}
+}
+
+func TestSearchCmd_AccountFlagDoesNotLeakAcrossInvocations(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/msgvault.db"
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := s.InitSchema(); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+	src, err := s.GetOrCreateSource("gmail", "alice@example.com")
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	conv, err := s.EnsureConversation(src.ID, "c1", "")
+	if err != nil {
+		t.Fatalf("create conv: %v", err)
+	}
+	_, err = s.UpsertMessage(&store.Message{
+		SourceID: src.ID, ConversationID: conv,
+		SourceMessageID: "m1", MessageType: "email",
+		Subject:      sql.NullString{String: "test msg", Valid: true},
+		SizeEstimate: 100,
+	})
+	if err != nil {
+		t.Fatalf("insert msg: %v", err)
+	}
+	_ = s.Close()
+
+	savedCfg := cfg
+	defer func() { cfg = savedCfg; resetSearchFlags() }()
+
+	cfg = &config.Config{
+		HomeDir: tmpDir,
+		Data:    config.DataConfig{DataDir: tmpDir},
+	}
+
+	// First invocation: search with --account.
+	done := captureStdout(t)
+	root := newTestRootCmd()
+	root.AddCommand(searchCmd)
+	root.SetArgs([]string{
+		"search", "--account", "alice@example.com", "--json",
+	})
+	err = root.Execute()
+	_ = done()
+	if err != nil {
+		t.Fatalf("first search failed: %v", err)
+	}
+
+	// Second invocation: search WITHOUT --account.
+	// Must not carry over the previous account filter.
+	resetSearchFlags()
+	done = captureStdout(t)
+	root2 := newTestRootCmd()
+	root2.AddCommand(searchCmd)
+	root2.SetArgs([]string{
+		"search", "--account", "", "--json", "test msg",
+	})
+	err = root2.Execute()
+	out := done()
+	if err != nil {
+		t.Fatalf("second search failed: %v", err)
+	}
+	if !strings.Contains(out, "test msg") {
+		t.Errorf(
+			"second search should find msg without account filter: %s",
+			out,
+		)
+	}
+}
+
 func TestSearchCmd_NoQueryNoAccount(t *testing.T) {
 	savedCfg := cfg
 	defer func() { cfg = savedCfg; resetSearchFlags() }()
