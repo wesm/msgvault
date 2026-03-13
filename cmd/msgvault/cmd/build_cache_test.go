@@ -51,7 +51,10 @@ func setupTestSQLite(t *testing.T) (string, func()) {
 			received_at TIMESTAMP,
 			size_estimate INTEGER,
 			has_attachments BOOLEAN DEFAULT FALSE,
+			attachment_count INTEGER DEFAULT 0,
 			deleted_from_source_at TIMESTAMP,
+			sender_id INTEGER,
+			message_type TEXT NOT NULL DEFAULT 'email',
 			UNIQUE(source_id, source_message_id)
 		);
 
@@ -59,7 +62,8 @@ func setupTestSQLite(t *testing.T) (string, func()) {
 			id INTEGER PRIMARY KEY,
 			email_address TEXT NOT NULL UNIQUE,
 			domain TEXT,
-			display_name TEXT
+			display_name TEXT,
+			phone_number TEXT
 		);
 
 		CREATE TABLE message_recipients (
@@ -1128,13 +1132,13 @@ func TestBuildCache_EmptyDatabase(t *testing.T) {
 	db, _ := sql.Open("sqlite3", dbPath)
 	_, _ = db.Exec(`
 		CREATE TABLE sources (id INTEGER PRIMARY KEY, identifier TEXT);
-		CREATE TABLE messages (id INTEGER PRIMARY KEY, source_id INTEGER, source_message_id TEXT, sent_at TIMESTAMP, size_estimate INTEGER, has_attachments BOOLEAN, subject TEXT, snippet TEXT, conversation_id INTEGER, deleted_from_source_at TIMESTAMP);
-		CREATE TABLE participants (id INTEGER PRIMARY KEY, email_address TEXT, domain TEXT, display_name TEXT);
+		CREATE TABLE messages (id INTEGER PRIMARY KEY, source_id INTEGER, source_message_id TEXT, sent_at TIMESTAMP, size_estimate INTEGER, has_attachments BOOLEAN, subject TEXT, snippet TEXT, conversation_id INTEGER, deleted_from_source_at TIMESTAMP, attachment_count INTEGER DEFAULT 0, sender_id INTEGER, message_type TEXT NOT NULL DEFAULT 'email');
+		CREATE TABLE participants (id INTEGER PRIMARY KEY, email_address TEXT, domain TEXT, display_name TEXT, phone_number TEXT);
 		CREATE TABLE message_recipients (message_id INTEGER, participant_id INTEGER, recipient_type TEXT, display_name TEXT);
 		CREATE TABLE labels (id INTEGER PRIMARY KEY, name TEXT);
 		CREATE TABLE message_labels (message_id INTEGER, label_id INTEGER);
 		CREATE TABLE attachments (message_id INTEGER, size INTEGER, filename TEXT);
-		CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_conversation_id TEXT);
+		CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_conversation_id TEXT, title TEXT);
 	`)
 	db.Close()
 
@@ -1328,13 +1332,13 @@ func BenchmarkBuildCache(b *testing.B) {
 	// Create schema
 	_, _ = db.Exec(`
 		CREATE TABLE sources (id INTEGER PRIMARY KEY, identifier TEXT);
-		CREATE TABLE messages (id INTEGER PRIMARY KEY, source_id INTEGER, source_message_id TEXT, sent_at TIMESTAMP, size_estimate INTEGER, has_attachments BOOLEAN, subject TEXT, snippet TEXT, conversation_id INTEGER, deleted_from_source_at TIMESTAMP);
-		CREATE TABLE participants (id INTEGER PRIMARY KEY, email_address TEXT UNIQUE, domain TEXT, display_name TEXT);
+		CREATE TABLE messages (id INTEGER PRIMARY KEY, source_id INTEGER, source_message_id TEXT, sent_at TIMESTAMP, size_estimate INTEGER, has_attachments BOOLEAN, subject TEXT, snippet TEXT, conversation_id INTEGER, deleted_from_source_at TIMESTAMP, attachment_count INTEGER DEFAULT 0, sender_id INTEGER, message_type TEXT NOT NULL DEFAULT 'email');
+		CREATE TABLE participants (id INTEGER PRIMARY KEY, email_address TEXT UNIQUE, domain TEXT, display_name TEXT, phone_number TEXT);
 		CREATE TABLE message_recipients (message_id INTEGER, participant_id INTEGER, recipient_type TEXT, display_name TEXT);
 		CREATE TABLE labels (id INTEGER PRIMARY KEY, name TEXT);
 		CREATE TABLE message_labels (message_id INTEGER, label_id INTEGER);
 		CREATE TABLE attachments (message_id INTEGER, size INTEGER, filename TEXT);
-		CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_conversation_id TEXT);
+		CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_conversation_id TEXT, title TEXT);
 		INSERT INTO sources VALUES (1, 'test@gmail.com');
 		INSERT INTO labels VALUES (1, 'INBOX'), (2, 'Work');
 	`)
@@ -1418,14 +1422,18 @@ func setupTestSQLiteEmpty(t *testing.T) (string, func()) {
 			received_at TIMESTAMP,
 			size_estimate INTEGER,
 			has_attachments BOOLEAN DEFAULT FALSE,
+			attachment_count INTEGER DEFAULT 0,
 			deleted_from_source_at TIMESTAMP,
+			sender_id INTEGER,
+			message_type TEXT NOT NULL DEFAULT 'email',
 			UNIQUE(source_id, source_message_id)
 		);
 		CREATE TABLE participants (
 			id INTEGER PRIMARY KEY,
 			email_address TEXT NOT NULL UNIQUE,
 			domain TEXT,
-			display_name TEXT
+			display_name TEXT,
+			phone_number TEXT
 		);
 		CREATE TABLE message_recipients (
 			id INTEGER PRIMARY KEY,
@@ -1757,17 +1765,17 @@ func BenchmarkBuildCacheIncremental(b *testing.B) {
 	// Create schema and initial data (10000 messages)
 	_, _ = db.Exec(`
 		CREATE TABLE sources (id INTEGER PRIMARY KEY, identifier TEXT);
-		CREATE TABLE messages (id INTEGER PRIMARY KEY, source_id INTEGER, source_message_id TEXT, sent_at TIMESTAMP, size_estimate INTEGER, has_attachments BOOLEAN, subject TEXT, snippet TEXT, conversation_id INTEGER, deleted_from_source_at TIMESTAMP);
-		CREATE TABLE participants (id INTEGER PRIMARY KEY, email_address TEXT UNIQUE, domain TEXT, display_name TEXT);
+		CREATE TABLE messages (id INTEGER PRIMARY KEY, source_id INTEGER, source_message_id TEXT, sent_at TIMESTAMP, size_estimate INTEGER, has_attachments BOOLEAN, subject TEXT, snippet TEXT, conversation_id INTEGER, deleted_from_source_at TIMESTAMP, attachment_count INTEGER DEFAULT 0, sender_id INTEGER, message_type TEXT NOT NULL DEFAULT 'email');
+		CREATE TABLE participants (id INTEGER PRIMARY KEY, email_address TEXT UNIQUE, domain TEXT, display_name TEXT, phone_number TEXT);
 		CREATE TABLE message_recipients (message_id INTEGER, participant_id INTEGER, recipient_type TEXT, display_name TEXT);
 		CREATE TABLE labels (id INTEGER PRIMARY KEY, name TEXT);
 		CREATE TABLE message_labels (message_id INTEGER, label_id INTEGER);
 		CREATE TABLE attachments (message_id INTEGER, size INTEGER, filename TEXT);
-		CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_conversation_id TEXT);
+		CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_conversation_id TEXT, title TEXT);
 		INSERT INTO sources VALUES (1, 'test@gmail.com');
 		INSERT INTO labels VALUES (1, 'INBOX');
-		INSERT INTO participants VALUES (1, 'alice@example.com', 'example.com', 'Alice');
-		INSERT INTO participants VALUES (2, 'bob@example.com', 'example.com', 'Bob');
+		INSERT INTO participants VALUES (1, 'alice@example.com', 'example.com', 'Alice', NULL);
+		INSERT INTO participants VALUES (2, 'bob@example.com', 'example.com', 'Bob', NULL);
 	`)
 
 	// Insert conversations to match messages

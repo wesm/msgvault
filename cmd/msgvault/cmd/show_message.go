@@ -82,6 +82,10 @@ func showLocalMessage(cmd *cobra.Command, idStr string) error {
 	}
 	defer s.Close()
 
+	if err := s.InitSchema(); err != nil {
+		return fmt.Errorf("init schema: %w", err)
+	}
+
 	// Create query engine
 	engine := query.NewSQLiteEngine(s.DB())
 

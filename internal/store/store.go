@@ -226,6 +226,29 @@ func (s *Store) InitSchema() error {
 		return fmt.Errorf("execute schema.sql: %w", err)
 	}
 
+	// Migrate existing databases that were created before newer columns
+	// were added to schema.sql. CREATE TABLE IF NOT EXISTS is a no-op for
+	// existing tables, so we must ALTER TABLE to add missing columns.
+	// SQLite returns "duplicate column name" for columns that already exist;
+	// we silently ignore those errors.
+	migrations := []string{
+		"ALTER TABLE participants ADD COLUMN phone_number TEXT",
+		"ALTER TABLE participants ADD COLUMN canonical_id TEXT",
+		"ALTER TABLE messages ADD COLUMN sender_id INTEGER REFERENCES participants(id)",
+		"ALTER TABLE messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'email'",
+		"ALTER TABLE messages ADD COLUMN attachment_count INTEGER DEFAULT 0",
+		"ALTER TABLE messages ADD COLUMN deleted_from_source_at DATETIME",
+		"ALTER TABLE messages ADD COLUMN delete_batch_id TEXT",
+		"ALTER TABLE conversations ADD COLUMN title TEXT",
+	}
+	for _, m := range migrations {
+		if _, err := s.db.Exec(m); err != nil {
+			if !isSQLiteError(err, "duplicate column name") {
+				return fmt.Errorf("migration %q: %w", m, err)
+			}
+		}
+	}
+
 	// Try to load and execute SQLite-specific schema (FTS5)
 	// This is optional - FTS5 may not be available in all builds
 	sqliteSchema, err := schemaFS.ReadFile("schema_sqlite.sql")

@@ -146,3 +146,76 @@ func FirstLine(s string) string {
 	}
 	return s
 }
+
+// SanitizeTerminal strips ANSI escape sequences and C0/C1 control characters
+// from a string, preventing terminal injection via untrusted data (e.g.,
+// WhatsApp chat names, message snippets). Preserves printable characters,
+// tabs, and newlines.
+//
+// C1 control characters (U+0080–U+009F) are checked on the decoded rune, not
+// the raw leading byte, so that UTF-8 encoded C1 chars (e.g., U+009B CSI
+// encoded as 0xC2 0x9B) are correctly stripped.
+func SanitizeTerminal(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		// Strip ESC-initiated sequences (CSI, OSC, etc.).
+		if c == 0x1b && i+1 < len(s) {
+			next := s[i+1]
+			switch {
+			case next == '[': // CSI sequence: ESC [ ... <final byte 0x40-0x7E>
+				i += 2
+				for i < len(s) && (s[i] < 0x40 || s[i] > 0x7E) {
+					i++
+				}
+				if i < len(s) {
+					i++ // skip final byte
+				}
+				continue
+			case next == ']': // OSC sequence: ESC ] ... (ST or BEL)
+				i += 2
+				for i < len(s) {
+					if s[i] == 0x07 { // BEL terminates OSC
+						i++
+						break
+					}
+					if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\' { // ST terminates OSC
+						i += 2
+						break
+					}
+					i++
+				}
+				continue
+			default: // Other ESC sequences (2-byte): skip both
+				i += 2
+				continue
+			}
+		}
+
+		// Decode the full rune so we can check C1 control characters that
+		// span multiple bytes in UTF-8 (e.g., U+009B is 0xC2 0x9B).
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			// Invalid UTF-8 byte — skip it.
+			i++
+			continue
+		}
+
+		// Allow tab, newline, carriage return; strip other C0/C1 control chars.
+		if r == '\t' || r == '\n' || r == '\r' {
+			b.WriteRune(r)
+			i += size
+			continue
+		}
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			i += size
+			continue
+		}
+
+		b.WriteString(s[i : i+size])
+		i += size
+	}
+	return b.String()
+}

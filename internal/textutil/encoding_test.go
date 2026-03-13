@@ -496,3 +496,36 @@ func TestFirstLine(t *testing.T) {
 		})
 	}
 }
+
+func TestSanitizeTerminal(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain text", "Hello World", "Hello World"},
+		{"preserves tabs", "col1\tcol2", "col1\tcol2"},
+		{"preserves newlines", "line1\nline2", "line1\nline2"},
+		{"strips CSI color", "\x1b[31mred\x1b[0m", "red"},
+		{"strips CSI cursor move", "\x1b[2Ahello", "hello"},
+		{"strips OSC title (BEL)", "\x1b]0;evil title\x07safe", "safe"},
+		{"strips OSC title (ST)", "\x1b]0;evil\x1b\\safe", "safe"},
+		{"strips BEL", "\x07beep", "beep"},
+		{"strips null bytes", "a\x00b", "ab"},
+		{"strips C1 control byte", "a\x8fb", "ab"},
+		{"strips UTF-8 encoded C1 CSI (U+009B)", "a\xc2\x9bb", "ab"},
+		{"strips UTF-8 encoded C1 0x80-0x9F range", "a\xc2\x80z\xc2\x9fb", "azb"},
+		{"preserves unicode", "café ☕ 日本語", "café ☕ 日本語"},
+		{"strips embedded ESC seq", "before\x1b[1;32mgreen\x1b[0mafter", "beforegreenafter"},
+		{"empty string", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SanitizeTerminal(tt.input)
+			if got != tt.want {
+				t.Errorf("SanitizeTerminal(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
