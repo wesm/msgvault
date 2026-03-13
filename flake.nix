@@ -29,7 +29,7 @@
             pname = "msgvault";
             version = "0.0.0-dev";
             src = ./.;
-            vendorHash = "sha256-/M0yrxlz9zooEGzdsaITpAty0uiK5uYiqZFOa/1ZaEw=";
+            vendorHash = "sha256-alL4wbCDkxbD4R8MuPep6dwgk8gVF151Phw3XfQKwmU=";
             proxyVendor = true;
             subPackages = [ "cmd/msgvault" ];
             tags = [ "fts5" ];
