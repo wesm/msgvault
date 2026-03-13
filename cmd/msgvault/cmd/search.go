@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -198,13 +197,10 @@ func outputRemoteSearchResultsTable(results []store.APIMessage, total int64) err
 }
 
 func outputRemoteSearchResultsJSON(results []store.APIMessage, total int64) error {
-	output := map[string]interface{}{
+	return printJSON(map[string]interface{}{
 		"total":   total,
 		"results": results,
-	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(output)
+	})
 }
 
 func outputSearchResultsJSON(results []query.MessageSummary) error {
@@ -226,28 +222,7 @@ func outputSearchResultsJSON(results []query.MessageSummary) error {
 		}
 	}
 
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(output)
-}
-
-func formatSize(bytes int64) string {
-	const (
-		KB = 1024
-		MB = 1024 * KB
-		GB = 1024 * MB
-	)
-
-	switch {
-	case bytes >= GB:
-		return fmt.Sprintf("%.1fG", float64(bytes)/float64(GB))
-	case bytes >= MB:
-		return fmt.Sprintf("%.1fM", float64(bytes)/float64(MB))
-	case bytes >= KB:
-		return fmt.Sprintf("%.1fK", float64(bytes)/float64(KB))
-	default:
-		return fmt.Sprintf("%dB", bytes)
-	}
+	return printJSON(output)
 }
 
 func init() {
@@ -285,82 +260,4 @@ func ensureFTSIndex(s *store.Store) error {
 	}
 	fmt.Fprintf(os.Stderr, "\r  [%s] 100%%  %d messages indexed.\n", strings.Repeat("=", 30), n)
 	return nil
-}
-
-// Common flag variables used across aggregate commands
-var (
-	aggLimit  int
-	aggAfter  string
-	aggBefore string
-	aggJSON   bool
-)
-
-// parseCommonFlags converts string flags to AggregateOptions
-func parseCommonFlags() (query.AggregateOptions, error) {
-	opts := query.DefaultAggregateOptions()
-
-	if aggLimit > 0 {
-		opts.Limit = aggLimit
-	}
-
-	if aggAfter != "" {
-		t, err := time.Parse("2006-01-02", aggAfter)
-		if err != nil {
-			return opts, fmt.Errorf("invalid after date: %w", err)
-		}
-		opts.After = &t
-	}
-
-	if aggBefore != "" {
-		t, err := time.Parse("2006-01-02", aggBefore)
-		if err != nil {
-			return opts, fmt.Errorf("invalid before date: %w", err)
-		}
-		opts.Before = &t
-	}
-
-	return opts, nil
-}
-
-// addCommonAggregateFlags adds shared flags to aggregate commands
-func addCommonAggregateFlags(cmd *cobra.Command) {
-	cmd.Flags().IntVarP(&aggLimit, "limit", "n", 50, "Maximum number of results")
-	cmd.Flags().StringVar(&aggAfter, "after", "", "Filter to messages after date (YYYY-MM-DD)")
-	cmd.Flags().StringVar(&aggBefore, "before", "", "Filter to messages before date (YYYY-MM-DD)")
-	cmd.Flags().BoolVar(&aggJSON, "json", false, "Output as JSON")
-}
-
-// outputAggregateTable prints aggregate results as a table
-func outputAggregateTable(rows []query.AggregateRow, keyHeader string) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(w, "%s\tCOUNT\tSIZE\tATT SIZE\n", strings.ToUpper(keyHeader))
-	fmt.Fprintln(w, strings.Repeat("─", len(keyHeader))+"\t─────\t────\t────────")
-
-	for _, row := range rows {
-		fmt.Fprintf(w, "%s\t%d\t%s\t%s\n",
-			truncate(row.Key, 40),
-			row.Count,
-			formatSize(row.TotalSize),
-			formatSize(row.AttachmentSize),
-		)
-	}
-	w.Flush()
-	fmt.Printf("\nShowing %d results\n", len(rows))
-}
-
-// outputAggregateJSON prints aggregate results as JSON
-func outputAggregateJSON(rows []query.AggregateRow) error {
-	output := make([]map[string]interface{}, len(rows))
-	for i, row := range rows {
-		output[i] = map[string]interface{}{
-			"key":             row.Key,
-			"count":           row.Count,
-			"total_size":      row.TotalSize,
-			"attachment_size": row.AttachmentSize,
-		}
-	}
-
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(output)
 }
