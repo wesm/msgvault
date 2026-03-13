@@ -15,9 +15,9 @@ import (
 )
 
 var (
-	searchLimit  int
-	searchOffset int
-	searchJSON   bool
+	searchLimit   int
+	searchOffset  int
+	searchJSON    bool
 	searchAccount string
 )
 
@@ -62,6 +62,11 @@ Examples:
 
 		// Use remote search if configured
 		if IsRemoteMode() {
+			if searchAccount != "" {
+				return fmt.Errorf(
+					"--account is not supported in remote mode",
+				)
+			}
 			return runRemoteSearch(queryStr)
 		}
 
