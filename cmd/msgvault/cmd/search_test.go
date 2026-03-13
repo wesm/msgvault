@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"database/sql"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -12,6 +13,8 @@ import (
 
 // captureStdout redirects os.Stdout to a pipe and returns a function
 // that restores the original stdout and returns captured output.
+// The pipe is drained concurrently to avoid deadlock if the command
+// fills the OS pipe buffer.
 func captureStdout(t *testing.T) func() string {
 	t.Helper()
 	origStdout := os.Stdout
@@ -21,13 +24,26 @@ func captureStdout(t *testing.T) func() string {
 	}
 	os.Stdout = w
 
+	// Drain the read side concurrently so writers never block.
+	type result struct {
+		data []byte
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		data, readErr := io.ReadAll(r)
+		ch <- result{data, readErr}
+	}()
+
 	return func() string {
 		_ = w.Close()
 		os.Stdout = origStdout
-		buf := make([]byte, 64*1024)
-		n, _ := r.Read(buf)
+		res := <-ch
 		_ = r.Close()
-		return string(buf[:n])
+		if res.err != nil {
+			t.Fatalf("read captured stdout: %v", res.err)
+		}
+		return string(res.data)
 	}
 }
 
