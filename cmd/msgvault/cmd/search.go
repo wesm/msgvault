@@ -105,6 +105,12 @@ func runLocalSearch(cmd *cobra.Command, queryStr string) error {
 	// Parse the query
 	q := search.Parse(queryStr)
 
+	// Fail fast on invalid queries before touching the database,
+	// unless --account is set (which requires a DB lookup to resolve).
+	if searchAccount == "" && q.IsEmpty() {
+		return fmt.Errorf("empty search query")
+	}
+
 	// Open database
 	dbPath := cfg.DatabaseDSN()
 	s, err := store.Open(dbPath)
@@ -118,8 +124,7 @@ func runLocalSearch(cmd *cobra.Command, queryStr string) error {
 		return fmt.Errorf("init schema: %w", err)
 	}
 
-	// Resolve --account before checking IsEmpty so that
-	// "search --account foo@bar.com" (no query terms) is valid.
+	// Resolve --account and recheck emptiness.
 	if searchAccount != "" {
 		src, err := s.GetSourceByIdentifier(searchAccount)
 		if err != nil {
