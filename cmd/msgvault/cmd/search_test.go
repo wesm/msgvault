@@ -1,12 +1,35 @@
 package cmd
 
 import (
+	"database/sql"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/config"
 	"github.com/wesm/msgvault/internal/store"
 )
+
+// captureStdout redirects os.Stdout to a pipe and returns a function
+// that restores the original stdout and returns captured output.
+func captureStdout(t *testing.T) func() string {
+	t.Helper()
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create pipe: %v", err)
+	}
+	os.Stdout = w
+
+	return func() string {
+		_ = w.Close()
+		os.Stdout = origStdout
+		buf := make([]byte, 64*1024)
+		n, _ := r.Read(buf)
+		_ = r.Close()
+		return string(buf[:n])
+	}
+}
 
 func resetSearchFlags() {
 	searchAccount = ""
@@ -46,9 +69,41 @@ func TestSearchCmd_AccountFlagWithoutQuery(t *testing.T) {
 	if err := s.InitSchema(); err != nil {
 		t.Fatalf("init schema: %v", err)
 	}
-	_, err = s.GetOrCreateSource("gmail", "test@example.com")
+
+	// Seed two accounts with one message each.
+	src1, err := s.GetOrCreateSource("gmail", "alice@example.com")
 	if err != nil {
-		t.Fatalf("add source: %v", err)
+		t.Fatalf("create source 1: %v", err)
+	}
+	src2, err := s.GetOrCreateSource("gmail", "bob@example.com")
+	if err != nil {
+		t.Fatalf("create source 2: %v", err)
+	}
+	conv1, err := s.EnsureConversation(src1.ID, "c1", "")
+	if err != nil {
+		t.Fatalf("create conv 1: %v", err)
+	}
+	conv2, err := s.EnsureConversation(src2.ID, "c2", "")
+	if err != nil {
+		t.Fatalf("create conv 2: %v", err)
+	}
+	_, err = s.UpsertMessage(&store.Message{
+		SourceID: src1.ID, ConversationID: conv1,
+		SourceMessageID: "m1", MessageType: "email",
+		Subject:      sql.NullString{String: "Alice msg", Valid: true},
+		SizeEstimate: 100,
+	})
+	if err != nil {
+		t.Fatalf("insert msg 1: %v", err)
+	}
+	_, err = s.UpsertMessage(&store.Message{
+		SourceID: src2.ID, ConversationID: conv2,
+		SourceMessageID: "m2", MessageType: "email",
+		Subject:      sql.NullString{String: "Bob msg", Valid: true},
+		SizeEstimate: 200,
+	})
+	if err != nil {
+		t.Fatalf("insert msg 2: %v", err)
 	}
 	_ = s.Close()
 
@@ -60,16 +115,26 @@ func TestSearchCmd_AccountFlagWithoutQuery(t *testing.T) {
 		Data:    config.DataConfig{DataDir: tmpDir},
 	}
 
+	// Search with --account only (no query terms) — must succeed.
+	done := captureStdout(t)
+
 	root := newTestRootCmd()
 	root.AddCommand(searchCmd)
-	root.SetArgs([]string{"search", "--account", "test@example.com"})
+	root.SetArgs([]string{
+		"search", "--account", "alice@example.com", "--json",
+	})
 
-	// Should not error on empty query — account-only is valid.
-	// It may return "No messages found." but should not fail
-	// with "empty search query".
 	err = root.Execute()
-	if err != nil && strings.Contains(err.Error(), "empty search query") {
-		t.Errorf("account-only search rejected as empty: %v", err)
+	out := done()
+	if err != nil {
+		t.Fatalf("account-only search failed: %v", err)
+	}
+
+	if !strings.Contains(out, "Alice msg") {
+		t.Errorf("expected Alice's message in output, got: %s", out)
+	}
+	if strings.Contains(out, "Bob msg") {
+		t.Errorf("Bob's message should be filtered out, got: %s", out)
 	}
 }
 
