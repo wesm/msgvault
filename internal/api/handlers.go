@@ -967,9 +967,13 @@ func (s *Server) handleFilteredMessages(w http.ResponseWriter, r *http.Request) 
 	}
 
 	filter := parseMessageFilter(r)
-	if filter.Pagination.Limit < 0 {
+	if filter.Pagination.Limit <= 0 {
 		filter.Pagination.Limit = 500
 	}
+
+	// Fetch one extra row to determine has_more accurately.
+	requestLimit := filter.Pagination.Limit
+	filter.Pagination.Limit = requestLimit + 1
 
 	messages, err := s.engine.ListMessages(r.Context(), filter)
 	if err != nil {
@@ -978,22 +982,21 @@ func (s *Server) handleFilteredMessages(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	hasMore := len(messages) > requestLimit
+	if hasMore {
+		messages = messages[:requestLimit]
+	}
+
 	summaries := make([]MessageSummary, len(messages))
 	for i, m := range messages {
 		summaries[i] = toMessageSummaryFromQuery(m)
 	}
 
-	// has_more indicates whether additional pages may exist.
-	// We request limit+1 rows would be needed for an exact flag,
-	// but since this endpoint doesn't support total counts yet,
-	// infer from whether the returned count fills the page.
-	hasMore := len(summaries) >= filter.Pagination.Limit && filter.Pagination.Limit > 0
-
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"count":    len(summaries),
 		"has_more": hasMore,
 		"offset":   filter.Pagination.Offset,
-		"limit":    filter.Pagination.Limit,
+		"limit":    requestLimit,
 		"messages": summaries,
 	})
 }
@@ -1127,19 +1130,23 @@ func (s *Server) handleDeepSearch(w http.ResponseWriter, r *http.Request) {
 	q := search.Parse(queryStr)
 	merged := query.MergeFilterIntoQuery(q, filter)
 
-	messages, err := s.engine.Search(r.Context(), merged, limit, offset)
+	// Fetch one extra row to determine has_more accurately.
+	messages, err := s.engine.Search(r.Context(), merged, limit+1, offset)
 	if err != nil {
 		s.logger.Error("deep search failed", "query", queryStr, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Search failed")
 		return
 	}
 
+	hasMore := len(messages) > limit
+	if hasMore {
+		messages = messages[:limit]
+	}
+
 	summaries := make([]MessageSummary, len(messages))
 	for i, m := range messages {
 		summaries[i] = toMessageSummaryFromQuery(m)
 	}
-
-	hasMore := len(summaries) >= limit
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"query":    queryStr,

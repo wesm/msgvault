@@ -1319,12 +1319,18 @@ func MergeFilterIntoQuery(q *search.Query, filter MessageFilter) *search.Query {
 		merged.HideDeleted = true
 	}
 
-	// Date range filters
-	if filter.After != nil && merged.AfterDate == nil {
-		merged.AfterDate = filter.After
+	// Date range filters — intersect (take the stricter bound) so
+	// a user-supplied after:/before: cannot widen beyond the current
+	// drill-down context.
+	if filter.After != nil {
+		if merged.AfterDate == nil || filter.After.After(*merged.AfterDate) {
+			merged.AfterDate = filter.After
+		}
 	}
-	if filter.Before != nil && merged.BeforeDate == nil {
-		merged.BeforeDate = filter.Before
+	if filter.Before != nil {
+		if merged.BeforeDate == nil || filter.Before.Before(*merged.BeforeDate) {
+			merged.BeforeDate = filter.Before
+		}
 	}
 
 	// Note: SenderName, RecipientName, TimeRange, ConversationID,
