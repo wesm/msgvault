@@ -1163,6 +1163,19 @@ func (s *Server) handleDeepSearch(w http.ResponseWriter, r *http.Request) {
 
 	filter := parseMessageFilter(r)
 
+	// Reject filter fields that MergeFilterIntoQuery cannot represent
+	// in search.Query. Without this check the parameters parse
+	// successfully but silently do nothing, letting deep search
+	// escape the current drill-down scope.
+	if filter.SenderName != "" || filter.RecipientName != "" ||
+		filter.TimeRange.Period != "" || filter.ConversationID != nil ||
+		filter.HasEmptyTargets() {
+		writeError(w, http.StatusBadRequest, "unsupported_filter",
+			"Deep search does not support sender_name, recipient_name, "+
+				"time_period, conversation_id, or empty_targets filters")
+		return
+	}
+
 	// Deep search uses its own pagination defaults (100 rows) rather
 	// than parseMessageFilter's 500-row default for list endpoints.
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
