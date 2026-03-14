@@ -1099,8 +1099,13 @@ func (s *Server) handleDeepSearch(w http.ResponseWriter, r *http.Request) {
 
 	filter := parseMessageFilter(r)
 
-	offset := filter.Pagination.Offset
-	limit := filter.Pagination.Limit
+	// Deep search uses its own pagination defaults (100 rows) rather
+	// than parseMessageFilter's 500-row default for list endpoints.
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if offset < 0 {
+		offset = 0
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
