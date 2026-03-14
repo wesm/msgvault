@@ -1104,6 +1104,18 @@ func (s *Server) handleFastSearch(w http.ResponseWriter, r *http.Request) {
 
 	filter := parseMessageFilter(r)
 
+	// Reject filter fields that the search engines cannot honor.
+	// SenderName/RecipientName use display names that aren't indexed
+	// for search, ConversationID scoping isn't implemented, and
+	// EmptyValueTargets is an aggregate-only concept.
+	if filter.SenderName != "" || filter.RecipientName != "" ||
+		filter.ConversationID != nil || filter.HasEmptyTargets() {
+		writeError(w, http.StatusBadRequest, "unsupported_filter",
+			"Fast search does not support sender_name, recipient_name, "+
+				"conversation_id, or empty_targets filters")
+		return
+	}
+
 	// Get view type for stats grouping (optional, defaults to senders)
 	var statsGroupBy query.ViewType
 	if v := r.URL.Query().Get("view_type"); v != "" {
