@@ -14,22 +14,21 @@ import (
 
 // Incremental performs an incremental sync using the Gmail History API.
 // Falls back to full sync if history is too old (404 error).
-func (s *Syncer) Incremental(ctx context.Context, email string) (summary *gmail.SyncSummary, err error) {
+//
+// The caller must resolve the correct *store.Source before calling this
+// method. This avoids ambiguity when multiple sources share the same
+// identifier (e.g. a Gmail and IMAP source for the same email address).
+func (s *Syncer) Incremental(ctx context.Context, source *store.Source) (summary *gmail.SyncSummary, err error) {
+	if source == nil {
+		return nil, fmt.Errorf("no source provided - run full sync first")
+	}
+
 	startTime := time.Now()
 	summary = &gmail.SyncSummary{StartTime: startTime}
 
-	// Get source - must already exist for incremental sync
-	source, err := s.store.GetSourceByIdentifier(email)
-	if err != nil {
-		return nil, fmt.Errorf("get source: %w", err)
-	}
-	if source == nil {
-		return nil, fmt.Errorf("no source found for %s - run full sync first", email)
-	}
-
 	// Get last history ID
 	if !source.SyncCursor.Valid || source.SyncCursor.String == "" {
-		return nil, fmt.Errorf("no history ID for %s - run full sync first", email)
+		return nil, fmt.Errorf("no history ID for %s - run full sync first", source.Identifier)
 	}
 
 	startHistoryID, err := strconv.ParseUint(source.SyncCursor.String, 10, 64)
@@ -63,7 +62,7 @@ func (s *Syncer) Incremental(ctx context.Context, email string) (summary *gmail.
 		return nil, fmt.Errorf("get profile: %w", err)
 	}
 
-	s.logger.Info("incremental sync", "email", email, "start_history", startHistoryID, "current_history", profile.HistoryID)
+	s.logger.Info("incremental sync", "email", source.Identifier, "start_history", startHistoryID, "current_history", profile.HistoryID)
 
 	// If history IDs match, nothing to do
 	if startHistoryID >= profile.HistoryID {

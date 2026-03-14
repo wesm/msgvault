@@ -300,8 +300,14 @@ func runScheduledSync(ctx context.Context, email string, s *store.Store, oauthMg
 	// Create syncer (no CLI progress for daemon mode)
 	syncer := sync.New(client, s, opts).WithLogger(logger)
 
+	// Resolve source — scheduled sync is Gmail-only.
+	source, err := s.GetOrCreateSource("gmail", email)
+	if err != nil {
+		return fmt.Errorf("get source: %w", err)
+	}
+
 	// Run incremental sync
-	summary, err := syncer.Incremental(ctx, email)
+	summary, err := syncer.Incremental(ctx, source)
 	if err != nil {
 		return fmt.Errorf("incremental sync failed: %w", err)
 	}

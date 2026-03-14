@@ -20,4 +20,10 @@ symlink-following, local file overwrites, or similar CWE patterns that
 require an attacker with the same privileges as the user — they already
 own everything this tool touches. Auth on loopback-only endpoints with
 no configured API key is also by design.
+
+IMAP passwords are stored on disk with restricted file permissions
+(0600), equivalent to OAuth tokens and API keys in the same data
+directory. If the data directory is compromised, the user must rotate
+their IMAP app-specific password just as they would revoke API keys.
+Do not flag plaintext IMAP password storage as a finding.
 """

@@ -57,7 +57,7 @@ func (p *panicOnHistoryAPI) ListHistory(_ context.Context, _ uint64, _ string) (
 
 func TestIncrementalSync_PanicReturnsError(t *testing.T) {
 	env := newTestEnv(t)
-	env.CreateSourceWithHistory(t, "12340")
+	source := env.CreateSourceWithHistory(t, "12340")
 
 	env.Mock.Profile.MessagesTotal = 10
 	env.Mock.Profile.HistoryID = 12350
@@ -66,7 +66,7 @@ func TestIncrementalSync_PanicReturnsError(t *testing.T) {
 	env.Syncer = New(&panicOnHistoryAPI{MockAPI: env.Mock}, env.Store, nil)
 
 	// Should return an error, NOT panic and crash the program
-	_, err := env.Syncer.Incremental(env.Context, testEmail)
+	_, err := env.Syncer.Incremental(env.Context, source)
 	if err == nil {
 		t.Fatal("expected error from panic recovery, got nil")
 	}
@@ -366,21 +366,21 @@ func TestSyncerWithProgress(t *testing.T) {
 
 // Tests for incremental sync
 
-func TestIncrementalSyncNoSource(t *testing.T) {
+func TestIncrementalSyncNilSource(t *testing.T) {
 	env := newTestEnv(t)
 
-	_, err := env.Syncer.Incremental(env.Context, testEmail)
+	_, err := env.Syncer.Incremental(env.Context, nil)
 	if err == nil {
-		t.Error("expected error for incremental sync without source")
+		t.Error("expected error for nil source")
 	}
 }
 
 func TestIncrementalSyncNoHistoryID(t *testing.T) {
 	env := newTestEnv(t)
 
-	env.CreateSource(t)
+	source := env.CreateSource(t)
 
-	_, err := env.Syncer.Incremental(env.Context, testEmail)
+	_, err := env.Syncer.Incremental(env.Context, source)
 	if err == nil {
 		t.Error("expected error for incremental sync without history ID")
 	}
@@ -434,13 +434,13 @@ func TestIncrementalSyncWithDeletions(t *testing.T) {
 
 func TestIncrementalSyncHistoryExpired(t *testing.T) {
 	env := newTestEnv(t)
-	env.CreateSourceWithHistory(t, "1000")
+	source := env.CreateSourceWithHistory(t, "1000")
 
 	env.Mock.Profile.MessagesTotal = 10
 	env.Mock.Profile.HistoryID = 12350
 	env.Mock.HistoryError = &gmail.NotFoundError{Path: "/history"}
 
-	_, err := env.Syncer.Incremental(env.Context, testEmail)
+	_, err := env.Syncer.Incremental(env.Context, source)
 	if err == nil {
 		t.Error("expected error for expired history")
 	}
@@ -448,10 +448,10 @@ func TestIncrementalSyncHistoryExpired(t *testing.T) {
 
 func TestIncrementalSyncProfileError(t *testing.T) {
 	env := newTestEnv(t)
-	env.CreateSourceWithHistory(t, "12345")
+	source := env.CreateSourceWithHistory(t, "12345")
 	env.Mock.ProfileError = fmt.Errorf("auth failed")
 
-	_, err := env.Syncer.Incremental(env.Context, testEmail)
+	_, err := env.Syncer.Incremental(env.Context, source)
 	if err == nil {
 		t.Error("expected error when profile fails")
 	}
@@ -534,7 +534,7 @@ func TestIncrementalSyncLabelAddedToNewMessage(t *testing.T) {
 
 	env.SetHistory(12350, historyLabelAdded("new-msg", "STARRED"))
 
-	_, err := env.Syncer.Incremental(env.Context, testEmail)
+	_, err := env.Syncer.Incremental(env.Context, source)
 	if err != nil {
 		t.Fatalf("incremental sync: %v", err)
 	}
@@ -905,13 +905,13 @@ func TestFullSyncMessageFetchError(t *testing.T) {
 
 func TestIncrementalSyncLabelsError(t *testing.T) {
 	env := newTestEnv(t)
-	env.CreateSourceWithHistory(t, "12340")
+	source := env.CreateSourceWithHistory(t, "12340")
 
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 12350
 	env.Mock.LabelsError = fmt.Errorf("labels API error")
 
-	_, err := env.Syncer.Incremental(env.Context, testEmail)
+	_, err := env.Syncer.Incremental(env.Context, source)
 	if err == nil {
 		t.Error("expected error when labels sync fails")
 	}
@@ -1550,6 +1550,200 @@ func TestIncrementalSyncMixedOperations(t *testing.T) {
 	assertDeletedFromSource(t, env.Store, "existing-1", true)
 	assertMessageHasLabel(t, env.Store, "existing-2", "STARRED")
 	assertMessageCount(t, env.Store, 3) // 2 original (1 deleted but still counted) + 1 new
+}
+
+// TestDeriveThreadKey verifies the MIME-based thread key derivation used for
+// IMAP sources that lack server-side threading.
+func TestDeriveThreadKey(t *testing.T) {
+	tests := []struct {
+		name      string
+		msg       *mime.Message
+		wantKey   string
+		wantEmpty bool
+	}{
+		{
+			name:    "References uses first entry (thread root)",
+			msg:     &mime.Message{References: []string{"root@ex", "mid@ex"}, InReplyTo: "<mid@ex>", MessageID: "<self@ex>"},
+			wantKey: "root@ex",
+		},
+		{
+			name:    "InReplyTo fallback when no References",
+			msg:     &mime.Message{InReplyTo: "<parent@ex>", MessageID: "<self@ex>"},
+			wantKey: "parent@ex",
+		},
+		{
+			name:    "MessageID fallback for standalone",
+			msg:     &mime.Message{MessageID: "<self@ex>"},
+			wantKey: "self@ex",
+		},
+		{
+			name:    "Multi-ID InReplyTo uses first entry",
+			msg:     &mime.Message{InReplyTo: "<a@ex> <b@ex>", MessageID: "<self@ex>"},
+			wantKey: "a@ex",
+		},
+		{
+			name:    "InReplyTo with leading comment",
+			msg:     &mime.Message{InReplyTo: "(comment) <root@ex>"},
+			wantKey: "root@ex",
+		},
+		{
+			name:    "InReplyTo with folded whitespace",
+			msg:     &mime.Message{InReplyTo: "\r\n <root@ex>"},
+			wantKey: "root@ex",
+		},
+		{
+			name:      "Bare token without angle brackets ignored",
+			msg:       &mime.Message{InReplyTo: "bare-token"},
+			wantEmpty: true,
+		},
+		{
+			name:      "Empty when no threading info",
+			msg:       &mime.Message{},
+			wantEmpty: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := deriveThreadKey(tt.msg)
+			if tt.wantEmpty {
+				if got != "" {
+					t.Errorf("expected empty, got %q", got)
+				}
+			} else if got != tt.wantKey {
+				t.Errorf("got %q, want %q", got, tt.wantKey)
+			}
+		})
+	}
+}
+
+// TestIMAPThreading verifies that IMAP messages sharing an email thread
+// (via References/In-Reply-To headers) are grouped into the same conversation.
+func TestIMAPThreading(t *testing.T) {
+	env := newTestEnv(t)
+	env.SetOptions(t, func(o *Options) {
+		o.SourceType = "imap"
+	})
+
+	// Build three messages in a thread:
+	// msg-root -> msg-reply -> msg-reply2
+	rootMIME := testemail.NewMessage().
+		Subject("Thread root").
+		Header("Message-ID", "<root@example.com>").
+		Body("Root message.").
+		Bytes()
+
+	replyMIME := testemail.NewMessage().
+		Subject("Re: Thread root").
+		Header("Message-ID", "<reply@example.com>").
+		Header("In-Reply-To", "<root@example.com>").
+		Header("References", "<root@example.com>").
+		Body("Reply message.").
+		Bytes()
+
+	reply2MIME := testemail.NewMessage().
+		Subject("Re: Thread root").
+		Header("Message-ID", "<reply2@example.com>").
+		Header("In-Reply-To", "<reply@example.com>").
+		Header("References", "<root@example.com> <reply@example.com>").
+		Body("Second reply.").
+		Bytes()
+
+	// Standalone message (no threading headers except Message-ID)
+	standaloneMIME := testemail.NewMessage().
+		Subject("Unrelated").
+		Header("Message-ID", "<standalone@example.com>").
+		Body("Standalone message.").
+		Bytes()
+
+	env.Mock.Profile.MessagesTotal = 4
+	env.Mock.Profile.HistoryID = 100
+	env.Mock.AddMessage("INBOX|1", rootMIME, []string{"INBOX"})
+	env.Mock.AddMessage("INBOX|2", replyMIME, []string{"INBOX"})
+	env.Mock.AddMessage("INBOX|3", reply2MIME, []string{"INBOX"})
+	env.Mock.AddMessage("INBOX|4", standaloneMIME, []string{"INBOX"})
+
+	summary := runFullSync(t, env)
+	assertSummary(t, summary, WantSummary{Added: intPtr(4)})
+
+	// All three thread messages should share the same conversation
+	// (thread key = References[0] = root@example.com, brackets stripped)
+	assertThreadSourceID(t, env.Store, "INBOX|1", "root@example.com")
+	assertThreadSourceID(t, env.Store, "INBOX|2", "root@example.com")
+	assertThreadSourceID(t, env.Store, "INBOX|3", "root@example.com")
+
+	// Standalone should use its own Message-ID (brackets stripped)
+	assertThreadSourceID(t, env.Store, "INBOX|4", "standalone@example.com")
+
+	// Verify conversation grouping: thread msgs share 1 conversation,
+	// standalone gets its own.
+	var convCount int
+	err := env.Store.DB().QueryRow(`SELECT COUNT(DISTINCT conversation_id) FROM messages`).Scan(&convCount)
+	if err != nil {
+		t.Fatalf("count conversations: %v", err)
+	}
+	if convCount != 2 {
+		t.Errorf("expected 2 conversations (1 thread + 1 standalone), got %d", convCount)
+	}
+}
+
+// TestIMAPCrossSyncDedup verifies that a message imported from one mailbox
+// is not re-imported when it appears under a different mailbox|uid on a
+// subsequent sync (e.g. moved from All Mail to Trash).
+func TestIMAPCrossSyncDedup(t *testing.T) {
+	env := newTestEnv(t)
+	env.SetOptions(t, func(o *Options) {
+		o.SourceType = "imap"
+	})
+
+	msg := testemail.NewMessage().
+		Subject("Dedup test").
+		Header("Message-ID", "<dedup@example.com>").
+		Body("Same message, different mailbox.").
+		Bytes()
+
+	// First sync: message is in INBOX
+	env.Mock.Profile.MessagesTotal = 1
+	env.Mock.Profile.HistoryID = 100
+	env.Mock.AddMessage("INBOX|42", msg, []string{"INBOX"})
+	summary := runFullSync(t, env)
+	assertSummary(t, summary, WantSummary{Added: intPtr(1)})
+	assertMessageHasLabel(t, env.Store, "INBOX|42", "INBOX")
+
+	// Second sync: message moved to Trash (different composite ID)
+	delete(env.Mock.Messages, "INBOX|42")
+	env.Mock.AddMessage("TRASH|99", msg, []string{"TRASH"})
+	summary = runFullSync(t, env)
+	// Should be skipped via RFC822 Message-ID dedup, not re-imported
+	assertSummary(t, summary, WantSummary{Added: intPtr(0)})
+
+	// Only one message should exist in the database
+	var count int
+	err := env.Store.DB().QueryRow(
+		`SELECT COUNT(*) FROM messages`).Scan(&count)
+	if err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 message, got %d (duplicate imported)", count)
+	}
+
+	// The existing row's source_message_id should be updated to the
+	// new composite ID so future syncs don't re-download the message.
+	var srcMsgID string
+	err = env.Store.DB().QueryRow(
+		`SELECT source_message_id FROM messages LIMIT 1`,
+	).Scan(&srcMsgID)
+	if err != nil {
+		t.Fatalf("get source_message_id: %v", err)
+	}
+	if srcMsgID != "TRASH|99" {
+		t.Errorf("source_message_id not updated: got %q, want %q",
+			srcMsgID, "TRASH|99")
+	}
+
+	// Labels should reflect the new mailbox.
+	assertMessageHasLabel(t, env.Store, "TRASH|99", "TRASH")
+	assertMessageNotHasLabel(t, env.Store, "TRASH|99", "INBOX")
 }
 
 // TestIncrementalSyncLabelRemovedWithMissingRaw verifies that removing a label

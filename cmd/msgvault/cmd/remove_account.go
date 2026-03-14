@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	imaplib "github.com/wesm/msgvault/internal/imap"
 	"github.com/wesm/msgvault/internal/oauth"
 	"github.com/wesm/msgvault/internal/store"
 )
@@ -116,8 +117,9 @@ func runRemoveAccount(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("remove account: %w", err)
 	}
 
-	// Only remove OAuth token for gmail sources
-	if source.SourceType == "gmail" {
+	// Remove credentials for the source type.
+	switch source.SourceType {
+	case "gmail":
 		tokenPath := oauth.TokenFilePath(
 			cfg.TokensDir(), source.Identifier,
 		)
@@ -125,6 +127,16 @@ func runRemoveAccount(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr,
 				"Warning: could not remove token file %s: %v\n",
 				tokenPath, err,
+			)
+		}
+	case "imap":
+		credPath := imaplib.CredentialsPath(
+			cfg.TokensDir(), source.Identifier,
+		)
+		if err := os.Remove(credPath); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr,
+				"Warning: could not remove credentials file %s: %v\n",
+				credPath, err,
 			)
 		}
 	}
