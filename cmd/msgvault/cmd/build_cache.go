@@ -180,6 +180,12 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 	fmt.Println("Building cache...")
 	buildStart := time.Now()
 
+	// Capture deletion watermark before export starts. Any deletion
+	// with deleted_from_source_at after this timestamp may not be
+	// reflected in the exported Parquet data and will trigger a
+	// cache rebuild on the next freshness check.
+	cacheWatermark := time.Now().UTC().Truncate(time.Second)
+
 	// Build WHERE clause for incremental exports
 	idFilter := ""
 	if !fullRebuild && lastMessageID > 0 {
@@ -391,10 +397,11 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 		exportedCount = 0
 	}
 
-	// Save sync state
+	// Save sync state using the pre-export watermark so any deletion
+	// that occurs during or after the build is detected as stale.
 	state := syncState{
 		LastMessageID: maxID,
-		LastSyncAt:    time.Now(),
+		LastSyncAt:    cacheWatermark,
 	}
 	stateData, _ := json.Marshal(state)
 	if err := os.WriteFile(stateFile, stateData, 0644); err != nil {

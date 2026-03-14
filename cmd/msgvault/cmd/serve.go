@@ -16,6 +16,7 @@ import (
 	"github.com/wesm/msgvault/internal/api"
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/oauth"
+	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/scheduler"
 	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/sync"
@@ -82,6 +83,34 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("init schema: %w", err)
 	}
 
+	// Create query engine for TUI aggregate support.
+	// Prefer DuckDB over Parquet when the cache is complete and fresh;
+	// otherwise fall back to SQLite so remote endpoints still work.
+	analyticsDir := cfg.AnalyticsDir()
+	var engine query.Engine
+	needsBuild, reason := cacheNeedsBuild(dbPath, analyticsDir)
+	if !needsBuild && query.HasCompleteParquetData(analyticsDir) {
+		duckEngine, engineErr := query.NewDuckDBEngine(
+			analyticsDir, dbPath, s.DB(),
+		)
+		if engineErr != nil {
+			logger.Warn("DuckDB engine failed, falling back to SQLite",
+				"error", engineErr)
+			engine = query.NewSQLiteEngine(s.DB())
+		} else {
+			engine = duckEngine
+		}
+	} else {
+		if reason != "" {
+			logger.Info("parquet cache not usable, using SQLite engine",
+				"reason", reason)
+		} else {
+			logger.Info("parquet cache not built - using SQLite engine (run 'msgvault build-cache' for faster aggregates)")
+		}
+		engine = query.NewSQLiteEngine(s.DB())
+	}
+	defer engine.Close()
+
 	// Create OAuth manager
 	oauthMgr, err := oauth.NewManager(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger)
 	if err != nil {
@@ -122,7 +151,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	schedAdapter := &schedulerAdapter{scheduler: sched}
 
 	// Create and start API server
-	apiServer := api.NewServer(cfg, storeAdapter, schedAdapter, logger)
+	apiServer := api.NewServerWithOptions(api.ServerOptions{
+		Config:    cfg,
+		Store:     storeAdapter,
+		Engine:    engine,
+		Scheduler: schedAdapter,
+		Logger:    logger,
+	})
 
 	// Start API server in goroutine
 	serverErr := make(chan error, 1)

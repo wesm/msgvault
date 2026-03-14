@@ -10,6 +10,7 @@ import (
 // APIMessage represents a message for API responses.
 type APIMessage struct {
 	ID             int64
+	ConversationID int64
 	Subject        string
 	From           string
 	To             []string
@@ -43,6 +44,7 @@ func (s *Store) ListMessages(offset, limit int) ([]APIMessage, int64, error) {
 	query := `
 		SELECT
 			m.id,
+			COALESCE(m.conversation_id, 0) as conversation_id,
 			COALESCE(m.subject, '') as subject,
 			COALESCE(p.email_address, '') as from_email,
 			COALESCE(m.sent_at, m.received_at, m.internal_date) as sent_at,
@@ -99,6 +101,7 @@ func (s *Store) GetMessage(id int64) (*APIMessage, error) {
 	query := `
 		SELECT
 			m.id,
+			COALESCE(m.conversation_id, 0) as conversation_id,
 			COALESCE(m.subject, '') as subject,
 			COALESCE(p.email_address, '') as from_email,
 			COALESCE(m.sent_at, m.received_at, m.internal_date) as sent_at,
@@ -113,7 +116,7 @@ func (s *Store) GetMessage(id int64) (*APIMessage, error) {
 
 	var m APIMessage
 	var sentAtStr sql.NullString
-	err := s.db.QueryRow(query, id).Scan(&m.ID, &m.Subject, &m.From, &sentAtStr, &m.Snippet, &m.HasAttachments, &m.SizeEstimate)
+	err := s.db.QueryRow(query, id).Scan(&m.ID, &m.ConversationID, &m.Subject, &m.From, &sentAtStr, &m.Snippet, &m.HasAttachments, &m.SizeEstimate)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -171,6 +174,7 @@ func (s *Store) SearchMessages(query string, offset, limit int) ([]APIMessage, i
 	ftsQuery := `
 		SELECT
 			m.id,
+			COALESCE(m.conversation_id, 0) as conversation_id,
 			COALESCE(m.subject, '') as subject,
 			COALESCE(p.email_address, '') as from_email,
 			COALESCE(m.sent_at, m.received_at, m.internal_date) as sent_at,
@@ -248,6 +252,7 @@ func (s *Store) searchMessagesLike(query string, offset, limit int) ([]APIMessag
 	searchQuery := `
 		SELECT
 			m.id,
+			COALESCE(m.conversation_id, 0) as conversation_id,
 			COALESCE(m.subject, '') as subject,
 			COALESCE(p.email_address, '') as from_email,
 			COALESCE(m.sent_at, m.received_at, m.internal_date) as sent_at,
@@ -286,7 +291,7 @@ func (s *Store) searchMessagesLike(query string, offset, limit int) ([]APIMessag
 	return messages, total, nil
 }
 
-// scanMessageRows scans the standard 7-column message row set.
+// scanMessageRows scans the standard 8-column message row set.
 // Uses string scanning for dates to handle all SQLite datetime formats robustly.
 func scanMessageRows(rows *sql.Rows) ([]APIMessage, []int64, error) {
 	var messages []APIMessage
@@ -294,7 +299,7 @@ func scanMessageRows(rows *sql.Rows) ([]APIMessage, []int64, error) {
 	for rows.Next() {
 		var m APIMessage
 		var sentAtStr sql.NullString
-		err := rows.Scan(&m.ID, &m.Subject, &m.From, &sentAtStr, &m.Snippet, &m.HasAttachments, &m.SizeEstimate)
+		err := rows.Scan(&m.ID, &m.ConversationID, &m.Subject, &m.From, &sentAtStr, &m.Snippet, &m.HasAttachments, &m.SizeEstimate)
 		if err != nil {
 			return nil, nil, err
 		}

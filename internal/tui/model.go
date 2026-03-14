@@ -50,6 +50,10 @@ type Options struct {
 	// ThreadMessageLimit overrides the maximum number of messages in a thread view.
 	// Zero uses the default (1,000).
 	ThreadMessageLimit int
+
+	// IsRemote indicates the TUI is connected to a remote server.
+	// Some features (deletion staging, attachment export) are disabled in remote mode.
+	IsRemote bool
 }
 
 // modalType represents the type of modal dialog.
@@ -106,6 +110,9 @@ type Model struct {
 	// Configurable limits
 	aggregateLimit     int
 	threadMessageLimit int
+
+	// Remote mode (disables deletion/export)
+	isRemote bool
 
 	// Navigation
 	breadcrumbs []navigationSnapshot
@@ -216,6 +223,7 @@ func New(engine query.Engine, opts Options) Model {
 		version:            opts.Version,
 		aggregateLimit:     aggLimit,
 		threadMessageLimit: threadLimit,
+		isRemote:           opts.IsRemote,
 		viewState: viewState{
 			level:            levelAggregates,
 			viewType:         query.ViewSenders,

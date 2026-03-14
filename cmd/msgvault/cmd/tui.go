@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/remote"
 	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/tui"
 )
@@ -16,6 +17,7 @@ import (
 var forceSQL bool
 var skipCacheBuild bool
 var noSQLiteScanner bool
+var forceLocalTUI bool
 
 var tuiCmd = &cobra.Command{
 	Use:   "tui",
@@ -48,76 +50,103 @@ Selection & Deletion:
 
 Performance:
   For large archives (100k+ messages), the TUI uses Parquet files for fast
-  aggregation queries. Run 'msgvault-sync build-parquet' to generate them.
-  Use --force-sql to bypass Parquet and query SQLite directly (slow).`,
+  aggregation queries. Run 'msgvault build-cache' to generate them.
+  Use --force-sql to bypass Parquet and query SQLite directly (slow).
+
+Remote Mode:
+  When [remote].url is configured, the TUI connects to a remote msgvault server.
+  Use --local to force local database. Deletion and export are disabled in remote mode.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Open database
-		dbPath := cfg.DatabaseDSN()
-		s, err := store.Open(dbPath)
-		if err != nil {
-			return fmt.Errorf("open database: %w", err)
-		}
-		defer s.Close()
+		var engine query.Engine
+		var isRemote bool
 
-		// Ensure schema is up to date
-		if err := s.InitSchema(); err != nil {
-			return fmt.Errorf("init schema: %w", err)
-		}
+		// Check for remote mode (unless --local flag is set)
+		if cfg.Remote.URL != "" && !forceLocalTUI {
+			// Remote mode - connect to remote msgvault server
+			remoteCfg := remote.Config{
+				URL:           cfg.Remote.URL,
+				APIKey:        cfg.Remote.APIKey,
+				AllowInsecure: cfg.Remote.AllowInsecure,
+			}
+			remoteEngine, err := remote.NewEngine(remoteCfg)
+			if err != nil {
+				return fmt.Errorf("connect to remote: %w", err)
+			}
+			defer remoteEngine.Close()
+			engine = remoteEngine
+			isRemote = true
+			fmt.Printf("Connected to remote: %s\n", cfg.Remote.URL)
+		} else {
+			// Local mode - use local database
+			dbPath := cfg.DatabaseDSN()
+			s, err := store.Open(dbPath)
+			if err != nil {
+				return fmt.Errorf("open database: %w", err)
+			}
+			defer s.Close()
 
-		// Build FTS index in background — TUI uses DuckDB/Parquet for
-		// aggregates and only needs FTS for deep search (Tab to switch).
-		if s.NeedsFTSBackfill() {
-			go func() {
-				_, _ = s.BackfillFTS(nil)
-			}()
-		}
+			// Ensure schema is up to date
+			if err := s.InitSchema(); err != nil {
+				return fmt.Errorf("init schema: %w", err)
+			}
 
-		analyticsDir := cfg.AnalyticsDir()
+			// Build FTS index in background — TUI uses DuckDB/Parquet for
+			// aggregates and only needs FTS for deep search (Tab to switch).
+			if s.NeedsFTSBackfill() {
+				go func() {
+					_, _ = s.BackfillFTS(nil)
+				}()
+			}
 
-		// Check if cache needs to be built/updated (unless forcing SQL or skipping)
-		if !forceSQL && !skipCacheBuild {
-			needsBuild, reason := cacheNeedsBuild(dbPath, analyticsDir)
-			if needsBuild {
-				fmt.Printf("Building analytics cache (%s)...\n", reason)
-				result, err := buildCache(dbPath, analyticsDir, true)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: Failed to build cache: %v\n", err)
-					fmt.Fprintf(os.Stderr, "Falling back to SQLite (may be slow for large archives)\n")
-				} else if !result.Skipped {
-					fmt.Printf("Cached %d messages for fast queries.\n", result.ExportedCount)
+			analyticsDir := cfg.AnalyticsDir()
+
+			// Check if cache needs to be built/updated (unless forcing SQL or skipping)
+			if !forceSQL && !skipCacheBuild {
+				needsBuild, reason := cacheNeedsBuild(dbPath, analyticsDir)
+				if needsBuild {
+					fmt.Printf("Building analytics cache (%s)...\n", reason)
+					result, err := buildCache(dbPath, analyticsDir, true)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: Failed to build cache: %v\n", err)
+						fmt.Fprintf(os.Stderr, "Falling back to SQLite (may be slow for large archives)\n")
+					} else if !result.Skipped {
+						fmt.Printf("Cached %d messages for fast queries.\n", result.ExportedCount)
+					}
 				}
 			}
-		}
 
-		// Determine query engine to use
-		var engine query.Engine
-
-		if !forceSQL && query.HasCompleteParquetData(analyticsDir) {
-			// Use DuckDB for fast Parquet queries
-			var duckOpts query.DuckDBOptions
-			if noSQLiteScanner {
-				duckOpts.DisableSQLiteScanner = true
-			}
-			duckEngine, err := query.NewDuckDBEngine(analyticsDir, dbPath, s.DB(), duckOpts)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: Failed to open Parquet engine: %v\n", err)
-				fmt.Fprintf(os.Stderr, "Falling back to SQLite (may be slow for large archives)\n")
-				engine = query.NewSQLiteEngine(s.DB())
+			// Determine query engine to use
+			if !forceSQL && query.HasCompleteParquetData(analyticsDir) {
+				// Use DuckDB for fast Parquet queries
+				var duckOpts query.DuckDBOptions
+				if noSQLiteScanner {
+					duckOpts.DisableSQLiteScanner = true
+				}
+				duckEngine, err := query.NewDuckDBEngine(analyticsDir, dbPath, s.DB(), duckOpts)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: Failed to open Parquet engine: %v\n", err)
+					fmt.Fprintf(os.Stderr, "Falling back to SQLite (may be slow for large archives)\n")
+					engine = query.NewSQLiteEngine(s.DB())
+				} else {
+					engine = duckEngine
+					defer duckEngine.Close()
+				}
 			} else {
-				engine = duckEngine
-				defer duckEngine.Close()
+				// Use SQLite directly
+				if !forceSQL {
+					fmt.Fprintf(os.Stderr, "Note: No cache data available, using SQLite (slow for large archives)\n")
+					fmt.Fprintf(os.Stderr, "Run 'msgvault build-cache' to enable fast queries.\n")
+				}
+				engine = query.NewSQLiteEngine(s.DB())
 			}
-		} else {
-			// Use SQLite directly
-			if !forceSQL {
-				fmt.Fprintf(os.Stderr, "Note: No cache data available, using SQLite (slow for large archives)\n")
-				fmt.Fprintf(os.Stderr, "Run 'msgvault build-cache' to enable fast queries.\n")
-			}
-			engine = query.NewSQLiteEngine(s.DB())
 		}
 
 		// Create and run TUI
-		model := tui.New(engine, tui.Options{DataDir: cfg.Data.DataDir, Version: Version})
+		model := tui.New(engine, tui.Options{
+			DataDir:  cfg.Data.DataDir,
+			Version:  Version,
+			IsRemote: isRemote,
+		})
 		p := tea.NewProgram(model, tea.WithAltScreen())
 
 		if _, err := p.Run(); err != nil {
@@ -185,6 +214,27 @@ func cacheNeedsBuild(dbPath, analyticsDir string) (bool, string) {
 		return true, fmt.Sprintf("%d new messages", newCount)
 	}
 
+	// Check if any messages were soft-deleted after the last cache build.
+	// Incremental builds don't rewrite existing rows, so deletions that
+	// occur after the build leave stale (non-deleted) rows in Parquet.
+	// Format as "YYYY-MM-DD HH:MM:SS" to match datetime('now') values.
+	var deletedSinceBuild int64
+	syncAtStr := state.LastSyncAt.UTC().Format("2006-01-02 15:04:05")
+	err = db.DB().QueryRow(`
+		SELECT COUNT(*) FROM messages
+		WHERE deleted_from_source_at IS NOT NULL
+		  AND deleted_from_source_at >= ?
+	`, syncAtStr).Scan(&deletedSinceBuild)
+	if err != nil {
+		return true, "cannot verify deletion state"
+	}
+	if deletedSinceBuild > 0 {
+		return true, fmt.Sprintf(
+			"%d deletions since last cache build",
+			deletedSinceBuild,
+		)
+	}
+
 	// Check if parquet files actually exist (directory might be empty)
 	files, _ := filepath.Glob(filepath.Join(messagesDir, "*", "*.parquet"))
 	if len(files) == 0 {
@@ -204,5 +254,6 @@ func init() {
 	tuiCmd.Flags().BoolVar(&forceSQL, "force-sql", false, "Force SQLite queries instead of Parquet (slow for large archives)")
 	tuiCmd.Flags().BoolVar(&skipCacheBuild, "no-cache-build", false, "Skip automatic cache build/update")
 	tuiCmd.Flags().BoolVar(&noSQLiteScanner, "no-sqlite-scanner", false, "Disable DuckDB sqlite_scanner extension (use direct SQLite fallback)")
+	tuiCmd.Flags().BoolVar(&forceLocalTUI, "local", false, "Force local database (override remote config)")
 	_ = tuiCmd.Flags().MarkHidden("no-sqlite-scanner")
 }
