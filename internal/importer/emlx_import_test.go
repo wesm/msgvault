@@ -834,10 +834,10 @@ func TestImportEmlxDir_CheckpointBlockedOnIngestFailure(t *testing.T) {
 	if err := json.Unmarshal([]byte(cursor), &cp); err != nil {
 		t.Fatalf("unmarshal checkpoint: %v", err)
 	}
-	if !strings.HasSuffix(cp.LastFile, "/1.emlx") {
+	if filepath.Base(cp.LastFile) != "1.emlx" {
 		t.Fatalf(
-			"checkpoint LastFile = %q, want suffix %q (should not advance past failed msg2)",
-			cp.LastFile, "/1.emlx",
+			"checkpoint LastFile = %q, want basename %q (should not advance past failed msg2)",
+			cp.LastFile, "1.emlx",
 		)
 	}
 

@@ -180,6 +180,15 @@ func ImportEmlxDir(
 					cp.ErrorsCount = active.ErrorsCount
 					startMbox = ecp.MailboxIndex
 					startAfter = ecp.LastFile
+					// Normalize legacy checkpoints that stored bare
+					// filenames (e.g. "1.emlx") instead of full paths.
+					if startAfter != "" &&
+						!filepath.IsAbs(startAfter) {
+						startAfter = filepath.Join(
+							mailboxes[ecp.MailboxIndex].MsgDir,
+							startAfter,
+						)
+					}
 					summary.WasResumed = true
 					log.Info("resuming emlx import",
 						"root", absRoot,
