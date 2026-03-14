@@ -76,6 +76,15 @@ Examples:
 			args = args[1:]
 		}
 
+		// --identifier requires an explicit mail-dir to avoid
+		// accidentally importing the entire ~/Library/Mail tree
+		// under one identifier.
+		if identifier != "" && len(args) == 0 {
+			return fmt.Errorf(
+				"--identifier requires a positional mail-dir argument",
+			)
+		}
+
 		// Determine mail directory.
 		var mailDir string
 		if len(args) > 0 {
