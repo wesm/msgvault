@@ -223,7 +223,7 @@ func cacheNeedsBuild(dbPath, analyticsDir string) (bool, string) {
 	err = db.DB().QueryRow(`
 		SELECT COUNT(*) FROM messages
 		WHERE deleted_from_source_at IS NOT NULL
-		  AND deleted_from_source_at > ?
+		  AND deleted_from_source_at >= ?
 	`, syncAtStr).Scan(&deletedSinceBuild)
 	if err != nil {
 		return true, "cannot verify deletion state"

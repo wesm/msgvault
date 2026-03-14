@@ -1121,6 +1121,8 @@ func (s *Server) handleFastSearch(w http.ResponseWriter, r *http.Request) {
 	// Allow limit=0 for count-only requests (used by SearchFastCount).
 	if limit < 0 {
 		limit = 100
+	} else if limit > maxPageSize {
+		limit = maxPageSize
 	}
 
 	q := search.Parse(queryStr)
