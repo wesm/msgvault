@@ -22,6 +22,9 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// maxPageSize is the hard upper bound for any paginated endpoint.
+const maxPageSize = 500
+
 // StatsResponse represents the archive statistics.
 type StatsResponse struct {
 	TotalMessages int64 `json:"total_messages"`
@@ -750,6 +753,20 @@ func parseAggregateOptions(r *http.Request) query.AggregateOptions {
 	if v := r.URL.Query().Get("search_query"); v != "" {
 		opts.SearchQuery = v
 	}
+	if v := r.URL.Query().Get("after"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			opts.After = &t
+		} else if t, err := time.Parse("2006-01-02", v); err == nil {
+			opts.After = &t
+		}
+	}
+	if v := r.URL.Query().Get("before"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			opts.Before = &t
+		} else if t, err := time.Parse("2006-01-02", v); err == nil {
+			opts.Before = &t
+		}
+	}
 
 	return opts
 }
@@ -789,6 +806,22 @@ func parseMessageFilter(r *http.Request) query.MessageFilter {
 		filter.HideDeletedFromSource = true
 	}
 
+	// Date range filters (RFC3339 or 2006-01-02)
+	if v := r.URL.Query().Get("after"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			filter.After = &t
+		} else if t, err := time.Parse("2006-01-02", v); err == nil {
+			filter.After = &t
+		}
+	}
+	if v := r.URL.Query().Get("before"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			filter.Before = &t
+		} else if t, err := time.Parse("2006-01-02", v); err == nil {
+			filter.Before = &t
+		}
+	}
+
 	// EmptyValueTargets — comma-separated view type names
 	if v := r.URL.Query().Get("empty_targets"); v != "" {
 		for _, name := range strings.Split(v, ",") {
@@ -806,6 +839,9 @@ func parseMessageFilter(r *http.Request) query.MessageFilter {
 	}
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if limit, err := strconv.Atoi(v); err == nil && limit >= 0 {
+			if limit > maxPageSize {
+				limit = maxPageSize
+			}
 			filter.Pagination.Limit = limit
 		}
 	}
@@ -1074,8 +1110,6 @@ func (s *Server) handleFastSearch(w http.ResponseWriter, r *http.Request) {
 	// Allow limit=0 for count-only requests (used by SearchFastCount).
 	if limit < 0 {
 		limit = 100
-	} else if limit > 500 {
-		limit = 500
 	}
 
 	q := search.Parse(queryStr)

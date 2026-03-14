@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/search"
@@ -224,6 +225,12 @@ func buildAggregateQuery(viewType query.ViewType, opts query.AggregateOptions) u
 	if opts.SearchQuery != "" {
 		params.Set("search_query", opts.SearchQuery)
 	}
+	if opts.After != nil {
+		params.Set("after", opts.After.Format(time.RFC3339))
+	}
+	if opts.Before != nil {
+		params.Set("before", opts.Before.Format(time.RFC3339))
+	}
 
 	return params
 }
@@ -279,6 +286,14 @@ func buildFilterQuery(filter query.MessageFilter) url.Values {
 	// Sorting
 	params.Set("sort", messageSortFieldToString(filter.Sorting.Field))
 	params.Set("direction", sortDirectionToString(filter.Sorting.Direction))
+
+	// Date range filters
+	if filter.After != nil {
+		params.Set("after", filter.After.Format(time.RFC3339))
+	}
+	if filter.Before != nil {
+		params.Set("before", filter.Before.Format(time.RFC3339))
+	}
 
 	// EmptyValueTargets — serialize active view types as comma-separated list
 	if filter.HasEmptyTargets() {
