@@ -387,16 +387,17 @@ Returns a filtered list of messages with pagination.
 | `label` | string | - | Filter by label |
 | `conversation_id` | int | - | Filter by thread (for thread view) |
 | `offset` | int | 0 | Pagination offset |
-| `limit` | int | 100 | Pagination limit (max 500) |
+| `limit` | int | 500 | Pagination limit (max 500; uncapped for `conversation_id` thread fetches) |
 | `sort` | string | `date` | `date`, `size`, `subject` |
 | `direction` | string | `desc` | `asc`, `desc` |
 
 **Response:**
 ```json
 {
-  "total": 150,
+  "count": 150,
+  "has_more": true,
   "offset": 0,
-  "limit": 100,
+  "limit": 500,
   "messages": [
     {
       "id": 12345,
@@ -501,7 +502,8 @@ Full-text search including message body (uses FTS5).
 {
   "query": "project proposal",
   "messages": [...],
-  "total_count": 15,
+  "count": 15,
+  "has_more": false,
   "offset": 0,
   "limit": 100
 }
