@@ -757,6 +757,7 @@ func parseAggregateOptions(r *http.Request) query.AggregateOptions {
 // parseMessageFilter extracts filter parameters from query parameters.
 func parseMessageFilter(r *http.Request) query.MessageFilter {
 	var filter query.MessageFilter
+	filter.Pagination.Limit = -1 // sentinel: "not provided"
 
 	filter.Sender = r.URL.Query().Get("sender")
 	filter.SenderName = r.URL.Query().Get("sender_name")
@@ -804,13 +805,13 @@ func parseMessageFilter(r *http.Request) query.MessageFilter {
 		}
 	}
 	if v := r.URL.Query().Get("limit"); v != "" {
-		if limit, err := strconv.Atoi(v); err == nil && limit > 0 {
+		if limit, err := strconv.Atoi(v); err == nil && limit >= 0 {
 			filter.Pagination.Limit = limit
 		}
 	}
-	if filter.Pagination.Limit == 0 {
-		filter.Pagination.Limit = 500 // Default limit for message lists
-	}
+	// -1 sentinel means "not provided" — leave for callers that need
+	// endpoint-specific defaults (fast search: 100, deep search: 100).
+	// Endpoints that don't override should call applyDefaultLimit.
 
 	// Sorting
 	if v := r.URL.Query().Get("sort"); v != "" {
@@ -966,6 +967,9 @@ func (s *Server) handleFilteredMessages(w http.ResponseWriter, r *http.Request) 
 	}
 
 	filter := parseMessageFilter(r)
+	if filter.Pagination.Limit < 0 {
+		filter.Pagination.Limit = 500
+	}
 
 	messages, err := s.engine.ListMessages(r.Context(), filter)
 	if err != nil {
@@ -979,8 +983,15 @@ func (s *Server) handleFilteredMessages(w http.ResponseWriter, r *http.Request) 
 		summaries[i] = toMessageSummaryFromQuery(m)
 	}
 
+	// has_more indicates whether additional pages may exist.
+	// We request limit+1 rows would be needed for an exact flag,
+	// but since this endpoint doesn't support total counts yet,
+	// infer from whether the returned count fills the page.
+	hasMore := len(summaries) >= filter.Pagination.Limit && filter.Pagination.Limit > 0
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"total":    len(summaries), // Note: This is the returned count, not total matching
+		"count":    len(summaries),
+		"has_more": hasMore,
 		"offset":   filter.Pagination.Offset,
 		"limit":    filter.Pagination.Limit,
 		"messages": summaries,
@@ -1057,8 +1068,11 @@ func (s *Server) handleFastSearch(w http.ResponseWriter, r *http.Request) {
 
 	offset := filter.Pagination.Offset
 	limit := filter.Pagination.Limit
-	if limit == 0 || limit > 500 {
+	// Allow limit=0 for count-only requests (used by SearchFastCount).
+	if limit < 0 {
 		limit = 100
+	} else if limit > 500 {
+		limit = 500
 	}
 
 	q := search.Parse(queryStr)
@@ -1125,17 +1139,14 @@ func (s *Server) handleDeepSearch(w http.ResponseWriter, r *http.Request) {
 		summaries[i] = toMessageSummaryFromQuery(m)
 	}
 
-	// For deep search, we don't have a fast count, so use -1 to indicate unknown
-	totalCount := int64(len(summaries))
-	if len(summaries) == limit {
-		totalCount = -1 // Indicates more results may exist
-	}
+	hasMore := len(summaries) >= limit
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"query":       queryStr,
-		"messages":    summaries,
-		"total_count": totalCount,
-		"offset":      offset,
-		"limit":       limit,
+		"query":    queryStr,
+		"messages": summaries,
+		"count":    len(summaries),
+		"has_more": hasMore,
+		"offset":   offset,
+		"limit":    limit,
 	})
 }

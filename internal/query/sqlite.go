@@ -1319,6 +1319,19 @@ func MergeFilterIntoQuery(q *search.Query, filter MessageFilter) *search.Query {
 		merged.HideDeleted = true
 	}
 
+	// Date range filters
+	if filter.After != nil && merged.AfterDate == nil {
+		merged.AfterDate = filter.After
+	}
+	if filter.Before != nil && merged.BeforeDate == nil {
+		merged.BeforeDate = filter.Before
+	}
+
+	// Note: SenderName, RecipientName, TimeRange, ConversationID,
+	// and EmptyValueTargets cannot be represented in search.Query
+	// and are not merged. Deep search within those drill-down
+	// contexts will not be scoped to the current view.
+
 	return &merged
 }
 

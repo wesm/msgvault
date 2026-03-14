@@ -83,7 +83,8 @@ type totalStatsResponse struct {
 
 // filteredMessagesResponse matches the API filtered messages response format.
 type filteredMessagesResponse struct {
-	Total    int                  `json:"total"`
+	Count    int                  `json:"count"`
+	HasMore  bool                 `json:"has_more"`
 	Offset   int                  `json:"offset"`
 	Limit    int                  `json:"limit"`
 	Messages []messageSummaryJSON `json:"messages"`
@@ -113,11 +114,12 @@ type searchFastResponse struct {
 
 // deepSearchResponse matches the API deep search response format.
 type deepSearchResponse struct {
-	Query      string               `json:"query"`
-	Messages   []messageSummaryJSON `json:"messages"`
-	TotalCount int64                `json:"total_count"`
-	Offset     int                  `json:"offset"`
-	Limit      int                  `json:"limit"`
+	Query    string               `json:"query"`
+	Messages []messageSummaryJSON `json:"messages"`
+	Count    int                  `json:"count"`
+	HasMore  bool                 `json:"has_more"`
+	Offset   int                  `json:"offset"`
+	Limit    int                  `json:"limit"`
 }
 
 // ============================================================================
