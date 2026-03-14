@@ -214,6 +214,25 @@ func cacheNeedsBuild(dbPath, analyticsDir string) (bool, string) {
 		return true, fmt.Sprintf("%d new messages", newCount)
 	}
 
+	// Check if any messages were soft-deleted after the last cache build.
+	// Incremental builds don't rewrite existing rows, so deletions that
+	// occur after the build leave stale (non-deleted) rows in Parquet.
+	var deletedSinceBuild int64
+	err = db.DB().QueryRow(`
+		SELECT COUNT(*) FROM messages
+		WHERE deleted_from_source_at IS NOT NULL
+		  AND deleted_from_source_at > ?
+	`, state.LastSyncAt).Scan(&deletedSinceBuild)
+	if err != nil {
+		return true, "cannot verify deletion state"
+	}
+	if deletedSinceBuild > 0 {
+		return true, fmt.Sprintf(
+			"%d deletions since last cache build",
+			deletedSinceBuild,
+		)
+	}
+
 	// Check if parquet files actually exist (directory might be empty)
 	files, _ := filepath.Glob(filepath.Join(messagesDir, "*", "*.parquet"))
 	if len(files) == 0 {

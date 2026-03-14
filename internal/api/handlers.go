@@ -755,16 +755,20 @@ func parseAggregateOptions(r *http.Request) query.AggregateOptions {
 	}
 	if v := r.URL.Query().Get("after"); v != "" {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			opts.After = &t
+			u := t.UTC()
+			opts.After = &u
 		} else if t, err := time.Parse("2006-01-02", v); err == nil {
-			opts.After = &t
+			u := t.UTC()
+			opts.After = &u
 		}
 	}
 	if v := r.URL.Query().Get("before"); v != "" {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			opts.Before = &t
+			u := t.UTC()
+			opts.Before = &u
 		} else if t, err := time.Parse("2006-01-02", v); err == nil {
-			opts.Before = &t
+			u := t.UTC()
+			opts.Before = &u
 		}
 	}
 
@@ -806,19 +810,23 @@ func parseMessageFilter(r *http.Request) query.MessageFilter {
 		filter.HideDeletedFromSource = true
 	}
 
-	// Date range filters (RFC3339 or 2006-01-02)
+	// Date range filters (RFC3339 or 2006-01-02), normalized to UTC
 	if v := r.URL.Query().Get("after"); v != "" {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			filter.After = &t
+			u := t.UTC()
+			filter.After = &u
 		} else if t, err := time.Parse("2006-01-02", v); err == nil {
-			filter.After = &t
+			u := t.UTC()
+			filter.After = &u
 		}
 	}
 	if v := r.URL.Query().Get("before"); v != "" {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			filter.Before = &t
+			u := t.UTC()
+			filter.Before = &u
 		} else if t, err := time.Parse("2006-01-02", v); err == nil {
-			filter.Before = &t
+			u := t.UTC()
+			filter.Before = &u
 		}
 	}
 
