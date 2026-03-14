@@ -39,7 +39,8 @@ func (q *Query) IsEmpty() bool {
 		q.BeforeDate == nil &&
 		q.AfterDate == nil &&
 		q.LargerThan == nil &&
-		q.SmallerThan == nil
+		q.SmallerThan == nil &&
+		q.AccountID == nil
 }
 
 // operatorFn handles a parsed operator:value pair by applying it to the query.
