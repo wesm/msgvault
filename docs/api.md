@@ -395,7 +395,7 @@ Returns a filtered list of messages with pagination.
 ```json
 {
   "count": 150,
-  "has_more": true,
+  "has_more": false,
   "offset": 0,
   "limit": 500,
   "messages": [
