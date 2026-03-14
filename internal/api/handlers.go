@@ -847,9 +847,6 @@ func parseMessageFilter(r *http.Request) query.MessageFilter {
 	}
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if limit, err := strconv.Atoi(v); err == nil && limit >= 0 {
-			if limit > maxPageSize {
-				limit = maxPageSize
-			}
 			filter.Pagination.Limit = limit
 		}
 	}
@@ -1012,7 +1009,13 @@ func (s *Server) handleFilteredMessages(w http.ResponseWriter, r *http.Request) 
 
 	filter := parseMessageFilter(r)
 	if filter.Pagination.Limit <= 0 {
-		filter.Pagination.Limit = 500
+		filter.Pagination.Limit = maxPageSize
+	}
+	// Thread fetches (conversation_id) are naturally bounded by thread
+	// size, so skip the page-size cap to avoid silent truncation.
+	if filter.ConversationID == nil &&
+		filter.Pagination.Limit > maxPageSize {
+		filter.Pagination.Limit = maxPageSize
 	}
 
 	// Fetch one extra row to determine has_more accurately.
