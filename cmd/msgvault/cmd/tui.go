@@ -217,12 +217,14 @@ func cacheNeedsBuild(dbPath, analyticsDir string) (bool, string) {
 	// Check if any messages were soft-deleted after the last cache build.
 	// Incremental builds don't rewrite existing rows, so deletions that
 	// occur after the build leave stale (non-deleted) rows in Parquet.
+	// Format as "YYYY-MM-DD HH:MM:SS" to match datetime('now') values.
 	var deletedSinceBuild int64
+	syncAtStr := state.LastSyncAt.UTC().Format("2006-01-02 15:04:05")
 	err = db.DB().QueryRow(`
 		SELECT COUNT(*) FROM messages
 		WHERE deleted_from_source_at IS NOT NULL
 		  AND deleted_from_source_at > ?
-	`, state.LastSyncAt).Scan(&deletedSinceBuild)
+	`, syncAtStr).Scan(&deletedSinceBuild)
 	if err != nil {
 		return true, "cannot verify deletion state"
 	}

@@ -391,10 +391,12 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 		exportedCount = 0
 	}
 
-	// Save sync state
+	// Save sync state. Truncate to whole seconds in UTC to match
+	// SQLite's datetime('now') format used by deleted_from_source_at,
+	// so cacheNeedsBuild deletion checks compare like with like.
 	state := syncState{
 		LastMessageID: maxID,
-		LastSyncAt:    time.Now(),
+		LastSyncAt:    time.Now().UTC().Truncate(time.Second),
 	}
 	stateData, _ := json.Marshal(state)
 	if err := os.WriteFile(stateFile, stateData, 0644); err != nil {
