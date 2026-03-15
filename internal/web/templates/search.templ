@@ -1,0 +1,240 @@
+package templates
+
+import (
+	"fmt"
+	"net/url"
+	"github.com/wesm/msgvault/internal/query"
+)
+
+type SearchData struct {
+	Query       string
+	Mode        string // "fast" or "deep"
+	Messages    []query.MessageSummary
+	Page        int
+	PageSize    int
+	HasMore     bool
+	Stats       *query.TotalStats
+	HideDeleted bool
+	Attachments bool
+	SortField   string
+	SortDir     string
+}
+
+func (d SearchData) baseQuery() url.Values {
+	q := url.Values{}
+	q.Set("q", d.Query)
+	q.Set("mode", d.Mode)
+	if d.SortField != "" && d.SortField != "date" {
+		q.Set("sort", d.SortField)
+	}
+	if d.SortDir != "" && d.SortDir != "desc" {
+		q.Set("dir", d.SortDir)
+	}
+	if d.HideDeleted {
+		q.Set("hide_deleted", "1")
+	}
+	if d.Attachments {
+		q.Set("attachments", "1")
+	}
+	return q
+}
+
+func (d SearchData) searchURL(page int) string {
+	q := d.baseQuery()
+	if page > 1 {
+		q.Set("page", fmt.Sprintf("%d", page))
+	}
+	return "/search?" + q.Encode()
+}
+
+func (d SearchData) modeToggleURL() string {
+	q := d.baseQuery()
+	if d.Mode == "fast" {
+		q.Set("mode", "deep")
+	} else {
+		q.Set("mode", "fast")
+	}
+	q.Del("page")
+	return "/search?" + q.Encode()
+}
+
+func (d SearchData) filterToggleURL(key string, currentlyOn bool) string {
+	q := d.baseQuery()
+	if currentlyOn {
+		q.Del(key)
+	} else {
+		q.Set(key, "1")
+	}
+	q.Del("page")
+	return "/search?" + q.Encode()
+}
+
+func (d SearchData) searchSortURL(field string) string {
+	dir := "desc"
+	if d.SortField == field && d.SortDir == "desc" {
+		dir = "asc"
+	}
+	q := d.baseQuery()
+	q.Set("sort", field)
+	q.Set("dir", dir)
+	q.Del("page")
+	return "/search?" + q.Encode()
+}
+
+func (d SearchData) searchSortIndicator(field string) string {
+	if d.SortField != field {
+		return ""
+	}
+	if d.SortDir == "asc" {
+		return " ↑"
+	}
+	return " ↓"
+}
+
+templ Search(data SearchData) {
+	@Layout("Search", "search") {
+		if data.Stats != nil {
+			@StatsBar(data.Stats)
+		}
+		<form action="/search" method="get" class="search-form">
+			<div class="search-row">
+				<input
+					type="text"
+					name="q"
+					value={ data.Query }
+					placeholder="Search messages... (e.g. from:user@example.com invoice)"
+					aria-label="Search messages"
+					autofocus
+					class="search-input"
+				/>
+				<input type="hidden" name="mode" value={ data.Mode }/>
+				if data.HideDeleted {
+					<input type="hidden" name="hide_deleted" value="1"/>
+				}
+				if data.Attachments {
+					<input type="hidden" name="attachments" value="1"/>
+				}
+				<button type="submit" class="search-btn">
+					Search
+				</button>
+			</div>
+			<div class="search-controls">
+				if data.Mode == "fast" {
+					<span class="pill-sm active">Fast</span>
+					<a href={ templ.SafeURL(data.modeToggleURL()) } class="pill-sm">Deep</a>
+				} else {
+					<a href={ templ.SafeURL(data.modeToggleURL()) } class="pill-sm">Fast</a>
+					<span class="pill-sm active">Deep</span>
+				}
+				<span class="search-hint">
+					if data.Mode == "fast" {
+						Searches subject and sender (faster)
+					} else {
+						Searches full message body (slower)
+					}
+				</span>
+				<span class="search-divider"></span>
+				if data.HideDeleted {
+					<a href={ templ.SafeURL(data.filterToggleURL("hide_deleted", true)) } class="pill-sm active">
+						Hide Deleted
+					</a>
+				} else {
+					<a href={ templ.SafeURL(data.filterToggleURL("hide_deleted", false)) } class="pill-sm">
+						Hide Deleted
+					</a>
+				}
+				if data.Attachments {
+					<a href={ templ.SafeURL(data.filterToggleURL("attachments", true)) } class="pill-sm active">
+						Attachments Only
+					</a>
+				} else {
+					<a href={ templ.SafeURL(data.filterToggleURL("attachments", false)) } class="pill-sm">
+						Attachments Only
+					</a>
+				}
+			</div>
+		</form>
+		if data.Query == "" {
+			<div class="empty-state">
+				<div class="empty-state-title">Search your archive</div>
+				<p>Use Gmail-like syntax: from:user@example.com, subject:invoice, has:attachment, before:2024/01/01</p>
+			</div>
+		} else if len(data.Messages) == 0 {
+			<div class="empty-state">
+				<div class="empty-state-title">No results</div>
+				<p>
+					No messages match "{ data.Query }"
+					if data.Mode == "fast" {
+						— try <a href={ templ.SafeURL(data.modeToggleURL()) }>deep search</a> to include message bodies
+					}
+				</p>
+			</div>
+		} else {
+			<div class="result-count">
+				Showing { formatCount(int64(len(data.Messages))) } results
+				if data.Page > 1 {
+					(page { fmt.Sprintf("%d", data.Page) })
+				}
+			</div>
+			@searchMessageTable(data)
+			@searchPagination(data)
+		}
+	}
+}
+
+templ searchMessageTable(data SearchData) {
+	<form method="POST" action="/deletions/stage-batch" id="sel-form">
+		<table class="data-table">
+			<thead>
+				<tr>
+					<th class="sel-cell"><input type="checkbox" id="select-all" title="Select all"/></th>
+					if data.Mode == "fast" {
+						<th>
+							<a href={ templ.SafeURL(data.searchSortURL("date")) }>
+								Date{ data.searchSortIndicator("date") }
+							</a>
+						</th>
+						<th>From</th>
+						<th>
+							<a href={ templ.SafeURL(data.searchSortURL("subject")) }>
+								Subject{ data.searchSortIndicator("subject") }
+							</a>
+						</th>
+						<th class="num">
+							<a href={ templ.SafeURL(data.searchSortURL("size")) }>
+								Size{ data.searchSortIndicator("size") }
+							</a>
+						</th>
+					} else {
+						<th>Date</th>
+						<th>From</th>
+						<th>Subject</th>
+						<th class="num">Size</th>
+					}
+				</tr>
+			</thead>
+			<tbody>
+				for _, msg := range data.Messages {
+					@messageRow(msg)
+				}
+			</tbody>
+		</table>
+		@selectionBar()
+	</form>
+}
+
+templ searchPagination(data SearchData) {
+	if data.Page > 1 || data.HasMore {
+		<div class="pagination">
+			if data.Page > 1 {
+				<a href={ templ.SafeURL(data.searchURL(data.Page - 1)) }>Prev</a>
+			}
+			<span class="page-info">
+				Page { fmt.Sprintf("%d", data.Page) }
+			</span>
+			if data.HasMore {
+				<a href={ templ.SafeURL(data.searchURL(data.Page + 1)) }>Next</a>
+			}
+		</div>
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -14,8 +15,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/wesm/msgvault/internal/config"
+	"github.com/wesm/msgvault/internal/deletion"
+	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/scheduler"
 	"github.com/wesm/msgvault/internal/store"
+	"github.com/wesm/msgvault/internal/web"
 )
 
 // MessageStore defines the store operations the API needs.
@@ -46,6 +50,7 @@ type Server struct {
 	cfg         *config.Config
 	store       MessageStore
 	scheduler   SyncScheduler
+	engine      query.Engine // optional: enables web UI when set
 	logger      *slog.Logger
 	router      chi.Router
 	server      *http.Server
@@ -53,13 +58,26 @@ type Server struct {
 	cfgMu       sync.RWMutex // protects cfg.Accounts
 }
 
+// ServerOption configures the API server.
+type ServerOption func(*Server)
+
+// WithQueryEngine enables the web UI by providing a query engine.
+func WithQueryEngine(engine query.Engine) ServerOption {
+	return func(s *Server) {
+		s.engine = engine
+	}
+}
+
 // NewServer creates a new API server.
-func NewServer(cfg *config.Config, store MessageStore, sched SyncScheduler, logger *slog.Logger) *Server {
+func NewServer(cfg *config.Config, store MessageStore, sched SyncScheduler, logger *slog.Logger, opts ...ServerOption) *Server {
 	s := &Server{
 		cfg:       cfg,
 		store:     store,
 		scheduler: sched,
 		logger:    logger,
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 	s.router = s.setupRouter()
 	return s
@@ -122,6 +140,23 @@ func (s *Server) setupRouter() chi.Router {
 		// Token upload for headless OAuth
 		r.Post("/auth/token/{email}", s.handleUploadToken)
 	})
+
+	// Web UI (enabled when query engine is provided)
+	if s.engine != nil {
+		var delMgr *deletion.Manager
+		deletionsDir := filepath.Join(s.cfg.Data.DataDir, "deletions")
+		mgr, err := deletion.NewManager(deletionsDir)
+		if err != nil {
+			s.logger.Error("failed to create deletion manager", "error", err)
+		} else {
+			delMgr = mgr
+		}
+		webHandler := web.NewHandler(s.engine, delMgr, s.cfg.AttachmentsDir())
+		r.Group(func(r chi.Router) {
+			r.Use(s.authMiddleware)
+			r.Mount("/", webHandler.Routes())
+		})
+	}
 
 	return r
 }

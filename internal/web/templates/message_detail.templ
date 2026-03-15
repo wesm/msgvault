@@ -1,0 +1,144 @@
+package templates
+
+import (
+	"fmt"
+	"strings"
+	"github.com/wesm/msgvault/internal/query"
+)
+
+type MessageDetailData struct {
+	Message *query.MessageDetail
+	// Navigation context for back link
+	BackURL string
+}
+
+func formatAddress(a query.Address) string {
+	if a.Name != "" {
+		return a.Name + " <" + a.Email + ">"
+	}
+	return a.Email
+}
+
+func formatAddressList(addrs []query.Address) string {
+	parts := make([]string, len(addrs))
+	for i, a := range addrs {
+		parts[i] = formatAddress(a)
+	}
+	return strings.Join(parts, ", ")
+}
+
+templ MessageDetailPage(data MessageDetailData) {
+	@Layout("Message", "messages") {
+		if data.Message == nil {
+			<div class="empty-state">
+				<div class="empty-state-title">Message not found</div>
+				<p>The requested message could not be loaded.</p>
+			</div>
+		} else {
+			<nav class="breadcrumb">
+				<a href={ templ.SafeURL(data.BackURL) }>&larr; Back to messages</a>
+			</nav>
+			@messageHeader(data.Message)
+			@messageBody(data.Message)
+		}
+	}
+}
+
+templ messageHeader(msg *query.MessageDetail) {
+	<div class="card" style="margin-bottom: 16px;">
+		<h2 class="msg-subject">
+			if msg.Subject != "" {
+				{ msg.Subject }
+			} else {
+				<em style="color: var(--fg-muted);">(no subject)</em>
+			}
+		</h2>
+		<table class="msg-headers">
+			<tbody>
+				<tr>
+					<td class="msg-header-label">Date</td>
+					<td class="msg-header-value">{ msg.SentAt.Format("Mon, 02 Jan 2006 15:04:05 MST") }</td>
+				</tr>
+				if len(msg.From) > 0 {
+					<tr>
+						<td class="msg-header-label">From</td>
+						<td class="msg-header-value">{ formatAddressList(msg.From) }</td>
+					</tr>
+				}
+				if len(msg.To) > 0 {
+					<tr>
+						<td class="msg-header-label">To</td>
+						<td class="msg-header-value">{ formatAddressList(msg.To) }</td>
+					</tr>
+				}
+				if len(msg.Cc) > 0 {
+					<tr>
+						<td class="msg-header-label">Cc</td>
+						<td class="msg-header-value">{ formatAddressList(msg.Cc) }</td>
+					</tr>
+				}
+				if len(msg.Bcc) > 0 {
+					<tr>
+						<td class="msg-header-label">Bcc</td>
+						<td class="msg-header-value">{ formatAddressList(msg.Bcc) }</td>
+					</tr>
+				}
+				if len(msg.Labels) > 0 {
+					<tr>
+						<td class="msg-header-label">Labels</td>
+						<td class="msg-header-value">
+							for _, label := range msg.Labels {
+								<span class="msg-label">{ label }</span>
+							}
+						</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+		if len(msg.Attachments) > 0 {
+			<div class="msg-section">
+				<div class="msg-section-title">
+					Attachments ({ fmt.Sprintf("%d", len(msg.Attachments)) })
+				</div>
+				for _, att := range msg.Attachments {
+					<div class="msg-attachment">
+						if att.ContentHash != "" {
+							<a href={ templ.SafeURL(fmt.Sprintf("/attachments/%d/download", att.ID)) } class="msg-attachment-link">
+								{ att.Filename }
+							</a>
+						} else {
+							{ att.Filename }
+						}
+						<span class="msg-attachment-size">({ formatBytes(att.Size) })</span>
+					</div>
+				}
+			</div>
+		}
+		if msg.ConversationID > 0 {
+			<div class="msg-section" style="font-size: 12px;">
+				<a href={ templ.SafeURL(fmt.Sprintf("/messages?conversation=%d", msg.ConversationID)) }>
+					View thread
+				</a>
+			</div>
+		}
+		<div class="msg-section" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);">
+			<form method="POST" action={ templ.SafeURL(fmt.Sprintf("/deletions/stage/%d", msg.ID)) } style="display: inline;">
+				<button type="submit" class="btn-danger-sm" onclick="return confirm('Stage this message for deletion?')">
+					Stage for Deletion
+				</button>
+			</form>
+		</div>
+	</div>
+}
+
+templ messageBody(msg *query.MessageDetail) {
+	<div class="card">
+		if msg.BodyText != "" {
+			<pre class="msg-body">{ msg.BodyText }</pre>
+		} else if msg.BodyHTML != "" {
+			<pre class="msg-body">{ htmlToPlainText(msg.BodyHTML) }</pre>
+		} else {
+			<p style="color: var(--fg-muted); font-style: italic;">(No message content)</p>
+		}
+	</div>
+}

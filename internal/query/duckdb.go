@@ -1755,12 +1755,28 @@ func (e *DuckDBEngine) dropSearchCache() {
 
 // searchPageFromCache executes Phase 3 (paginated results) from the cached temp table.
 // Returns a SearchFastResult with cached count and stats.
-func (e *DuckDBEngine) searchPageFromCache(ctx context.Context, limit, offset int) (*SearchFastResult, error) {
+func (e *DuckDBEngine) searchPageFromCache(ctx context.Context, sorting MessageSorting, limit, offset int) (*SearchFastResult, error) {
+	// Build ORDER BY clause from sorting parameters.
+	var orderCol string
+	switch sorting.Field {
+	case MessageSortBySize:
+		orderCol = "sm.size_estimate"
+	case MessageSortBySubject:
+		orderCol = "sm.subject"
+	default:
+		orderCol = "sm.sent_at"
+	}
+	orderDir := "DESC"
+	if sorting.Direction == SortAsc {
+		orderDir = "ASC"
+	}
+	orderBy := orderCol + " " + orderDir
+
 	pageQuery := fmt.Sprintf(`
 		WITH %s,
 		page AS (
 			SELECT sm.id FROM %s sm
-			ORDER BY sm.sent_at DESC
+			ORDER BY %s
 			LIMIT ? OFFSET ?
 		),
 		msg_labels AS (
@@ -1790,8 +1806,8 @@ func (e *DuckDBEngine) searchPageFromCache(ctx context.Context, limit, offset in
 		LEFT JOIN att ON att.message_id = sm.id
 		LEFT JOIN msg_labels mlbl ON mlbl.message_id = sm.id
 		LEFT JOIN conv c ON c.id = sm.conversation_id
-		ORDER BY sm.sent_at DESC
-	`, e.parquetCTEs(), e.searchCacheTable, e.searchCacheTable)
+		ORDER BY %s
+	`, e.parquetCTEs(), e.searchCacheTable, orderBy, e.searchCacheTable, orderBy)
 
 	rows, err := e.db.QueryContext(ctx, pageQuery, limit, offset)
 	if err != nil {
@@ -1927,7 +1943,7 @@ func (e *DuckDBEngine) SearchFastWithStats(ctx context.Context, q *search.Query,
 		if e.searchCacheStats == nil {
 			e.searchCacheStats = e.computeSearchStats(ctx)
 		}
-		return e.searchPageFromCache(ctx, limit, offset)
+		return e.searchPageFromCache(ctx, filter.Sorting, limit, offset)
 	}
 
 	// Cache miss — drop old cache and materialize fresh.
@@ -1993,7 +2009,7 @@ func (e *DuckDBEngine) SearchFastWithStats(ctx context.Context, q *search.Query,
 	e.searchCacheKey = cacheKey
 
 	// Phase 3: Paginated results from cached temp table.
-	return e.searchPageFromCache(ctx, limit, offset)
+	return e.searchPageFromCache(ctx, filter.Sorting, limit, offset)
 }
 
 // buildSearchConditions builds WHERE conditions for search queries.

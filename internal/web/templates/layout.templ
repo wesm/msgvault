@@ -1,0 +1,111 @@
+package templates
+
+templ Layout(title string, activePage string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>{ title } - msgvault</title>
+			<link rel="stylesheet" href="/static/style.css"/>
+		</head>
+		<body>
+			<div class="app">
+				<header class="header">
+					<span class="header-title">msgvault</span>
+					<div class="header-right">
+						<nav class="header-nav">
+							<a href="/" class={ templ.KV("active", activePage == "dashboard") }>Dashboard</a>
+							<a href="/browse" class={ templ.KV("active", activePage == "browse") }>Browse</a>
+							<a href="/search" class={ templ.KV("active", activePage == "search") }>Search</a>
+							<a href="/deletions" class={ templ.KV("active", activePage == "deletions") }>Deletions</a>
+						</nav>
+						<button id="theme-toggle" class="theme-toggle" title="Toggle dark mode" aria-label="Toggle dark mode"></button>
+					</div>
+				</header>
+				{ children... }
+				<footer class="footer">
+					msgvault
+					<span style="margin-left: 8px; opacity: 0.6;"><kbd>?</kbd> shortcuts</span>
+				</footer>
+			</div>
+			@helpOverlay()
+			<script src="/static/keys.js"></script>
+		</body>
+	</html>
+}
+
+templ helpOverlay() {
+	<div id="help-overlay" class="help-overlay">
+		<div class="help-dialog">
+			<h3>Keyboard Shortcuts</h3>
+			<table>
+				<tr>
+					<td><kbd>j</kbd> <kbd>k</kbd></td>
+					<td>Navigate rows up / down</td>
+				</tr>
+				<tr>
+					<td><kbd>Enter</kbd></td>
+					<td>Drill into selected row</td>
+				</tr>
+				<tr>
+					<td><kbd>o</kbd></td>
+					<td>Open messages for row</td>
+				</tr>
+				<tr>
+					<td><kbd>g</kbd> <kbd>G</kbd></td>
+					<td>Jump to first / last row</td>
+				</tr>
+				<tr>
+					<td><kbd>n</kbd> <kbd>p</kbd></td>
+					<td>Next / previous page</td>
+				</tr>
+				<tr>
+					<td><kbd>/</kbd></td>
+					<td>Focus search (or go to search)</td>
+				</tr>
+				<tr>
+					<td><kbd>Esc</kbd></td>
+					<td>Blur search / close help</td>
+				</tr>
+				<tr>
+					<td><kbd>d</kbd></td>
+					<td>Enter delete mode</td>
+				</tr>
+				<tr>
+					<td><kbd>Space</kbd></td>
+					<td>Toggle selection (delete mode)</td>
+				</tr>
+				<tr>
+					<td><kbd>A</kbd></td>
+					<td>Select all (delete mode)</td>
+				</tr>
+				<tr>
+					<td><kbd>x</kbd></td>
+					<td>Clear selection (delete mode)</td>
+				</tr>
+				<tr>
+					<td><kbd>←</kbd> <kbd>→</kbd></td>
+					<td>Previous / next message</td>
+				</tr>
+				<tr>
+					<td><kbd>Bksp</kbd></td>
+					<td>Go back (breadcrumb)</td>
+				</tr>
+				<tr>
+					<td><kbd>H</kbd></td>
+					<td>Go to Dashboard</td>
+				</tr>
+				<tr>
+					<td><kbd>B</kbd></td>
+					<td>Go to Browse</td>
+				</tr>
+				<tr>
+					<td><kbd>?</kbd></td>
+					<td>Toggle this help</td>
+				</tr>
+			</table>
+			<div class="help-close">Press <kbd>?</kbd> or <kbd>Esc</kbd> to close</div>
+		</div>
+	</div>
+}
