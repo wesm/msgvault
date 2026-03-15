@@ -715,10 +715,13 @@ func TestAuthorize_WorkspaceAliasMismatch(t *testing.T) {
 		t.Errorf("error should contain 'token mismatch': %q",
 			err.Error())
 	}
-	// Error should suggest re-adding with the primary address.
-	if !strings.Contains(err.Error(), "primary@company.com") {
-		t.Errorf("error should suggest primary address: %q",
-			err.Error())
+
+	// No token should exist under either address.
+	if _, loadErr := mgr.loadToken("alias@company.com"); loadErr == nil {
+		t.Error("token should NOT be saved under alias address")
+	}
+	if _, loadErr := mgr.loadToken("primary@company.com"); loadErr == nil {
+		t.Error("token should NOT be saved under primary address")
 	}
 }
 

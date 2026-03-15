@@ -325,11 +325,9 @@ func (m *Manager) resolveTokenEmail(
 
 	if !sameGoogleAccount(email, profile.EmailAddress) {
 		return "", fmt.Errorf(
-			"token mismatch: expected %s but authorized as %s\n"+
-				"If %s is the primary address for this account, "+
-				"re-add with:\n  msgvault add-account %s",
+			"token mismatch: expected %s but authorized as %s"+
+				" (select the correct account and try again)",
 			email, profile.EmailAddress,
-			profile.EmailAddress, profile.EmailAddress,
 		)
 	}
 
