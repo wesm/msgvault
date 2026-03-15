@@ -582,6 +582,54 @@ func TestNewCallbackHandler(t *testing.T) {
 	}
 }
 
+// TestTokenSavedUnderOriginalIdentifier verifies that when the canonical
+// Gmail address differs from the user-supplied identifier (e.g. dotted
+// alias), the token is saved under the original identifier — not the
+// canonical one. This is the key invariant enforced by authorize():
+// sameGoogleAccount() accepts the alias, and saveToken() uses the
+// original email.
+//
+// Regression test: a previous version saved under canonicalEmail,
+// breaking HasToken/TokenSource lookups elsewhere in the app.
+func TestTokenSavedUnderOriginalIdentifier(t *testing.T) {
+	mgr := setupTestManager(t, Scopes)
+
+	token := &oauth2.Token{
+		AccessToken: "test-access-token",
+		TokenType:   "Bearer",
+		Expiry:      time.Now().Add(time.Hour),
+	}
+
+	// Simulate what authorize() does: validate via sameGoogleAccount,
+	// then save under the original identifier.
+	inputEmail := "first.last@gmail.com"
+	canonicalEmail := "firstlast@gmail.com"
+
+	if !sameGoogleAccount(inputEmail, canonicalEmail) {
+		t.Fatalf("sameGoogleAccount(%q, %q) = false, want true",
+			inputEmail, canonicalEmail)
+	}
+
+	// Save under original identifier (the authorize() contract)
+	if err := mgr.saveToken(inputEmail, token, Scopes); err != nil {
+		t.Fatalf("saveToken: %v", err)
+	}
+
+	// Token must be loadable under the original identifier
+	loaded, err := mgr.loadToken(inputEmail)
+	if err != nil {
+		t.Fatalf("loadToken(%q) failed: %v", inputEmail, err)
+	}
+	if loaded.AccessToken != "test-access-token" {
+		t.Errorf("wrong access token: got %q", loaded.AccessToken)
+	}
+
+	// Token must NOT exist under the canonical email
+	if _, err := mgr.loadToken(canonicalEmail); err == nil {
+		t.Errorf("token should NOT exist under canonical %q", canonicalEmail)
+	}
+}
+
 func TestSameGoogleAccount(t *testing.T) {
 	t.Parallel()
 
