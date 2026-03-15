@@ -673,16 +673,20 @@ func TestAuthorize_RejectsMismatch(t *testing.T) {
 			err.Error())
 	}
 
-	// No token should have been saved.
+	// No token should have been saved under either address.
 	if _, loadErr := mgr.loadToken("expected@gmail.com"); loadErr == nil {
-		t.Error("token should NOT be saved after mismatch rejection")
+		t.Error("token should NOT be saved under expected address")
+	}
+	if _, loadErr := mgr.loadToken("wrong@gmail.com"); loadErr == nil {
+		t.Error("token should NOT be saved under profile address")
 	}
 }
 
-// TestAuthorize_WorkspaceAlias verifies that a Workspace alias
-// (different local part, same domain) is accepted with a warning
-// rather than hard-rejected.
-func TestAuthorize_WorkspaceAlias(t *testing.T) {
+// TestAuthorize_WorkspaceAliasMismatch verifies that a Workspace
+// account where the profile returns a different local part on the
+// same domain is rejected (we can't verify aliases without admin
+// API access, so we reject to prevent token pollution).
+func TestAuthorize_WorkspaceAliasMismatch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -703,19 +707,18 @@ func TestAuthorize_WorkspaceAlias(t *testing.T) {
 		}, nil
 	}
 
-	// alias@company.com -> profile returns primary@company.com
 	err := mgr.Authorize(context.Background(), "alias@company.com")
-	if err != nil {
-		t.Fatalf("Authorize should accept same-domain alias: %v", err)
+	if err == nil {
+		t.Fatal("expected error for Workspace alias mismatch")
 	}
-
-	// Token saved under the original alias identifier.
-	loaded, err := mgr.loadToken("alias@company.com")
-	if err != nil {
-		t.Fatalf("loadToken failed: %v", err)
+	if !strings.Contains(err.Error(), "token mismatch") {
+		t.Errorf("error should contain 'token mismatch': %q",
+			err.Error())
 	}
-	if loaded.AccessToken != "ws-token" {
-		t.Errorf("wrong access token: got %q", loaded.AccessToken)
+	// Error should suggest re-adding with the primary address.
+	if !strings.Contains(err.Error(), "primary@company.com") {
+		t.Errorf("error should suggest primary address: %q",
+			err.Error())
 	}
 }
 
@@ -749,33 +752,6 @@ func TestAuthorize_CrossDomainReject(t *testing.T) {
 	if !strings.Contains(err.Error(), "token mismatch") {
 		t.Errorf("error should contain 'token mismatch': %q",
 			err.Error())
-	}
-}
-
-func TestSameWorkspaceDomain(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		a, b string
-		want bool
-	}{
-		{"user@company.com", "admin@company.com", true},
-		{"user@Company.Com", "admin@company.com", true},
-		{"user@company.com", "user@other.com", false},
-		{"user@gmail.com", "other@gmail.com", false},
-		{"user@googlemail.com", "other@googlemail.com", false},
-		{"noat", "user@gmail.com", false},
-		{"user@gmail.com", "noat", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.a+"_"+tt.b, func(t *testing.T) {
-			t.Parallel()
-			got := sameWorkspaceDomain(tt.a, tt.b)
-			if got != tt.want {
-				t.Errorf(
-					"sameWorkspaceDomain(%q, %q) = %v, want %v",
-					tt.a, tt.b, got, tt.want)
-			}
-		})
 	}
 }
 
