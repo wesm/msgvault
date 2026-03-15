@@ -107,12 +107,11 @@ Examples:
 			var mismatch *oauth.TokenMismatchError
 			if errors.As(err, &mismatch) {
 				// Only suggest add-account with the primary
-				// address when no source exists yet. If a source
+				// address when no Gmail source exists yet. If one
 				// already exists (--force re-auth, or token was
 				// manually deleted), the suggestion would create
 				// a duplicate and orphan the existing source.
-				existing, _ := s.GetSourcesByIdentifier(email)
-				if len(existing) == 0 {
+				if !hasGmailSource(s, email) {
 					return fmt.Errorf(
 						"%w\nIf %s is the primary address, "+
 							"re-add with:\n"+
@@ -142,6 +141,19 @@ Examples:
 
 		return nil
 	},
+}
+
+func hasGmailSource(s *store.Store, email string) bool {
+	sources, err := s.GetSourcesByIdentifier(email)
+	if err != nil {
+		return false
+	}
+	for _, src := range sources {
+		if src.SourceType == "gmail" {
+			return true
+		}
+	}
+	return false
 }
 
 func init() {
