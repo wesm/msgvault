@@ -1,0 +1,109 @@
+package templates
+
+import (
+	"fmt"
+	"github.com/wesm/msgvault/internal/deletion"
+)
+
+type DeletionsData struct {
+	Pending    []*deletion.Manifest
+	InProgress []*deletion.Manifest
+	Completed  []*deletion.Manifest
+	Failed     []*deletion.Manifest
+	Flash      string
+	FlashCount int
+}
+
+func (d DeletionsData) totalCount() int {
+	return len(d.Pending) + len(d.InProgress) + len(d.Completed) + len(d.Failed)
+}
+
+templ DeletionsPage(data DeletionsData) {
+	@Layout("Deletions", "deletions") {
+		if data.Flash == "staged" {
+			<div class="flash-notice">
+				Successfully staged { fmt.Sprintf("%d", data.FlashCount) } message(s) for deletion.
+			</div>
+		}
+		<h2 style="font-size: 16px; margin-bottom: 16px;">Deletion Batches</h2>
+		if data.totalCount() == 0 {
+			<div class="empty-state">
+				<div class="empty-state-title">No deletion batches</div>
+				<p>Stage individual messages for deletion from the message detail view, then execute with the CLI.</p>
+			</div>
+		} else {
+			if len(data.Pending) > 0 {
+				@manifestSection("Pending", "pending", data.Pending, true)
+			}
+			if len(data.InProgress) > 0 {
+				@manifestSection("In Progress", "in_progress", data.InProgress, false)
+			}
+			if len(data.Completed) > 0 {
+				@manifestSection("Completed", "completed", data.Completed, false)
+			}
+			if len(data.Failed) > 0 {
+				@manifestSection("Failed", "failed", data.Failed, false)
+			}
+		}
+		<div class="card" style="margin-top: 24px;">
+			<div class="card-title">How to execute</div>
+			<p style="font-size: 13px; color: var(--fg-muted); line-height: 1.6; margin-bottom: 8px;">
+				Staged batches are executed from the command line:
+			</p>
+			<table class="cmd-table">
+				<tr>
+					<td><code>msgvault delete-staged</code></td>
+					<td>Execute all pending</td>
+				</tr>
+				<tr>
+					<td><code>msgvault delete-staged &lt;batch-id&gt;</code></td>
+					<td>Execute specific batch</td>
+				</tr>
+				<tr>
+					<td><code>msgvault delete-staged --dry-run</code></td>
+					<td>Preview without deleting</td>
+				</tr>
+				<tr>
+					<td><code>msgvault delete-staged --trash</code></td>
+					<td>Move to trash (recoverable)</td>
+				</tr>
+			</table>
+		</div>
+	}
+}
+
+templ manifestSection(title string, status string, manifests []*deletion.Manifest, showCancel bool) {
+	<div class="card">
+		<div class="card-title">{ title } ({ fmt.Sprintf("%d", len(manifests)) })</div>
+		<table class="data-table">
+			<thead>
+				<tr>
+					<th>Batch ID</th>
+					<th>Description</th>
+					<th class="num">Messages</th>
+					<th>Created</th>
+					if showCancel {
+						<th></th>
+					}
+				</tr>
+			</thead>
+			<tbody>
+				for _, m := range manifests {
+					<tr>
+						<td style="font-family: var(--font); font-size: 12px;">{ m.ID }</td>
+						<td>{ m.Description }</td>
+						<td class="num">{ formatCount(int64(len(m.GmailIDs))) }</td>
+						<td class="date-cell">{ m.CreatedAt.Format("Jan 02 15:04") }</td>
+						if showCancel {
+							<td>
+								<form method="POST" action={ templ.SafeURL(fmt.Sprintf("/deletions/%s/cancel", m.ID)) } style="display: inline;">
+									<button type="submit" class="btn-danger-sm" onclick="return confirm('Cancel this deletion batch?')">Cancel</button>
+								</form>
+							</td>
+						}
+					</tr>
+				}
+			</tbody>
+		</table>
+	</div>
+}

@@ -1,0 +1,80 @@
+package templates
+
+import "github.com/wesm/msgvault/internal/query"
+
+type DashboardData struct {
+	Stats    *query.TotalStats
+	Accounts []query.AccountInfo
+}
+
+templ Dashboard(data DashboardData) {
+	@Layout("Dashboard", "dashboard") {
+		if data.Stats != nil {
+			@StatsBar(data.Stats)
+			<div class="dashboard-stats">
+				@statCard(formatCount(data.Stats.MessageCount), "Messages")
+				@statCard(formatBytes(data.Stats.TotalSize), "Total Size")
+				@statCard(formatCount(data.Stats.AttachmentCount), "Attachments")
+				@statCard(formatBytes(data.Stats.AttachmentSize), "Attachment Size")
+				@statCard(formatCount(data.Stats.LabelCount), "Labels")
+				@statCard(formatCount(data.Stats.AccountCount), "Accounts")
+			</div>
+		}
+		<div class="card">
+			<div class="card-title">Accounts</div>
+			if len(data.Accounts) == 0 {
+				<div class="empty-state">
+					<div class="empty-state-title">No accounts configured</div>
+					<p>Run <code>msgvault add-account you@gmail.com</code> to get started.</p>
+				</div>
+			} else {
+				<ul class="account-list">
+					for _, acct := range data.Accounts {
+						<li class="account-item">
+							<span class="account-email">{ acct.Identifier }</span>
+							<span class="account-meta">{ acct.SourceType }</span>
+						</li>
+					}
+				</ul>
+			}
+		</div>
+		<div class="card">
+			<div class="card-title">Quick Links</div>
+			<ul class="account-list">
+				<li class="account-item">
+					<a href="/browse?view=senders">Top Senders</a>
+				</li>
+				<li class="account-item">
+					<a href="/browse?view=domains">Top Domains</a>
+				</li>
+				<li class="account-item">
+					<a href="/browse?view=labels">Labels</a>
+				</li>
+				<li class="account-item">
+					<a href="/browse?view=time">Timeline</a>
+				</li>
+			</ul>
+		</div>
+	}
+}
+
+templ statCard(value string, label string) {
+	<div class="stat-card">
+		<div class="stat-card-value">{ value }</div>
+		<div class="stat-card-label">{ label }</div>
+	</div>
+}
+
+templ StatsBar(stats *query.TotalStats) {
+	<div class="stats-bar">
+		<div class="stat-item">
+			<span class="stat-value">{ formatCount(stats.MessageCount) }</span> msgs
+		</div>
+		<div class="stat-item">
+			<span class="stat-value">{ formatBytes(stats.TotalSize) }</span> total
+		</div>
+		<div class="stat-item">
+			<span class="stat-value">{ formatCount(stats.AttachmentCount) }</span> attachments
+		</div>
+	</div>
+}

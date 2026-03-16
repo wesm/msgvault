@@ -60,8 +60,9 @@ type MessageDetail struct {
 	BodyHTML string
 
 	// Metadata
-	Labels      []string
-	Attachments []AttachmentInfo
+	Labels       []string
+	Attachments  []AttachmentInfo
+	AccountEmail string // Source account identifier (email)
 }
 
 // Address represents an email address with optional display name.

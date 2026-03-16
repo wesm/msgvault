@@ -1,0 +1,397 @@
+package templates
+
+import (
+	"fmt"
+	"net/url"
+	"sort"
+	"github.com/wesm/msgvault/internal/query"
+)
+
+type BrowseData struct {
+	Stats       *query.TotalStats
+	Rows        []query.AggregateRow
+	ViewType    string
+	ViewLabel   string
+	SortField   string
+	SortDir     string
+	Granularity string
+	AccountID   string
+	Attachments bool
+	HideDeleted bool
+	Accounts    []query.AccountInfo
+	// Drill-down context
+	DrillFilters map[string]string
+	Breadcrumbs  []Breadcrumb
+}
+
+type Breadcrumb struct {
+	Label string
+	URL   string
+}
+
+// buildURL constructs a URL with properly encoded query parameters.
+func buildURL(path string, params ...string) string {
+	u := url.URL{Path: path}
+	q := u.Query()
+	for i := 0; i+1 < len(params); i += 2 {
+		if params[i+1] != "" {
+			q.Set(params[i], params[i+1])
+		}
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// addFilterParams appends the common filter params to a url.Values.
+func (d BrowseData) addFilterParams(q url.Values) {
+	if d.AccountID != "" {
+		q.Set("account", d.AccountID)
+	}
+	if d.Attachments {
+		q.Set("attachments", "1")
+	}
+	if d.HideDeleted {
+		q.Set("hide_deleted", "1")
+	}
+}
+
+// addDrillParams appends drill filter params to a url.Values.
+func (d BrowseData) addDrillParams(q url.Values) {
+	for k, v := range d.DrillFilters {
+		q.Set(k, v)
+	}
+}
+
+// currentBase returns the current page URL with all state preserved.
+func (d BrowseData) currentBase() string {
+	var path string
+	if len(d.DrillFilters) > 0 {
+		path = "/browse/drill"
+	} else {
+		path = "/browse"
+	}
+	q := url.Values{}
+	q.Set("view", d.ViewType)
+	q.Set("sort", d.SortField)
+	q.Set("dir", d.SortDir)
+	if d.Granularity != "" {
+		q.Set("granularity", d.Granularity)
+	}
+	d.addDrillParams(q)
+	d.addFilterParams(q)
+	return path + "?" + q.Encode()
+}
+
+// sortURL returns the URL for clicking a column header to sort.
+func (d BrowseData) sortURL(field string) string {
+	dir := "desc"
+	if d.SortField == field && d.SortDir == "desc" {
+		dir = "asc"
+	}
+	var path string
+	if len(d.DrillFilters) > 0 {
+		path = "/browse/drill"
+	} else {
+		path = "/browse"
+	}
+	q := url.Values{}
+	q.Set("view", d.ViewType)
+	q.Set("sort", field)
+	q.Set("dir", dir)
+	if d.Granularity != "" {
+		q.Set("granularity", d.Granularity)
+	}
+	d.addDrillParams(q)
+	d.addFilterParams(q)
+	return path + "?" + q.Encode()
+}
+
+// sortIndicator returns the sort arrow for a column header.
+func (d BrowseData) sortIndicator(field string) string {
+	if d.SortField != field {
+		return ""
+	}
+	if d.SortDir == "asc" {
+		return " ↑"
+	}
+	return " ↓"
+}
+
+// drillURL returns the URL for drilling into an aggregate row.
+func (d BrowseData) drillURL(key string) string {
+	filterKey := viewTypeToFilterParam(d.ViewType)
+	q := url.Values{}
+	q.Set("view", d.ViewType)
+	if key == "" {
+		q.Set(filterKey, "")
+	} else {
+		q.Set(filterKey, key)
+	}
+	q.Set("sort", d.SortField)
+	q.Set("dir", d.SortDir)
+	d.addDrillParams(q)
+	if d.Granularity != "" {
+		q.Set("granularity", d.Granularity)
+	}
+	d.addFilterParams(q)
+	return "/browse/drill?" + q.Encode()
+}
+
+// messagesURL returns the URL for viewing messages matching a filter.
+func (d BrowseData) messagesURL(key string) string {
+	filterKey := viewTypeToFilterParam(d.ViewType)
+	q := url.Values{}
+	if key == "" {
+		q.Set(filterKey, "")
+	} else {
+		q.Set(filterKey, key)
+	}
+	d.addDrillParams(q)
+	// Include granularity for time views so the messages query uses the
+	// correct time precision (year/month/day) instead of defaulting to month.
+	if d.ViewType == "time" && d.Granularity != "" {
+		q.Set("granularity", d.Granularity)
+	}
+	d.addFilterParams(q)
+	return "/messages?" + q.Encode()
+}
+
+// ViewTabURL returns the URL for switching to a different view type.
+func (d BrowseData) ViewTabURL(viewType string) string {
+	q := url.Values{}
+	q.Set("view", viewType)
+	q.Set("sort", d.SortField)
+	q.Set("dir", d.SortDir)
+	d.addFilterParams(q)
+	return "/browse?" + q.Encode()
+}
+
+// granularityTabURL returns the URL for switching time granularity.
+func (d BrowseData) granularityTabURL(granularity string) string {
+	q := url.Values{}
+	q.Set("view", "time")
+	q.Set("granularity", granularity)
+	q.Set("sort", d.SortField)
+	q.Set("dir", d.SortDir)
+	d.addFilterParams(q)
+	return "/browse?" + q.Encode()
+}
+
+// sortedDrillKeys returns drill filter keys in deterministic order.
+func (d BrowseData) sortedDrillKeys() []string {
+	keys := make([]string, 0, len(d.DrillFilters))
+	for k := range d.DrillFilters {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// filterToggleURL returns the URL to toggle a boolean filter on or off.
+func (d BrowseData) filterToggleURL(key string, currentlyOn bool) string {
+	base := d.currentBase()
+	if currentlyOn {
+		return deleteParam(base, key)
+	}
+	return addParam(base, key, "1")
+}
+
+// accountFilterURL returns the URL for filtering by a specific account (or all).
+func (d BrowseData) accountFilterURL(accountID string) string {
+	base := d.currentBase()
+	if accountID == "" {
+		return deleteParam(base, "account")
+	}
+	// Replace any existing account param
+	base = deleteParam(base, "account")
+	return addParam(base, "account", accountID)
+}
+
+func viewTypeToFilterParam(viewType string) string {
+	switch viewType {
+	case "senders":
+		return "sender"
+	case "sender_names":
+		return "sender_name"
+	case "recipients":
+		return "recipient"
+	case "recipient_names":
+		return "recipient_name"
+	case "domains":
+		return "domain"
+	case "labels":
+		return "label"
+	case "time":
+		return "time_period"
+	default:
+		return "sender"
+	}
+}
+
+templ Aggregates(data BrowseData) {
+	@Layout(data.ViewLabel, "browse") {
+		if data.Stats != nil {
+			@StatsBar(data.Stats)
+		}
+		<div class="toolbar">
+			<div class="toolbar-left">
+				@viewSelector(data)
+				if data.ViewType == "time" {
+					@granularitySelector(data)
+				}
+			</div>
+			@filterControls(data)
+		</div>
+		if len(data.Breadcrumbs) > 0 {
+			<nav class="breadcrumb">
+				for i, bc := range data.Breadcrumbs {
+					if i > 0 {
+						<span> / </span>
+					}
+					if bc.URL != "" {
+						<a href={ templ.SafeURL(bc.URL) }>{ bc.Label }</a>
+					} else {
+						<strong style="color: var(--fg);">{ bc.Label }</strong>
+					}
+				}
+			</nav>
+		}
+		if len(data.Rows) == 0 {
+			<div class="empty-state">
+				<div class="empty-state-title">No data</div>
+				<p>No messages match the current filters.</p>
+			</div>
+		} else {
+			@AggregateTable(data)
+		}
+	}
+}
+
+templ AggregateTable(data BrowseData) {
+	<table class="data-table">
+		<thead>
+			<tr>
+				<th>
+					<a href={ templ.SafeURL(data.sortURL("name")) }>
+						{ data.ViewLabel }{ data.sortIndicator("name") }
+					</a>
+				</th>
+				<th class="num">
+					<a href={ templ.SafeURL(data.sortURL("count")) }>
+						Count{ data.sortIndicator("count") }
+					</a>
+				</th>
+				<th class="num">
+					<a href={ templ.SafeURL(data.sortURL("size")) }>
+						Size{ data.sortIndicator("size") }
+					</a>
+				</th>
+				<th class="num">
+					<a href={ templ.SafeURL(data.sortURL("attachments")) }>
+						Attachments{ data.sortIndicator("attachments") }
+					</a>
+				</th>
+			</tr>
+		</thead>
+		<tbody>
+			for _, row := range data.Rows {
+				<tr>
+					<td>
+						<a href={ templ.SafeURL(data.drillURL(row.Key)) }>
+							if row.Key == "" {
+								<em>(empty)</em>
+							} else {
+								{ row.Key }
+							}
+						</a>
+					</td>
+					<td class="num">
+						<a href={ templ.SafeURL(data.messagesURL(row.Key)) }>
+							{ formatCount(row.Count) }
+						</a>
+					</td>
+					<td class="num">{ formatBytes(row.TotalSize) }</td>
+					<td class="num">
+						if row.AttachmentCount > 0 {
+							{ formatCount(row.AttachmentCount) } ({ formatBytes(row.AttachmentSize) })
+						} else {
+							{ "-" }
+						}
+					</td>
+				</tr>
+			}
+		</tbody>
+	</table>
+	if len(data.Rows) > 0 {
+		<div class="result-count" style="margin-top: 8px;">
+			Showing { formatCount(int64(len(data.Rows))) } of { formatCount(data.Rows[0].TotalUnique) } unique entries
+		</div>
+	}
+}
+
+templ viewSelector(data BrowseData) {
+	<div class="pill-group">
+		@viewTab("Senders", "senders", data)
+		@viewTab("Names", "sender_names", data)
+		@viewTab("Recipients", "recipients", data)
+		@viewTab("Rcpt Names", "recipient_names", data)
+		@viewTab("Domains", "domains", data)
+		@viewTab("Labels", "labels", data)
+		@viewTab("Time", "time", data)
+	</div>
+}
+
+templ viewTab(label string, viewType string, data BrowseData) {
+	if data.ViewType == viewType {
+		<a href={ templ.SafeURL(data.ViewTabURL(viewType)) } class="pill active">{ label }</a>
+	} else {
+		<a href={ templ.SafeURL(data.ViewTabURL(viewType)) } class="pill">{ label }</a>
+	}
+}
+
+templ granularitySelector(data BrowseData) {
+	<div class="pill-group" style="margin-left: 8px;">
+		@granularityTab("Year", "year", data)
+		@granularityTab("Month", "month", data)
+		@granularityTab("Day", "day", data)
+	</div>
+}
+
+templ granularityTab(label string, granularity string, data BrowseData) {
+	if data.Granularity == granularity {
+		<a href={ templ.SafeURL(data.granularityTabURL(granularity)) } class="pill-sm active-muted">{ label }</a>
+	} else {
+		<a href={ templ.SafeURL(data.granularityTabURL(granularity)) } class="pill-sm">{ label }</a>
+	}
+}
+
+templ filterControls(data BrowseData) {
+	<div class="toolbar-right">
+		if len(data.Accounts) > 0 {
+			@accountSelector(data)
+		}
+		if data.Attachments {
+			<a href={ templ.SafeURL(data.filterToggleURL("attachments", true)) } class="pill-sm active">Attachments Only</a>
+		} else {
+			<a href={ templ.SafeURL(data.filterToggleURL("attachments", false)) } class="pill-sm">Attachments Only</a>
+		}
+		if data.HideDeleted {
+			<a href={ templ.SafeURL(data.filterToggleURL("hide_deleted", true)) } class="pill-sm active">Hide Deleted</a>
+		} else {
+			<a href={ templ.SafeURL(data.filterToggleURL("hide_deleted", false)) } class="pill-sm">Hide Deleted</a>
+		}
+	</div>
+}
+
+templ accountSelector(data BrowseData) {
+	<select class="account-select" onchange="window.location=this.value">
+		<option value={ data.accountFilterURL("") } if data.AccountID == "" {
+			selected
+		}>All accounts</option>
+		for _, acct := range data.Accounts {
+			<option value={ data.accountFilterURL(fmt.Sprintf("%d", acct.ID)) } if data.AccountID == fmt.Sprintf("%d", acct.ID) {
+				selected
+			}>{ acct.Identifier }</option>
+		}
+	</select>
+}

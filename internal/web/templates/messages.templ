@@ -1,0 +1,255 @@
+package templates
+
+import (
+	"fmt"
+	"net/url"
+	"strings"
+	"github.com/wesm/msgvault/internal/query"
+)
+
+type MessagesData struct {
+	Messages    []query.MessageSummary
+	Page        int
+	PageSize    int
+	HasMore     bool
+	SortField   string
+	SortDir     string
+	// Filter context
+	Filters     map[string]string
+	AccountID   string
+	Attachments bool
+	HideDeleted bool
+}
+
+func (d MessagesData) baseQuery() url.Values {
+	q := url.Values{}
+	q.Set("sort", d.SortField)
+	q.Set("dir", d.SortDir)
+	for k, v := range d.Filters {
+		q.Set(k, v)
+	}
+	if d.AccountID != "" {
+		q.Set("account", d.AccountID)
+	}
+	if d.Attachments {
+		q.Set("attachments", "1")
+	}
+	if d.HideDeleted {
+		q.Set("hide_deleted", "1")
+	}
+	return q
+}
+
+func (d MessagesData) sortURL(field string) string {
+	dir := "desc"
+	if d.SortField == field && d.SortDir == "desc" {
+		dir = "asc"
+	}
+	q := d.baseQuery()
+	q.Set("sort", field)
+	q.Set("dir", dir)
+	q.Del("page")
+	return "/messages?" + q.Encode()
+}
+
+func (d MessagesData) sortIndicator(field string) string {
+	if d.SortField != field {
+		return ""
+	}
+	if d.SortDir == "asc" {
+		return " ↑"
+	}
+	return " ↓"
+}
+
+func (d MessagesData) pageURL(page int) string {
+	q := d.baseQuery()
+	if page > 1 {
+		q.Set("page", fmt.Sprintf("%d", page))
+	} else {
+		q.Del("page")
+	}
+	return "/messages?" + q.Encode()
+}
+
+func (d MessagesData) filterSummary() string {
+	var parts []string
+	order := []struct{ key, label string }{
+		{"sender", "Sender"},
+		{"sender_name", "Name"},
+		{"recipient", "Recipient"},
+		{"recipient_name", "Recipient Name"},
+		{"domain", "Domain"},
+		{"label", "Label"},
+		{"time_period", "Period"},
+	}
+	for _, item := range order {
+		if v, ok := d.Filters[item.key]; ok {
+			if v == "" {
+				parts = append(parts, item.label+": (empty)")
+			} else {
+				parts = append(parts, item.label+": "+v)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return "All Messages"
+	}
+	return strings.Join(parts, " / ")
+}
+
+func (d MessagesData) browseBackURL() string {
+	q := url.Values{}
+	// Map filters back to browse view type
+	viewType := "senders"
+	filterOrder := []struct{ param, view string }{
+		{"label", "labels"},
+		{"domain", "domains"},
+		{"recipient_name", "recipient_names"},
+		{"recipient", "recipients"},
+		{"sender_name", "sender_names"},
+		{"sender", "senders"},
+		{"time_period", "time"},
+	}
+	for _, f := range filterOrder {
+		if _, ok := d.Filters[f.param]; ok {
+			viewType = f.view
+			break
+		}
+	}
+	q.Set("view", viewType)
+	if d.AccountID != "" {
+		q.Set("account", d.AccountID)
+	}
+	if d.Attachments {
+		q.Set("attachments", "1")
+	}
+	if d.HideDeleted {
+		q.Set("hide_deleted", "1")
+	}
+	return "/browse?" + q.Encode()
+}
+
+templ Messages(data MessagesData) {
+	@Layout("Messages", "messages") {
+		<nav class="breadcrumb">
+			<a href={ templ.SafeURL(data.browseBackURL()) }>Browse</a>
+			<span> / </span>
+			<strong style="color: var(--fg);">{ data.filterSummary() }</strong>
+		</nav>
+		if len(data.Messages) == 0 {
+			<div class="empty-state">
+				<div class="empty-state-title">No messages</div>
+				<p>No messages match the current filters.</p>
+			</div>
+		} else {
+			<div class="result-count">
+				Showing { formatCount(int64(len(data.Messages))) } messages
+				if data.Page > 1 {
+					(page { fmt.Sprintf("%d", data.Page) })
+				}
+			</div>
+			@MessageTable(data)
+			@pagination(data)
+		}
+	}
+}
+
+templ MessageTable(data MessagesData) {
+	<form method="POST" action="/deletions/stage-batch" id="sel-form">
+		<table class="data-table">
+			<thead>
+				<tr>
+					<th class="sel-cell"><input type="checkbox" id="select-all" title="Select all"/></th>
+					<th>
+						<a href={ templ.SafeURL(data.sortURL("date")) }>
+							Date{ data.sortIndicator("date") }
+						</a>
+					</th>
+					<th>From</th>
+					<th>
+						<a href={ templ.SafeURL(data.sortURL("subject")) }>
+							Subject{ data.sortIndicator("subject") }
+						</a>
+					</th>
+					<th class="num">
+						<a href={ templ.SafeURL(data.sortURL("size")) }>
+							Size{ data.sortIndicator("size") }
+						</a>
+					</th>
+				</tr>
+			</thead>
+			<tbody>
+				for _, msg := range data.Messages {
+					@messageRow(msg)
+				}
+			</tbody>
+		</table>
+		@selectionBar()
+	</form>
+}
+
+templ pagination(data MessagesData) {
+	if data.Page > 1 || data.HasMore {
+		<div class="pagination">
+			if data.Page > 1 {
+				<a href={ templ.SafeURL(data.pageURL(data.Page - 1)) }>Prev</a>
+			}
+			<span class="page-info">
+				Page { fmt.Sprintf("%d", data.Page) }
+			</span>
+			if data.HasMore {
+				<a href={ templ.SafeURL(data.pageURL(data.Page + 1)) }>Next</a>
+			}
+		</div>
+	}
+}
+
+
+templ selectionBar() {
+	<div id="sel-bar" class="selection-bar">
+		<span id="sel-info">Select messages to stage for deletion</span>
+		<button type="button" class="pill-sm" onclick="selectAllMessages()">Select All</button>
+		<span style="flex: 1;"></span>
+		<button type="submit" class="btn-danger-sm" id="sel-submit" disabled onclick="return confirm('Stage selected messages for deletion?')">
+			Stage for Deletion
+		</button>
+		<button type="button" class="pill-sm" onclick="exitDeleteMode()">Cancel</button>
+	</div>
+}
+
+// messageRow renders a single message row, shared across all message tables.
+templ messageRow(msg query.MessageSummary) {
+	<tr>
+		<td class="sel-cell">
+			if msg.SourceMessageID != "" {
+				<input type="checkbox" name="gmail_id" value={ msg.SourceMessageID } class="msg-checkbox"/>
+			}
+		</td>
+		<td class="date-cell">
+			{ formatMessageDate(msg.SentAt) }
+		</td>
+		<td style="max-width: 200px;">
+			if msg.FromName != "" {
+				{ msg.FromName }
+			} else {
+				{ msg.FromEmail }
+			}
+		</td>
+		<td>
+			<a href={ templ.SafeURL(fmt.Sprintf("/messages/%d", msg.ID)) }>
+				if msg.Subject != "" {
+					{ msg.Subject }
+				} else {
+					<em>(no subject)</em>
+				}
+			</a>
+			if msg.HasAttachments {
+				<span title={ fmt.Sprintf("%d attachment(s)", msg.AttachmentCount) } class="attachment-badge">
+					{ fmt.Sprintf("[%d]", msg.AttachmentCount) }
+				</span>
+			}
+		</td>
+		<td class="num">{ formatBytes(msg.SizeEstimate) }</td>
+	</tr>
+}

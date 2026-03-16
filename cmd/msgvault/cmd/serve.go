@@ -16,6 +16,7 @@ import (
 	"github.com/wesm/msgvault/internal/api"
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/oauth"
+	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/scheduler"
 	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/sync"
@@ -121,8 +122,41 @@ func runServe(cmd *cobra.Command, args []string) error {
 	storeAdapter := &storeAPIAdapter{store: s}
 	schedAdapter := &schedulerAdapter{scheduler: sched}
 
+	// Initialize query engine for web UI
+	var serverOpts []api.ServerOption
+	analyticsDir := cfg.AnalyticsDir()
+
+	// Build cache if needed (same logic as TUI)
+	needsBuild, reason := cacheNeedsBuild(dbPath, analyticsDir)
+	if needsBuild {
+		fmt.Printf("Building analytics cache (%s)...\n", reason)
+		result, err := buildCache(dbPath, analyticsDir, true)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to build cache: %v\n", err)
+		} else if !result.Skipped {
+			fmt.Printf("Cached %d messages for fast queries.\n", result.ExportedCount)
+		}
+	}
+
+	if query.HasCompleteParquetData(analyticsDir) {
+		duckEngine, err := query.NewDuckDBEngine(analyticsDir, dbPath, s.DB(), query.DuckDBOptions{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to open query engine for web UI: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Web UI will be disabled. JSON API still available.\n")
+		} else {
+			defer duckEngine.Close()
+			serverOpts = append(serverOpts, api.WithQueryEngine(duckEngine))
+			logger.Info("web UI enabled", "analytics_dir", analyticsDir)
+		}
+	} else {
+		// Fall back to SQLite engine
+		sqlEngine := query.NewSQLiteEngine(s.DB())
+		serverOpts = append(serverOpts, api.WithQueryEngine(sqlEngine))
+		logger.Info("web UI enabled (SQLite fallback - may be slow for large archives)")
+	}
+
 	// Create and start API server
-	apiServer := api.NewServer(cfg, storeAdapter, schedAdapter, logger)
+	apiServer := api.NewServer(cfg, storeAdapter, schedAdapter, logger, serverOpts...)
 
 	// Start API server in goroutine
 	serverErr := make(chan error, 1)
@@ -136,8 +170,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if bindAddr == "" {
 		bindAddr = "127.0.0.1"
 	}
+	serverAddr := net.JoinHostPort(bindAddr, strconv.Itoa(cfg.Server.APIPort))
 	fmt.Printf("msgvault daemon started\n")
-	fmt.Printf("  API server: http://%s\n", net.JoinHostPort(bindAddr, strconv.Itoa(cfg.Server.APIPort)))
+	fmt.Printf("  Web UI:  http://%s/\n", serverAddr)
+	fmt.Printf("  API:     http://%s/api/v1\n", serverAddr)
 	fmt.Printf("  Scheduled accounts: %d\n", count)
 	fmt.Printf("  Data directory: %s\n", cfg.Data.DataDir)
 	fmt.Println()

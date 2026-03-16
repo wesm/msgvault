@@ -189,11 +189,13 @@ func getMessageByQueryShared(ctx context.Context, db *sql.DB, tablePrefix string
 			m.sent_at,
 			m.received_at,
 			COALESCE(m.size_estimate, 0),
-			m.has_attachments
+			m.has_attachments,
+			COALESCE(s.identifier, '')
 		FROM %smessages m
 		LEFT JOIN %sconversations conv ON conv.id = m.conversation_id
+		LEFT JOIN %ssources s ON s.id = m.source_id
 		WHERE %s
-	`, tablePrefix, tablePrefix, whereClause)
+	`, tablePrefix, tablePrefix, tablePrefix, whereClause)
 
 	var msg MessageDetail
 	var sentAt, receivedAt sql.NullTime
@@ -208,6 +210,7 @@ func getMessageByQueryShared(ctx context.Context, db *sql.DB, tablePrefix string
 		&receivedAt,
 		&msg.SizeEstimate,
 		&msg.HasAttachments,
+		&msg.AccountEmail,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil

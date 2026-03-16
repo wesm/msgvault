@@ -12,15 +12,19 @@ LDFLAGS := -X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=$(VERSION) \
 
 LDFLAGS_RELEASE := $(LDFLAGS) -s -w
 
-.PHONY: build build-release install clean test test-v fmt lint tidy shootout run-shootout setup-hooks help
+.PHONY: build build-release install clean test test-v fmt lint tidy generate shootout run-shootout setup-hooks help
+
+# Generate templ templates
+generate:
+	templ generate
 
 # Build the binary (debug)
-build:
+build: generate
 	CGO_ENABLED=1 go build -tags fts5 -ldflags="$(LDFLAGS)" -o msgvault ./cmd/msgvault
 	@chmod +x msgvault
 
 # Build with optimizations (release)
-build-release:
+build-release: generate
 	CGO_ENABLED=1 go build -tags fts5 -ldflags="$(LDFLAGS_RELEASE)" -trimpath -o msgvault ./cmd/msgvault
 	@chmod +x msgvault
 
@@ -83,7 +87,8 @@ run-shootout: shootout
 help:
 	@echo "msgvault build targets:"
 	@echo ""
-	@echo "  build          - Debug build"
+	@echo "  generate       - Generate templ templates"
+	@echo "  build          - Debug build (includes generate)"
 	@echo "  build-release  - Release build (optimized, stripped)"
 	@echo "  install        - Install to ~/.local/bin or GOPATH"
 	@echo ""
