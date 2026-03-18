@@ -143,6 +143,7 @@ func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB, o
 		"participants":  engine.probeParquetColumns(engine.parquetPath("participants"), false),
 		"messages":      engine.probeParquetColumns(engine.parquetGlob(), true),
 		"conversations": engine.probeParquetColumns(engine.parquetPath("conversations"), false),
+		"sources":       engine.probeParquetColumns(engine.parquetPath("sources"), false),
 	}
 	var missing []string
 	for _, col := range []struct{ table, col string }{
@@ -151,6 +152,7 @@ func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB, o
 		{"messages", "sender_id"},
 		{"messages", "message_type"},
 		{"conversations", "title"},
+		{"sources", "source_type"},
 	} {
 		if !engine.optionalCols[col.table][col.col] {
 			missing = append(missing, col.table+"."+col.col)
@@ -1838,7 +1840,9 @@ func (e *DuckDBEngine) SearchFast(ctx context.Context, q *search.Query, filter M
 			COALESCE(msg.has_attachments, false) as has_attachments,
 			COALESCE(att.attachment_count, 0) as attachment_count,
 			CAST(COALESCE(to_json(mlbl.labels), '[]') AS VARCHAR) as labels,
-			msg.deleted_from_source_at
+			msg.deleted_from_source_at,
+			COALESCE(msg.message_type, '') as message_type,
+			COALESCE(c.title, '') as conv_title
 		FROM msg
 		LEFT JOIN msg_sender ms ON ms.message_id = msg.id
 		LEFT JOIN direct_sender ds ON ds.message_id = msg.id
@@ -1880,6 +1884,8 @@ func (e *DuckDBEngine) SearchFast(ctx context.Context, q *search.Query, filter M
 			&msg.AttachmentCount,
 			&labelsJSON,
 			&deletedAt,
+			&msg.MessageType,
+			&msg.ConversationTitle,
 		); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
@@ -2007,7 +2013,9 @@ func (e *DuckDBEngine) searchPageFromCache(ctx context.Context, limit, offset in
 			sm.has_attachments,
 			COALESCE(att.attachment_count, 0) as attachment_count,
 			CAST(COALESCE(to_json(mlbl.labels), '[]') AS VARCHAR) as labels,
-			sm.deleted_from_source_at
+			sm.deleted_from_source_at,
+			COALESCE(sm.message_type, '') as message_type,
+			COALESCE(c.title, '') as conv_title
 		FROM %s sm
 		JOIN page p ON p.id = sm.id
 		LEFT JOIN att ON att.message_id = sm.id
@@ -2055,6 +2063,8 @@ func (e *DuckDBEngine) searchPageFromCache(ctx context.Context, limit, offset in
 			&msg.AttachmentCount,
 			&labelsJSON,
 			&deletedAt,
+			&msg.MessageType,
+			&msg.ConversationTitle,
 		); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
@@ -2200,7 +2210,8 @@ func (e *DuckDBEngine) SearchFastWithStats(ctx context.Context, q *search.Query,
 			COALESCE(CAST(msg.size_estimate AS BIGINT), 0) as size_estimate,
 			COALESCE(msg.has_attachments, false) as has_attachments,
 			msg.deleted_from_source_at,
-			CAST(msg.source_id AS BIGINT) as source_id
+			CAST(msg.source_id AS BIGINT) as source_id,
+			COALESCE(msg.message_type, '') as message_type
 		FROM msg
 		LEFT JOIN msg_sender ms ON ms.message_id = msg.id
 		LEFT JOIN direct_sender ds ON ds.message_id = msg.id
