@@ -126,6 +126,7 @@ func (s *Syncer) Incremental(ctx context.Context, source *store.Source) (summary
 		// Collect new message IDs to batch-fetch and deleted IDs to batch-mark
 		newMsgThreads := make(map[string]string) // deduplicates by ID
 		deletedSet := make(map[string]bool)
+		updatedExisting := make(map[string]struct{})
 
 		for _, record := range historyResp.History {
 			for _, msg := range record.MessagesAdded {
@@ -136,9 +137,10 @@ func (s *Syncer) Incremental(ctx context.Context, source *store.Source) (summary
 			for _, msg := range record.MessagesDeleted {
 				deletedSet[msg.Message.ID] = true
 			}
-			s.processLabelChanges(ctx, source.ID, record, labelMap, existingMap)
+			s.processLabelChanges(ctx, source.ID, record, labelMap, existingMap, updatedExisting)
 			checkpoint.MessagesProcessed++
 		}
+		checkpoint.MessagesUpdated += int64(len(updatedExisting))
 		newMsgIDs := make([]string, 0, len(newMsgThreads))
 		for id := range newMsgThreads {
 			newMsgIDs = append(newMsgIDs, id)
@@ -229,15 +231,25 @@ func (s *Syncer) Incremental(ctx context.Context, source *store.Source) (summary
 
 // processLabelChanges handles label additions and removals for messages.
 // existingMap maps source_message_id -> internal message_id for known messages.
-func (s *Syncer) processLabelChanges(ctx context.Context, sourceID int64, record gmail.HistoryRecord, labelMap map[string]int64, existingMap map[string]int64) {
+func (s *Syncer) processLabelChanges(ctx context.Context, sourceID int64, record gmail.HistoryRecord, labelMap map[string]int64, existingMap map[string]int64, updatedExisting map[string]struct{}) {
 	for _, item := range record.LabelsAdded {
-		if err := s.handleLabelChange(ctx, sourceID, item.Message.ID, item.Message.ThreadID, item.LabelIDs, labelMap, true, existingMap); err != nil {
+		updated, err := s.handleLabelChange(ctx, sourceID, item.Message.ID, item.Message.ThreadID, item.LabelIDs, labelMap, true, existingMap)
+		if err != nil {
 			s.logLabelChangeError("add", item.Message.ID, err)
+			continue
+		}
+		if updated {
+			updatedExisting[item.Message.ID] = struct{}{}
 		}
 	}
 	for _, item := range record.LabelsRemoved {
-		if err := s.handleLabelChange(ctx, sourceID, item.Message.ID, item.Message.ThreadID, item.LabelIDs, labelMap, false, existingMap); err != nil {
+		updated, err := s.handleLabelChange(ctx, sourceID, item.Message.ID, item.Message.ThreadID, item.LabelIDs, labelMap, false, existingMap)
+		if err != nil {
 			s.logLabelChangeError("remove", item.Message.ID, err)
+			continue
+		}
+		if updated {
+			updatedExisting[item.Message.ID] = struct{}{}
 		}
 	}
 }
@@ -245,7 +257,7 @@ func (s *Syncer) processLabelChanges(ctx context.Context, sourceID int64, record
 // handleLabelChange processes a label addition or removal.
 // For existing messages, applies the label diff directly without any API calls.
 // For unknown messages with labels being added, fetches and ingests the message.
-func (s *Syncer) handleLabelChange(ctx context.Context, sourceID int64, messageID, threadID string, gmailLabelIDs []string, labelMap map[string]int64, isAdd bool, existingMap map[string]int64) error {
+func (s *Syncer) handleLabelChange(ctx context.Context, sourceID int64, messageID, threadID string, gmailLabelIDs []string, labelMap map[string]int64, isAdd bool, existingMap map[string]int64) (bool, error) {
 	internalID, exists := existingMap[messageID]
 
 	if !exists {
@@ -253,12 +265,12 @@ func (s *Syncer) handleLabelChange(ctx context.Context, sourceID int64, messageI
 		if isAdd {
 			raw, err := s.client.GetMessageRaw(ctx, messageID)
 			if err != nil {
-				return err
+				return false, err
 			}
-			return s.ingestMessage(ctx, sourceID, raw, threadID, labelMap)
+			return false, s.ingestMessage(ctx, sourceID, raw, threadID, labelMap)
 		}
 		// Removing labels from non-existent message is a no-op
-		return nil
+		return false, nil
 	}
 
 	// Convert Gmail label IDs to internal label IDs
@@ -271,9 +283,9 @@ func (s *Syncer) handleLabelChange(ctx context.Context, sourceID int64, messageI
 
 	// Apply label diff directly — no API call needed
 	if isAdd {
-		return s.store.AddMessageLabels(internalID, labelIDs)
+		return true, s.store.AddMessageLabels(internalID, labelIDs)
 	}
-	return s.store.RemoveMessageLabels(internalID, labelIDs)
+	return true, s.store.RemoveMessageLabels(internalID, labelIDs)
 }
 
 // logLabelChangeError logs label change errors, downgrading "not found"

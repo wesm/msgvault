@@ -73,6 +73,7 @@ type MessageSummary struct {
 	From           string   `json:"from"`
 	To             []string `json:"to"`
 	SentAt         string   `json:"sent_at"`
+	DeletedAt      string   `json:"deleted_at,omitempty"`
 	Snippet        string   `json:"snippet"`
 	Labels         []string `json:"labels"`
 	HasAttach      bool     `json:"has_attachments"`
@@ -131,6 +132,7 @@ func toMessageSummary(m APIMessage) MessageSummary {
 		From:           m.From,
 		To:             to,
 		SentAt:         m.SentAt.UTC().Format(time.RFC3339),
+		DeletedAt:      formatDeletedAt(m.DeletedAt),
 		Snippet:        m.Snippet,
 		Labels:         labels,
 		HasAttach:      m.HasAttachments,
@@ -912,11 +914,19 @@ func toMessageSummaryFromQuery(m query.MessageSummary) MessageSummary {
 		From:           m.FromEmail,
 		To:             []string{}, // Query summary doesn't include recipients
 		SentAt:         m.SentAt.UTC().Format(time.RFC3339),
+		DeletedAt:      formatDeletedAt(m.DeletedAt),
 		Snippet:        m.Snippet,
 		Labels:         labels,
 		HasAttach:      m.HasAttachments,
 		SizeBytes:      m.SizeEstimate,
 	}
+}
+
+func formatDeletedAt(deletedAt *time.Time) string {
+	if deletedAt == nil {
+		return ""
+	}
+	return deletedAt.UTC().Format(time.RFC3339)
 }
 
 // handleAggregates returns aggregate data for a view type.

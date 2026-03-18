@@ -166,6 +166,7 @@ type messageResponse struct {
 	From           string   `json:"from"`
 	To             []string `json:"to"`
 	SentAt         string   `json:"sent_at"`
+	DeletedAt      string   `json:"deleted_at,omitempty"`
 	Snippet        string   `json:"snippet"`
 	Labels         []string `json:"labels"`
 	HasAttach      bool     `json:"has_attachments"`
@@ -208,6 +209,13 @@ func parseTime(s string) time.Time {
 
 // toAPIMessage converts a messageResponse to store.APIMessage.
 func toAPIMessage(m messageResponse) store.APIMessage {
+	var deletedAt *time.Time
+	if m.DeletedAt != "" {
+		t := parseTime(m.DeletedAt)
+		if !t.IsZero() {
+			deletedAt = &t
+		}
+	}
 	return store.APIMessage{
 		ID:             m.ID,
 		ConversationID: m.ConversationID,
@@ -215,6 +223,7 @@ func toAPIMessage(m messageResponse) store.APIMessage {
 		From:           m.From,
 		To:             m.To,
 		SentAt:         parseTime(m.SentAt),
+		DeletedAt:      deletedAt,
 		Snippet:        m.Snippet,
 		Labels:         m.Labels,
 		HasAttachments: m.HasAttach,

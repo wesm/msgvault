@@ -924,6 +924,50 @@ func TestHandleFilteredMessages(t *testing.T) {
 	}
 }
 
+func TestHandleFilteredMessagesIncludesDeletedAt(t *testing.T) {
+	deletedAt := time.Date(2026, 3, 18, 15, 0, 0, 0, time.UTC)
+	engine := &querytest.MockEngine{
+		ListResults: []query.MessageSummary{
+			{
+				ID:        1,
+				Subject:   "Deleted Email",
+				FromEmail: "alice@example.com",
+				SentAt:    time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC),
+				DeletedAt: &deletedAt,
+			},
+		},
+	}
+	srv := newTestServerWithEngine(t, engine)
+
+	req := httptest.NewRequest("GET", "/api/v1/messages/filter?limit=100", nil)
+	w := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	messages, ok := resp["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("messages = %#v, want single message", resp["messages"])
+	}
+
+	message, ok := messages[0].(map[string]any)
+	if !ok {
+		t.Fatalf("message = %#v, want object", messages[0])
+	}
+
+	if got := message["deleted_at"]; got != deletedAt.Format(time.RFC3339) {
+		t.Fatalf("deleted_at = %#v, want %q", got, deletedAt.Format(time.RFC3339))
+	}
+}
+
 func TestHandleTotalStats(t *testing.T) {
 	engine := &querytest.MockEngine{
 		Stats: &query.TotalStats{

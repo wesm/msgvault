@@ -19,6 +19,7 @@ type APIMessage struct {
 	Labels         []string
 	HasAttachments bool
 	SizeEstimate   int64
+	DeletedAt      *time.Time
 	Body           string
 	Headers        map[string]string
 	Attachments    []APIAttachment
@@ -107,16 +108,18 @@ func (s *Store) GetMessage(id int64) (*APIMessage, error) {
 			COALESCE(m.sent_at, m.received_at, m.internal_date) as sent_at,
 			COALESCE(m.snippet, '') as snippet,
 			m.has_attachments,
-			m.size_estimate
+			m.size_estimate,
+			m.deleted_from_source_at
 		FROM messages m
 		LEFT JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
 		LEFT JOIN participants p ON p.id = mr.participant_id
-		WHERE m.id = ? AND m.deleted_from_source_at IS NULL
+		WHERE m.id = ?
 	`
 
 	var m APIMessage
 	var sentAtStr sql.NullString
-	err := s.db.QueryRow(query, id).Scan(&m.ID, &m.ConversationID, &m.Subject, &m.From, &sentAtStr, &m.Snippet, &m.HasAttachments, &m.SizeEstimate)
+	var deletedAtStr sql.NullString
+	err := s.db.QueryRow(query, id).Scan(&m.ID, &m.ConversationID, &m.Subject, &m.From, &sentAtStr, &m.Snippet, &m.HasAttachments, &m.SizeEstimate, &deletedAtStr)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -125,6 +128,10 @@ func (s *Store) GetMessage(id int64) (*APIMessage, error) {
 	}
 	if sentAtStr.Valid && sentAtStr.String != "" {
 		m.SentAt = parseSQLiteTime(sentAtStr.String)
+	}
+	if deletedAtStr.Valid && deletedAtStr.String != "" {
+		deletedAt := parseSQLiteTime(deletedAtStr.String)
+		m.DeletedAt = &deletedAt
 	}
 
 	// Get recipients (single message, per-row is fine)

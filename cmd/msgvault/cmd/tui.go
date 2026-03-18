@@ -163,6 +163,7 @@ type cacheStaleness struct {
 	NeedsBuild  bool
 	HasNew      bool // new messages since last build
 	HasDeleted  bool // deletions since last build
+	HasUpdated  bool // existing messages mutated since last build
 	FullRebuild bool // must rewrite all shards (not incremental)
 	Reason      string
 }
@@ -261,6 +262,39 @@ func cacheNeedsBuild(dbPath, analyticsDir string) cacheStaleness {
 		result.FullRebuild = true
 		reasons = append(reasons,
 			fmt.Sprintf("%d deletions", deletedSinceBuild))
+	}
+
+	var hasSyncRunsTable int
+	err = db.DB().QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'sync_runs'
+	`).Scan(&hasSyncRunsTable)
+	if err != nil {
+		return cacheStaleness{
+			NeedsBuild: true, FullRebuild: true,
+			Reason: "cannot verify sync history",
+		}
+	}
+	if hasSyncRunsTable > 0 {
+		var updatedSinceBuild int64
+		err = db.DB().QueryRow(`
+			SELECT COALESCE(SUM(messages_updated), 0) FROM sync_runs
+			WHERE status = 'completed'
+			  AND completed_at IS NOT NULL
+			  AND completed_at >= ?
+		`, syncAtStr).Scan(&updatedSinceBuild)
+		if err != nil {
+			return cacheStaleness{
+				NeedsBuild: true, FullRebuild: true,
+				Reason: "cannot verify sync history",
+			}
+		}
+		if updatedSinceBuild > 0 {
+			result.HasUpdated = true
+			result.FullRebuild = true
+			reasons = append(reasons,
+				fmt.Sprintf("%d updated messages", updatedSinceBuild))
+		}
 	}
 
 	// Check if parquet files actually exist (directory might be empty)

@@ -99,6 +99,7 @@ type messageSummaryJSON struct {
 	From           string   `json:"from"`
 	To             []string `json:"to"`
 	SentAt         string   `json:"sent_at"`
+	DeletedAt      string   `json:"deleted_at,omitempty"`
 	Snippet        string   `json:"snippet"`
 	Labels         []string `json:"labels"`
 	HasAttach      bool     `json:"has_attachments"`
@@ -360,12 +361,20 @@ func parseMessageSummaries(msgs []messageSummaryJSON) []query.MessageSummary {
 	result := make([]query.MessageSummary, len(msgs))
 	for i, m := range msgs {
 		sentAt := parseTime(m.SentAt)
+		var deletedAt *time.Time
+		if m.DeletedAt != "" {
+			t := parseTime(m.DeletedAt)
+			if !t.IsZero() {
+				deletedAt = &t
+			}
+		}
 		result[i] = query.MessageSummary{
 			ID:             m.ID,
 			ConversationID: m.ConversationID,
 			Subject:        m.Subject,
 			FromEmail:      m.From,
 			SentAt:         sentAt,
+			DeletedAt:      deletedAt,
 			Snippet:        m.Snippet,
 			Labels:         m.Labels,
 			HasAttachments: m.HasAttach,

@@ -1521,10 +1521,16 @@ func TestBuildCache_ZeroMessagesNoRepeatedRebuilds(t *testing.T) {
 // writeSyncState writes a _last_sync.json file to the analytics directory.
 func writeSyncState(t *testing.T, analyticsDir string, lastMessageID int64) {
 	t.Helper()
+	writeSyncStateAt(t, analyticsDir, lastMessageID, time.Now())
+}
+
+// writeSyncStateAt writes a _last_sync.json file with an explicit timestamp.
+func writeSyncStateAt(t *testing.T, analyticsDir string, lastMessageID int64, syncAt time.Time) {
+	t.Helper()
 	if err := os.MkdirAll(analyticsDir, 0755); err != nil {
 		t.Fatalf("MkdirAll analytics: %v", err)
 	}
-	state := syncState{LastMessageID: lastMessageID, LastSyncAt: time.Now()}
+	state := syncState{LastMessageID: lastMessageID, LastSyncAt: syncAt}
 	data, err := json.Marshal(state)
 	if err != nil {
 		t.Fatalf("marshal sync state: %v", err)
@@ -1738,6 +1744,67 @@ func TestCacheNeedsBuild(t *testing.T) {
 				t.Errorf("cacheNeedsBuild() reason = %q, want %q", got.Reason, tt.wantReason)
 			}
 		})
+	}
+}
+
+func TestCacheNeedsBuild_LabelOnlySyncRequiresFullRebuild(t *testing.T) {
+	tmpDir, cleanup := setupTestSQLiteEmpty(t)
+	defer cleanup()
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	analyticsDir := filepath.Join(tmpDir, "analytics")
+
+	stateTime := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
+	writeSyncStateAt(t, analyticsDir, 5, stateTime)
+	createFakeParquet(t, analyticsDir)
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	_, err = db.Exec(`
+		CREATE TABLE sync_runs (
+			id INTEGER PRIMARY KEY,
+			source_id INTEGER,
+			started_at DATETIME,
+			completed_at DATETIME,
+			status TEXT,
+			messages_processed INTEGER,
+			messages_added INTEGER,
+			messages_updated INTEGER,
+			errors_count INTEGER
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create sync_runs: %v", err)
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO sync_runs (
+			id, source_id, started_at, completed_at, status,
+			messages_processed, messages_added, messages_updated, errors_count
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		1, 1,
+		stateTime.Add(30*time.Second).Format("2006-01-02 15:04:05"),
+		stateTime.Add(2*time.Minute).Format("2006-01-02 15:04:05"),
+		"completed", 1, 0, 2, 0,
+	)
+	if err != nil {
+		t.Fatalf("insert sync_run: %v", err)
+	}
+
+	got := cacheNeedsBuild(dbPath, analyticsDir)
+	if !got.NeedsBuild {
+		t.Fatal("cacheNeedsBuild() NeedsBuild = false, want true")
+	}
+	if !got.FullRebuild {
+		t.Fatal("cacheNeedsBuild() FullRebuild = false, want true")
+	}
+	if !strings.Contains(got.Reason, "updated") {
+		t.Fatalf("cacheNeedsBuild() reason = %q, want substring %q", got.Reason, "updated")
 	}
 }
 
