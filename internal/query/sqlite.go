@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wesm/msgvault/internal/search"
 )
@@ -1356,7 +1357,71 @@ func MergeFilterIntoQuery(q *search.Query, filter MessageFilter) *search.Query {
 		merged.HideDeleted = true
 	}
 
+	// Date range filters — intersect (take the stricter bound) so
+	// a user-supplied after:/before: cannot widen beyond the current
+	// drill-down context.
+	if filter.After != nil {
+		if merged.AfterDate == nil || filter.After.After(*merged.AfterDate) {
+			merged.AfterDate = filter.After
+		}
+	}
+	if filter.Before != nil {
+		if merged.BeforeDate == nil || filter.Before.Before(*merged.BeforeDate) {
+			merged.BeforeDate = filter.Before
+		}
+	}
+
+	// TimeRange.Period can be converted to date bounds. A period
+	// like "2024" → [2024-01-01, 2025-01-01), "2024-03" →
+	// [2024-03-01, 2024-04-01), "2024-03-15" → [2024-03-15, 2024-03-16).
+	if filter.TimeRange.Period != "" {
+		if after, before, ok := timePeriodToBounds(
+			filter.TimeRange.Period,
+		); ok {
+			if merged.AfterDate == nil ||
+				after.After(*merged.AfterDate) {
+				merged.AfterDate = &after
+			}
+			if merged.BeforeDate == nil ||
+				before.Before(*merged.BeforeDate) {
+				merged.BeforeDate = &before
+			}
+		}
+	}
+
+	// Note: SenderName, RecipientName, ConversationID, and
+	// EmptyValueTargets cannot be represented in search.Query
+	// and are not merged. Deep search within those drill-down
+	// contexts will not be scoped to the current view.
+
 	return &merged
+}
+
+// timePeriodToBounds converts a time period string to half-open date
+// bounds [after, before). Returns ok=false if the format is unrecognized.
+func timePeriodToBounds(period string) (after, before time.Time, ok bool) {
+	switch len(period) {
+	case 4: // "2024" → year
+		t, err := time.Parse("2006", period)
+		if err != nil {
+			return time.Time{}, time.Time{}, false
+		}
+		return t, t.AddDate(1, 0, 0), true
+	case 7: // "2024-03" → month
+		t, err := time.Parse("2006-01", period)
+		if err != nil {
+			return time.Time{}, time.Time{}, false
+		}
+		return t, t.AddDate(0, 1, 0), true
+	case 10: // "2024-03-15" → day
+		t, err := time.Parse("2006-01-02", period)
+		if err != nil {
+			return time.Time{}, time.Time{}, false
+		}
+		return t, t.AddDate(0, 0, 1), true
+	default:
+		return time.Time{}, time.Time{}, false
+	}
 }
 
 // SearchFastCount returns the total count of messages matching a search query.

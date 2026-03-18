@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -68,6 +69,7 @@ func newTestEnv(t *testing.T, opt ...*Options) *TestEnv {
 }
 
 // CreateSourceWithHistory creates a source and sets its sync cursor for incremental sync tests.
+// The returned Source has SyncCursor populated so it can be passed directly to Incremental().
 func (e *TestEnv) CreateSourceWithHistory(t *testing.T, historyID string) *store.Source {
 	t.Helper()
 	source, err := e.Store.GetOrCreateSource("gmail", e.Mock.Profile.EmailAddress)
@@ -77,6 +79,7 @@ func (e *TestEnv) CreateSourceWithHistory(t *testing.T, historyID string) *store
 	if err := e.Store.UpdateSourceSyncCursor(source.ID, historyID); err != nil {
 		t.Fatalf("UpdateSourceSyncCursor: %v", err)
 	}
+	source.SyncCursor = sql.NullString{String: historyID, Valid: true}
 	return source
 }
 
@@ -125,9 +128,14 @@ func runFullSync(t *testing.T, env *TestEnv) *gmail.SyncSummary {
 }
 
 // runIncrementalSync runs an incremental sync and fails the test on error.
+// Looks up the Gmail source for testEmail (all sync tests use "gmail" type).
 func runIncrementalSync(t *testing.T, env *TestEnv) *gmail.SyncSummary {
 	t.Helper()
-	summary, err := env.Syncer.Incremental(env.Context, testEmail)
+	source, err := env.Store.GetOrCreateSource("gmail", testEmail)
+	if err != nil {
+		t.Fatalf("look up source for incremental sync: %v", err)
+	}
+	summary, err := env.Syncer.Incremental(env.Context, source)
 	if err != nil {
 		t.Fatalf("incremental sync: %v", err)
 	}

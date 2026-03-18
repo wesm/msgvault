@@ -310,6 +310,22 @@ func (e *DuckDBEngine) parquetCTEs() string {
 	}
 	convCTE += fmt.Sprintf(" FROM read_parquet('%s')", e.parquetPath("conversations"))
 
+	// --- sources CTE ---
+	srcReplace := []string{
+		"CAST(id AS BIGINT) AS id",
+	}
+	var srcExtra []string
+	if e.hasCol("sources", "source_type") {
+		srcReplace = append(srcReplace, "COALESCE(CAST(source_type AS VARCHAR), 'gmail') AS source_type")
+	} else {
+		srcExtra = append(srcExtra, "'gmail' AS source_type")
+	}
+	srcCTE := fmt.Sprintf("SELECT * REPLACE (\n\t\t\t\t%s\n\t\t\t)", strings.Join(srcReplace, ",\n\t\t\t\t"))
+	if len(srcExtra) > 0 {
+		srcCTE += ", " + strings.Join(srcExtra, ", ")
+	}
+	srcCTE += fmt.Sprintf(" FROM read_parquet('%s')", e.parquetPath("sources"))
+
 	return fmt.Sprintf(`
 		msg AS (
 			%s
@@ -345,9 +361,7 @@ func (e *DuckDBEngine) parquetCTEs() string {
 			GROUP BY 1
 		),
 		src AS (
-			SELECT * REPLACE (
-				CAST(id AS BIGINT) AS id
-			) FROM read_parquet('%s')
+			%s
 		),
 		conv AS (
 			%s
@@ -358,7 +372,7 @@ func (e *DuckDBEngine) parquetCTEs() string {
 		e.parquetPath("labels"),
 		e.parquetPath("message_labels"),
 		e.parquetPath("attachments"),
-		e.parquetPath("sources"),
+		srcCTE,
 		convCTE)
 }
 
@@ -1592,10 +1606,9 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	// Always exclude deleted messages
 	conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
 
-	// Scope to Gmail messages only — this function is used for Gmail-specific
-	// deletion/staging workflows and must not return WhatsApp or other source IDs.
-	// In the Parquet fallback, we filter by message_type since sources aren't in the cache.
-	conditions = append(conditions, "(msg.message_type = '' OR msg.message_type = 'email' OR msg.message_type IS NULL)")
+	// Gmail scoping is handled by JOIN src in the query below — this function
+	// is used for Gmail-specific deletion/staging workflows and must not
+	// return WhatsApp or other source IDs.
 
 	if filter.SourceID != nil {
 		conditions = append(conditions, "msg.source_id = ?")
@@ -1692,11 +1705,12 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 		args = append(args, filter.TimeRange.Period)
 	}
 
-	// Build query
+	// Build query — JOIN src to scope to Gmail sources authoritatively.
 	query := fmt.Sprintf(`
 		WITH %s
 		SELECT msg.source_message_id
 		FROM msg
+		JOIN src ON src.id = msg.source_id AND COALESCE(src.source_type, 'gmail') = 'gmail'
 		WHERE %s
 		ORDER BY msg.sent_at DESC, msg.id DESC
 	`, e.parquetCTEs(), strings.Join(conditions, " AND "))

@@ -180,6 +180,22 @@ func ImportEmlxDir(
 					cp.ErrorsCount = active.ErrorsCount
 					startMbox = ecp.MailboxIndex
 					startAfter = ecp.LastFile
+					// Legacy checkpoints stored bare filenames
+					// (e.g. "1.emlx"); resolve against the actual
+					// file list to find the full path. This handles
+					// partitioned V10 layouts where files may be in
+					// different Messages/ subdirectories.
+					if startAfter != "" &&
+						!filepath.IsAbs(startAfter) {
+						resolved, resolveErr := resolveCheckpointFile(
+							startAfter,
+							mailboxes[ecp.MailboxIndex].Files,
+						)
+						if resolveErr != nil {
+							return nil, resolveErr
+						}
+						startAfter = resolved
+					}
 					summary.WasResumed = true
 					log.Info("resuming emlx import",
 						"root", absRoot,
@@ -404,19 +420,17 @@ func ImportEmlxDir(
 			"index", mboxIdx,
 		)
 
-		for _, fileName := range mb.Files {
+		for _, filePath := range mb.Files {
 			if ctx.Err() != nil {
 				break
 			}
 
 			// Resume: skip files already processed.
 			if mboxIdx == startMbox && startAfter != "" {
-				if fileName <= startAfter {
+				if filePath <= startAfter {
 					continue
 				}
 			}
-
-			filePath := filepath.Join(mb.MsgDir, fileName)
 
 			// Check file size before reading to avoid OOM on oversized files.
 			fi, statErr := os.Stat(filePath)
@@ -486,7 +500,7 @@ func ImportEmlxDir(
 					Fallback:  fallbackDate,
 					MboxIdx:   mboxIdx,
 					MboxPath:  mb.Path,
-					FileName:  fileName,
+					FileName:  filePath,
 				})
 				pendingBytes += int64(len(msg.Raw))
 			}
@@ -559,6 +573,26 @@ func ImportEmlxDir(
 	}
 
 	return summary, nil
+}
+
+// resolveCheckpointFile finds the full path in files whose basename
+// matches the legacy bare filename from an older checkpoint. Returns
+// the first matching full path so that no previously-unseen partition
+// files are skipped. Returns an error if no match is found, since
+// comparing a bare filename against absolute paths would produce
+// incorrect resume behavior.
+func resolveCheckpointFile(
+	basename string, files []string,
+) (string, error) {
+	for _, f := range files {
+		if filepath.Base(f) == basename {
+			return f, nil
+		}
+	}
+	return "", fmt.Errorf(
+		"legacy checkpoint file %q not found in current mailbox; rerun with --no-resume to start fresh",
+		basename,
+	)
 }
 
 func saveEmlxCheckpoint(

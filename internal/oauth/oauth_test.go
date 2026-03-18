@@ -1,9 +1,12 @@
 package oauth
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,6 +29,7 @@ func setupTestManager(t *testing.T, scopes []string) *Manager {
 	return &Manager{
 		config:    &oauth2.Config{Scopes: scopes},
 		tokensDir: tokensDir,
+		logger:    slog.Default(),
 	}
 }
 
@@ -577,6 +581,261 @@ func TestNewCallbackHandler(t *testing.T) {
 				}
 			} else {
 				assertNoSend(t, errChan, "errChan")
+			}
+		})
+	}
+}
+
+// TestAuthorize_SavesUnderOriginalIdentifier exercises the real
+// authorize() method end-to-end (with injected browserFlow and
+// profile server) to verify the token is saved under the original
+// user-supplied identifier, not the canonical email returned by
+// the Gmail profile API.
+//
+// Regression: a previous version saved under canonicalEmail, which
+// broke HasToken/TokenSource lookups elsewhere in the app.
+func TestAuthorize_SavesUnderOriginalIdentifier(t *testing.T) {
+	const canonicalEmail = "firstlast@gmail.com"
+
+	// Mock Gmail profile endpoint returning the canonical address.
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w,
+				`{"emailAddress": %q}`, canonicalEmail)
+		}))
+	defer srv.Close()
+
+	fakeToken := &oauth2.Token{
+		AccessToken: "test-access-token",
+		TokenType:   "Bearer",
+		Expiry:      time.Now().Add(time.Hour),
+	}
+
+	mgr := setupTestManager(t, Scopes)
+	mgr.profileURL = srv.URL
+	mgr.browserFlowFn = func(
+		_ context.Context, _ string, _ bool,
+	) (*oauth2.Token, error) {
+		return fakeToken, nil
+	}
+
+	inputEmail := "first.last@gmail.com"
+	if err := mgr.Authorize(context.Background(), inputEmail); err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+
+	// Token must be loadable under the original identifier.
+	loaded, err := mgr.loadToken(inputEmail)
+	if err != nil {
+		t.Fatalf("loadToken(%q) failed: %v", inputEmail, err)
+	}
+	if loaded.AccessToken != "test-access-token" {
+		t.Errorf("wrong access token: got %q", loaded.AccessToken)
+	}
+
+	// Token must NOT exist under the canonical email.
+	if _, err := mgr.loadToken(canonicalEmail); err == nil {
+		t.Errorf("token should NOT exist under canonical %q",
+			canonicalEmail)
+	}
+}
+
+// TestAuthorize_RejectsMismatch verifies that authorize() rejects
+// tokens where the profile email is for a different account and
+// does NOT persist a token file.
+func TestAuthorize_RejectsMismatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w,
+				`{"emailAddress": "wrong@gmail.com"}`)
+		}))
+	defer srv.Close()
+
+	mgr := setupTestManager(t, Scopes)
+	mgr.profileURL = srv.URL
+	mgr.browserFlowFn = func(
+		_ context.Context, _ string, _ bool,
+	) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken: "test",
+			TokenType:   "Bearer",
+			Expiry:      time.Now().Add(time.Hour),
+		}, nil
+	}
+
+	err := mgr.Authorize(context.Background(), "expected@gmail.com")
+	if err == nil {
+		t.Fatal("expected error for mismatched email")
+	}
+
+	var mismatch *TokenMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("expected TokenMismatchError, got %T: %v",
+			err, err)
+	}
+	if mismatch.Expected != "expected@gmail.com" {
+		t.Errorf("Expected = %q, want expected@gmail.com",
+			mismatch.Expected)
+	}
+	if mismatch.Actual != "wrong@gmail.com" {
+		t.Errorf("Actual = %q, want wrong@gmail.com",
+			mismatch.Actual)
+	}
+
+	// No token should have been saved under either address.
+	if _, loadErr := mgr.loadToken("expected@gmail.com"); loadErr == nil {
+		t.Error("token should NOT be saved under expected address")
+	}
+	if _, loadErr := mgr.loadToken("wrong@gmail.com"); loadErr == nil {
+		t.Error("token should NOT be saved under profile address")
+	}
+}
+
+// TestAuthorize_WorkspaceAliasMismatch verifies that a Workspace
+// account where the profile returns a different local part on the
+// same domain is rejected (we can't verify aliases without admin
+// API access, so we reject to prevent token pollution).
+func TestAuthorize_WorkspaceAliasMismatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w,
+				`{"emailAddress": "primary@company.com"}`)
+		}))
+	defer srv.Close()
+
+	mgr := setupTestManager(t, Scopes)
+	mgr.profileURL = srv.URL
+	mgr.browserFlowFn = func(
+		_ context.Context, _ string, _ bool,
+	) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken: "ws-token",
+			TokenType:   "Bearer",
+			Expiry:      time.Now().Add(time.Hour),
+		}, nil
+	}
+
+	err := mgr.Authorize(context.Background(), "alias@company.com")
+	if err == nil {
+		t.Fatal("expected error for Workspace alias mismatch")
+	}
+
+	var mismatch *TokenMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("expected TokenMismatchError, got %T: %v",
+			err, err)
+	}
+	if mismatch.Actual != "primary@company.com" {
+		t.Errorf("Actual = %q, want primary@company.com",
+			mismatch.Actual)
+	}
+
+	// No token should exist under either address.
+	if _, loadErr := mgr.loadToken("alias@company.com"); loadErr == nil {
+		t.Error("token should NOT be saved under alias address")
+	}
+	if _, loadErr := mgr.loadToken("primary@company.com"); loadErr == nil {
+		t.Error("token should NOT be saved under primary address")
+	}
+}
+
+// TestAuthorize_CrossDomainReject verifies that entirely different
+// domains are rejected even for Workspace accounts.
+func TestAuthorize_CrossDomainReject(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w,
+				`{"emailAddress": "user@other.com"}`)
+		}))
+	defer srv.Close()
+
+	mgr := setupTestManager(t, Scopes)
+	mgr.profileURL = srv.URL
+	mgr.browserFlowFn = func(
+		_ context.Context, _ string, _ bool,
+	) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken: "test",
+			TokenType:   "Bearer",
+			Expiry:      time.Now().Add(time.Hour),
+		}, nil
+	}
+
+	err := mgr.Authorize(context.Background(), "user@company.com")
+	if err == nil {
+		t.Fatal("expected error for cross-domain mismatch")
+	}
+	if !strings.Contains(err.Error(), "token mismatch") {
+		t.Errorf("error should contain 'token mismatch': %q",
+			err.Error())
+	}
+}
+
+func TestSameGoogleAccount(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		expected  string
+		canonical string
+		want      bool
+	}{
+		{"exact match", "user@gmail.com", "user@gmail.com", true},
+		{"case insensitive", "User@Gmail.Com", "user@gmail.com", true},
+		{"dot insensitive", "first.last@gmail.com", "firstlast@gmail.com", true},
+		{"plus address", "user+tag@gmail.com", "user@gmail.com", true},
+		{"plus with dots", "f.oo+bar@gmail.com", "foo@gmail.com", true},
+		{"plus googlemail", "user+x@googlemail.com", "user@gmail.com", true},
+		{"googlemail alias", "user@googlemail.com", "user@gmail.com", true},
+		{"different users", "alice@gmail.com", "bob@gmail.com", false},
+		{"different domains", "user@example.com", "user@gmail.com", false},
+		{"workspace exact", "user@company.com", "user@company.com", true},
+		{"workspace different", "alice@company.com", "bob@company.com", false},
+		{"gmail vs workspace", "user@gmail.com", "user@company.com", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := sameGoogleAccount(tt.expected, tt.canonical)
+			if got != tt.want {
+				t.Errorf("sameGoogleAccount(%q, %q) = %v, want %v",
+					tt.expected, tt.canonical, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeGmailAddress(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		email string
+		want  string
+	}{
+		{"user@gmail.com", "user@gmail.com"},
+		{"User@Gmail.Com", "user@gmail.com"},
+		{"first.last@gmail.com", "firstlast@gmail.com"},
+		{"user@googlemail.com", "user@gmail.com"},
+		{"f.i.r.s.t@googlemail.com", "first@gmail.com"},
+		{"user+tag@gmail.com", "user@gmail.com"},
+		{"user+@gmail.com", "user@gmail.com"},
+		{"f.o.o+bar@googlemail.com", "foo@gmail.com"},
+		{"user@example.com", ""},
+		{"noatsign", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.email, func(t *testing.T) {
+			t.Parallel()
+			got := normalizeGmailAddress(tt.email)
+			if got != tt.want {
+				t.Errorf("normalizeGmailAddress(%q) = %q, want %q",
+					tt.email, got, tt.want)
 			}
 		})
 	}

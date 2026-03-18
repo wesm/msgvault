@@ -389,11 +389,10 @@ func TestIsAuthInvalidError(t *testing.T) {
 type mockReauthorizer struct {
 	tokenSourceFn func(ctx context.Context, email string) (oauth2.TokenSource, error)
 	hasTokenVal   bool
-	deleteTokenFn func(email string) error
 	authorizeFn   func(ctx context.Context, email string) error
 
-	deleteCount    int
-	authorizeCount int
+	authorizeCount       int
+	authorizeManualCount int
 
 	// tokenSourceCall tracks how many times TokenSource was called,
 	// allowing the mock to return different results on each call.
@@ -409,16 +408,16 @@ func (m *mockReauthorizer) HasToken(email string) bool {
 	return m.hasTokenVal
 }
 
-func (m *mockReauthorizer) DeleteToken(email string) error {
-	m.deleteCount++
-	if m.deleteTokenFn != nil {
-		return m.deleteTokenFn(email)
+func (m *mockReauthorizer) Authorize(ctx context.Context, email string) error {
+	m.authorizeCount++
+	if m.authorizeFn != nil {
+		return m.authorizeFn(ctx, email)
 	}
 	return nil
 }
 
-func (m *mockReauthorizer) Authorize(ctx context.Context, email string) error {
-	m.authorizeCount++
+func (m *mockReauthorizer) AuthorizeManual(ctx context.Context, email string) error {
+	m.authorizeManualCount++
 	if m.authorizeFn != nil {
 		return m.authorizeFn(ctx, email)
 	}
@@ -437,13 +436,13 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 	genericErr := errors.New("transient network error")
 
 	tests := []struct {
-		name          string
-		mock          *mockReauthorizer
-		interactive   bool
-		wantErr       bool
-		errContains   string
-		wantDelete    int
-		wantAuthorize int
+		name                string
+		mock                *mockReauthorizer
+		interactive         bool
+		wantErr             bool
+		errContains         string
+		wantAuthorize       int
+		wantAuthorizeManual int
 	}{
 		{
 			name: "token valid",
@@ -453,10 +452,8 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 				},
 				hasTokenVal: true,
 			},
-			interactive:   true,
-			wantErr:       false,
-			wantDelete:    0,
-			wantAuthorize: 0,
+			interactive: true,
+			wantErr:     false,
 		},
 		{
 			name: "no token at all",
@@ -469,7 +466,6 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 			interactive: true,
 			wantErr:     true,
 			errContains: "add-account",
-			wantDelete:  0,
 		},
 		{
 			name: "transient error, token exists",
@@ -479,14 +475,12 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 				},
 				hasTokenVal: true,
 			},
-			interactive:   true,
-			wantErr:       true,
-			errContains:   "transient network error",
-			wantDelete:    0,
-			wantAuthorize: 0,
+			interactive: true,
+			wantErr:     true,
+			errContains: "transient network error",
 		},
 		{
-			name: "invalid_grant, interactive — full reauth",
+			name: "invalid_grant, interactive — manual reauth",
 			mock: func() *mockReauthorizer {
 				m := &mockReauthorizer{hasTokenVal: true}
 				m.tokenSourceFn = func(_ context.Context, _ string) (oauth2.TokenSource, error) {
@@ -497,10 +491,9 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 				}
 				return m
 			}(),
-			interactive:   true,
-			wantErr:       false,
-			wantDelete:    1,
-			wantAuthorize: 1,
+			interactive:         true,
+			wantErr:             false,
+			wantAuthorizeManual: 1,
 		},
 		{
 			name: "invalid_grant, non-interactive",
@@ -510,11 +503,9 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 				},
 				hasTokenVal: true,
 			},
-			interactive:   false,
-			wantErr:       true,
-			errContains:   "non-interactive session",
-			wantDelete:    0,
-			wantAuthorize: 0,
+			interactive: false,
+			wantErr:     true,
+			errContains: "non-interactive session",
 		},
 		{
 			name: "invalid_grant, reauth fails",
@@ -527,28 +518,10 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 					return errors.New("browser flow failed")
 				},
 			},
-			interactive:   true,
-			wantErr:       true,
-			errContains:   "browser flow failed",
-			wantDelete:    1,
-			wantAuthorize: 1,
-		},
-		{
-			name: "invalid_grant, delete fails",
-			mock: &mockReauthorizer{
-				tokenSourceFn: func(_ context.Context, _ string) (oauth2.TokenSource, error) {
-					return nil, invalidGrant
-				},
-				hasTokenVal: true,
-				deleteTokenFn: func(_ string) error {
-					return errors.New("permission denied")
-				},
-			},
-			interactive:   true,
-			wantErr:       true,
-			errContains:   "permission denied",
-			wantDelete:    1,
-			wantAuthorize: 0,
+			interactive:         true,
+			wantErr:             true,
+			errContains:         "browser flow failed",
+			wantAuthorizeManual: 1,
 		},
 		{
 			name: "invalid_grant, retry TokenSource fails",
@@ -562,11 +535,10 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 				}
 				return m
 			}(),
-			interactive:   true,
-			wantErr:       true,
-			errContains:   "after re-authorization",
-			wantDelete:    1,
-			wantAuthorize: 1,
+			interactive:         true,
+			wantErr:             true,
+			errContains:         "after re-authorization",
+			wantAuthorizeManual: 1,
 		},
 	}
 
@@ -594,11 +566,13 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 				}
 			}
 
-			if tt.mock.deleteCount != tt.wantDelete {
-				t.Errorf("DeleteToken called %d times, want %d", tt.mock.deleteCount, tt.wantDelete)
-			}
 			if tt.mock.authorizeCount != tt.wantAuthorize {
-				t.Errorf("Authorize called %d times, want %d", tt.mock.authorizeCount, tt.wantAuthorize)
+				t.Errorf("Authorize called %d times, want %d",
+					tt.mock.authorizeCount, tt.wantAuthorize)
+			}
+			if tt.mock.authorizeManualCount != tt.wantAuthorizeManual {
+				t.Errorf("AuthorizeManual called %d times, want %d",
+					tt.mock.authorizeManualCount, tt.wantAuthorizeManual)
 			}
 		})
 	}

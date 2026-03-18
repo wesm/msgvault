@@ -16,12 +16,12 @@
       packages = forAllSystems (pkgs: {
         default =
           let
-            # Pin Go 1.25.7 until nixpkgs-unstable catches up from staging
+            # Pin Go 1.25.8 until nixpkgs-unstable catches up from staging
             go_pinned = pkgs.go_1_25.overrideAttrs (old: rec {
-              version = "1.25.7";
+              version = "1.25.8";
               src = pkgs.fetchurl {
                 url = "https://go.dev/dl/go${version}.src.tar.gz";
-                hash = "sha256-F48oMoICdLQ+F30y8Go+uwEp5CfdIKXkyI3ywXY88Qo=";
+                hash = "sha256-6YjUokRqx/4/baoImljpk2pSo4E1Wt7ByJgyMKjWxZ4=";
               };
             });
           in
@@ -29,7 +29,7 @@
             pname = "msgvault";
             version = "0.0.0-dev";
             src = ./.;
-            vendorHash = "sha256-XgtHKRLqNX7LCI22Ls3LQjEs+jX7EwapiiFs7I+gtRE=";
+            vendorHash = "sha256-EyVSGMpQIVo3zn+2BJ/KaMT4HdkdZpe2OQtveoj7oAQ=";
             proxyVendor = true;
             subPackages = [ "cmd/msgvault" ];
             tags = [ "fts5" ];

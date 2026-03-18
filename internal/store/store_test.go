@@ -503,6 +503,24 @@ func TestStore_SyncFail(t *testing.T) {
 	}
 }
 
+func TestStore_GetMessage_DeletedMessageVisibleByID(t *testing.T) {
+	f := storetest.New(t)
+
+	msgID := f.CreateMessage("deleted-msg-1")
+	_, err := f.Store.DB().Exec(
+		f.Store.Rebind("UPDATE messages SET deleted_from_source_at = ? WHERE id = ?"),
+		time.Date(2026, 3, 18, 14, 30, 0, 0, time.UTC),
+		msgID,
+	)
+	testutil.MustNoErr(t, err, "mark deleted")
+
+	msg, err := f.Store.GetMessage(msgID)
+	testutil.MustNoErr(t, err, "GetMessage()")
+	if msg == nil {
+		t.Fatal("GetMessage() = nil, want deleted message")
+	}
+}
+
 func TestStore_MarkMessageDeletedByGmailID(t *testing.T) {
 	f := storetest.New(t)
 

@@ -2160,7 +2160,7 @@ func TestDuckDBEngine_AggregateByRecipientName_EmptyStringFallback(t *testing.T)
 			(2::BIGINT, 1::BIGINT, 'msg2', 101::BIGINT, 'World', 'Snippet', TIMESTAMP '2024-01-16 10:00:00', 1000::BIGINT, false, 0, NULL::TIMESTAMP, NULL::BIGINT, 'email', 2024, 1)
 		`).
 		addTable("sources", "sources", "sources.parquet", sourcesCols, `
-			(1::BIGINT, 'test@gmail.com')
+			(1::BIGINT, 'test@gmail.com', 'gmail')
 		`).
 		addTable("participants", "participants", "participants.parquet", participantsCols, `
 			(1::BIGINT, 'sender@test.com', 'test.com', 'Sender', ''),
@@ -2212,7 +2212,7 @@ func TestDuckDBEngine_ListMessages_MatchEmptyRecipientName(t *testing.T) {
 			(2::BIGINT, 1::BIGINT, 'msg2', 101::BIGINT, 'No Recipient', 'Snippet', TIMESTAMP '2024-01-16 10:00:00', 1000::BIGINT, false, 0, NULL::TIMESTAMP, NULL::BIGINT, 'email', 2024, 1)
 		`).
 		addTable("sources", "sources", "sources.parquet", sourcesCols, `
-			(1::BIGINT, 'test@gmail.com')
+			(1::BIGINT, 'test@gmail.com', 'gmail')
 		`).
 		addTable("participants", "participants", "participants.parquet", participantsCols, `
 			(1::BIGINT, 'alice@test.com', 'test.com', 'Alice', ''),
@@ -2809,7 +2809,7 @@ func TestDuckDBEngine_VARCHARParquetColumns(t *testing.T) {
 			(2::BIGINT, 1::BIGINT, 'msg2', '101', 'Goodbye', 'snippet2', TIMESTAMP '2024-01-16 10:00:00', '2000', '1', '0', NULL::TIMESTAMP, NULL::BIGINT, 'email', 2024, 1)
 		`).
 		addTable("sources", "sources", "sources.parquet", sourcesCols, `
-			(1::BIGINT, 'test@gmail.com')
+			(1::BIGINT, 'test@gmail.com', 'gmail')
 		`).
 		addTable("participants", "participants", "participants.parquet", participantsCols, `
 			(1::BIGINT, 'alice@test.com', 'test.com', 'Alice', '')
@@ -3225,7 +3225,7 @@ func TestDuckDBEngine_StaleParquetSchema(t *testing.T) {
 			(2::BIGINT, 1::BIGINT, 'msg2', 101::BIGINT, 'Stale Goodbye', 'snip2', TIMESTAMP '2024-01-16 10:00:00', 2000::BIGINT, true, NULL::TIMESTAMP, 2024, 1)
 		`).
 		addTable("sources", "sources", "sources.parquet", sourcesCols, `
-			(1::BIGINT, 'test@gmail.com')
+			(1::BIGINT, 'test@gmail.com', 'gmail')
 		`).
 		addTable("participants", "participants", "participants.parquet", oldParticipantsCols, `
 			(1::BIGINT, 'alice@test.com', 'test.com', 'Alice')

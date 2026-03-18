@@ -108,6 +108,9 @@ CREATE TABLE IF NOT EXISTS messages (
     -- Platform-specific ID for dedup
     source_message_id TEXT,
 
+    -- RFC822 Message-ID for cross-mailbox dedup (IMAP)
+    rfc822_message_id TEXT,
+
     -- Message classification
     message_type TEXT NOT NULL,  -- 'email', 'imessage', 'sms', 'mms', 'rcs', 'whatsapp'
 

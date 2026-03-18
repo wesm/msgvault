@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -72,7 +73,11 @@ func sanitizeEMLFilename(sourceMessageID string) string {
 		}
 		return r
 	}, sourceMessageID)
-	if safe == "" {
+	// Ensure the result is a plain filename with no directory
+	// components, guarding against IMAP mailbox names with
+	// path separators or traversal sequences.
+	safe = filepath.Base(safe)
+	if safe == "" || safe == "." {
 		safe = "message"
 	}
 	return safe + ".eml"

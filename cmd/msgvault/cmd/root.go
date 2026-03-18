@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/config"
+	"github.com/wesm/msgvault/internal/oauth"
 	"golang.org/x/oauth2"
 )
 
@@ -161,8 +162,8 @@ func isAuthInvalidError(err error) bool {
 type tokenReauthorizer interface {
 	TokenSource(ctx context.Context, email string) (oauth2.TokenSource, error)
 	HasToken(email string) bool
-	DeleteToken(email string) error
 	Authorize(ctx context.Context, email string) error
+	AuthorizeManual(ctx context.Context, email string) error
 }
 
 // getTokenSourceWithReauth tries to get a token source for the given email.
@@ -205,11 +206,23 @@ func getTokenSourceWithReauth(
 
 	fmt.Printf("Token for %s is expired or revoked. Re-authorizing...\n", email)
 
-	if delErr := mgr.DeleteToken(email); delErr != nil {
-		return nil, fmt.Errorf("delete expired token: %w", delErr)
-	}
-
-	if authErr := mgr.Authorize(ctx, email); authErr != nil {
+	// Use manual flow (no browser auto-launch) so the user sees which
+	// account needs authorization and can select the correct one.
+	// AuthorizeManual validates the token and atomically saves it,
+	// so the old token is only overwritten after validation succeeds.
+	if authErr := mgr.AuthorizeManual(ctx, email); authErr != nil {
+		var mismatch *oauth.TokenMismatchError
+		if errors.As(authErr, &mismatch) {
+			return nil, fmt.Errorf(
+				"re-authorize %s: %w\n"+
+					"If this account uses an alias, remove "+
+					"and re-add with the primary address:\n"+
+					"  msgvault remove-account %s --type gmail\n"+
+					"  msgvault add-account %s",
+				email, authErr,
+				mismatch.Expected, mismatch.Actual,
+			)
+		}
 		return nil, fmt.Errorf("re-authorize %s: %w", email, authErr)
 	}
 

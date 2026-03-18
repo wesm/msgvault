@@ -834,9 +834,9 @@ func TestImportEmlxDir_CheckpointBlockedOnIngestFailure(t *testing.T) {
 	if err := json.Unmarshal([]byte(cursor), &cp); err != nil {
 		t.Fatalf("unmarshal checkpoint: %v", err)
 	}
-	if cp.LastFile != "1.emlx" {
+	if filepath.Base(cp.LastFile) != "1.emlx" {
 		t.Fatalf(
-			"checkpoint LastFile = %q, want %q (should not advance past failed msg2)",
+			"checkpoint LastFile = %q, want basename %q (should not advance past failed msg2)",
 			cp.LastFile, "1.emlx",
 		)
 	}

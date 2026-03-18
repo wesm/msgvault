@@ -136,21 +136,23 @@ func TruncateRunes(s string, maxRunes int) string {
 	return string(runes[:maxRunes-3]) + "..."
 }
 
-// FirstLine returns the first line of a string.
-// Useful for extracting clean error messages from multi-line outputs.
-// Leading newlines are trimmed before extracting the first line.
+// FirstLine returns the first line of a string, capped at 200 runes.
+// Useful for extracting clean error messages from multi-line outputs
+// where the first line itself may be excessively long (e.g. enmime
+// includes malformed MIME content in its error messages).
 func FirstLine(s string) string {
 	s = strings.TrimLeft(s, "\r\n")
 	if idx := strings.Index(s, "\n"); idx >= 0 {
-		return s[:idx]
+		s = s[:idx]
 	}
-	return s
+	return TruncateRunes(s, 200)
 }
 
 // SanitizeTerminal strips ANSI escape sequences and C0/C1 control characters
 // from a string, preventing terminal injection via untrusted data (e.g.,
-// WhatsApp chat names, message snippets). Preserves printable characters,
-// tabs, and newlines.
+// WhatsApp chat names, message snippets). Preserves printable characters
+// and tabs. Replaces \r and \n with spaces to prevent line overwrite/break
+// attacks in single-line contexts (TUI rows, progress output).
 //
 // C1 control characters (U+0080–U+009F) are checked on the decoded rune, not
 // the raw leading byte, so that UTF-8 encoded C1 chars (e.g., U+009B CSI
@@ -203,9 +205,17 @@ func SanitizeTerminal(s string) string {
 			continue
 		}
 
-		// Allow tab, newline, carriage return; strip other C0/C1 control chars.
-		if r == '\t' || r == '\n' || r == '\r' {
+		// Allow tab; strip newline and carriage return (all callers use this
+		// in single-line contexts such as TUI rows and progress output where
+		// \r can overwrite lines and \n can break layout).
+		if r == '\t' {
 			b.WriteRune(r)
+			i += size
+			continue
+		}
+		if r == '\n' || r == '\r' {
+			// Replace with space to preserve word boundaries.
+			b.WriteByte(' ')
 			i += size
 			continue
 		}

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -103,6 +104,28 @@ Examples:
 		fmt.Println("Starting browser authorization...")
 
 		if err := oauthMgr.Authorize(cmd.Context(), email); err != nil {
+			var mismatch *oauth.TokenMismatchError
+			if errors.As(err, &mismatch) {
+				// Only suggest add-account with the primary
+				// address when no Gmail source exists yet. If one
+				// already exists (--force re-auth, or token was
+				// manually deleted), the suggestion would create
+				// a duplicate and orphan the existing source.
+				existing, lookupErr := findGmailSource(s, email)
+				if lookupErr != nil {
+					return fmt.Errorf(
+						"authorization failed: %w (also: %v)",
+						err, lookupErr)
+				}
+				if existing == nil {
+					return fmt.Errorf(
+						"%w\nIf %s is the primary address, "+
+							"re-add with:\n"+
+							"  msgvault add-account %s",
+						err, mismatch.Actual, mismatch.Actual,
+					)
+				}
+			}
 			return fmt.Errorf("authorization failed: %w", err)
 		}
 
@@ -124,6 +147,21 @@ Examples:
 
 		return nil
 	},
+}
+
+func findGmailSource(
+	s *store.Store, email string,
+) (*store.Source, error) {
+	sources, err := s.GetSourcesByIdentifier(email)
+	if err != nil {
+		return nil, fmt.Errorf("look up sources for %s: %w", email, err)
+	}
+	for _, src := range sources {
+		if src.SourceType == "gmail" {
+			return src, nil
+		}
+	}
+	return nil, nil
 }
 
 func init() {

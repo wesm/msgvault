@@ -32,13 +32,14 @@ var buildCacheMu sync.Mutex
 // columns are added/removed/renamed in the COPY queries below so that
 // incremental builds automatically trigger a full rebuild instead of
 // producing Parquet files with mismatched schemas.
-const cacheSchemaVersion = 3 // v3: schema migration adds phone_number etc. to existing DBs; force Parquet rebuild
+const cacheSchemaVersion = 4 // v4: add source_type to sources Parquet; strip \r\n in SanitizeTerminal
 
-// syncState tracks the last exported message ID for incremental updates.
+// syncState tracks the message and sync-run watermarks covered by the cache.
 type syncState struct {
-	LastMessageID int64     `json:"last_message_id"`
-	LastSyncAt    time.Time `json:"last_sync_at"`
-	SchemaVersion int       `json:"schema_version,omitempty"`
+	LastMessageID          int64     `json:"last_message_id"`
+	LastSyncAt             time.Time `json:"last_sync_at"`
+	SchemaVersion          int       `json:"schema_version,omitempty"`
+	LastCompletedSyncRunID int64     `json:"last_completed_sync_run_id,omitempty"`
 }
 
 var buildCacheCmd = &cobra.Command{
@@ -146,13 +147,39 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 	}
 
 	var maxMessageID sql.NullInt64
+	var lastCompletedSyncRunID int64
 	// Use indexed query: id is PRIMARY KEY, sent_at has an index
 	maxIDQuery := `SELECT MAX(id) FROM messages WHERE sent_at IS NOT NULL`
 	if err := sqliteDB.QueryRow(maxIDQuery).Scan(&maxMessageID); err != nil {
-		sqliteDB.Close()
+		if closeErr := sqliteDB.Close(); closeErr != nil {
+			return nil, fmt.Errorf("get max message id: %w; close sqlite: %v", err, closeErr)
+		}
 		return nil, fmt.Errorf("get max message id: %w", err)
 	}
-	sqliteDB.Close()
+	var hasSyncRunsTable int
+	if err := sqliteDB.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'sync_runs'
+	`).Scan(&hasSyncRunsTable); err != nil {
+		if closeErr := sqliteDB.Close(); closeErr != nil {
+			return nil, fmt.Errorf("check sync_runs table: %w; close sqlite: %v", err, closeErr)
+		}
+		return nil, fmt.Errorf("check sync_runs table: %w", err)
+	}
+	if hasSyncRunsTable > 0 {
+		if err := sqliteDB.QueryRow(`
+			SELECT COALESCE(MAX(id), 0) FROM sync_runs
+			WHERE status = 'completed' AND completed_at IS NOT NULL
+		`).Scan(&lastCompletedSyncRunID); err != nil {
+			if closeErr := sqliteDB.Close(); closeErr != nil {
+				return nil, fmt.Errorf("get last completed sync run id: %w; close sqlite: %v", err, closeErr)
+			}
+			return nil, fmt.Errorf("get last completed sync run id: %w", err)
+		}
+	}
+	if err := sqliteDB.Close(); err != nil {
+		return nil, fmt.Errorf("close sqlite after metadata check: %w", err)
+	}
 
 	maxID := int64(0)
 	if maxMessageID.Valid {
@@ -209,6 +236,12 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 
 	fmt.Println("Building cache...")
 	buildStart := time.Now()
+
+	// Capture deletion watermark before export starts. Any deletion
+	// with deleted_from_source_at after this timestamp may not be
+	// reflected in the exported Parquet data and will trigger a
+	// cache rebuild on the next freshness check.
+	cacheWatermark := time.Now().UTC().Truncate(time.Second)
 
 	// Build WHERE clause for incremental exports
 	idFilter := ""
@@ -389,7 +422,8 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 	COPY (
 		SELECT
 			id,
-			identifier as account_email
+			identifier as account_email,
+			COALESCE(TRY_CAST(source_type AS VARCHAR), 'gmail') as source_type
 		FROM sqlite_db.sources
 	) TO '%s/sources.parquet' (
 		FORMAT PARQUET,
@@ -426,11 +460,13 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 		exportedCount = 0
 	}
 
-	// Save sync state with schema version for compatibility detection.
+	// Save sync state using the pre-export watermark so any deletion
+	// that occurs during or after the build is detected as stale.
 	state := syncState{
-		LastMessageID: maxID,
-		LastSyncAt:    time.Now(),
-		SchemaVersion: cacheSchemaVersion,
+		LastMessageID:          maxID,
+		LastSyncAt:             cacheWatermark,
+		SchemaVersion:          cacheSchemaVersion,
+		LastCompletedSyncRunID: lastCompletedSyncRunID,
 	}
 	stateData, _ := json.Marshal(state)
 	if err := os.WriteFile(stateFile, stateData, 0644); err != nil {
@@ -635,7 +671,7 @@ func setupSQLiteSource(duckDB *sql.DB, dbPath string) (cleanup func(), err error
 		{"attachments", "SELECT message_id, size, filename FROM attachments", ""},
 		{"participants", "SELECT id, email_address, domain, display_name, phone_number FROM participants", ""},
 		{"labels", "SELECT id, name FROM labels", ""},
-		{"sources", "SELECT id, identifier FROM sources", ""},
+		{"sources", "SELECT id, identifier, source_type FROM sources", ""},
 		{"conversations", "SELECT id, source_conversation_id, title FROM conversations", ""},
 	}
 

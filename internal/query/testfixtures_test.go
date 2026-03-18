@@ -39,6 +39,7 @@ type MessageFixture struct {
 type SourceFixture struct {
 	ID           int64
 	AccountEmail string
+	SourceType   string // "gmail", "whatsapp", etc. Defaults to "gmail".
 }
 
 // ParticipantFixture defines a participant row for Parquet test data.
@@ -124,9 +125,14 @@ func NewTestDataBuilder(t testing.TB) *TestDataBuilder {
 
 // AddSource adds a source and returns its ID.
 func (b *TestDataBuilder) AddSource(email string) int64 {
+	return b.AddSourceWithType(email, "gmail")
+}
+
+// AddSourceWithType adds a source with a specific type and returns its ID.
+func (b *TestDataBuilder) AddSourceWithType(email, sourceType string) int64 {
 	id := b.nextSrcID
 	b.nextSrcID++
-	b.sources = append(b.sources, SourceFixture{ID: id, AccountEmail: email})
+	b.sources = append(b.sources, SourceFixture{ID: id, AccountEmail: email, SourceType: sourceType})
 	return id
 }
 
@@ -315,7 +321,11 @@ func (m MessageFixture) toSQL() string {
 
 func (b *TestDataBuilder) sourcesSQL() string {
 	return joinRows(b.sources, func(s SourceFixture) string {
-		return fmt.Sprintf("(%d::BIGINT, %s)", s.ID, sqlStr(s.AccountEmail))
+		st := s.SourceType
+		if st == "" {
+			st = "gmail"
+		}
+		return fmt.Sprintf("(%d::BIGINT, %s, %s)", s.ID, sqlStr(s.AccountEmail), sqlStr(st))
 	})
 }
 
@@ -366,7 +376,7 @@ func (b *TestDataBuilder) conversationsSQL() string {
 // column definitions (coupled to SQL generation methods above)
 const (
 	messagesCols          = "id, source_id, source_message_id, conversation_id, subject, snippet, sent_at, size_estimate, has_attachments, attachment_count, deleted_from_source_at, sender_id, message_type, year, month"
-	sourcesCols           = "id, account_email"
+	sourcesCols           = "id, account_email, source_type"
 	participantsCols      = "id, email_address, domain, display_name, phone_number"
 	messageRecipientsCols = "message_id, participant_id, recipient_type, display_name"
 	labelsCols            = "id, name"
@@ -408,7 +418,7 @@ func (b *TestDataBuilder) addAuxiliaryTables(pb *parquetBuilder) {
 		name, subdir, file, cols, dummy, sql string
 		empty                                bool
 	}{
-		{"sources", "sources", "sources.parquet", sourcesCols, "(0::BIGINT, '')", b.sourcesSQL(), len(b.sources) == 0},
+		{"sources", "sources", "sources.parquet", sourcesCols, "(0::BIGINT, '', 'gmail')", b.sourcesSQL(), len(b.sources) == 0},
 		{"participants", "participants", "participants.parquet", participantsCols, "(0::BIGINT, '', '', '', '')", b.participantsSQL(), len(b.participants) == 0},
 		{"message_recipients", "message_recipients", "message_recipients.parquet", messageRecipientsCols, "(0::BIGINT, 0::BIGINT, '', '')", b.recipientsSQL(), len(b.recipients) == 0},
 		{"labels", "labels", "labels.parquet", labelsCols, "(0::BIGINT, '')", b.labelsSQL(), len(b.labels) == 0},

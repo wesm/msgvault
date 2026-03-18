@@ -45,7 +45,8 @@ type Message struct {
 	ConversationID  int64
 	SourceID        int64
 	SourceMessageID string
-	MessageType     string // "email"
+	RFC822MessageID sql.NullString // RFC822 Message-ID header for cross-mailbox dedup
+	MessageType     string         // "email"
 	SentAt          sql.NullTime
 	ReceivedAt      sql.NullTime
 	InternalDate    sql.NullTime
@@ -83,6 +84,44 @@ func (s *Store) MessageExistsBatch(sourceID int64, sourceMessageIDs []string) (m
 		return nil, err
 	}
 	return result, nil
+}
+
+// GetMessageIDByRFC822ID returns the internal ID of a message
+// with the given RFC822 Message-ID for this source, or 0 if
+// no match exists.
+func (s *Store) GetMessageIDByRFC822ID(
+	sourceID int64, rfc822ID string,
+) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(
+		`SELECT id FROM messages
+		 WHERE source_id = ? AND rfc822_message_id = ?`,
+		sourceID, rfc822ID,
+	).Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return id, err
+}
+
+// UpdateMessageOnDedup updates an existing message's composite ID
+// and labels when a cross-mailbox RFC822 dedup match is found.
+// This ensures future syncs recognize the message under its new
+// mailbox|uid key and don't re-download it.
+func (s *Store) UpdateMessageOnDedup(
+	messageID int64, newSourceMessageID string,
+	labelIDs []int64,
+) error {
+	return s.withTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(
+			`UPDATE messages SET source_message_id = ?
+			 WHERE id = ?`,
+			newSourceMessageID, messageID,
+		); err != nil {
+			return fmt.Errorf("update source_message_id: %w", err)
+		}
+		return replaceMessageLabelsTx(tx, messageID, labelIDs)
+	})
 }
 
 // MessageExistsWithRawBatch checks which message IDs already exist in the database
@@ -144,13 +183,15 @@ func (s *Store) EnsureConversation(sourceID int64, sourceConversationID, title s
 
 const upsertMessageSQL = `
 	INSERT INTO messages (
-		conversation_id, source_id, source_message_id, message_type,
+		conversation_id, source_id, source_message_id,
+		rfc822_message_id, message_type,
 		sent_at, received_at, internal_date, sender_id, is_from_me,
 		subject, snippet, size_estimate,
 		has_attachments, attachment_count, archived_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 	ON CONFLICT(source_id, source_message_id) DO UPDATE SET
 		conversation_id = excluded.conversation_id,
+		rfc822_message_id = excluded.rfc822_message_id,
 		sent_at = excluded.sent_at,
 		received_at = excluded.received_at,
 		internal_date = excluded.internal_date,
@@ -169,7 +210,8 @@ func (s *Store) UpsertMessage(msg *Message) (int64, error) {
 
 func upsertMessage(q querier, msg *Message) (int64, error) {
 	args := []any{
-		msg.ConversationID, msg.SourceID, msg.SourceMessageID, msg.MessageType,
+		msg.ConversationID, msg.SourceID, msg.SourceMessageID,
+		msg.RFC822MessageID, msg.MessageType,
 		msg.SentAt, msg.ReceivedAt, msg.InternalDate, msg.SenderID, msg.IsFromMe,
 		msg.Subject, msg.Snippet, msg.SizeEstimate,
 		msg.HasAttachments, msg.AttachmentCount,

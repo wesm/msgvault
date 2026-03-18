@@ -486,6 +486,10 @@ func TestFirstLine(t *testing.T) {
 		{"leading carriage return", "\r\nSecond", "Second"},
 		{"mixed leading newlines", "\r\n\n\rThird", "Third"},
 		{"only newlines", "\n\n\n", ""},
+		{"long line truncated", strings.Repeat("x", 250), strings.Repeat("x", 197) + "..."},
+		{"exactly 200 runes", strings.Repeat("y", 200), strings.Repeat("y", 200)},
+		{"long first line of multi", strings.Repeat("z", 250) + "\nSecond", strings.Repeat("z", 197) + "..."},
+		{"unicode truncation safe", strings.Repeat("é", 250), strings.Repeat("é", 197) + "..."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -505,7 +509,8 @@ func TestSanitizeTerminal(t *testing.T) {
 	}{
 		{"plain text", "Hello World", "Hello World"},
 		{"preserves tabs", "col1\tcol2", "col1\tcol2"},
-		{"preserves newlines", "line1\nline2", "line1\nline2"},
+		{"replaces newlines with spaces", "line1\nline2", "line1 line2"},
+		{"replaces CR with space", "over\rwrite", "over write"},
 		{"strips CSI color", "\x1b[31mred\x1b[0m", "red"},
 		{"strips CSI cursor move", "\x1b[2Ahello", "hello"},
 		{"strips OSC title (BEL)", "\x1b]0;evil title\x07safe", "safe"},

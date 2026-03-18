@@ -16,6 +16,7 @@ import (
 	"github.com/wesm/msgvault/internal/api"
 	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/oauth"
+	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/scheduler"
 	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/sync"
@@ -82,6 +83,34 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("init schema: %w", err)
 	}
 
+	// Create query engine for TUI aggregate support.
+	// Prefer DuckDB over Parquet when the cache is complete and fresh;
+	// otherwise fall back to SQLite so remote endpoints still work.
+	analyticsDir := cfg.AnalyticsDir()
+	var engine query.Engine
+	staleness := cacheNeedsBuild(dbPath, analyticsDir)
+	if !staleness.NeedsBuild && query.HasCompleteParquetData(analyticsDir) {
+		duckEngine, engineErr := query.NewDuckDBEngine(
+			analyticsDir, dbPath, s.DB(),
+		)
+		if engineErr != nil {
+			logger.Warn("DuckDB engine failed, falling back to SQLite",
+				"error", engineErr)
+			engine = query.NewSQLiteEngine(s.DB())
+		} else {
+			engine = duckEngine
+		}
+	} else {
+		if staleness.Reason != "" {
+			logger.Info("parquet cache not usable, using SQLite engine",
+				"reason", staleness.Reason)
+		} else {
+			logger.Info("parquet cache not built - using SQLite engine (run 'msgvault build-cache' for faster aggregates)")
+		}
+		engine = query.NewSQLiteEngine(s.DB())
+	}
+	defer engine.Close()
+
 	// Create OAuth manager
 	oauthMgr, err := oauth.NewManager(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger)
 	if err != nil {
@@ -122,7 +151,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	schedAdapter := &schedulerAdapter{scheduler: sched}
 
 	// Create and start API server
-	apiServer := api.NewServer(cfg, storeAdapter, schedAdapter, logger)
+	apiServer := api.NewServerWithOptions(api.ServerOptions{
+		Config:    cfg,
+		Store:     storeAdapter,
+		Engine:    engine,
+		Scheduler: schedAdapter,
+		Logger:    logger,
+	})
 
 	// Start API server in goroutine
 	serverErr := make(chan error, 1)
@@ -264,8 +299,14 @@ func runScheduledSync(ctx context.Context, email string, s *store.Store, oauthMg
 	// Create syncer (no CLI progress for daemon mode)
 	syncer := sync.New(client, s, opts).WithLogger(logger)
 
+	// Resolve source — scheduled sync is Gmail-only.
+	source, err := s.GetOrCreateSource("gmail", email)
+	if err != nil {
+		return fmt.Errorf("get source: %w", err)
+	}
+
 	// Run incremental sync
-	summary, err := syncer.Incremental(ctx, email)
+	summary, err := syncer.Incremental(ctx, source)
 	if err != nil {
 		return fmt.Errorf("incremental sync failed: %w", err)
 	}
@@ -276,10 +317,15 @@ func runScheduledSync(ctx context.Context, email string, s *store.Store, oauthMg
 		"duration", time.Since(startTime),
 	)
 
-	// Build cache after sync if there were new messages
-	if summary.MessagesAdded > 0 {
-		logger.Info("building cache after sync", "email", email)
-		result, err := buildCache(cfg.DatabaseDSN(), cfg.AnalyticsDir(), false)
+	// Rebuild cache if stale (covers new messages and deletions).
+	dbPath := cfg.DatabaseDSN()
+	analyticsDir := cfg.AnalyticsDir()
+	if staleness := cacheNeedsBuild(dbPath, analyticsDir); staleness.NeedsBuild {
+		logger.Info("rebuilding cache after sync",
+			"email", email, "reason", staleness.Reason,
+			"full_rebuild", staleness.FullRebuild)
+		result, err := buildCache(
+			dbPath, analyticsDir, staleness.FullRebuild)
 		if err != nil {
 			logger.Error("cache build failed", "error", err)
 			// Don't fail the sync for cache build errors

@@ -77,7 +77,8 @@ func scanSource(sc scanner) (*Source, error) {
 
 	err := sc.Scan(
 		&source.ID, &source.SourceType, &source.Identifier, &source.DisplayName,
-		&source.GoogleUserID, &lastSyncAt, &source.SyncCursor, &createdAt, &updatedAt,
+		&source.GoogleUserID, &lastSyncAt, &source.SyncCursor, &source.SyncConfig,
+		&createdAt, &updatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -255,12 +256,13 @@ func (s *Store) GetLastSuccessfulSync(sourceID int64) (*SyncRun, error) {
 // Source represents a Gmail account or other message source.
 type Source struct {
 	ID           int64
-	SourceType   string // "gmail"
-	Identifier   string // email address
+	SourceType   string // "gmail" or "imap"
+	Identifier   string // email address or IMAP identifier URL
 	DisplayName  sql.NullString
 	GoogleUserID sql.NullString
 	LastSyncAt   sql.NullTime
 	SyncCursor   sql.NullString // historyId for Gmail
+	SyncConfig   sql.NullString // JSON config for IMAP sources
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
@@ -270,7 +272,7 @@ func (s *Store) GetOrCreateSource(sourceType, identifier string) (*Source, error
 	// Try to get existing
 	row := s.db.QueryRow(`
 		SELECT id, source_type, identifier, display_name, google_user_id,
-		       last_sync_at, sync_cursor, created_at, updated_at
+		       last_sync_at, sync_cursor, sync_config, created_at, updated_at
 		FROM sources
 		WHERE source_type = ? AND identifier = ?
 	`, sourceType, identifier)
@@ -322,7 +324,7 @@ func (s *Store) ListSources(sourceType string) ([]*Source, error) {
 	if sourceType != "" {
 		rows, err = s.db.Query(`
 			SELECT id, source_type, identifier, display_name, google_user_id,
-			       last_sync_at, sync_cursor, created_at, updated_at
+			       last_sync_at, sync_cursor, sync_config, created_at, updated_at
 			FROM sources
 			WHERE source_type = ?
 			ORDER BY identifier
@@ -330,7 +332,7 @@ func (s *Store) ListSources(sourceType string) ([]*Source, error) {
 	} else {
 		rows, err = s.db.Query(`
 			SELECT id, source_type, identifier, display_name, google_user_id,
-			       last_sync_at, sync_cursor, created_at, updated_at
+			       last_sync_at, sync_cursor, sync_config, created_at, updated_at
 			FROM sources
 			ORDER BY identifier
 		`)
@@ -365,11 +367,21 @@ func (s *Store) UpdateSourceDisplayName(sourceID int64, displayName string) erro
 	return err
 }
 
+// UpdateSourceSyncConfig updates the JSON sync configuration for an IMAP source.
+func (s *Store) UpdateSourceSyncConfig(sourceID int64, configJSON string) error {
+	_, err := s.db.Exec(`
+		UPDATE sources
+		SET sync_config = ?, updated_at = datetime('now')
+		WHERE id = ?
+	`, configJSON, sourceID)
+	return err
+}
+
 // GetSourceByIdentifier returns a source by its identifier (email address).
 func (s *Store) GetSourceByIdentifier(identifier string) (*Source, error) {
 	row := s.db.QueryRow(`
 		SELECT id, source_type, identifier, display_name, google_user_id,
-		       last_sync_at, sync_cursor, created_at, updated_at
+		       last_sync_at, sync_cursor, sync_config, created_at, updated_at
 		FROM sources
 		WHERE identifier = ?
 	`, identifier)

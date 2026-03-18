@@ -144,8 +144,9 @@ func TestDiscoverMailboxes_PartialEmlxSkipped(t *testing.T) {
 		t.Fatalf("Files = %d, want 1 (partial should be skipped)",
 			len(mailboxes[0].Files))
 	}
-	if mailboxes[0].Files[0] != "1.emlx" {
-		t.Fatalf("Files[0] = %q, want %q", mailboxes[0].Files[0], "1.emlx")
+	if filepath.Base(mailboxes[0].Files[0]) != "1.emlx" {
+		t.Fatalf("Files[0] basename = %q, want %q",
+			filepath.Base(mailboxes[0].Files[0]), "1.emlx")
 	}
 }
 
@@ -258,14 +259,15 @@ func TestDiscoverMailboxes_FilesSorted(t *testing.T) {
 		t.Fatalf("got %d mailboxes, want 1", len(mailboxes))
 	}
 
-	want := []string{"1.emlx", "10.emlx", "2.emlx", "300.emlx"}
+	wantNames := []string{"1.emlx", "10.emlx", "2.emlx", "300.emlx"}
 	files := mailboxes[0].Files
-	if len(files) != len(want) {
-		t.Fatalf("files = %v, want %v", files, want)
+	if len(files) != len(wantNames) {
+		t.Fatalf("files count = %d, want %d", len(files), len(wantNames))
 	}
-	for i := range want {
-		if files[i] != want[i] {
-			t.Fatalf("files[%d] = %q, want %q", i, files[i], want[i])
+	for i := range wantNames {
+		got := filepath.Base(files[i])
+		if got != wantNames[i] {
+			t.Fatalf("files[%d] basename = %q, want %q", i, got, wantNames[i])
 		}
 	}
 }
@@ -382,9 +384,9 @@ func TestDiscoverMailboxes_V10PartialSkipped(t *testing.T) {
 	if len(mailboxes[0].Files) != 1 {
 		t.Fatalf("Files = %d, want 1", len(mailboxes[0].Files))
 	}
-	if mailboxes[0].Files[0] != "1.emlx" {
-		t.Errorf("Files[0] = %q, want %q",
-			mailboxes[0].Files[0], "1.emlx")
+	if filepath.Base(mailboxes[0].Files[0]) != "1.emlx" {
+		t.Errorf("Files[0] basename = %q, want %q",
+			filepath.Base(mailboxes[0].Files[0]), "1.emlx")
 	}
 }
 
@@ -422,6 +424,174 @@ func TestDiscoverMailboxes_MixedLegacyAndV10(t *testing.T) {
 	}
 }
 
+// mkV10PartitionedMailbox creates a V10 mailbox with .emlx files in
+// both the primary Messages/ directory and in numeric partition
+// subdirectories at various nesting depths.
+//
+// Layout created:
+//
+//	base/<guid>/Data/Messages/1.emlx       (top-level)
+//	base/<guid>/Data/0/3/Messages/123.emlx (2-level partition)
+//	base/<guid>/Data/9/Messages/456.emlx   (1-level partition)
+func mkV10PartitionedMailbox(t *testing.T, base, guid string) {
+	t.Helper()
+	dataDir := filepath.Join(base, guid, "Data")
+
+	writeEmlxFile := func(dir, name string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatalf("mkdir %q: %v", dir, err)
+		}
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("10\nFrom: x\r\n\r\n"), 0600); err != nil {
+			t.Fatalf("write %q: %v", path, err)
+		}
+	}
+
+	writeEmlxFile(filepath.Join(dataDir, "Messages"), "1.emlx")
+	writeEmlxFile(filepath.Join(dataDir, "0", "3", "Messages"), "123.emlx")
+	writeEmlxFile(filepath.Join(dataDir, "9", "Messages"), "456.emlx")
+}
+
+func TestDiscoverMailboxes_V10Partitioned(t *testing.T) {
+	root := t.TempDir()
+	guid := "9F0F15DD-4CBC-448A-9EBF-C385A47A3A67"
+	mboxDir := filepath.Join(root, "INBOX.mbox")
+	mkV10PartitionedMailbox(t, mboxDir, guid)
+
+	mailboxes, err := DiscoverMailboxes(mboxDir)
+	if err != nil {
+		t.Fatalf("DiscoverMailboxes: %v", err)
+	}
+	if len(mailboxes) != 1 {
+		t.Fatalf("got %d mailboxes, want 1", len(mailboxes))
+	}
+
+	mb := mailboxes[0]
+	if mb.Label != "INBOX" {
+		t.Errorf("Label = %q, want %q", mb.Label, "INBOX")
+	}
+
+	// Should find all 3 files: 1 top-level + 2 from partitions.
+	if len(mb.Files) != 3 {
+		t.Fatalf("Files = %v (len %d), want 3 files", mb.Files, len(mb.Files))
+	}
+
+	// Verify all paths are absolute and point to existing files.
+	for _, path := range mb.Files {
+		if !filepath.IsAbs(path) {
+			t.Errorf("expected absolute path, got %q", path)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("stat %q: %v", path, err)
+		}
+	}
+
+	// Verify expected basenames are present.
+	baseNames := make(map[string]bool)
+	for _, f := range mb.Files {
+		baseNames[filepath.Base(f)] = true
+	}
+	for _, want := range []string{"1.emlx", "123.emlx", "456.emlx"} {
+		if !baseNames[want] {
+			t.Errorf("missing file %q in Files", want)
+		}
+	}
+}
+
+func TestDiscoverMailboxes_V10PartitionedOnly(t *testing.T) {
+	root := t.TempDir()
+	guid := "9F0F15DD-4CBC-448A-9EBF-C385A47A3A67"
+	mboxDir := filepath.Join(root, "INBOX.mbox")
+
+	// Create the primary Messages/ dir but leave it empty.
+	// (Tests the case where Messages/ exists but is empty.)
+	primaryMsg := filepath.Join(mboxDir, guid, "Data", "Messages")
+	if err := os.MkdirAll(primaryMsg, 0700); err != nil {
+		t.Fatalf("mkdir %q: %v", primaryMsg, err)
+	}
+
+	// Place files only in partition dirs.
+	partDir := filepath.Join(mboxDir, guid, "Data", "3", "Messages")
+	if err := os.MkdirAll(partDir, 0700); err != nil {
+		t.Fatalf("mkdir %q: %v", partDir, err)
+	}
+	for _, name := range []string{"100.emlx", "200.emlx"} {
+		path := filepath.Join(partDir, name)
+		if err := os.WriteFile(path, []byte("10\nFrom: x\r\n\r\n"), 0600); err != nil {
+			t.Fatalf("write %q: %v", path, err)
+		}
+	}
+
+	mailboxes, err := DiscoverMailboxes(mboxDir)
+	if err != nil {
+		t.Fatalf("DiscoverMailboxes: %v", err)
+	}
+	if len(mailboxes) != 1 {
+		t.Fatalf("got %d mailboxes, want 1 (partitioned-only mailbox should be detected)", len(mailboxes))
+	}
+
+	mb := mailboxes[0]
+	if len(mb.Files) != 2 {
+		t.Fatalf("Files = %v (len %d), want 2", mb.Files, len(mb.Files))
+	}
+
+	for _, path := range mb.Files {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("stat %q: %v", path, err)
+		}
+	}
+}
+
+// TestDiscoverMailboxes_V10NoTopLevelMessages tests the case where
+// Data/Messages/ does not exist at all — only numeric partition dirs.
+// This matches real Apple Mail behavior for large mailboxes.
+func TestDiscoverMailboxes_V10NoTopLevelMessages(t *testing.T) {
+	root := t.TempDir()
+	guid := "9F0F15DD-4CBC-448A-9EBF-C385A47A3A67"
+	mboxDir := filepath.Join(root, "Sent Messages.mbox")
+
+	// Do NOT create Data/Messages/ — only create partition dirs.
+	for _, partPath := range []string{
+		filepath.Join(mboxDir, guid, "Data", "9", "9", "Messages"),
+		filepath.Join(mboxDir, guid, "Data", "0", "0", "1", "Messages"),
+	} {
+		if err := os.MkdirAll(partPath, 0700); err != nil {
+			t.Fatalf("mkdir %q: %v", partPath, err)
+		}
+	}
+	testFiles := map[string]string{
+		"500.emlx": filepath.Join(mboxDir, guid, "Data", "9", "9", "Messages"),
+		"600.emlx": filepath.Join(mboxDir, guid, "Data", "0", "0", "1", "Messages"),
+		"700.emlx": filepath.Join(mboxDir, guid, "Data", "0", "0", "1", "Messages"),
+	}
+	for name, dir := range testFiles {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("10\nFrom: x\r\n\r\n"), 0600); err != nil {
+			t.Fatalf("write %q: %v", path, err)
+		}
+	}
+
+	mailboxes, err := DiscoverMailboxes(mboxDir)
+	if err != nil {
+		t.Fatalf("DiscoverMailboxes: %v", err)
+	}
+	if len(mailboxes) != 1 {
+		t.Fatalf("got %d mailboxes, want 1 (no Data/Messages/ dir)", len(mailboxes))
+	}
+
+	mb := mailboxes[0]
+	if len(mb.Files) != 3 {
+		t.Fatalf("Files = %v, want 3", mb.Files)
+	}
+
+	for _, path := range mb.Files {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("stat %q: %v", path, err)
+		}
+	}
+}
+
 func TestIsUUID(t *testing.T) {
 	tests := []struct {
 		input string
@@ -436,9 +606,9 @@ func TestIsUUID(t *testing.T) {
 		{"not-a-uuid-at-all-nope-definitely", false},
 	}
 	for _, tc := range tests {
-		got := isUUID(tc.input)
+		got := IsUUID(tc.input)
 		if got != tc.want {
-			t.Errorf("isUUID(%q) = %v, want %v",
+			t.Errorf("IsUUID(%q) = %v, want %v",
 				tc.input, got, tc.want)
 		}
 	}

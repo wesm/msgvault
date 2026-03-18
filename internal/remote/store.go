@@ -2,6 +2,7 @@
 package remote
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -77,9 +78,14 @@ func (s *Store) Close() error {
 
 // doRequest performs an authenticated HTTP request.
 func (s *Store) doRequest(method, path string, body io.Reader) (*http.Response, error) {
+	return s.doRequestWithContext(context.Background(), method, path, body)
+}
+
+// doRequestWithContext performs an authenticated HTTP request with context support.
+func (s *Store) doRequestWithContext(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
 	reqURL := s.baseURL + path
 
-	req, err := http.NewRequest(method, reqURL, body)
+	req, err := http.NewRequestWithContext(ctx, method, reqURL, body)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -154,15 +160,17 @@ func (s *Store) GetStats() (*store.Stats, error) {
 
 // messageResponse matches the API message summary format.
 type messageResponse struct {
-	ID        int64    `json:"id"`
-	Subject   string   `json:"subject"`
-	From      string   `json:"from"`
-	To        []string `json:"to"`
-	SentAt    string   `json:"sent_at"`
-	Snippet   string   `json:"snippet"`
-	Labels    []string `json:"labels"`
-	HasAttach bool     `json:"has_attachments"`
-	SizeBytes int64    `json:"size_bytes"`
+	ID             int64    `json:"id"`
+	ConversationID int64    `json:"conversation_id,omitempty"`
+	Subject        string   `json:"subject"`
+	From           string   `json:"from"`
+	To             []string `json:"to"`
+	SentAt         string   `json:"sent_at"`
+	DeletedAt      string   `json:"deleted_at,omitempty"`
+	Snippet        string   `json:"snippet"`
+	Labels         []string `json:"labels"`
+	HasAttach      bool     `json:"has_attachments"`
+	SizeBytes      int64    `json:"size_bytes"`
 }
 
 // messageDetailResponse includes body and attachments.
@@ -201,12 +209,21 @@ func parseTime(s string) time.Time {
 
 // toAPIMessage converts a messageResponse to store.APIMessage.
 func toAPIMessage(m messageResponse) store.APIMessage {
+	var deletedAt *time.Time
+	if m.DeletedAt != "" {
+		t := parseTime(m.DeletedAt)
+		if !t.IsZero() {
+			deletedAt = &t
+		}
+	}
 	return store.APIMessage{
 		ID:             m.ID,
+		ConversationID: m.ConversationID,
 		Subject:        m.Subject,
 		From:           m.From,
 		To:             m.To,
 		SentAt:         parseTime(m.SentAt),
+		DeletedAt:      deletedAt,
 		Snippet:        m.Snippet,
 		Labels:         m.Labels,
 		HasAttachments: m.HasAttach,
@@ -329,6 +346,7 @@ func (s *Store) SearchMessages(query string, offset, limit int) ([]store.APIMess
 
 // AccountInfo represents an account in list responses.
 type AccountInfo struct {
+	ID          int64  `json:"id"`
 	Email       string `json:"email"`
 	DisplayName string `json:"display_name,omitempty"`
 	LastSyncAt  string `json:"last_sync_at,omitempty"`

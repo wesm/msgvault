@@ -13,7 +13,7 @@ type Mailbox struct {
 	// Path is the absolute path to the .mbox or .imapmbox directory.
 	Path string
 
-	// MsgDir is the absolute path to the Messages/ directory
+	// MsgDir is the absolute path to the primary Messages/ directory
 	// containing .emlx files. In legacy layouts this is Path/Messages;
 	// in modern V10 layouts it is Path/<GUID>/Data/Messages.
 	MsgDir string
@@ -21,7 +21,9 @@ type Mailbox struct {
 	// Label is the derived label for messages in this mailbox.
 	Label string
 
-	// Files contains sorted .emlx filenames within MsgDir.
+	// Files contains sorted absolute paths to .emlx files within
+	// this mailbox, including files from numeric partition
+	// subdirectories in V10 layouts.
 	Files []string
 }
 
@@ -132,7 +134,7 @@ func LabelFromPath(rootDir, mailboxPath string) string {
 			continue
 		}
 		// V10 account GUID directories (e.g. 13C9A646-...-E07FFBDDEED3).
-		if isUUID(p) {
+		if IsUUID(p) {
 			continue
 		}
 		filtered = append(filtered, p)
@@ -164,7 +166,7 @@ func isMailboxDir(path string) bool {
 // findMessagesDir locates the Messages/ directory within a .mbox.
 // Returns "" if none found. Checks both legacy (Messages/) and
 // modern V10 (<GUID>/Data/Messages/) layouts. When both exist,
-// prefers whichever contains .emlx files.
+// prefers whichever contains .emlx files (directly or in partitions).
 func findMessagesDir(mailboxPath string) string {
 	var candidates []string
 
@@ -175,17 +177,24 @@ func findMessagesDir(mailboxPath string) string {
 	}
 
 	// Modern V10: <subdir>/Data/Messages/ subdirectory.
+	// Also handles partition-only layouts where Data/Messages/ doesn't exist.
 	entries, err := os.ReadDir(mailboxPath)
 	if err == nil {
 		for _, e := range entries {
 			if !e.IsDir() || e.Name() == "Messages" {
 				continue
 			}
-			modern := filepath.Join(
-				mailboxPath, e.Name(), "Data", "Messages",
-			)
-			info, statErr := os.Stat(modern)
-			if statErr == nil && info.IsDir() {
+			dataDir := filepath.Join(mailboxPath, e.Name(), "Data")
+			dataStat, statErr := os.Stat(dataDir)
+			if statErr != nil || !dataStat.IsDir() {
+				continue
+			}
+			modern := filepath.Join(dataDir, "Messages")
+			msgStat, statErr := os.Stat(modern)
+			if statErr == nil && msgStat.IsDir() {
+				candidates = append(candidates, modern)
+			} else if hasEmlxFilesInPartitions(dataDir) {
+				// Partition-only: Data/Messages/ absent but partitions exist.
 				candidates = append(candidates, modern)
 			}
 		}
@@ -195,9 +204,16 @@ func findMessagesDir(mailboxPath string) string {
 		return ""
 	}
 
-	// Prefer the first candidate that has .emlx files.
+	// Prefer the first candidate that has .emlx files directly or
+	// within numeric partition subdirectories (V10 only).
 	for _, dir := range candidates {
 		if hasEmlxFiles(dir) {
+			return dir
+		}
+		// For V10 layout the parent is Data/; check partitions there.
+		dataDir := filepath.Dir(dir)
+		if filepath.Base(dataDir) == "Data" &&
+			hasEmlxFilesInPartitions(dataDir) {
 			return dir
 		}
 	}
@@ -214,20 +230,40 @@ func hasEmlxFiles(dir string) bool {
 		return false
 	}
 	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		lower := strings.ToLower(e.Name())
-		if strings.HasSuffix(lower, ".emlx") &&
-			!strings.HasSuffix(lower, ".partial.emlx") {
+		if !e.IsDir() && isEmlxFile(e.Name()) {
 			return true
 		}
 	}
 	return false
 }
 
-// isUUID returns true if s matches UUID format (8-4-4-4-12 hex).
-func isUUID(s string) bool {
+// hasEmlxFilesInPartitions returns true if dir contains .emlx files
+// within Messages/ subdirectories or nested numeric partition dirs (0-9).
+func hasEmlxFilesInPartitions(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if name == "Messages" {
+			if hasEmlxFiles(filepath.Join(dir, name)) {
+				return true
+			}
+		} else if isDigitDir(name) {
+			if hasEmlxFilesInPartitions(filepath.Join(dir, name)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// IsUUID returns true if s matches UUID format (8-4-4-4-12 hex).
+func IsUUID(s string) bool {
 	if len(s) != 36 {
 		return false
 	}
@@ -249,6 +285,16 @@ func isUUID(s string) bool {
 	return true
 }
 
+func isDigitDir(name string) bool {
+	return len(name) == 1 && name[0] >= '0' && name[0] <= '9'
+}
+
+func isEmlxFile(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasSuffix(lower, ".emlx") &&
+		!strings.HasSuffix(lower, ".partial.emlx")
+}
+
 func stripMailboxSuffix(name string) string {
 	lower := strings.ToLower(name)
 	if strings.HasSuffix(lower, ".imapmbox") {
@@ -260,9 +306,10 @@ func stripMailboxSuffix(name string) string {
 	return name
 }
 
-// listEmlxFiles returns the Messages directory path and sorted .emlx
-// filenames within it, excluding .partial.emlx. Returns ("", nil, nil)
-// if no Messages directory is found.
+// listEmlxFiles returns the Messages directory path and sorted
+// absolute paths to .emlx files (from both the primary Messages/ dir
+// and numeric partition subdirectories).
+// Returns ("", nil, nil) if no Messages directory is found.
 func listEmlxFiles(
 	mailboxPath string,
 ) (string, []string, error) {
@@ -273,30 +320,68 @@ func listEmlxFiles(
 
 	entries, err := os.ReadDir(msgDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil, nil
+		if !os.IsNotExist(err) {
+			return "", nil, fmt.Errorf("read Messages dir: %w", err)
 		}
-		return "", nil, fmt.Errorf("read Messages dir: %w", err)
+		// Primary Messages/ dir absent (partition-only layout); continue
+		// so that partition files are still collected below.
+		entries = nil
 	}
 
 	var files []string
 	for _, e := range entries {
-		if e.IsDir() {
-			continue
+		if !e.IsDir() && isEmlxFile(e.Name()) {
+			files = append(files, filepath.Join(msgDir, e.Name()))
 		}
-		name := e.Name()
-		if !strings.HasSuffix(strings.ToLower(name), ".emlx") {
-			continue
+	}
+
+	// Walk numeric partition dirs in Data/ (parent of Messages/).
+	// Only enter digit dirs (0-9) to avoid re-collecting from the
+	// primary Messages/ dir which was already handled above.
+	dataDir := filepath.Dir(msgDir)
+	if filepath.Base(dataDir) == "Data" {
+		topEntries, readErr := os.ReadDir(dataDir)
+		if readErr == nil {
+			for _, e := range topEntries {
+				if e.IsDir() && isDigitDir(e.Name()) {
+					collectPartitionFiles(
+						filepath.Join(dataDir, e.Name()), &files,
+					)
+				}
+			}
 		}
-		// Skip .partial.emlx files (Apple Mail temp files).
-		if strings.HasSuffix(
-			strings.ToLower(name), ".partial.emlx",
-		) {
-			continue
-		}
-		files = append(files, name)
 	}
 
 	sort.Strings(files)
 	return msgDir, files, nil
+}
+
+// collectPartitionFiles recursively walks dir for Messages/ subdirs
+// and numeric partition dirs (0-9), appending absolute .emlx file
+// paths to files.
+func collectPartitionFiles(dir string, files *[]string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if name == "Messages" {
+			msgDir := filepath.Join(dir, name)
+			msgs, err := os.ReadDir(msgDir)
+			if err != nil {
+				continue
+			}
+			for _, m := range msgs {
+				if !m.IsDir() && isEmlxFile(m.Name()) {
+					*files = append(*files, filepath.Join(msgDir, m.Name()))
+				}
+			}
+		} else if isDigitDir(name) {
+			collectPartitionFiles(filepath.Join(dir, name), files)
+		}
+	}
 }
