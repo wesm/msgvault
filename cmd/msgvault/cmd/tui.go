@@ -281,8 +281,8 @@ func cacheNeedsBuild(dbPath, analyticsDir string) cacheStaleness {
 			SELECT COALESCE(SUM(messages_updated), 0) FROM sync_runs
 			WHERE status = 'completed'
 			  AND completed_at IS NOT NULL
-			  AND completed_at >= ?
-		`, syncAtStr).Scan(&updatedSinceBuild)
+			  AND id > ?
+		`, state.LastCompletedSyncRunID).Scan(&updatedSinceBuild)
 		if err != nil {
 			return cacheStaleness{
 				NeedsBuild: true, FullRebuild: true,

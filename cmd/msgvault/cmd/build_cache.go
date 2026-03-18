@@ -27,10 +27,11 @@ var fullRebuild bool
 // files (_last_sync.json, parquet directories) can corrupt the cache.
 var buildCacheMu sync.Mutex
 
-// syncState tracks the last exported message ID for incremental updates.
+// syncState tracks the message and sync-run watermarks covered by the cache.
 type syncState struct {
-	LastMessageID int64     `json:"last_message_id"`
-	LastSyncAt    time.Time `json:"last_sync_at"`
+	LastMessageID          int64     `json:"last_message_id"`
+	LastSyncAt             time.Time `json:"last_sync_at"`
+	LastCompletedSyncRunID int64     `json:"last_completed_sync_run_id,omitempty"`
 }
 
 var buildCacheCmd = &cobra.Command{
@@ -116,13 +117,39 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 	}
 
 	var maxMessageID sql.NullInt64
+	var lastCompletedSyncRunID int64
 	// Use indexed query: id is PRIMARY KEY, sent_at has an index
 	maxIDQuery := `SELECT MAX(id) FROM messages WHERE sent_at IS NOT NULL`
 	if err := sqliteDB.QueryRow(maxIDQuery).Scan(&maxMessageID); err != nil {
-		sqliteDB.Close()
+		if closeErr := sqliteDB.Close(); closeErr != nil {
+			return nil, fmt.Errorf("get max message id: %w; close sqlite: %v", err, closeErr)
+		}
 		return nil, fmt.Errorf("get max message id: %w", err)
 	}
-	sqliteDB.Close()
+	var hasSyncRunsTable int
+	if err := sqliteDB.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'sync_runs'
+	`).Scan(&hasSyncRunsTable); err != nil {
+		if closeErr := sqliteDB.Close(); closeErr != nil {
+			return nil, fmt.Errorf("check sync_runs table: %w; close sqlite: %v", err, closeErr)
+		}
+		return nil, fmt.Errorf("check sync_runs table: %w", err)
+	}
+	if hasSyncRunsTable > 0 {
+		if err := sqliteDB.QueryRow(`
+			SELECT COALESCE(MAX(id), 0) FROM sync_runs
+			WHERE status = 'completed' AND completed_at IS NOT NULL
+		`).Scan(&lastCompletedSyncRunID); err != nil {
+			if closeErr := sqliteDB.Close(); closeErr != nil {
+				return nil, fmt.Errorf("get last completed sync run id: %w; close sqlite: %v", err, closeErr)
+			}
+			return nil, fmt.Errorf("get last completed sync run id: %w", err)
+		}
+	}
+	if err := sqliteDB.Close(); err != nil {
+		return nil, fmt.Errorf("close sqlite after metadata check: %w", err)
+	}
 
 	maxID := int64(0)
 	if maxMessageID.Valid {
@@ -400,8 +427,9 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 	// Save sync state using the pre-export watermark so any deletion
 	// that occurs during or after the build is detected as stale.
 	state := syncState{
-		LastMessageID: maxID,
-		LastSyncAt:    cacheWatermark,
+		LastMessageID:          maxID,
+		LastSyncAt:             cacheWatermark,
+		LastCompletedSyncRunID: lastCompletedSyncRunID,
 	}
 	stateData, _ := json.Marshal(state)
 	if err := os.WriteFile(stateFile, stateData, 0644); err != nil {
