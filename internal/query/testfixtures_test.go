@@ -27,7 +27,10 @@ type MessageFixture struct {
 	SentAt          time.Time
 	SizeEstimate    int64
 	HasAttachments  bool
+	AttachmentCount int
 	DeletedAt       *time.Time // nil = NULL
+	SenderID        *int64     // nil = NULL (direct sender for WhatsApp/chat messages)
+	MessageType     string     // e.g. "email", "whatsapp"
 	Year            int
 	Month           int
 }
@@ -36,6 +39,7 @@ type MessageFixture struct {
 type SourceFixture struct {
 	ID           int64
 	AccountEmail string
+	SourceType   string // "gmail", "whatsapp", etc. Defaults to "gmail".
 }
 
 // ParticipantFixture defines a participant row for Parquet test data.
@@ -44,6 +48,7 @@ type ParticipantFixture struct {
 	Email       string
 	Domain      string
 	DisplayName string
+	PhoneNumber string // E.164 phone number (for WhatsApp/chat participants)
 }
 
 // RecipientFixture defines a message_recipients row for Parquet test data.
@@ -77,6 +82,7 @@ type AttachmentFixture struct {
 type ConversationFixture struct {
 	ID                   int64
 	SourceConversationID string
+	Title                string // Group/chat name (for WhatsApp/chat conversations)
 }
 
 // ---------------------------------------------------------------------------
@@ -119,9 +125,14 @@ func NewTestDataBuilder(t testing.TB) *TestDataBuilder {
 
 // AddSource adds a source and returns its ID.
 func (b *TestDataBuilder) AddSource(email string) int64 {
+	return b.AddSourceWithType(email, "gmail")
+}
+
+// AddSourceWithType adds a source with a specific type and returns its ID.
+func (b *TestDataBuilder) AddSourceWithType(email, sourceType string) int64 {
 	id := b.nextSrcID
 	b.nextSrcID++
-	b.sources = append(b.sources, SourceFixture{ID: id, AccountEmail: email})
+	b.sources = append(b.sources, SourceFixture{ID: id, AccountEmail: email, SourceType: sourceType})
 	return id
 }
 
@@ -292,24 +303,36 @@ func (m MessageFixture) toSQL() string {
 	if m.DeletedAt != nil {
 		deletedAt = fmt.Sprintf("TIMESTAMP '%s'", m.DeletedAt.Format("2006-01-02 15:04:05"))
 	}
-	return fmt.Sprintf("(%d::BIGINT, %d::BIGINT, %s, %d::BIGINT, %s, %s, TIMESTAMP '%s', %d::BIGINT, %v, %s, %d, %d)",
+	senderID := "NULL::BIGINT"
+	if m.SenderID != nil {
+		senderID = fmt.Sprintf("%d::BIGINT", *m.SenderID)
+	}
+	msgType := m.MessageType
+	if msgType == "" {
+		msgType = "email"
+	}
+	return fmt.Sprintf("(%d::BIGINT, %d::BIGINT, %s, %d::BIGINT, %s, %s, TIMESTAMP '%s', %d::BIGINT, %v, %d, %s, %s, %s, %d, %d)",
 		m.ID, m.SourceID, sqlStr(m.SourceMessageID), m.ConversationID,
 		sqlStr(m.Subject), sqlStr(m.Snippet),
 		m.SentAt.Format("2006-01-02 15:04:05"), m.SizeEstimate,
-		m.HasAttachments, deletedAt, m.Year, m.Month,
+		m.HasAttachments, m.AttachmentCount, deletedAt, senderID, sqlStr(msgType), m.Year, m.Month,
 	)
 }
 
 func (b *TestDataBuilder) sourcesSQL() string {
 	return joinRows(b.sources, func(s SourceFixture) string {
-		return fmt.Sprintf("(%d::BIGINT, %s)", s.ID, sqlStr(s.AccountEmail))
+		st := s.SourceType
+		if st == "" {
+			st = "gmail"
+		}
+		return fmt.Sprintf("(%d::BIGINT, %s, %s)", s.ID, sqlStr(s.AccountEmail), sqlStr(st))
 	})
 }
 
 func (b *TestDataBuilder) participantsSQL() string {
 	return joinRows(b.participants, func(p ParticipantFixture) string {
-		return fmt.Sprintf("(%d::BIGINT, %s, %s, %s)",
-			p.ID, sqlStr(p.Email), sqlStr(p.Domain), sqlStr(p.DisplayName))
+		return fmt.Sprintf("(%d::BIGINT, %s, %s, %s, %s)",
+			p.ID, sqlStr(p.Email), sqlStr(p.Domain), sqlStr(p.DisplayName), sqlStr(p.PhoneNumber))
 	})
 }
 
@@ -341,8 +364,8 @@ func (b *TestDataBuilder) attachmentsSQL() string {
 
 func (b *TestDataBuilder) conversationsSQL() string {
 	return joinRows(b.conversations, func(c ConversationFixture) string {
-		return fmt.Sprintf("(%d::BIGINT, %s)",
-			c.ID, sqlStr(c.SourceConversationID))
+		return fmt.Sprintf("(%d::BIGINT, %s, %s)",
+			c.ID, sqlStr(c.SourceConversationID), sqlStr(c.Title))
 	})
 }
 
@@ -352,14 +375,14 @@ func (b *TestDataBuilder) conversationsSQL() string {
 
 // column definitions (coupled to SQL generation methods above)
 const (
-	messagesCols          = "id, source_id, source_message_id, conversation_id, subject, snippet, sent_at, size_estimate, has_attachments, deleted_from_source_at, year, month"
-	sourcesCols           = "id, account_email"
-	participantsCols      = "id, email_address, domain, display_name"
+	messagesCols          = "id, source_id, source_message_id, conversation_id, subject, snippet, sent_at, size_estimate, has_attachments, attachment_count, deleted_from_source_at, sender_id, message_type, year, month"
+	sourcesCols           = "id, account_email, source_type"
+	participantsCols      = "id, email_address, domain, display_name, phone_number"
 	messageRecipientsCols = "message_id, participant_id, recipient_type, display_name"
 	labelsCols            = "id, name"
 	messageLabelsCols     = "message_id, label_id"
 	attachmentsCols       = "message_id, size, filename"
-	conversationsCols     = "id, source_conversation_id"
+	conversationsCols     = "id, source_conversation_id, title"
 )
 
 // Build generates Parquet files from the accumulated data and returns the
@@ -395,12 +418,12 @@ func (b *TestDataBuilder) addAuxiliaryTables(pb *parquetBuilder) {
 		name, subdir, file, cols, dummy, sql string
 		empty                                bool
 	}{
-		{"sources", "sources", "sources.parquet", sourcesCols, "(0::BIGINT, '')", b.sourcesSQL(), len(b.sources) == 0},
-		{"participants", "participants", "participants.parquet", participantsCols, "(0::BIGINT, '', '', '')", b.participantsSQL(), len(b.participants) == 0},
+		{"sources", "sources", "sources.parquet", sourcesCols, "(0::BIGINT, '', 'gmail')", b.sourcesSQL(), len(b.sources) == 0},
+		{"participants", "participants", "participants.parquet", participantsCols, "(0::BIGINT, '', '', '', '')", b.participantsSQL(), len(b.participants) == 0},
 		{"message_recipients", "message_recipients", "message_recipients.parquet", messageRecipientsCols, "(0::BIGINT, 0::BIGINT, '', '')", b.recipientsSQL(), len(b.recipients) == 0},
 		{"labels", "labels", "labels.parquet", labelsCols, "(0::BIGINT, '')", b.labelsSQL(), len(b.labels) == 0},
 		{"message_labels", "message_labels", "message_labels.parquet", messageLabelsCols, "(0::BIGINT, 0::BIGINT)", b.messageLabelsSQL(), len(b.msgLabels) == 0},
-		{"conversations", "conversations", "conversations.parquet", conversationsCols, "(0::BIGINT, '')", b.conversationsSQL(), len(b.conversations) == 0},
+		{"conversations", "conversations", "conversations.parquet", conversationsCols, "(0::BIGINT, '', '')", b.conversationsSQL(), len(b.conversations) == 0},
 	}
 	for _, a := range auxTables {
 		if a.empty {

@@ -323,7 +323,12 @@ func (h *handlers) listMessages(ctx context.Context, req mcp.CallToolRequest) (*
 	}
 
 	if v, ok := args["from"].(string); ok && v != "" {
-		filter.Sender = v
+		// If it looks like an email address, filter by email; otherwise by display name.
+		if strings.Contains(v, "@") || strings.HasPrefix(v, "+") {
+			filter.Sender = v
+		} else {
+			filter.SenderName = v
+		}
 	}
 	if v, ok := args["to"].(string); ok && v != "" {
 		filter.Recipient = v
