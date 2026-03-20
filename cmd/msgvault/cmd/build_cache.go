@@ -417,11 +417,25 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 
 	fmt.Printf("  %-25s %s\n", "Total:", time.Since(buildStart).Round(time.Millisecond))
 
-	// Count exported messages
+	// Count exported messages and verify Parquet files actually exist
 	var exportedCount int64
 	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM read_parquet('%s/**/*.parquet', hive_partitioning=true)", escapedMessagesDir)
 	if err := db.QueryRow(countSQL).Scan(&exportedCount); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to count exported messages: %v\n", err)
 		exportedCount = 0
+	}
+
+	// Only save sync state if Parquet files were actually created.
+	// Without this guard, a failed export writes the state file with the
+	// current max message ID, causing future incremental builds to skip
+	// the rebuild — leaving the cache permanently empty.
+	if exportedCount == 0 && maxID > 0 {
+		fmt.Fprintf(os.Stderr, "Warning: export produced 0 messages from %d in database; not updating cache state\n", maxID)
+		return &buildResult{
+			ExportedCount: 0,
+			MaxMessageID:  maxID,
+			OutputDir:     analyticsDir,
+		}, nil
 	}
 
 	// Save sync state using the pre-export watermark so any deletion

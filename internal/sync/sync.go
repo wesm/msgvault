@@ -371,6 +371,13 @@ func (s *Syncer) Full(ctx context.Context, email string) (summary *gmail.SyncSum
 		s.logger.Warn("failed to complete sync", "error", err)
 	}
 
+	// Checkpoint WAL after sync to fold it back into the main database.
+	// This prevents WAL accumulation across long sync sessions and ensures
+	// readers (e.g. build-cache) see a consistent database state.
+	if err := s.store.CheckpointWAL(); err != nil {
+		s.logger.Warn("wal checkpoint after sync failed", "error", err)
+	}
+
 	// Build summary
 	summary.EndTime = time.Now()
 	summary.Duration = summary.EndTime.Sub(summary.StartTime)
