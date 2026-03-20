@@ -236,9 +236,16 @@ func (c *Client) enumerateMailbox(
 		}
 	}
 
+	// Use ESEARCH RETURN (ALL) when the server supports it for compact
+	// UID set responses; fall back to plain UID SEARCH ALL otherwise.
+	var searchOpts *imap.SearchOptions
+	if c.conn.Caps().Has(imap.CapESearch) {
+		searchOpts = &imap.SearchOptions{ReturnAll: true}
+	}
+
 	searchData, err := c.conn.UIDSearch(
 		&imap.SearchCriteria{},
-		&imap.SearchOptions{ReturnAll: true},
+		searchOpts,
 	).Wait()
 	if err != nil {
 		if isNetworkError(err) {
@@ -254,7 +261,7 @@ func (c *Client) enumerateMailbox(
 			}
 			searchData, err = c.conn.UIDSearch(
 				&imap.SearchCriteria{},
-				&imap.SearchOptions{ReturnAll: true},
+				searchOpts,
 			).Wait()
 			if err != nil {
 				return nil, err
