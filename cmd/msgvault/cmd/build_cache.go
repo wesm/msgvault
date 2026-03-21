@@ -430,12 +430,7 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 	// current max message ID, causing future incremental builds to skip
 	// the rebuild — leaving the cache permanently empty.
 	if exportedCount == 0 && maxID > 0 {
-		fmt.Fprintf(os.Stderr, "Warning: export produced 0 messages from %d in database; not updating cache state\n", maxID)
-		return &buildResult{
-			ExportedCount: 0,
-			MaxMessageID:  maxID,
-			OutputDir:     analyticsDir,
-		}, nil
+		return nil, fmt.Errorf("export produced 0 parquet rows from %d messages in database; cache state not updated", maxID)
 	}
 
 	// Save sync state using the pre-export watermark so any deletion
