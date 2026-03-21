@@ -238,7 +238,7 @@ func (c *Client) enumerateMailbox(
 
 	searchData, err := c.conn.UIDSearch(
 		&imap.SearchCriteria{},
-		&imap.SearchOptions{ReturnAll: true},
+		nil,
 	).Wait()
 	if err != nil {
 		if isNetworkError(err) {
@@ -254,7 +254,7 @@ func (c *Client) enumerateMailbox(
 			}
 			searchData, err = c.conn.UIDSearch(
 				&imap.SearchCriteria{},
-				&imap.SearchOptions{ReturnAll: true},
+				nil,
 			).Wait()
 			if err != nil {
 				return nil, err
