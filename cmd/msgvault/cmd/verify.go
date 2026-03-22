@@ -85,6 +85,7 @@ Examples:
 		defer client.Close()
 
 		// Run SQLite integrity check first (offline, no Gmail needed)
+		var dbCorrupt bool
 		if !verifySkipDBCheck {
 			fmt.Println("Running database integrity check...")
 			integrityErrors, err := runIntegrityCheck(s)
@@ -94,6 +95,7 @@ Examples:
 			if len(integrityErrors) == 0 {
 				fmt.Println("  Database integrity: OK")
 			} else {
+				dbCorrupt = true
 				fmt.Printf("  Database integrity: FAILED (%d errors)\n", len(integrityErrors))
 				for i, ie := range integrityErrors {
 					if i >= 10 {
@@ -228,6 +230,10 @@ Examples:
 
 		fmt.Println()
 		fmt.Println("Verification complete.")
+
+		if dbCorrupt {
+			return fmt.Errorf("database integrity check failed")
+		}
 
 		return nil
 	},

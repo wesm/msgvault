@@ -90,8 +90,20 @@ func (s *Store) Close() error {
 // database file. Uses TRUNCATE mode which also resets the WAL file to zero
 // bytes. Returns nil on success; callers may log but should not fail on error.
 func (s *Store) CheckpointWAL() error {
-	_, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
-	return err
+	var busy, log, checkpointed int
+	err := s.db.QueryRow(
+		"PRAGMA wal_checkpoint(TRUNCATE)",
+	).Scan(&busy, &log, &checkpointed)
+	if err != nil {
+		return err
+	}
+	if busy != 0 {
+		return fmt.Errorf(
+			"WAL checkpoint incomplete: database busy "+
+				"(log=%d, checkpointed=%d)", log, checkpointed,
+		)
+	}
+	return nil
 }
 
 // DB returns the underlying database connection for advanced queries.
