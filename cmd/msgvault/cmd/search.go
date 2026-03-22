@@ -212,18 +212,19 @@ func outputSearchResultsJSON(results []query.MessageSummary) error {
 	output := make([]map[string]interface{}, len(results))
 	for i, msg := range results {
 		output[i] = map[string]interface{}{
-			"id":                msg.ID,
-			"source_message_id": msg.SourceMessageID,
-			"conversation_id":   msg.ConversationID,
-			"subject":           msg.Subject,
-			"snippet":           msg.Snippet,
-			"from_email":        msg.FromEmail,
-			"from_name":         msg.FromName,
-			"sent_at":           msg.SentAt.Format(time.RFC3339),
-			"size_estimate":     msg.SizeEstimate,
-			"has_attachments":   msg.HasAttachments,
-			"attachment_count":  msg.AttachmentCount,
-			"labels":            msg.Labels,
+			"id":                     msg.ID,
+			"source_message_id":      msg.SourceMessageID,
+			"conversation_id":        msg.ConversationID,
+			"source_conversation_id": msg.SourceConversationID,
+			"subject":                msg.Subject,
+			"snippet":                msg.Snippet,
+			"from_email":             msg.FromEmail,
+			"from_name":              msg.FromName,
+			"sent_at":                msg.SentAt.Format(time.RFC3339),
+			"size_estimate":          msg.SizeEstimate,
+			"has_attachments":        msg.HasAttachments,
+			"attachment_count":       msg.AttachmentCount,
+			"labels":                 msg.Labels,
 		}
 	}
 
