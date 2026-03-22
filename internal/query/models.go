@@ -20,48 +20,48 @@ type AggregateRow struct {
 // MessageSummary represents a message in list views.
 // Contains enough information for display without fetching the full body.
 type MessageSummary struct {
-	ID                   int64
-	SourceMessageID      string
-	ConversationID       int64
-	SourceConversationID string // Gmail Thread ID
-	Subject              string
-	Snippet              string
-	FromEmail            string
-	FromName             string
-	SentAt               time.Time
-	SizeEstimate         int64
-	HasAttachments       bool
-	AttachmentCount      int
-	Labels               []string
-	DeletedAt            *time.Time // When message was deleted from server (nil if not deleted)
+	ID                   int64      `json:"id"`
+	SourceMessageID      string     `json:"source_message_id"`
+	ConversationID       int64      `json:"conversation_id"`
+	SourceConversationID string     `json:"source_conversation_id"` // Gmail Thread ID
+	Subject              string     `json:"subject"`
+	Snippet              string     `json:"snippet"`
+	FromEmail            string     `json:"from_email"`
+	FromName             string     `json:"from_name"`
+	SentAt               time.Time  `json:"sent_at"`
+	SizeEstimate         int64      `json:"size_estimate"`
+	HasAttachments       bool       `json:"has_attachments"`
+	AttachmentCount      int        `json:"attachment_count"`
+	Labels               []string   `json:"labels"`
+	DeletedAt            *time.Time `json:"deleted_at,omitempty"` // When message was deleted from server (nil if not deleted)
 }
 
 // MessageDetail represents a full message with body and attachments.
 type MessageDetail struct {
-	ID                   int64
-	SourceMessageID      string
-	ConversationID       int64
-	SourceConversationID string // Gmail Thread ID
-	Subject              string
-	Snippet              string
-	SentAt               time.Time
-	ReceivedAt           *time.Time
-	SizeEstimate         int64
-	HasAttachments       bool
+	ID                   int64      `json:"id"`
+	SourceMessageID      string     `json:"source_message_id"`
+	ConversationID       int64      `json:"conversation_id"`
+	SourceConversationID string     `json:"source_conversation_id"` // Gmail Thread ID
+	Subject              string     `json:"subject"`
+	Snippet              string     `json:"snippet"`
+	SentAt               time.Time  `json:"sent_at"`
+	ReceivedAt           *time.Time `json:"received_at,omitempty"`
+	SizeEstimate         int64      `json:"size_estimate"`
+	HasAttachments       bool       `json:"has_attachments"`
 
 	// Participants
-	From []Address
-	To   []Address
-	Cc   []Address
-	Bcc  []Address
+	From []Address `json:"from"`
+	To   []Address `json:"to"`
+	Cc   []Address `json:"cc"`
+	Bcc  []Address `json:"bcc"`
 
 	// Content
-	BodyText string
-	BodyHTML string
+	BodyText string `json:"body_text"`
+	BodyHTML string `json:"body_html"`
 
 	// Metadata
-	Labels      []string
-	Attachments []AttachmentInfo
+	Labels      []string         `json:"labels"`
+	Attachments []AttachmentInfo `json:"attachments"`
 }
 
 // Address represents an email address with optional display name.
