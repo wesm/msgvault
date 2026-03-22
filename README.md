@@ -128,6 +128,32 @@ rate_limit_qps = 5
 
 See the [Configuration Guide](https://msgvault.io/configuration/) for all options.
 
+### Multiple OAuth Apps (Google Workspace)
+
+Some Google Workspace organizations require OAuth apps within their org.
+To use multiple OAuth apps, add named apps to `config.toml`:
+
+```toml
+[oauth]
+client_secrets = "/path/to/default_secret.json"   # for personal Gmail
+
+[oauth.apps.acme]
+client_secrets = "/path/to/acme_workspace_secret.json"
+```
+
+Then specify the app when adding accounts:
+
+```bash
+msgvault add-account you@acme.com --oauth-app acme
+msgvault add-account personal@gmail.com              # uses default
+```
+
+To switch an existing account to a different OAuth app:
+
+```bash
+msgvault add-account you@acme.com --oauth-app acme   # re-authorizes
+```
+
 ## MCP Server
 
 msgvault includes an MCP server that lets AI assistants search, analyze, and read your archived messages. Connect it to Claude Desktop or any MCP-capable agent and query your full message history conversationally. See the [MCP documentation](https://msgvault.io/usage/chat/) for setup instructions.

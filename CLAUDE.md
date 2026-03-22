@@ -46,6 +46,7 @@ make lint                     # Run linter
 ./msgvault init-db                                    # Initialize database
 ./msgvault add-account you@gmail.com                  # Browser OAuth
 ./msgvault add-account you@gmail.com --headless       # Device flow
+./msgvault add-account you@acme.com --oauth-app acme  # Named OAuth app
 ./msgvault sync-full you@gmail.com --limit 100        # Sync with limit
 ./msgvault sync-full you@gmail.com --after 2024-01-01 # Sync date range
 ./msgvault sync-incremental you@gmail.com             # Incremental sync
@@ -255,6 +256,10 @@ Override with `MSGVAULT_HOME` environment variable.
 
 [oauth]
 client_secrets = "/path/to/client_secret.json"
+
+# Named OAuth apps for Google Workspace orgs
+# [oauth.apps.acme]
+# client_secrets = "/path/to/acme_secret.json"
 
 [sync]
 rate_limit_qps = 5
