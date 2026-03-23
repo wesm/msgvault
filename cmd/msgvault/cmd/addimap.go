@@ -65,36 +65,29 @@ Examples:
 			Username: imapUsername,
 		}
 
-		// Read password using the best method for the terminal:
-		//  - huh masked input when stdin is a terminal (output goes
-		//    to stdout when available, stderr when stdout is
-		//    redirected)
-		//  - term.ReadPassword as fallback when stdin is a native
-		//    terminal but huh output is unavailable (does not work
-		//    on Cygwin/mintty PTYs)
+		// Read password: prompt renders to stderr (it's UI, not
+		// program output) so stdout redirection never captures
+		// escape sequences.
+		//  - huh masked input when stdin + stderr are terminals
+		//  - term.ReadPassword when stdin is a native terminal but
+		//    stderr is redirected (doesn't need a TTY for output)
 		//  - plain pipe read when stdin is not a terminal
 		var (
 			password string
 			err      error
 		)
 		prompt := fmt.Sprintf("Password for %s@%s:", imapUsername, imapHost)
-		nativeTTY := isatty.IsTerminal(os.Stdin.Fd())
-		cygwinTTY := isatty.IsCygwinTerminal(os.Stdin.Fd())
-		stdinTTY := nativeTTY || cygwinTTY
-		stdoutTTY := isatty.IsTerminal(os.Stdout.Fd()) ||
-			isatty.IsCygwinTerminal(os.Stdout.Fd())
+		stdinTTY := isatty.IsTerminal(os.Stdin.Fd()) ||
+			isatty.IsCygwinTerminal(os.Stdin.Fd())
+		stderrTTY := isatty.IsTerminal(os.Stderr.Fd()) ||
+			isatty.IsCygwinTerminal(os.Stderr.Fd())
 
 		switch {
-		case stdinTTY && stdoutTTY:
-			password, err = readPasswordInteractive(prompt, os.Stdout)
-		case stdinTTY && cygwinTTY:
-			// Cygwin/mintty: term.ReadPassword doesn't work on
-			// these PTYs, so use huh with output on stderr.
+		case stdinTTY && stderrTTY:
 			password, err = readPasswordInteractive(prompt, os.Stderr)
-		case nativeTTY:
-			// Native terminal with stdout redirected: use
-			// term.ReadPassword to avoid TUI escape sequences in
-			// the redirected stream.
+		case isatty.IsTerminal(os.Stdin.Fd()):
+			// Native terminal, stderr redirected: term.ReadPassword
+			// suppresses echo without needing a TTY for output.
 			fmt.Fprintf(os.Stderr, "%s ", prompt)
 			raw, readErr := term.ReadPassword(int(os.Stdin.Fd()))
 			fmt.Fprintln(os.Stderr)
@@ -105,6 +98,11 @@ Examples:
 			} else {
 				password = string(raw)
 			}
+		case stdinTTY:
+			// Cygwin/mintty PTY with stderr redirected:
+			// term.ReadPassword doesn't work on Cygwin handles
+			// and huh needs a TTY for output.
+			return fmt.Errorf("cannot read password: no terminal available for prompt (try piping the password via stdin)")
 		default:
 			password, err = readPasswordFromPipe(os.Stdin)
 		}
@@ -191,8 +189,7 @@ func readPasswordFromPipe(r io.Reader) (string, error) {
 
 // readPasswordInteractive prompts for a password using a masked
 // input field with asterisk echo. The output writer controls where
-// the TUI renders (stdout for normal use, stderr when stdout is
-// redirected).
+// the TUI renders (typically stderr to avoid polluting stdout).
 func readPasswordInteractive(prompt string, output io.Writer) (string, error) {
 	var password string
 	input := huh.NewInput().
