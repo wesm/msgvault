@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.msgvault.serve</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/flox</string>
+		<string>activate</string>
+		<string>--dir</string>
+		<string>/Users/cdolan/Projects/msgvault</string>
+		<string>--</string>
+		<string>/Users/cdolan/Projects/msgvault/msgvault</string>
+		<string>serve</string>
+	</array>
+
+	<key>KeepAlive</key>
+	<true/>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<key>StandardOutPath</key>
+	<string>/Users/cdolan/Projects/msgvault/.flox/log/serve.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>/Users/cdolan/Projects/msgvault/.flox/log/serve.log</string>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/Users/cdolan</string>
+	</dict>
+</dict>
+</plist>

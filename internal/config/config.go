@@ -60,6 +60,15 @@ type AccountSchedule struct {
 	Enabled  bool   `toml:"enabled"`  // Whether scheduled sync is active
 }
 
+// ImportSchedule defines a scheduled local import (e.g., Apple Mail .emlx).
+type ImportSchedule struct {
+	Type       string `toml:"type"`       // Import type: "emlx"
+	Path       string `toml:"path"`       // Source directory (e.g., ~/Library/Mail or ~/mnt/Mail)
+	Identifier string `toml:"identifier"` // Account identifier (e.g., "chris@4dolan.com")
+	Schedule   string `toml:"schedule"`   // Cron expression (e.g., "0 6 * * *" for 6am daily)
+	Enabled    bool   `toml:"enabled"`    // Whether scheduled import is active
+}
+
 // RemoteConfig holds configuration for a remote msgvault server.
 // Used by export-token to remember the NAS/server destination.
 type RemoteConfig struct {
@@ -77,6 +86,7 @@ type Config struct {
 	Server   ServerConfig      `toml:"server"`
 	Remote   RemoteConfig      `toml:"remote"`
 	Accounts []AccountSchedule `toml:"accounts"`
+	Imports  []ImportSchedule  `toml:"imports"`
 
 	// Computed paths (not from config file)
 	HomeDir    string `toml:"-"`
@@ -194,6 +204,9 @@ func Load(path, homeDir string) (*Config, error) {
 	// Expand ~ in paths
 	cfg.Data.DataDir = expandPath(cfg.Data.DataDir)
 	cfg.OAuth.ClientSecrets = expandPath(cfg.OAuth.ClientSecrets)
+	for i := range cfg.Imports {
+		cfg.Imports[i].Path = expandPath(cfg.Imports[i].Path)
+	}
 
 	// When --config is used, resolve relative paths against the config file's
 	// directory so behavior doesn't depend on the working directory.
@@ -312,6 +325,17 @@ func (c *Config) ScheduledAccounts() []AccountSchedule {
 	for _, acc := range c.Accounts {
 		if acc.Enabled && acc.Schedule != "" {
 			scheduled = append(scheduled, acc)
+		}
+	}
+	return scheduled
+}
+
+// ScheduledImports returns imports with scheduling enabled.
+func (c *Config) ScheduledImports() []ImportSchedule {
+	var scheduled []ImportSchedule
+	for _, imp := range c.Imports {
+		if imp.Enabled && imp.Schedule != "" {
+			scheduled = append(scheduled, imp)
 		}
 	}
 	return scheduled

@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/api"
 	"github.com/wesm/msgvault/internal/gmail"
+	"github.com/wesm/msgvault/internal/importer"
 	"github.com/wesm/msgvault/internal/oauth"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/scheduler"
@@ -59,16 +60,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Validate config
-	if cfg.OAuth.ClientSecrets == "" {
+	// Check for scheduled Gmail accounts and imports
+	hasGmailAccounts := len(cfg.ScheduledAccounts()) > 0
+	hasImports := len(cfg.ScheduledImports()) > 0
+
+	// OAuth is required only when Gmail sync accounts are configured
+	if hasGmailAccounts && cfg.OAuth.ClientSecrets == "" {
 		return errOAuthNotConfigured()
 	}
 
-	// Check for scheduled accounts (warn but don't fail - allows token upload first)
-	scheduled := cfg.ScheduledAccounts()
-	if len(scheduled) == 0 {
-		logger.Warn("no scheduled accounts configured - server will start but no syncs will run",
-			"hint", "Add accounts to config.toml or upload tokens via API first")
+	if !hasGmailAccounts && !hasImports {
+		logger.Warn("no scheduled accounts or imports configured - server will start but no syncs will run",
+			"hint", "Add accounts or imports to config.toml")
 	}
 
 	// Open database
@@ -83,29 +86,57 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("init schema: %w", err)
 	}
 
-	// Create OAuth manager
-	oauthMgr, err := oauth.NewManager(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger)
-	if err != nil {
-		return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
+	// Create OAuth manager (nil if no Gmail accounts configured)
+	var oauthMgr *oauth.Manager
+	if cfg.OAuth.ClientSecrets != "" {
+		oauthMgr, err = oauth.NewManager(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger)
+		if err != nil {
+			return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
+		}
 	}
 
-	// Create sync function for the scheduler
-	syncFunc := func(ctx context.Context, email string) error {
-		return runScheduledSync(ctx, email, s, oauthMgr)
+	// Build import lookup table for dispatch
+	importConfigs := make(map[string]struct{ path, identifier, attachmentsDir string })
+	for _, imp := range cfg.ScheduledImports() {
+		key := "import:" + imp.Identifier
+		importConfigs[key] = struct{ path, identifier, attachmentsDir string }{
+			path: imp.Path, identifier: imp.Identifier, attachmentsDir: cfg.AttachmentsDir(),
+		}
+	}
+
+	// Create dispatch function: Gmail syncs vs local imports
+	dispatchFunc := func(ctx context.Context, key string) error {
+		if ic, ok := importConfigs[key]; ok {
+			return runScheduledImport(ctx, s, ic.path, ic.identifier, ic.attachmentsDir)
+		}
+		return runScheduledSync(ctx, key, s, oauthMgr)
 	}
 
 	// Create and configure scheduler
-	sched := scheduler.New(syncFunc).WithLogger(logger)
+	sched := scheduler.New(dispatchFunc).WithLogger(logger)
 
-	// Add all scheduled accounts
+	// Add all scheduled Gmail sync accounts
 	count, errs := sched.AddAccountsFromConfig(cfg)
 	if len(errs) > 0 {
 		for _, err := range errs {
 			logger.Error("failed to schedule account", "error", err)
 		}
 	}
-	if count == 0 {
-		logger.Warn("no accounts scheduled - upload tokens via API and add accounts to config.toml")
+
+	// Add scheduled imports (emlx, etc.)
+	importCount := 0
+	for _, imp := range cfg.ScheduledImports() {
+		key := "import:" + imp.Identifier
+		if err := sched.AddAccount(key, imp.Schedule); err != nil {
+			logger.Error("failed to schedule import", "identifier", imp.Identifier, "error", err)
+		} else {
+			importCount++
+			logger.Info("scheduled import", "type", imp.Type, "identifier", imp.Identifier, "path", imp.Path)
+		}
+	}
+
+	if count == 0 && importCount == 0 {
+		logger.Warn("no accounts or imports scheduled - add entries to config.toml")
 	}
 
 	// Set up signal handling for graceful shutdown
@@ -174,7 +205,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	fmt.Printf("msgvault daemon started\n")
 	fmt.Printf("  Web UI:  http://%s/\n", serverAddr)
 	fmt.Printf("  API:     http://%s/api/v1\n", serverAddr)
-	fmt.Printf("  Scheduled accounts: %d\n", count)
+	fmt.Printf("  Scheduled syncs:    %d\n", count)
+	fmt.Printf("  Scheduled imports:  %d\n", importCount)
 	fmt.Printf("  Data directory: %s\n", cfg.Data.DataDir)
 	fmt.Println()
 	fmt.Println("Press Ctrl+C to stop.")
@@ -268,6 +300,47 @@ func (a *schedulerAdapter) IsRunning() bool {
 
 func (a *schedulerAdapter) Status() []api.AccountStatus {
 	return a.scheduler.Status()
+}
+
+// runScheduledImport performs an emlx import for a scheduled import source.
+func runScheduledImport(ctx context.Context, s *store.Store, mailDir, identifier, attachmentsDir string) error {
+	logger.Info("starting scheduled import", "identifier", identifier, "path", mailDir)
+	startTime := time.Now()
+
+	summary, err := importer.ImportEmlxDir(ctx, s, mailDir, importer.EmlxImportOptions{
+		SourceType:         "apple-mail",
+		Identifier:         identifier,
+		CheckpointInterval: 200,
+		AttachmentsDir:     attachmentsDir,
+		Logger:             logger,
+	})
+	if err != nil {
+		return fmt.Errorf("emlx import failed: %w", err)
+	}
+
+	logger.Info("import completed",
+		"identifier", identifier,
+		"messages_added", summary.MessagesAdded,
+		"messages_skipped", summary.MessagesSkipped,
+		"duration", time.Since(startTime),
+	)
+
+	// Build cache after import if there were new messages
+	if summary.MessagesAdded > 0 {
+		logger.Info("building cache after import", "identifier", identifier)
+		result, err := buildCache(cfg.DatabaseDSN(), cfg.AnalyticsDir(), false)
+		if err != nil {
+			logger.Error("cache build failed", "error", err)
+		} else if !result.Skipped {
+			logger.Info("cache build completed", "exported", result.ExportedCount)
+		}
+	}
+
+	if summary.HardErrors {
+		return fmt.Errorf("import completed with %d errors", summary.Errors)
+	}
+
+	return nil
 }
 
 // runScheduledSync performs an incremental sync for a scheduled account.
