@@ -399,7 +399,8 @@ func (s *Server) handleSchedulerStatus(w http.ResponseWriter, r *http.Request) {
 // tokenFile represents the on-disk token format (matches oauth package).
 type tokenFile struct {
 	oauth2.Token
-	Scopes []string `json:"scopes,omitempty"`
+	Scopes   []string `json:"scopes,omitempty"`
+	ClientID string   `json:"client_id,omitempty"`
 }
 
 // handleUploadToken accepts a token from a remote client and saves it.

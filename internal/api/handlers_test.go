@@ -414,6 +414,55 @@ func TestHandleUploadToken(t *testing.T) {
 	}
 }
 
+func TestHandleUploadToken_PreservesClientID(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "msgvault-test-tokens-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{APIPort: 8080},
+		Data:   config.DataConfig{DataDir: tmpDir},
+	}
+	sched := newMockScheduler()
+	srv := NewServer(cfg, nil, sched, testLogger())
+
+	tokenJSON := `{
+		"access_token": "ya29.test",
+		"token_type": "Bearer",
+		"refresh_token": "1//test-refresh-token",
+		"client_id": "myapp.apps.googleusercontent.com"
+	}`
+
+	req := httptest.NewRequest("POST", "/api/v1/auth/token/test@gmail.com", strings.NewReader(tokenJSON))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	// Read back the saved token and verify client_id was preserved
+	tokenPath := filepath.Join(tmpDir, "tokens", "test@gmail.com.json")
+	data, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatalf("read token file: %v", err)
+	}
+
+	var saved struct {
+		ClientID string `json:"client_id"`
+	}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("unmarshal saved token: %v", err)
+	}
+	if saved.ClientID != "myapp.apps.googleusercontent.com" {
+		t.Errorf("client_id = %q, want myapp.apps.googleusercontent.com", saved.ClientID)
+	}
+}
+
 func TestHandleUploadTokenInvalidJSON(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "msgvault-test-tokens-*")
 	if err != nil {
