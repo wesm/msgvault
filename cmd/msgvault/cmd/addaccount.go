@@ -121,16 +121,10 @@ Examples:
 			}
 		}
 
-		// For binding changes, delete the old token so we re-auth
-		// with the new app's credentials.
-		if bindingChanged && oauthMgr.HasToken(email) {
-			fmt.Printf("Switching OAuth app for %s to %q. Re-authorizing...\n", email, oauthAppName)
-			if err := oauthMgr.DeleteToken(email); err != nil {
-				return fmt.Errorf("delete existing token: %w", err)
-			}
-		}
-
 		// Check if already authorized (skip if binding changed or --force)
+		// For binding changes, we don't delete the old token — Authorize
+		// atomically writes the new token on success and leaves the old
+		// one intact if auth fails or is cancelled.
 		if !bindingChanged && !forceReauth && oauthMgr.HasToken(email) {
 			source, err := s.GetOrCreateSource("gmail", email)
 			if err != nil {

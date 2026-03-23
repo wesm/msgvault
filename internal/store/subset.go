@@ -240,6 +240,8 @@ func copyData(tx *sql.Tx, rowCount int) (*CopyResult, error) {
 		return nil, fmt.Errorf("select messages: %w", err)
 	}
 
+	// Try copying with oauth_app column first; fall back to NULL
+	// for source databases created before this column existed.
 	res, err := tx.Exec(`
 		INSERT INTO sources
 			(id, source_type, identifier, display_name, google_user_id,
@@ -253,6 +255,21 @@ func copyData(tx *sql.Tx, rowCount int) (*CopyResult, error) {
 			SELECT DISTINCT source_id FROM src.messages
 			WHERE id IN (SELECT id FROM selected_messages)
 		)`)
+	if err != nil && isSQLiteError(err, "no such column") {
+		res, err = tx.Exec(`
+			INSERT INTO sources
+				(id, source_type, identifier, display_name, google_user_id,
+				 last_sync_at, sync_cursor, sync_config, oauth_app,
+				 created_at, updated_at)
+			SELECT id, source_type, identifier, display_name, google_user_id,
+			       last_sync_at, sync_cursor, sync_config, NULL,
+			       created_at, updated_at
+			FROM src.sources
+			WHERE id IN (
+				SELECT DISTINCT source_id FROM src.messages
+				WHERE id IN (SELECT id FROM selected_messages)
+			)`)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("copy sources: %w", err)
 	}
