@@ -134,18 +134,19 @@ Examples:
 			}
 		}
 
-		// Check if already authorized (skip if binding changed or --force)
-		// For binding changes, we don't delete the old token — Authorize
-		// atomically writes the new token on success and leaves the old
-		// one intact if auth fails or is cancelled.
-		if !bindingChanged && !forceReauth && oauthMgr.HasToken(email) {
+		// If a valid token exists and we're not forcing re-auth,
+		// register/update the source and binding without re-authing.
+		// This handles: initial setup (token exists from another machine),
+		// binding changes with existing token (headless rebind), and
+		// the normal "already authorized" case.
+		if !forceReauth && oauthMgr.HasToken(email) {
 			source, err := s.GetOrCreateSource("gmail", email)
 			if err != nil {
 				return fmt.Errorf("create source: %w", err)
 			}
-			// Set oauth_app on new source if specified
-			if resolvedApp != "" && !source.OAuthApp.Valid {
-				newApp := sql.NullString{String: resolvedApp, Valid: true}
+			// Update oauth_app binding if it changed or was newly specified
+			if bindingChanged || (resolvedApp != "" && !source.OAuthApp.Valid) {
+				newApp := sql.NullString{String: resolvedApp, Valid: resolvedApp != ""}
 				if err := s.UpdateSourceOAuthApp(source.ID, newApp); err != nil {
 					return fmt.Errorf("update oauth app binding: %w", err)
 				}
@@ -155,7 +156,11 @@ Examples:
 					return fmt.Errorf("set display name: %w", err)
 				}
 			}
-			fmt.Printf("Account %s is already authorized.\n", email)
+			if bindingChanged {
+				fmt.Printf("Account %s: OAuth app binding updated to %q.\n", email, resolvedApp)
+			} else {
+				fmt.Printf("Account %s is already authorized.\n", email)
+			}
 			fmt.Println("Next step: msgvault sync-full", email)
 			return nil
 		}

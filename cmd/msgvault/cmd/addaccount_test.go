@@ -65,10 +65,10 @@ func TestFindGmailSource(t *testing.T) {
 	}
 }
 
-// TestAddAccount_RebindPreservesTokenOnFailure verifies that when
-// switching OAuth app binding fails (auth cancelled/failed), the
-// original token file and DB binding remain intact.
-func TestAddAccount_RebindPreservesTokenOnFailure(t *testing.T) {
+// TestAddAccount_RebindWithExistingToken verifies that switching
+// OAuth app binding with an existing token updates the binding
+// without re-authorizing (headless rebind scenario).
+func TestAddAccount_RebindWithExistingToken(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "msgvault.db")
 
@@ -107,7 +107,7 @@ func TestAddAccount_RebindPreservesTokenOnFailure(t *testing.T) {
 		t.Fatalf("write token: %v", err)
 	}
 
-	// Write fake client secrets for both apps
+	// Write fake client secrets
 	secretsPath := filepath.Join(tmpDir, "secret.json")
 	if err := os.WriteFile(
 		secretsPath, []byte(fakeClientSecrets), 0600,
@@ -115,7 +115,6 @@ func TestAddAccount_RebindPreservesTokenOnFailure(t *testing.T) {
 		t.Fatalf("write secrets: %v", err)
 	}
 
-	// Save/restore globals
 	savedCfg := cfg
 	savedLogger := logger
 	savedOAuthApp := oauthAppName
@@ -137,11 +136,6 @@ func TestAddAccount_RebindPreservesTokenOnFailure(t *testing.T) {
 	}
 	logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-	// Use a pre-cancelled context so Authorize fails immediately
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	// Build a command with --oauth-app flag set
 	testCmd := &cobra.Command{
 		Use:  "add-account <email>",
 		Args: cobra.ExactArgs(1),
@@ -158,17 +152,18 @@ func TestAddAccount_RebindPreservesTokenOnFailure(t *testing.T) {
 		"add-account", "user@acme.com", "--oauth-app", "new-app",
 	})
 
-	err = root.ExecuteContext(ctx)
-	if err == nil {
-		t.Fatal("expected error from cancelled auth")
+	// Should succeed without opening a browser — token exists
+	err = root.Execute()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify token file still exists
+	// Token file should still exist
 	if _, statErr := os.Stat(tokenPath); os.IsNotExist(statErr) {
-		t.Error("token file was deleted despite auth failure")
+		t.Error("token file was deleted during rebind")
 	}
 
-	// Verify DB binding is still "old-app"
+	// Binding should be updated to "new-app"
 	s2, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
@@ -180,7 +175,107 @@ func TestAddAccount_RebindPreservesTokenOnFailure(t *testing.T) {
 		t.Fatalf("find source: %v", err)
 	}
 	if src == nil {
-		t.Fatal("source not found after failed rebind")
+		t.Fatal("source not found after rebind")
+	}
+	if !src.OAuthApp.Valid || src.OAuthApp.String != "new-app" {
+		t.Errorf("oauth_app = %v, want new-app", src.OAuthApp)
+	}
+}
+
+// TestAddAccount_ForceRebindPreservesBindingOnFailure verifies that
+// --force --oauth-app with a cancelled auth does not update the binding.
+func TestAddAccount_ForceRebindPreservesBindingOnFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "msgvault.db")
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := s.InitSchema(); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+	source, err := s.GetOrCreateSource("gmail", "user@acme.com")
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	err = s.UpdateSourceOAuthApp(source.ID, sql.NullString{
+		String: "old-app", Valid: true,
+	})
+	if err != nil {
+		t.Fatalf("set oauth_app: %v", err)
+	}
+	_ = s.Close()
+
+	secretsPath := filepath.Join(tmpDir, "secret.json")
+	if err := os.WriteFile(
+		secretsPath, []byte(fakeClientSecrets), 0600,
+	); err != nil {
+		t.Fatalf("write secrets: %v", err)
+	}
+
+	savedCfg := cfg
+	savedLogger := logger
+	savedOAuthApp := oauthAppName
+	savedForce := forceReauth
+	defer func() {
+		cfg = savedCfg
+		logger = savedLogger
+		oauthAppName = savedOAuthApp
+		forceReauth = savedForce
+	}()
+
+	cfg = &config.Config{
+		HomeDir: tmpDir,
+		Data:    config.DataConfig{DataDir: tmpDir},
+		OAuth: config.OAuthConfig{
+			Apps: map[string]config.OAuthApp{
+				"old-app": {ClientSecrets: secretsPath},
+				"new-app": {ClientSecrets: secretsPath},
+			},
+		},
+	}
+	logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	// Pre-cancel context so Authorize fails immediately
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	testCmd := &cobra.Command{
+		Use:  "add-account <email>",
+		Args: cobra.ExactArgs(1),
+		RunE: addAccountCmd.RunE,
+	}
+	testCmd.Flags().StringVar(&oauthAppName, "oauth-app", "", "")
+	testCmd.Flags().BoolVar(&headless, "headless", false, "")
+	testCmd.Flags().BoolVar(&forceReauth, "force", false, "")
+	testCmd.Flags().StringVar(&accountDisplayName, "display-name", "", "")
+
+	root := newTestRootCmd()
+	root.AddCommand(testCmd)
+	root.SetArgs([]string{
+		"add-account", "user@acme.com",
+		"--force", "--oauth-app", "new-app",
+	})
+
+	err = root.ExecuteContext(ctx)
+	if err == nil {
+		t.Fatal("expected error from cancelled auth")
+	}
+
+	// Binding should still be "old-app"
+	s2, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer func() { _ = s2.Close() }()
+
+	src, err := findGmailSource(s2, "user@acme.com")
+	if err != nil {
+		t.Fatalf("find source: %v", err)
+	}
+	if src == nil {
+		t.Fatal("source not found")
 	}
 	if !src.OAuthApp.Valid || src.OAuthApp.String != "old-app" {
 		t.Errorf(

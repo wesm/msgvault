@@ -44,6 +44,10 @@ Examples:
 		}
 		defer s.Close()
 
+		if err := s.InitSchema(); err != nil {
+			return fmt.Errorf("init schema: %w", err)
+		}
+
 		// Look up source to get OAuth app binding
 		appName := ""
 		src, srcErr := findGmailSource(s, email)
