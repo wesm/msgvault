@@ -33,12 +33,50 @@ func TestIdentifier(t *testing.T) {
 			cfg:  Config{Host: "mail.example.com", Username: "user"},
 			want: "imap://user@mail.example.com:143",
 		},
+		{
+			name: "IPv6 host unbracketed",
+			cfg:  Config{Host: "::1", Port: 1993, Username: "user"},
+			want: "imap://user@[::1]:1993",
+		},
+		{
+			name: "IPv6 host bracketed",
+			cfg:  Config{Host: "[::1]", Port: 1993, Username: "user"},
+			want: "imap://user@[::1]:1993",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := tt.cfg.Identifier()
 			if got != tt.want {
 				t.Errorf("Identifier() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAddr_IPv6(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{
+			name: "unbracketed",
+			cfg:  Config{Host: "::1", Port: 1993},
+			want: "[::1]:1993",
+		},
+		{
+			name: "bracketed",
+			cfg:  Config{Host: "[::1]", Port: 1993},
+			want: "[::1]:1993",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.cfg.Addr()
+			if got != tt.want {
+				t.Errorf("Addr() = %q, want %q", got, tt.want)
 			}
 		})
 	}

@@ -4,8 +4,10 @@ package imap
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 // Config holds connection settings for an IMAP server.
@@ -27,7 +29,7 @@ func (c *Config) Addr() string {
 			port = 143
 		}
 	}
-	return fmt.Sprintf("%s:%d", c.Host, port)
+	return net.JoinHostPort(normalizeHost(c.Host), strconv.Itoa(port))
 }
 
 // Identifier returns a canonical string like "imaps://user@host:port".
@@ -48,7 +50,18 @@ func (c *Config) Identifier() string {
 			port = 143
 		}
 	}
-	return fmt.Sprintf("%s://%s@%s:%d", scheme, url.PathEscape(c.Username), c.Host, port)
+	return fmt.Sprintf(
+		"%s://%s@%s",
+		scheme,
+		url.PathEscape(c.Username),
+		net.JoinHostPort(normalizeHost(c.Host), strconv.Itoa(port)),
+	)
+}
+
+// normalizeHost strips surrounding IPv6 brackets so callers can pass either
+// "::1" or "[::1]" and still get a valid host:port from net.JoinHostPort.
+func normalizeHost(host string) string {
+	return strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
 }
 
 // ToJSON serializes the config to JSON.
