@@ -360,7 +360,7 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 		if err != nil {
 			slog.Error("search failed", "error", err, "query", queryStr, "mode", mode)
-			http.Error(w, "Search failed", http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("Search failed: %v", err), http.StatusInternalServerError)
 			return
 		}
 

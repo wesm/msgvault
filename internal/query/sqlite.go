@@ -1120,16 +1120,15 @@ func (e *SQLiteEngine) buildSearchQueryParts(ctx context.Context, q *search.Quer
 		if e.hasFTSTable(ctx) {
 			// Use FTS5 for efficient full-text search
 			ftsJoin = "JOIN messages_fts fts ON fts.rowid = m.id"
-			// Build FTS match expression
+			// Build FTS match expression. Every term is double-quoted so
+			// FTS5 treats it as a tokenized phrase instead of parsing for
+			// query operators (e.g. "-" as NOT, ":" as column filter).
+			// Without quoting, "Re-Enrollment" is parsed as Re NOT
+			// Enrollment, which errors with "no such column: Enrollment".
 			ftsTerms := make([]string, len(q.TextTerms))
 			for i, term := range q.TextTerms {
-				// Escape special characters for FTS5
 				term = strings.ReplaceAll(term, "\"", "\"\"")
-				if strings.Contains(term, " ") {
-					ftsTerms[i] = fmt.Sprintf("\"%s\"", term)
-				} else {
-					ftsTerms[i] = term
-				}
+				ftsTerms[i] = fmt.Sprintf("\"%s\"", term)
 			}
 			conditions = append(conditions, "messages_fts MATCH ?")
 			args = append(args, strings.Join(ftsTerms, " "))

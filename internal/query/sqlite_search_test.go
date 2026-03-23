@@ -133,6 +133,66 @@ func TestSearch_WithFTS(t *testing.T) {
 	}
 }
 
+// TestSearch_FTS_HyphenatedTerms verifies that search terms containing hyphens
+// (e.g. "Re-Enrollment") are properly quoted for FTS5 so they're treated as
+// phrase queries, not misinterpreted as FTS5 operators (- = NOT, : = column filter).
+func TestSearch_FTS_HyphenatedTerms(t *testing.T) {
+	env := newTestEnv(t)
+	env.EnableFTS()
+
+	// Insert a message with a hyphenated subject
+	_, err := env.DB.Exec(`
+		INSERT INTO messages (id, conversation_id, source_id, source_message_id, message_type, sent_at, subject, snippet, size_estimate, has_attachments, attachment_count)
+		VALUES (100, 1, 1, 'msg-hyph', 'email', '2024-06-01 10:00:00', 'Re-Enrollment Notice', 'Please re-enroll', 500, 0, 0)
+	`)
+	if err != nil {
+		t.Fatalf("insert message: %v", err)
+	}
+	_, err = env.DB.Exec(`
+		INSERT INTO messages_fts (rowid, message_id, subject, body, from_addr, to_addr, cc_addr)
+		VALUES (100, 100, 'Re-Enrollment Notice', 'Your enrollment needs renewal', 'admin@school.edu', 'parent@gmail.com', '')
+	`)
+	if err != nil {
+		t.Fatalf("insert FTS: %v", err)
+	}
+	// Re-create engine to clear FTS cache
+	env.Engine = NewSQLiteEngine(env.DB)
+
+	tests := []struct {
+		name      string
+		terms     []string
+		wantMin   int
+		wantMatch string
+	}{
+		{"hyphenated term", []string{"Re-Enrollment"}, 1, "Re-Enrollment Notice"},
+		{"plain term from hyphenated", []string{"Enrollment"}, 1, "Re-Enrollment Notice"},
+		{"quoted phrase with hyphen", []string{"Re-Enrollment Notice"}, 1, "Re-Enrollment Notice"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q := &search.Query{TextTerms: tc.terms}
+			results, err := env.Engine.Search(env.Ctx, q, 100, 0)
+			if err != nil {
+				t.Fatalf("Search(%v): %v", tc.terms, err)
+			}
+			if len(results) < tc.wantMin {
+				t.Errorf("Search(%v): got %d results, want at least %d", tc.terms, len(results), tc.wantMin)
+			}
+			found := false
+			for _, r := range results {
+				if r.Subject == tc.wantMatch {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("Search(%v): expected result with subject %q not found", tc.terms, tc.wantMatch)
+			}
+		})
+	}
+}
+
 func TestHasFTSTable(t *testing.T) {
 	env := newTestEnv(t)
 
