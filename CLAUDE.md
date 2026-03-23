@@ -6,6 +6,8 @@ When a task involves multiple steps (e.g., implement + commit + PR), complete AL
 
 Always commit after every turn. Don't wait for the user to ask — if you made changes, commit them before responding.
 
+PR descriptions should be concise and changelog-oriented: what changed, why, and how to use it. Do not include test plans, design decisions, or implementation details — those belong in specs and commit messages.
+
 ## Project Overview
 
 msgvault is an offline Gmail archive tool that exports and stores email data locally with full-text search capabilities. The goal is to archive 20+ years of Gmail data from multiple accounts, make it searchable, and eventually delete emails from Gmail once safely archived.
