@@ -65,6 +65,100 @@ func TestFindGmailSource(t *testing.T) {
 	}
 }
 
+// TestAddAccount_InheritedBindingValidatesToken verifies that re-running
+// add-account without --oauth-app on a named-app account validates the
+// token's client_id against the inherited binding.
+func TestAddAccount_InheritedBindingValidatesToken(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		clientID  string
+		wantError bool
+	}{
+		{"matching token reused", "test.apps.googleusercontent.com", false},
+		{"mismatched token rejected", "wrong.apps.googleusercontent.com", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			dbPath := filepath.Join(tmpDir, "msgvault.db")
+
+			s, err := store.Open(dbPath)
+			if err != nil {
+				t.Fatalf("open store: %v", err)
+			}
+			if err := s.InitSchema(); err != nil {
+				t.Fatalf("init schema: %v", err)
+			}
+			source, err := s.GetOrCreateSource("gmail", "user@acme.com")
+			if err != nil {
+				t.Fatalf("create source: %v", err)
+			}
+			err = s.UpdateSourceOAuthApp(source.ID, sql.NullString{String: "acme", Valid: true})
+			if err != nil {
+				t.Fatalf("set oauth_app: %v", err)
+			}
+			_ = s.Close()
+
+			tokensDir := filepath.Join(tmpDir, "tokens")
+			if err := os.MkdirAll(tokensDir, 0700); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			tokenData, _ := json.Marshal(map[string]string{
+				"access_token":  "fake",
+				"refresh_token": "fake",
+				"token_type":    "Bearer",
+				"client_id":     tc.clientID,
+			})
+			if err := os.WriteFile(filepath.Join(tokensDir, "user@acme.com.json"), tokenData, 0600); err != nil {
+				t.Fatalf("write token: %v", err)
+			}
+
+			secretsPath := filepath.Join(tmpDir, "secret.json")
+			if err := os.WriteFile(secretsPath, []byte(fakeClientSecrets), 0600); err != nil {
+				t.Fatalf("write secrets: %v", err)
+			}
+
+			savedCfg, savedLogger, savedOAuthApp := cfg, logger, oauthAppName
+			defer func() { cfg, logger, oauthAppName = savedCfg, savedLogger, savedOAuthApp }()
+
+			cfg = &config.Config{
+				HomeDir: tmpDir,
+				Data:    config.DataConfig{DataDir: tmpDir},
+				OAuth: config.OAuthConfig{
+					Apps: map[string]config.OAuthApp{
+						"acme": {ClientSecrets: secretsPath},
+					},
+				},
+			}
+			logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			testCmd := &cobra.Command{
+				Use: "add-account <email>", Args: cobra.ExactArgs(1),
+				RunE: addAccountCmd.RunE,
+			}
+			testCmd.Flags().StringVar(&oauthAppName, "oauth-app", "", "")
+			testCmd.Flags().BoolVar(&headless, "headless", false, "")
+			testCmd.Flags().BoolVar(&forceReauth, "force", false, "")
+			testCmd.Flags().StringVar(&accountDisplayName, "display-name", "", "")
+
+			root := newTestRootCmd()
+			root.AddCommand(testCmd)
+			// No --oauth-app flag: binding inherited from DB
+			root.SetArgs([]string{"add-account", "user@acme.com"})
+
+			err = root.ExecuteContext(ctx)
+			if tc.wantError && err == nil {
+				t.Fatal("expected error for mismatched token")
+			}
+			if !tc.wantError && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 // TestAddAccount_RebindWithExistingToken verifies that switching
 // OAuth app binding with an existing token updates the binding
 // without re-authorizing (headless rebind scenario).
