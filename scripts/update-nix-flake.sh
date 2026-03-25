@@ -46,7 +46,8 @@ if [ -n "$VERSION_TAG" ]; then
         exit 1
     fi
     echo "==> Updating version to $VERSION..."
-    sed -i.bak -E "s/version = \"[^\"]+\"/version = \"$VERSION\"/" flake.nix
+    # Only replace the msgvault version (after pname), not the Go version
+    sed -i.bak -E '/pname = "msgvault"/,/version = "[^"]+"/ s/version = "[^"]+"/version = "'"$VERSION"'"/' flake.nix
     rm -f flake.nix.bak
 fi
 
