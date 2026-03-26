@@ -174,6 +174,19 @@ Examples:
 			}
 		}
 
+		// Rebuild analytics cache if requested and stale.
+		if syncRebuildCache {
+			analyticsDir := cfg.AnalyticsDir()
+			if staleness := cacheNeedsBuild(dbPath, analyticsDir); staleness.NeedsBuild {
+				result, cacheErr := buildCache(dbPath, analyticsDir, staleness.FullRebuild)
+				if cacheErr != nil {
+					logger.Warn("cache build failed", "error", cacheErr)
+				} else if !result.Skipped {
+					logger.Info("cache build completed", "exported", result.ExportedCount)
+				}
+			}
+		}
+
 		if len(syncErrors) > 0 {
 			fmt.Println()
 			fmt.Println("Errors:")
@@ -264,6 +277,9 @@ func runIncrementalSync(ctx context.Context, s *store.Store, getOAuthMgr func(st
 	return nil
 }
 
+var syncRebuildCache bool
+
 func init() {
+	syncIncrementalCmd.Flags().BoolVar(&syncRebuildCache, "rebuild-cache", false, "Rebuild analytics cache after sync")
 	rootCmd.AddCommand(syncIncrementalCmd)
 }
