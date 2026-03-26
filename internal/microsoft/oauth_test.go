@@ -1,9 +1,8 @@
 package microsoft
 
 import (
+	"encoding/base64"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"testing"
 
@@ -113,24 +112,21 @@ func TestSanitizeEmail(t *testing.T) {
 	}
 }
 
+// makeIDToken builds a minimal unsigned JWT with the given claims.
+// Only used in tests — the signature is not verified at runtime.
+func makeIDToken(claims map[string]any) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+	payload, _ := json.Marshal(claims)
+	body := base64.RawURLEncoding.EncodeToString(payload)
+	return header + "." + body + ".fake-sig"
+}
+
 func TestResolveTokenEmail_Match(t *testing.T) {
-	// Mock MS Graph /me endpoint
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]string{
-			"mail":              "user@example.com",
-			"userPrincipalName": "user@example.com",
-		})
-	}))
-	defer server.Close()
+	m := &Manager{clientID: "test-client", tenantID: "common", tokensDir: t.TempDir()}
+	idToken := makeIDToken(map[string]any{"email": "user@example.com"})
+	token := (&oauth2.Token{AccessToken: "test-token", TokenType: "Bearer"}).
+		WithExtra(map[string]any{"id_token": idToken})
 
-	m := &Manager{
-		clientID:  "test-client",
-		tenantID:  "common",
-		tokensDir: t.TempDir(),
-		graphURL:  server.URL,
-	}
-
-	token := &oauth2.Token{AccessToken: "test-token", TokenType: "Bearer"}
 	actual, err := m.resolveTokenEmail(t.Context(), "user@example.com", token)
 	if err != nil {
 		t.Fatal(err)
@@ -141,50 +137,27 @@ func TestResolveTokenEmail_Match(t *testing.T) {
 }
 
 func TestResolveTokenEmail_Mismatch(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]string{
-			"mail":              "other@example.com",
-			"userPrincipalName": "other@example.com",
-		})
-	}))
-	defer server.Close()
+	m := &Manager{clientID: "test-client", tenantID: "common", tokensDir: t.TempDir()}
+	idToken := makeIDToken(map[string]any{"email": "other@example.com"})
+	token := (&oauth2.Token{AccessToken: "test-token", TokenType: "Bearer"}).
+		WithExtra(map[string]any{"id_token": idToken})
 
-	m := &Manager{
-		clientID:  "test-client",
-		tenantID:  "common",
-		tokensDir: t.TempDir(),
-		graphURL:  server.URL,
-	}
-
-	token := &oauth2.Token{AccessToken: "test-token", TokenType: "Bearer"}
 	_, err := m.resolveTokenEmail(t.Context(), "user@example.com", token)
 	if err == nil {
 		t.Fatal("expected error for mismatch")
 	}
-	_, ok := err.(*TokenMismatchError)
-	if !ok {
+	if _, ok := err.(*TokenMismatchError); !ok {
 		t.Errorf("expected *TokenMismatchError, got %T: %v", err, err)
 	}
 }
 
 func TestResolveTokenEmail_FallbackToUPN(t *testing.T) {
-	// Some accounts have empty mail, only userPrincipalName
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]string{
-			"mail":              "",
-			"userPrincipalName": "user@example.com",
-		})
-	}))
-	defer server.Close()
+	// Some accounts omit "email" and only have "preferred_username".
+	m := &Manager{clientID: "test-client", tenantID: "common", tokensDir: t.TempDir()}
+	idToken := makeIDToken(map[string]any{"preferred_username": "user@example.com"})
+	token := (&oauth2.Token{AccessToken: "test-token", TokenType: "Bearer"}).
+		WithExtra(map[string]any{"id_token": idToken})
 
-	m := &Manager{
-		clientID:  "test-client",
-		tenantID:  "common",
-		tokensDir: t.TempDir(),
-		graphURL:  server.URL,
-	}
-
-	token := &oauth2.Token{AccessToken: "test-token", TokenType: "Bearer"}
 	actual, err := m.resolveTokenEmail(t.Context(), "user@example.com", token)
 	if err != nil {
 		t.Fatal(err)

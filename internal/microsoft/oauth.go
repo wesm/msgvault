@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -16,7 +15,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/wesm/msgvault/internal/fileutil"
 	"golang.org/x/oauth2"
@@ -26,9 +24,8 @@ const (
 	DefaultTenant = "common"
 	ScopeIMAP     = "https://outlook.office365.com/IMAP.AccessAsUser.All"
 
-	redirectPort    = "8089"
-	callbackPath    = "/callback/microsoft"
-	graphMeEndpoint = "https://graph.microsoft.com/v1.0/me"
+	redirectPort = "8089"
+	callbackPath = "/callback/microsoft"
 )
 
 var Scopes = []string{
@@ -36,7 +33,6 @@ var Scopes = []string{
 	"offline_access",
 	"openid",
 	"email",
-	"User.Read", // required for MS Graph /me to validate email
 }
 
 type TokenMismatchError struct {
@@ -53,7 +49,6 @@ type Manager struct {
 	tenantID  string
 	tokensDir string
 	logger    *slog.Logger
-	graphURL  string // override for testing
 
 	browserFlowFn func(ctx context.Context, email string) (*oauth2.Token, error)
 }
@@ -203,53 +198,52 @@ func (m *Manager) browserFlow(ctx context.Context, email string) (*oauth2.Token,
 	}
 }
 
-const resolveTimeout = 10 * time.Second
-
+// resolveTokenEmail extracts the authenticated email from the ID token
+// returned during the authorization code exchange. This avoids a separate
+// MS Graph API call, which would fail because the access token is scoped
+// to outlook.office365.com, not graph.microsoft.com.
 func (m *Manager) resolveTokenEmail(ctx context.Context, email string, token *oauth2.Token) (string, error) {
-	valCtx, cancel := context.WithTimeout(ctx, resolveTimeout)
-	defer cancel()
-
-	cfg := m.oauthConfig()
-	ts := cfg.TokenSource(valCtx, token)
-	client := oauth2.NewClient(valCtx, ts)
-
-	graphURL := m.graphURL
-	if graphURL == "" {
-		graphURL = graphMeEndpoint
+	idToken, _ := token.Extra("id_token").(string)
+	if idToken == "" {
+		return "", fmt.Errorf("no id_token in authorization response")
 	}
-	req, err := http.NewRequestWithContext(valCtx, "GET", graphURL, nil)
+	actual, err := extractEmailFromIDToken(idToken)
 	if err != nil {
-		return "", fmt.Errorf("create graph request: %w", err)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("verify Microsoft account: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("MS Graph returned HTTP %d: %s", resp.StatusCode, string(body))
-	}
-
-	var profile struct {
-		Mail              string `json:"mail"`
-		UserPrincipalName string `json:"userPrincipalName"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
-		return "", fmt.Errorf("parse MS Graph profile: %w", err)
-	}
-
-	actual := profile.Mail
-	if actual == "" {
-		actual = profile.UserPrincipalName
+		return "", fmt.Errorf("extract email from ID token: %w", err)
 	}
 	if !strings.EqualFold(actual, email) {
 		return "", &TokenMismatchError{Expected: email, Actual: actual}
 	}
-
 	return actual, nil
+}
+
+// extractEmailFromIDToken decodes the JWT payload and returns the email
+// (from the "email" claim, falling back to "preferred_username").
+// The signature is not verified — we trust the token because it was
+// received directly from Microsoft over HTTPS.
+func extractEmailFromIDToken(idToken string) (string, error) {
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		return "", fmt.Errorf("invalid ID token format (expected 3 parts, got %d)", len(parts))
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("decode ID token payload: %w", err)
+	}
+	var claims struct {
+		Email             string `json:"email"`
+		PreferredUsername string `json:"preferred_username"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", fmt.Errorf("parse ID token claims: %w", err)
+	}
+	if claims.Email != "" {
+		return claims.Email, nil
+	}
+	if claims.PreferredUsername != "" {
+		return claims.PreferredUsername, nil
+	}
+	return "", fmt.Errorf("no email or preferred_username claim in ID token")
 }
 
 // --- Token storage ---
