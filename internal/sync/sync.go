@@ -55,6 +55,7 @@ func DefaultOptions() *Options {
 	return &Options{
 		BatchSize:          10,
 		CheckpointInterval: 200,
+		SourceType:         "gmail",
 	}
 }
 
