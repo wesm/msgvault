@@ -174,16 +174,18 @@ Examples:
 			}
 		}
 
-		// Rebuild analytics cache if requested and stale.
+		// Rebuild analytics cache if requested.
 		if syncRebuildCache {
 			analyticsDir := cfg.AnalyticsDir()
-			if staleness := cacheNeedsBuild(dbPath, analyticsDir); staleness.NeedsBuild {
-				result, cacheErr := buildCache(dbPath, analyticsDir, staleness.FullRebuild)
-				if cacheErr != nil {
-					logger.Warn("cache build failed", "error", cacheErr)
-				} else if !result.Skipped {
-					logger.Info("cache build completed", "exported", result.ExportedCount)
-				}
+			fullRebuild := false
+			if staleness := cacheNeedsBuild(dbPath, analyticsDir); staleness.FullRebuild {
+				fullRebuild = true
+			}
+			result, cacheErr := buildCache(dbPath, analyticsDir, fullRebuild)
+			if cacheErr != nil {
+				logger.Warn("cache build failed", "error", cacheErr)
+			} else if !result.Skipped {
+				logger.Info("cache build completed", "exported", result.ExportedCount)
 			}
 		}
 
