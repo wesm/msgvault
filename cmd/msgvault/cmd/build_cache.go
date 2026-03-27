@@ -420,16 +420,17 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 	// Count exported messages and verify Parquet files actually exist
 	var exportedCount int64
 	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM read_parquet('%s/**/*.parquet', hive_partitioning=true)", escapedMessagesDir)
+	countQueryOK := true
 	if err := db.QueryRow(countSQL).Scan(&exportedCount); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to count exported messages: %v\n", err)
-		exportedCount = 0
+		fmt.Fprintf(os.Stderr, "Warning: could not verify exported rows: %v\n", err)
+		countQueryOK = false
 	}
 
 	// Only save sync state if Parquet files were actually created.
 	// Without this guard, a failed export writes the state file with the
 	// current max message ID, causing future incremental builds to skip
 	// the rebuild — leaving the cache permanently empty.
-	if exportedCount == 0 && maxID > 0 {
+	if countQueryOK && exportedCount == 0 && maxID > 0 {
 		return nil, fmt.Errorf("export produced 0 parquet rows from %d messages in database; cache state not updated", maxID)
 	}
 
@@ -566,7 +567,9 @@ var cacheStatsCmd = &cobra.Command{
 			attachSQL := fmt.Sprintf(`
 			SELECT COALESCE(SUM(size), 0) FROM read_parquet('%s/attachments/*.parquet')
 			`, escapedDir)
-			_ = db.QueryRow(attachSQL).Scan(&attachmentSize)
+			if err := db.QueryRow(attachSQL).Scan(&attachmentSize); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not read attachment stats: %v\n", err)
+			}
 		}
 
 		fmt.Println("Cache Statistics:")

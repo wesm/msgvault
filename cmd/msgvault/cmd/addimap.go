@@ -223,7 +223,7 @@ func readPasswordInteractive(prompt string, output io.Writer) (string, error) {
 
 func init() {
 	addIMAPCmd.Flags().StringVar(&imapHost, "host", "", "IMAP server hostname (required)")
-	addIMAPCmd.Flags().IntVar(&imapPort, "port", 0, "IMAP server port (default: 993 for TLS, 143 otherwise)")
+	addIMAPCmd.Flags().IntVar(&imapPort, "port", 0, "IMAP server port (default: 993 for TLS, 143 otherwise; matches defaults in internal/microsoft/imap package)")
 	addIMAPCmd.Flags().StringVar(&imapUsername, "username", "", "IMAP username / email address (required)")
 	addIMAPCmd.Flags().BoolVar(&imapNoTLS, "no-tls", false, "Disable TLS (plain connection, not recommended)")
 	addIMAPCmd.Flags().BoolVar(&imapSTARTTLS, "starttls", false, "Use STARTTLS instead of implicit TLS")

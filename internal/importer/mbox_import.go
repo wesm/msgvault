@@ -170,6 +170,12 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 		}
 	}
 
+	failSync := func(msg string) {
+		if fsErr := st.FailSync(syncID, msg); fsErr != nil {
+			log.Warn("failed to record sync failure", "error", fsErr)
+		}
+	}
+
 	// Save an initial checkpoint so the active sync always records which file it's importing,
 	// even if the run is interrupted before the first periodic checkpoint.
 	if err := saveMboxCheckpoint(st, syncID, cpFile, offset, seq, &cp); err != nil {
@@ -183,7 +189,7 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 	if opts.Label != "" {
 		labelID, err := st.EnsureLabel(src.ID, opts.Label, opts.Label, "user")
 		if err != nil {
-			_ = st.FailSync(syncID, err.Error())
+			failSync(err.Error())
 			return nil, fmt.Errorf("ensure label: %w", err)
 		}
 		labelIDs = []int64{labelID}
@@ -192,19 +198,19 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 	// Open file and (if resuming) seek.
 	f, err := os.Open(absPath)
 	if err != nil {
-		_ = st.FailSync(syncID, err.Error())
+		failSync(err.Error())
 		return nil, fmt.Errorf("open mbox: %w", err)
 	}
 	defer f.Close()
 
 	fi, err := f.Stat()
 	if err != nil {
-		_ = st.FailSync(syncID, err.Error())
+		failSync(err.Error())
 		return nil, fmt.Errorf("stat mbox: %w", err)
 	}
 	if offset > fi.Size() {
 		resumeErr := fmt.Errorf("resume offset %d is beyond end of file (size %d) for %q; rerun with --no-resume to start fresh", offset, fi.Size(), absPath)
-		_ = st.FailSync(syncID, resumeErr.Error())
+		failSync(resumeErr.Error())
 		return nil, resumeErr
 	}
 	if offset > 0 && offset == fi.Size() {
@@ -213,18 +219,18 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 
 	if offset > 0 {
 		if _, err := f.Seek(offset, io.SeekStart); err != nil {
-			_ = st.FailSync(syncID, err.Error())
+			failSync(err.Error())
 			return nil, fmt.Errorf("seek mbox: %w", err)
 		}
 	}
 
 	if offset == 0 && cp.MessagesProcessed == 0 {
 		if err := mbox.Validate(f, 8<<20); err != nil {
-			_ = st.FailSync(syncID, err.Error())
+			failSync(err.Error())
 			return summary, err
 		}
 		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			_ = st.FailSync(syncID, err.Error())
+			failSync(err.Error())
 			return nil, fmt.Errorf("seek mbox: %w", err)
 		}
 	}

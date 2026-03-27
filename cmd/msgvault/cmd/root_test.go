@@ -12,7 +12,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/oauth2"
+	"github.com/wesm/msgvault/internal/oauth"
+	extOAuth2 "golang.org/x/oauth2"
 )
 
 func TestErrOAuthNotConfigured(t *testing.T) {
@@ -338,24 +339,24 @@ func TestIsAuthInvalidError(t *testing.T) {
 		},
 		{
 			name: "invalid_grant RetrieveError",
-			err:  &oauth2.RetrieveError{ErrorCode: "invalid_grant"},
+			err:  &extOAuth2.RetrieveError{ErrorCode: "invalid_grant"},
 			want: true,
 		},
 		{
 			name: "other RetrieveError code",
-			err:  &oauth2.RetrieveError{ErrorCode: "invalid_client"},
+			err:  &extOAuth2.RetrieveError{ErrorCode: "invalid_client"},
 			want: false,
 		},
 		{
 			name: "empty ErrorCode RetrieveError",
-			err:  &oauth2.RetrieveError{},
+			err:  &extOAuth2.RetrieveError{},
 			want: false,
 		},
 		{
 			name: "wrapped invalid_grant",
 			err: fmt.Errorf(
 				"refresh token: %w",
-				&oauth2.RetrieveError{ErrorCode: "invalid_grant"},
+				&extOAuth2.RetrieveError{ErrorCode: "invalid_grant"},
 			),
 			want: true,
 		},
@@ -387,7 +388,7 @@ func TestIsAuthInvalidError(t *testing.T) {
 
 // mockReauthorizer implements tokenReauthorizer for testing.
 type mockReauthorizer struct {
-	tokenSourceFn func(ctx context.Context, email string) (oauth2.TokenSource, error)
+	tokenSourceFn func(ctx context.Context, email string) (extOAuth2.TokenSource, error)
 	hasTokenVal   bool
 	authorizeFn   func(ctx context.Context, email string) error
 
@@ -399,7 +400,7 @@ type mockReauthorizer struct {
 	tokenSourceCall int
 }
 
-func (m *mockReauthorizer) TokenSource(ctx context.Context, email string) (oauth2.TokenSource, error) {
+func (m *mockReauthorizer) TokenSource(ctx context.Context, email string) (extOAuth2.TokenSource, error) {
 	m.tokenSourceCall++
 	return m.tokenSourceFn(ctx, email)
 }
@@ -424,15 +425,15 @@ func (m *mockReauthorizer) AuthorizeManual(ctx context.Context, email string) er
 	return nil
 }
 
-// fakeTokenSource implements oauth2.TokenSource for tests.
+// fakeTokenSource implements extOAuth2.TokenSource for tests.
 type fakeTokenSource struct{}
 
-func (fakeTokenSource) Token() (*oauth2.Token, error) {
-	return &oauth2.Token{AccessToken: "fake"}, nil
+func (fakeTokenSource) Token() (*extOAuth2.Token, error) {
+	return &extOAuth2.Token{AccessToken: "fake"}, nil
 }
 
 func TestGetTokenSourceWithReauth(t *testing.T) {
-	invalidGrant := &oauth2.RetrieveError{ErrorCode: "invalid_grant"}
+	invalidGrant := &extOAuth2.RetrieveError{ErrorCode: "invalid_grant"}
 	genericErr := errors.New("transient network error")
 
 	tests := []struct {
@@ -447,7 +448,7 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 		{
 			name: "token valid",
 			mock: &mockReauthorizer{
-				tokenSourceFn: func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+				tokenSourceFn: func(_ context.Context, _ string) (extOAuth2.TokenSource, error) {
 					return fakeTokenSource{}, nil
 				},
 				hasTokenVal: true,
@@ -458,7 +459,7 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 		{
 			name: "no token at all",
 			mock: &mockReauthorizer{
-				tokenSourceFn: func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+				tokenSourceFn: func(_ context.Context, _ string) (extOAuth2.TokenSource, error) {
 					return nil, errors.New("no token")
 				},
 				hasTokenVal: false,
@@ -470,7 +471,7 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 		{
 			name: "transient error, token exists",
 			mock: &mockReauthorizer{
-				tokenSourceFn: func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+				tokenSourceFn: func(_ context.Context, _ string) (extOAuth2.TokenSource, error) {
 					return nil, genericErr
 				},
 				hasTokenVal: true,
@@ -483,7 +484,7 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 			name: "invalid_grant, interactive — manual reauth",
 			mock: func() *mockReauthorizer {
 				m := &mockReauthorizer{hasTokenVal: true}
-				m.tokenSourceFn = func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+				m.tokenSourceFn = func(_ context.Context, _ string) (extOAuth2.TokenSource, error) {
 					if m.tokenSourceCall == 1 {
 						return nil, fmt.Errorf("refresh: %w", invalidGrant)
 					}
@@ -498,7 +499,7 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 		{
 			name: "invalid_grant, non-interactive",
 			mock: &mockReauthorizer{
-				tokenSourceFn: func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+				tokenSourceFn: func(_ context.Context, _ string) (extOAuth2.TokenSource, error) {
 					return nil, invalidGrant
 				},
 				hasTokenVal: true,
@@ -510,7 +511,7 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 		{
 			name: "invalid_grant, reauth fails",
 			mock: &mockReauthorizer{
-				tokenSourceFn: func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+				tokenSourceFn: func(_ context.Context, _ string) (extOAuth2.TokenSource, error) {
 					return nil, invalidGrant
 				},
 				hasTokenVal: true,
@@ -527,7 +528,7 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 			name: "invalid_grant, retry TokenSource fails",
 			mock: func() *mockReauthorizer {
 				m := &mockReauthorizer{hasTokenVal: true}
-				m.tokenSourceFn = func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+				m.tokenSourceFn = func(_ context.Context, _ string) (extOAuth2.TokenSource, error) {
 					if m.tokenSourceCall == 1 {
 						return nil, invalidGrant
 					}
@@ -577,11 +578,44 @@ func TestGetTokenSourceWithReauth(t *testing.T) {
 		})
 	}
 
+	// Verify that when AuthorizeManual returns a TokenMismatchError, the
+	// error message includes recovery instructions for re-adding the account.
+	t.Run("token mismatch error includes recovery instructions", func(t *testing.T) {
+		mismatch := &oauth.TokenMismatchError{
+			Expected: "user@example.com",
+			Actual:   "other@example.com",
+		}
+		mock := &mockReauthorizer{
+			hasTokenVal: true,
+			tokenSourceFn: func(_ context.Context, _ string) (extOAuth2.TokenSource, error) {
+				return nil, invalidGrant
+			},
+			authorizeFn: func(_ context.Context, _ string) error {
+				return mismatch
+			},
+		}
+		_, err := getTokenSourceWithReauth(context.Background(), mock, "user@example.com", true)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		msg := err.Error()
+		for _, want := range []string{"remove-account", "add-account", "primary address"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("error message missing %q: %q", want, msg)
+			}
+		}
+		// Confirm the underlying TokenMismatchError is preserved.
+		var mismatchErr *oauth.TokenMismatchError
+		if !errors.As(err, &mismatchErr) {
+			t.Errorf("expected error to wrap *oauth.TokenMismatchError, got %T: %v", err, err)
+		}
+	})
+
 	// Additional assertion for non-interactive case: verify the error
 	// mentions running from an interactive terminal
 	t.Run("non-interactive error mentions interactive terminal", func(t *testing.T) {
 		mock := &mockReauthorizer{
-			tokenSourceFn: func(_ context.Context, _ string) (oauth2.TokenSource, error) {
+			tokenSourceFn: func(_ context.Context, _ string) (extOAuth2.TokenSource, error) {
 				return nil, invalidGrant
 			},
 			hasTokenVal: true,

@@ -1939,6 +1939,32 @@ func TestBuildCache_RecordsLastCompletedSyncRunID(t *testing.T) {
 	}
 }
 
+// TestBuildCache_ErrorDoesNotWriteStateFile verifies that when buildCache fails,
+// the state file (_last_sync.json) is not written or updated. Without this
+// guard, a failed export could write the current max message ID to the state
+// file, causing future incremental builds to skip the rebuild permanently.
+func TestBuildCache_ErrorDoesNotWriteStateFile(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "msgvault-test-*")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	analyticsDir := filepath.Join(tmpDir, "analytics")
+	stateFile := filepath.Join(analyticsDir, "_last_sync.json")
+
+	// Use a nonexistent DB path to force an error during cache build.
+	_, err = buildCache(filepath.Join(tmpDir, "nonexistent.db"), analyticsDir, false)
+	if err == nil {
+		t.Fatal("expected error from nonexistent DB, got nil")
+	}
+
+	// Verify state file was NOT written.
+	if _, statErr := os.Stat(stateFile); !os.IsNotExist(statErr) {
+		t.Error("state file must not be written when buildCache returns an error")
+	}
+}
+
 // BenchmarkBuildCacheIncremental benchmarks incremental export performance.
 func BenchmarkBuildCacheIncremental(b *testing.B) {
 	tmpDir, err := os.MkdirTemp("", "msgvault-bench-incr-*")
