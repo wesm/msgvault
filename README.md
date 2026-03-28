@@ -204,10 +204,13 @@ Join the [msgvault Discord](https://discord.gg/fDnmxB8Wkq) to ask questions, sha
 ```bash
 git clone https://github.com/wesm/msgvault.git
 cd msgvault
+make install-hooks  # install pre-commit hook (requires prek)
 make test           # run tests
-make lint           # run linter
+make lint           # run linter (auto-fix)
 make install        # build and install
 ```
+
+Pre-commit hooks are managed by [prek](https://prek.j178.dev/) (`brew install prek`).
 
 ## License
 
