@@ -136,29 +136,35 @@ Examples:
 						continue
 					}
 				case "imap":
-					hasAuth := false
 					if src.SyncConfig.Valid && src.SyncConfig.String != "" {
 						imapCfg, parseErr := imaplib.ConfigFromJSON(src.SyncConfig.String)
-						if parseErr == nil {
-							switch imapCfg.EffectiveAuthMethod() {
-							case imaplib.AuthXOAuth2:
-								msMgr := microsoft.NewManager(
-									cfg.Microsoft.ClientID,
-									cfg.Microsoft.EffectiveTenantID(),
-									cfg.TokensDir(),
-									logger,
-								)
-								hasAuth = msMgr.HasToken(imapCfg.Username)
-							default:
-								hasAuth = imaplib.HasCredentials(cfg.TokensDir(), src.Identifier)
+						if parseErr != nil {
+							syncErrors = append(syncErrors, fmt.Sprintf("%s: malformed sync_config: %v", src.Identifier, parseErr))
+							continue
+						}
+						switch imapCfg.EffectiveAuthMethod() {
+						case imaplib.AuthXOAuth2:
+							msMgr := microsoft.NewManager(
+								cfg.Microsoft.ClientID,
+								cfg.Microsoft.EffectiveTenantID(),
+								cfg.TokensDir(),
+								logger,
+							)
+							if !msMgr.HasToken(imapCfg.Username) {
+								fmt.Printf("Skipping %s (no Microsoft token - run 'add-o365' first)\n", src.Identifier)
+								continue
+							}
+						default:
+							if !imaplib.HasCredentials(cfg.TokensDir(), src.Identifier) {
+								fmt.Printf("Skipping %s (no credentials - run 'add-imap' first)\n", src.Identifier)
+								continue
 							}
 						}
 					} else {
-						hasAuth = imaplib.HasCredentials(cfg.TokensDir(), src.Identifier)
-					}
-					if !hasAuth {
-						fmt.Printf("Skipping %s (no credentials - run 'add-imap' or 'add-o365' first)\n", src.Identifier)
-						continue
+						if !imaplib.HasCredentials(cfg.TokensDir(), src.Identifier) {
+							fmt.Printf("Skipping %s (no credentials - run 'add-imap' or 'add-o365' first)\n", src.Identifier)
+							continue
+						}
 					}
 				default:
 					fmt.Printf("Skipping %s (unsupported source type %q)\n", src.Identifier, src.SourceType)

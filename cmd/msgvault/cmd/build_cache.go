@@ -417,21 +417,21 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 
 	fmt.Printf("  %-25s %s\n", "Total:", time.Since(buildStart).Round(time.Millisecond))
 
-	// Count exported messages and verify Parquet files actually exist
+	// Count exported messages and verify Parquet files actually exist.
+	// When maxID > 0 the export must be verifiable: a query failure or zero
+	// rows is treated as a hard stop so the state file is not written.
+	// When maxID == 0 (empty database) no message parquet is created, so
+	// the COUNT query will fail with "no files found" — that is expected
+	// and we skip the guard entirely.
 	var exportedCount int64
-	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM read_parquet('%s/**/*.parquet', hive_partitioning=true)", escapedMessagesDir)
-	countQueryOK := true
-	if err := db.QueryRow(countSQL).Scan(&exportedCount); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not verify exported rows: %v\n", err)
-		countQueryOK = false
-	}
-
-	// Only save sync state if Parquet files were actually created.
-	// Without this guard, a failed export writes the state file with the
-	// current max message ID, causing future incremental builds to skip
-	// the rebuild — leaving the cache permanently empty.
-	if countQueryOK && exportedCount == 0 && maxID > 0 {
-		return nil, fmt.Errorf("export produced 0 parquet rows from %d messages in database; cache state not updated", maxID)
+	if maxID > 0 {
+		countSQL := fmt.Sprintf("SELECT COUNT(*) FROM read_parquet('%s/**/*.parquet', hive_partitioning=true)", escapedMessagesDir)
+		if err := db.QueryRow(countSQL).Scan(&exportedCount); err != nil {
+			return nil, fmt.Errorf("verify exported parquet rows: %w; cache state not updated", err)
+		}
+		if exportedCount == 0 {
+			return nil, fmt.Errorf("export produced 0 parquet rows from %d messages in database; cache state not updated", maxID)
+		}
 	}
 
 	// Save sync state using the pre-export watermark so any deletion
