@@ -37,9 +37,6 @@ type Options struct {
 	// BatchSize is the number of messages to fetch in parallel (default: 10)
 	BatchSize int
 
-	// CheckpointInterval is how often to save progress (default: every 200 messages)
-	CheckpointInterval int
-
 	// AttachmentsDir is where to store attachments
 	AttachmentsDir string
 
@@ -53,8 +50,7 @@ type Options struct {
 // DefaultOptions returns sensible defaults.
 func DefaultOptions() *Options {
 	return &Options{
-		BatchSize:          10,
-		CheckpointInterval: 200,
+		BatchSize: 10,
 	}
 }
 

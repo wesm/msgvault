@@ -13,7 +13,6 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/gmail"
-	imaplib "github.com/wesm/msgvault/internal/imap"
 	"github.com/wesm/msgvault/internal/oauth"
 	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/sync"
@@ -80,7 +79,7 @@ Examples:
 		if len(args) == 1 {
 			// Resolve all sources for the identifier and route
 			// each by type, same as sync-full.
-			allMatches, lookupErr := s.GetSourcesByIdentifier(args[0])
+			allMatches, lookupErr := s.GetSourcesByIdentifierOrDisplayName(args[0])
 			if lookupErr != nil {
 				return fmt.Errorf("look up source: %w", lookupErr)
 			}
@@ -130,8 +129,13 @@ Examples:
 					}
 					gmailTargets = append(gmailTargets, syncTarget{source: src, email: src.Identifier})
 				case "imap":
-					if !imaplib.HasCredentials(cfg.TokensDir(), src.Identifier) {
-						fmt.Printf("Skipping %s (no credentials - run 'add-imap' first)\n", src.Identifier)
+					skipMsg, parseErr := imapSkipReason(src)
+					if parseErr != nil {
+						syncErrors = append(syncErrors, fmt.Sprintf("%s: malformed sync_config: %v", src.Identifier, parseErr))
+						continue
+					}
+					if skipMsg != "" {
+						fmt.Println(skipMsg)
 						continue
 					}
 					imapTargets = append(imapTargets, src)

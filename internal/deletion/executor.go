@@ -137,7 +137,7 @@ func (e *Executor) saveCheckpoint(manifest *Manifest, path string, index, succee
 	manifest.Execution.Failed = failed
 	manifest.Execution.FailedIDs = failedIDs
 	if err := manifest.Save(path); err != nil {
-		e.logger.Warn("failed to save checkpoint", "error", err)
+		e.logger.Error("failed to save checkpoint", "error", err)
 	}
 }
 
@@ -178,6 +178,9 @@ func (e *Executor) prepareExecution(manifestID string, method Method) (*Manifest
 // failed (succeeded == 0). When false (batch mode), it is always marked Completed
 // even with failures, preserving the batch semantics where partial progress is expected.
 func (e *Executor) finalizeExecution(manifestID string, manifest *Manifest, path string, succeeded, failed int, failedIDs []string, failOnAllErrors bool) {
+	if manifest.Execution == nil {
+		manifest.Execution = &Execution{StartedAt: time.Now(), Method: "unknown"}
+	}
 	now := time.Now()
 	manifest.Execution.CompletedAt = &now
 	manifest.Execution.LastProcessedIndex = len(manifest.GmailIDs)

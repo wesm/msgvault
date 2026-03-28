@@ -240,6 +240,8 @@ func tokenize(queryStr string) []string {
 	}
 
 	if current.Len() > 0 {
+		// If we're still inside an unterminated quote, emit what we have
+		// as a plain token so the user's input is not silently dropped.
 		tokens = append(tokens, current.String())
 	}
 

@@ -149,3 +149,30 @@ func TestParseIdentifier_InvalidScheme(t *testing.T) {
 		t.Error("expected error for unsupported scheme")
 	}
 }
+
+func TestConfigAuthMethod_DefaultsToPassword(t *testing.T) {
+	// Existing JSON without auth_method should default to password
+	cfg, err := ConfigFromJSON(`{"host":"imap.example.com","port":993,"tls":true,"username":"user"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthMethod != "" && cfg.AuthMethod != AuthPassword {
+		t.Errorf("AuthMethod = %q, want empty or %q", cfg.AuthMethod, AuthPassword)
+	}
+	if cfg.EffectiveAuthMethod() != AuthPassword {
+		t.Errorf("EffectiveAuthMethod() = %q, want %q", cfg.EffectiveAuthMethod(), AuthPassword)
+	}
+}
+
+func TestConfigAuthMethod_XOAuth2(t *testing.T) {
+	cfg, err := ConfigFromJSON(`{"host":"outlook.office365.com","port":993,"tls":true,"username":"user@company.com","auth_method":"xoauth2"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthMethod != AuthXOAuth2 {
+		t.Errorf("AuthMethod = %q, want %q", cfg.AuthMethod, AuthXOAuth2)
+	}
+	if cfg.EffectiveAuthMethod() != AuthXOAuth2 {
+		t.Errorf("EffectiveAuthMethod() = %q, want %q", cfg.EffectiveAuthMethod(), AuthXOAuth2)
+	}
+}

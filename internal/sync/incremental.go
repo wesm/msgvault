@@ -138,9 +138,9 @@ func (s *Syncer) Incremental(ctx context.Context, source *store.Source) (summary
 				deletedSet[msg.Message.ID] = true
 			}
 			s.processLabelChanges(ctx, source.ID, record, labelMap, existingMap, updatedExisting)
-			checkpoint.MessagesProcessed++
 		}
 		checkpoint.MessagesUpdated += int64(len(updatedExisting))
+		checkpoint.MessagesProcessed += int64(len(newMsgThreads) + len(deletedSet) + len(updatedExisting))
 		newMsgIDs := make([]string, 0, len(newMsgThreads))
 		for id := range newMsgThreads {
 			newMsgIDs = append(newMsgIDs, id)

@@ -1420,3 +1420,32 @@ func TestSave_AllowInsecureRoundTrip(t *testing.T) {
 		t.Error("AllowInsecure should be true after saving with true")
 	}
 }
+
+func TestMicrosoftConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	configContent := `
+[microsoft]
+client_id = "test-client-id-123"
+tenant_id = "my-tenant"
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	os.WriteFile(configPath, []byte(configContent), 0644)
+
+	cfg, err := Load(configPath, tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Microsoft.ClientID != "test-client-id-123" {
+		t.Errorf("Microsoft.ClientID = %q, want %q", cfg.Microsoft.ClientID, "test-client-id-123")
+	}
+	if cfg.Microsoft.TenantID != "my-tenant" {
+		t.Errorf("Microsoft.TenantID = %q, want %q", cfg.Microsoft.TenantID, "my-tenant")
+	}
+}
+
+func TestMicrosoftConfig_DefaultTenant(t *testing.T) {
+	cfg := NewDefaultConfig()
+	if cfg.Microsoft.EffectiveTenantID() != "common" {
+		t.Errorf("EffectiveTenantID() = %q, want %q", cfg.Microsoft.EffectiveTenantID(), "common")
+	}
+}

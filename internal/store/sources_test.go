@@ -2,8 +2,10 @@ package store_test
 
 import (
 	"database/sql"
+	"path/filepath"
 	"testing"
 
+	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/testutil"
 	"github.com/wesm/msgvault/internal/testutil/storetest"
 )
@@ -174,5 +176,88 @@ func TestStore_RemoveSource_CascadesConversations(t *testing.T) {
 	testutil.MustNoErr(t, err, "count message_recipients")
 	if recipCount != 0 {
 		t.Errorf("message_recipients count = %d, want 0", recipCount)
+	}
+}
+
+func TestInitSchema_MigratesOAuthAppColumn(t *testing.T) {
+	// Simulate a pre-migration database that lacks the oauth_app column.
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	// Create the sources table WITHOUT the oauth_app column,
+	// matching the schema as it existed before this feature.
+	_, err = st.DB().Exec(`
+		CREATE TABLE IF NOT EXISTS sources (
+			id INTEGER PRIMARY KEY,
+			source_type TEXT NOT NULL,
+			identifier TEXT NOT NULL,
+			display_name TEXT,
+			google_user_id TEXT UNIQUE,
+			last_sync_at DATETIME,
+			sync_cursor TEXT,
+			sync_config JSON,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(source_type, identifier)
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create legacy sources table: %v", err)
+	}
+
+	// Insert a row into the legacy table.
+	_, err = st.DB().Exec(`
+		INSERT INTO sources (source_type, identifier, display_name)
+		VALUES ('gmail', 'legacy@example.com', 'Legacy User')
+	`)
+	if err != nil {
+		t.Fatalf("insert legacy source: %v", err)
+	}
+
+	// Run InitSchema — this should migrate the table by adding oauth_app.
+	if err := st.InitSchema(); err != nil {
+		t.Fatalf("InitSchema on legacy DB: %v", err)
+	}
+
+	// Verify GetSourcesByIdentifier works (reads oauth_app column).
+	sources, err := st.GetSourcesByIdentifier("legacy@example.com")
+	if err != nil {
+		t.Fatalf("GetSourcesByIdentifier after migration: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("got %d sources, want 1", len(sources))
+	}
+	if sources[0].OAuthApp.Valid {
+		t.Errorf("OAuthApp should be NULL for legacy row, got %q", sources[0].OAuthApp.String)
+	}
+
+	// Verify GetSourcesByDisplayName works (also reads oauth_app column).
+	sources, err = st.GetSourcesByDisplayName("Legacy User")
+	if err != nil {
+		t.Fatalf("GetSourcesByDisplayName after migration: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("got %d sources, want 1", len(sources))
+	}
+
+	// Verify oauth_app can be written and read back.
+	_, err = st.DB().Exec(
+		`UPDATE sources SET oauth_app = ? WHERE identifier = ?`,
+		"acme", "legacy@example.com",
+	)
+	if err != nil {
+		t.Fatalf("update oauth_app: %v", err)
+	}
+
+	sources, err = st.GetSourcesByIdentifier("legacy@example.com")
+	if err != nil {
+		t.Fatalf("GetSourcesByIdentifier after update: %v", err)
+	}
+	if !sources[0].OAuthApp.Valid || sources[0].OAuthApp.String != "acme" {
+		t.Errorf("OAuthApp = %v, want {acme true}", sources[0].OAuthApp)
 	}
 }

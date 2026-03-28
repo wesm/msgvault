@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 	imaplib "github.com/wesm/msgvault/internal/imap"
+	"github.com/wesm/msgvault/internal/microsoft"
 	"github.com/wesm/msgvault/internal/oauth"
 	"github.com/wesm/msgvault/internal/store"
 )
@@ -138,6 +139,23 @@ func runRemoveAccount(cmd *cobra.Command, args []string) error {
 				"Warning: could not remove credentials file %s: %v\n",
 				credPath, err,
 			)
+		}
+		// Also clean up Microsoft OAuth token if this was an XOAUTH2 source
+		if source.SyncConfig.Valid && source.SyncConfig.String != "" {
+			imapCfg, parseErr := imaplib.ConfigFromJSON(source.SyncConfig.String)
+			if parseErr == nil && imapCfg.EffectiveAuthMethod() == imaplib.AuthXOAuth2 {
+				msMgr := microsoft.NewManager(
+					cfg.Microsoft.ClientID,
+					cfg.Microsoft.EffectiveTenantID(),
+					cfg.TokensDir(),
+					logger,
+				)
+				if err := msMgr.DeleteToken(imapCfg.Username); err != nil {
+					fmt.Fprintf(os.Stderr,
+						"Warning: could not remove Microsoft token: %v\n", err,
+					)
+				}
+			}
 		}
 	}
 

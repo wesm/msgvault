@@ -70,13 +70,14 @@ type RemoteConfig struct {
 
 // Config represents the msgvault configuration.
 type Config struct {
-	Data     DataConfig        `toml:"data"`
-	OAuth    OAuthConfig       `toml:"oauth"`
-	Sync     SyncConfig        `toml:"sync"`
-	Chat     ChatConfig        `toml:"chat"`
-	Server   ServerConfig      `toml:"server"`
-	Remote   RemoteConfig      `toml:"remote"`
-	Accounts []AccountSchedule `toml:"accounts"`
+	Data      DataConfig        `toml:"data"`
+	OAuth     OAuthConfig       `toml:"oauth"`
+	Microsoft MicrosoftConfig   `toml:"microsoft"`
+	Sync      SyncConfig        `toml:"sync"`
+	Chat      ChatConfig        `toml:"chat"`
+	Server    ServerConfig      `toml:"server"`
+	Remote    RemoteConfig      `toml:"remote"`
+	Accounts  []AccountSchedule `toml:"accounts"`
 
 	// Computed paths (not from config file)
 	HomeDir    string `toml:"-"`
@@ -134,6 +135,21 @@ func (o *OAuthConfig) HasAnyConfig() bool {
 		}
 	}
 	return false
+}
+
+// MicrosoftConfig holds Microsoft 365 / Azure AD OAuth configuration.
+type MicrosoftConfig struct {
+	ClientID string `toml:"client_id"`
+	TenantID string `toml:"tenant_id"`
+}
+
+// EffectiveTenantID returns the tenant ID, defaulting to "common"
+// (multi-tenant, works for personal + org accounts).
+func (c *MicrosoftConfig) EffectiveTenantID() string {
+	if c.TenantID == "" {
+		return "common"
+	}
+	return c.TenantID
 }
 
 // SyncConfig holds sync-related configuration.

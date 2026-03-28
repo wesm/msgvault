@@ -1449,7 +1449,7 @@ func TestIncrementalSyncLabelAddAndRemoveOnExisting(t *testing.T) {
 	)
 
 	summary := runIncrementalSync(t, env)
-	assertSummary(t, summary, WantSummary{Found: intPtr(2)})
+	assertSummary(t, summary, WantSummary{Found: intPtr(1)})
 
 	// Zero additional API calls
 	callsAfterIncr := len(env.Mock.GetMessageCalls)

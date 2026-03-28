@@ -188,7 +188,9 @@ func repairMessageFields(s *store.Store, stats *repairStats) error {
 				msgArgs = append(msgArgs, r.id)
 				query := s.Rebind(fmt.Sprintf("UPDATE messages SET %s WHERE id = ?", strings.Join(msgUpdates, ", ")))
 				if _, err := tx.Exec(query, msgArgs...); err != nil {
-					_ = tx.Rollback()
+					if rbErr := tx.Rollback(); rbErr != nil {
+						logger.Warn("rollback failed", "error", rbErr)
+					}
 					return fmt.Errorf("update message %d: %w", r.id, err)
 				}
 			}
@@ -209,7 +211,9 @@ func repairMessageFields(s *store.Store, stats *repairStats) error {
 						body_text = COALESCE(excluded.body_text, message_bodies.body_text),
 						body_html = COALESCE(excluded.body_html, message_bodies.body_html)`)
 				if _, err := tx.Exec(query, r.id, bodyText, bodyHTML); err != nil {
-					_ = tx.Rollback()
+					if rbErr := tx.Rollback(); rbErr != nil {
+						logger.Warn("rollback failed", "error", rbErr)
+					}
 					return fmt.Errorf("upsert message_bodies %d: %w", r.id, err)
 				}
 			}
@@ -377,14 +381,18 @@ func repairDisplayNames(s *store.Store, stats *repairStats) error {
 
 			stmt, err := tx.Prepare(s.Rebind(table.updateStmt))
 			if err != nil {
-				_ = tx.Rollback()
+				if rbErr := tx.Rollback(); rbErr != nil {
+					logger.Warn("rollback failed", "error", rbErr)
+				}
 				return fmt.Errorf("prepare update: %w", err)
 			}
 			defer stmt.Close()
 
 			for _, r := range repairs {
 				if _, err := stmt.Exec(r.newName, r.id); err != nil {
-					_ = tx.Rollback()
+					if rbErr := tx.Rollback(); rbErr != nil {
+						logger.Warn("rollback failed", "error", rbErr)
+					}
 					return fmt.Errorf("update %s %d: %w", table.name, r.id, err)
 				}
 			}
@@ -531,14 +539,18 @@ func repairOtherStrings(s *store.Store, stats *repairStats) error {
 
 			stmt, err := tx.Prepare(s.Rebind(table.updateStmt))
 			if err != nil {
-				_ = tx.Rollback()
+				if rbErr := tx.Rollback(); rbErr != nil {
+					logger.Warn("rollback failed", "error", rbErr)
+				}
 				return fmt.Errorf("prepare update: %w", err)
 			}
 			defer stmt.Close()
 
 			for _, r := range repairs {
 				if _, err := stmt.Exec(r.newValue, r.id); err != nil {
-					_ = tx.Rollback()
+					if rbErr := tx.Rollback(); rbErr != nil {
+						logger.Warn("rollback failed", "error", rbErr)
+					}
 					return fmt.Errorf("update %s %d: %w", table.name, r.id, err)
 				}
 			}

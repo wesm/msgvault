@@ -795,9 +795,6 @@ func (m Model) handleDataLoaded(msg dataLoadedMsg) (tea.Model, tea.Cmd) {
 	if m.modal == modalError {
 		m.modal = modalNone
 	}
-	if m.modal == modalError {
-		m.modal = modalNone
-	}
 	m.rows = msg.rows
 	// Only reset position on fresh loads, not when restoring from breadcrumb
 	if !m.restorePosition {

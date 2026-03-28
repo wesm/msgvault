@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS sources (
     last_sync_at DATETIME,
     sync_cursor TEXT,           -- platform-specific: historyId, rowid, timestamp
     sync_config JSON,           -- platform-specific sync settings
+    oauth_app TEXT,             -- named OAuth app binding (NULL = default)
 
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,

@@ -111,7 +111,10 @@ type apiError struct {
 
 // handleErrorResponse reads an error response and returns an appropriate error.
 func handleErrorResponse(resp *http.Response) error {
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("API error (%d): could not read response body: %w", resp.StatusCode, err)
+	}
 
 	var apiErr apiError
 	if err := json.Unmarshal(body, &apiErr); err == nil && apiErr.Message != "" {
