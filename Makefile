@@ -79,7 +79,13 @@ install-hooks:
 		echo "prek not found. Install with: brew install prek" >&2; \
 		exit 1; \
 	fi
-	@git config --unset core.hooksPath 2>/dev/null || true
+	@HOOKS_PATH=$$(git config --get core.hooksPath 2>/dev/null); \
+	if [ "$$HOOKS_PATH" = ".githooks" ]; then \
+		git config --unset core.hooksPath; \
+	elif [ -n "$$HOOKS_PATH" ]; then \
+		echo "core.hooksPath is set to '$$HOOKS_PATH' — unset it first if intended" >&2; \
+		exit 1; \
+	fi
 	prek install
 
 # Tidy dependencies
