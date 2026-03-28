@@ -34,10 +34,22 @@ with their ID, status, message count, and creation date.`,
 		}
 
 		// List all statuses
-		pending, _ := manager.ListPending()
-		inProgress, _ := manager.ListInProgress()
-		completed, _ := manager.ListCompleted()
-		failed, _ := manager.ListFailed()
+		pending, err := manager.ListPending()
+		if err != nil {
+			return fmt.Errorf("list pending deletions: %w", err)
+		}
+		inProgress, err := manager.ListInProgress()
+		if err != nil {
+			return fmt.Errorf("list in-progress deletions: %w", err)
+		}
+		completed, err := manager.ListCompleted()
+		if err != nil {
+			return fmt.Errorf("list completed deletions: %w", err)
+		}
+		failed, err := manager.ListFailed()
+		if err != nil {
+			return fmt.Errorf("list failed deletions: %w", err)
+		}
 
 		if len(pending) == 0 && len(inProgress) == 0 && len(completed) == 0 && len(failed) == 0 {
 			fmt.Println("No deletion batches found.")

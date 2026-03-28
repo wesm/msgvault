@@ -441,7 +441,10 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 		LastSyncAt:             cacheWatermark,
 		LastCompletedSyncRunID: lastCompletedSyncRunID,
 	}
-	stateData, _ := json.Marshal(state)
+	stateData, err := json.Marshal(state)
+	if err != nil {
+		return nil, fmt.Errorf("marshal sync state: %w", err)
+	}
 	if err := os.WriteFile(stateFile, stateData, 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to save sync state: %v\n", err)
 	}
