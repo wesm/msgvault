@@ -1,0 +1,12 @@
+minimum_prek_version = "0.3.6"
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "go-fmt-lint"
+name = "go-fmt-lint"
+language = "system"
+entry = "make fmt lint"
+pass_filenames = false
+always_run = true

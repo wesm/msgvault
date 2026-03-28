@@ -22,7 +22,7 @@ jobs:
         run: make test
 
       - name: Lint
-        run: make lint
+        run: make lint-ci
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4

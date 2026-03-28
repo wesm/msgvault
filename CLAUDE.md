@@ -196,13 +196,15 @@ When committing changes, always stage ALL modified files (including formatting, 
 ## Code Style & Linting
 
 All code must pass formatting and linting checks before commit. A pre-commit
-hook is available to enforce this automatically:
+hook is available via [prek](https://prek.j178.dev/) to enforce this
+automatically:
 
 ```bash
-make setup-hooks               # Enable pre-commit hook (fmt + lint)
+make install-hooks             # Install pre-commit hook via prek
 make test                      # Run tests
 make fmt                       # Format code (go fmt)
-make lint                      # Run linter (golangci-lint)
+make lint                      # Run linter (auto-fix)
+make lint-ci                   # Run linter (CI, no auto-fix)
 go vet ./...                   # Check for issues
 ```
 
