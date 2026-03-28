@@ -87,11 +87,12 @@ func runExportAttachments(cmd *cobra.Command, args []string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("not a directory: %s", outputDir)
 	}
-	testFile := filepath.Join(outputDir, ".msgvault_write_test")
-	defer os.Remove(testFile)
-	if err := os.WriteFile(testFile, nil, 0600); err != nil {
+	tmpFile, err := os.CreateTemp(outputDir, ".msgvault_write_test-*")
+	if err != nil {
 		return fmt.Errorf("output directory not writable: %w", err)
 	}
+	tmpFile.Close()
+	os.Remove(tmpFile.Name())
 
 	// Export
 	attachmentsDir := cfg.AttachmentsDir()
