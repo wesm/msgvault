@@ -197,10 +197,10 @@ func (m *Manager) doBrowserFlow(ctx context.Context, email string, scopes []stri
 // Suitable for passing to imap.WithTokenSource. The returned function
 // is safe for concurrent use.
 //
-// The underlying oauth2.TokenSource uses the context passed to
-// TokenSource (not the per-call context) for HTTP refresh requests.
-// Callers should pass a context that outlives all calls to the
-// returned function.
+// Token refresh HTTP requests run against context.Background so they are
+// not cancelled if the caller's context expires between calls. This
+// prevents silent refresh failures during long-running syncs where the
+// original context may be narrower than the token source's lifetime.
 func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.Context) (string, error), error) {
 	tf, err := m.loadTokenFile(email)
 	if err != nil {
@@ -230,7 +230,11 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.C
 		refreshTenant = tf.TenantID
 	}
 	cfg := m.oauthConfigWithTenant(refreshTenant, scopes)
-	ts := cfg.TokenSource(ctx, &tf.Token)
+	// Use context.Background so token refreshes are not cancelled by the
+	// caller's (sync-scoped) context. The token source outlives individual
+	// operations; tying it to a cancellable context would cause silent
+	// failures on the next call after cancellation.
+	ts := cfg.TokenSource(context.Background(), &tf.Token)
 
 	var (
 		mu               sync.Mutex
@@ -423,12 +427,15 @@ func (m *Manager) resolveTokenEmail(ctx context.Context, email string, token *oa
 	// Fall back to "preferred_username". In Entra/O365 setups the UPN
 	// (sign-in identifier) can differ from the SMTP mailbox address, so a
 	// mismatch is not necessarily an error — trust the user-entered email as
-	// the mailbox address and log a warning. The IMAP connection will fail
-	// later if the address is actually wrong.
+	// the mailbox address and log a warning. If the address is wrong, IMAP
+	// authentication will fail with an explicit error pointing back here.
 	if claims.PreferredUsername != "" {
 		if !strings.EqualFold(claims.PreferredUsername, email) {
-			m.logger.Warn("UPN differs from expected email — using user-entered address as mailbox",
-				"expected", email,
+			m.logger.Warn("Microsoft sign-in UPN differs from the address you specified — "+
+				"proceeding with your address as the IMAP mailbox; "+
+				"if sync fails with an authentication error, re-run 'add-o365' "+
+				"using the UPN shown below as the email argument",
+				"specified", email,
 				"upn", claims.PreferredUsername,
 			)
 		}
