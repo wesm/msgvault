@@ -82,9 +82,32 @@ Examples:
 		}
 
 		identifier := imapCfg.Identifier()
-		source, err := s.GetOrCreateSource("imap", identifier)
+
+		// If an IMAP source with this email already exists (matched by display
+		// name), reuse it and update its identifier + config in place. This
+		// prevents duplicate sources when re-authorizing after a host change
+		// (e.g. personal vs org scope correction changes the IMAP hostname).
+		var source *store.Source
+		existing, err := s.GetSourcesByDisplayName(email)
 		if err != nil {
-			return fmt.Errorf("create source: %w", err)
+			return fmt.Errorf("look up existing source: %w", err)
+		}
+		for _, src := range existing {
+			if src.SourceType == "imap" {
+				source = src
+				break
+			}
+		}
+
+		if source != nil {
+			if err := s.UpdateSourceIdentifier(source.ID, identifier); err != nil {
+				return fmt.Errorf("update source identifier: %w", err)
+			}
+		} else {
+			source, err = s.GetOrCreateSource("imap", identifier)
+			if err != nil {
+				return fmt.Errorf("create source: %w", err)
+			}
 		}
 
 		cfgJSON, err := imapCfg.ToJSON()

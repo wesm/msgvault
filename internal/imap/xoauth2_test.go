@@ -44,8 +44,14 @@ func TestXOAuth2Client_Start(t *testing.T) {
 
 func TestXOAuth2Client_Next(t *testing.T) {
 	c := NewXOAuth2Client("user@example.com", "token")
-	_, err := c.Next([]byte("some challenge"))
-	if err == nil {
-		t.Fatal("Next() should return error (XOAUTH2 is single-step)")
+	// On auth failure the server sends a JSON error challenge.  The correct
+	// XOAUTH2 response is an empty byte slice; the server then sends NO and
+	// the IMAP AUTHENTICATE command returns the server's error message.
+	resp, err := c.Next([]byte(`{"status":"401","schemes":"bearer","scope":"..."}`))
+	if err != nil {
+		t.Fatalf("Next() returned unexpected error: %v", err)
+	}
+	if len(resp) != 0 {
+		t.Errorf("Next() = %q, want empty response", resp)
 	}
 }

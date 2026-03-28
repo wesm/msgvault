@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/wesm/msgvault/internal/fileutil"
@@ -368,7 +369,14 @@ func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string
 			}
 		}
 	}()
-	defer func() { _ = server.Shutdown(ctx) }()
+	defer func() {
+		// Use a fresh context for shutdown: the caller's ctx may already be
+		// cancelled (e.g. Ctrl-C), in which case Shutdown(ctx) returns
+		// immediately without waiting for in-flight requests to drain.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
 
 	authURL := cfg.AuthCodeURL(state,
 		oauth2.SetAuthURLParam("code_challenge", challenge),

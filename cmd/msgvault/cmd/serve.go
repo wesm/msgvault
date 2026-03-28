@@ -58,6 +58,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err := cfg.Server.ValidateSecure(); err != nil {
 		return err
 	}
+	if cfg.Server.APIKey != "" && len(cfg.Server.APIKey) < 16 {
+		logger.Warn("api_key is very short — use a randomly generated key of at least 32 characters")
+	}
 
 	// Validate config
 	if !cfg.OAuth.HasAnyConfig() {

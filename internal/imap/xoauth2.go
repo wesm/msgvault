@@ -1,8 +1,6 @@
 package imap
 
 import (
-	"fmt"
-
 	"github.com/emersion/go-sasl"
 )
 
@@ -30,5 +28,11 @@ func (c *xoauth2Client) Start() (mech string, ir []byte, err error) {
 }
 
 func (c *xoauth2Client) Next(challenge []byte) ([]byte, error) {
-	return nil, fmt.Errorf("XOAUTH2: unexpected server challenge")
+	// XOAUTH2: on auth failure the server sends a base64-encoded JSON error
+	// challenge and expects an empty response to complete the SASL exchange.
+	// Returning an empty byte slice here lets the IMAP AUTHENTICATE command
+	// terminate normally, after which the server sends NO with a human-readable
+	// error. Returning an error instead would abort the exchange mid-flight and
+	// surface our internal message rather than the server's diagnostic payload.
+	return []byte{}, nil
 }

@@ -381,6 +381,18 @@ func (s *Store) UpdateSourceSyncConfig(sourceID int64, configJSON string) error 
 	return err
 }
 
+// UpdateSourceIdentifier updates the identifier column for an existing source.
+// Used by add-o365 to fix up the IMAP host when re-authorizing an account
+// whose host classification changed (e.g. personal vs org scope correction).
+func (s *Store) UpdateSourceIdentifier(sourceID int64, identifier string) error {
+	_, err := s.db.Exec(`
+		UPDATE sources
+		SET identifier = ?, updated_at = datetime('now')
+		WHERE id = ?
+	`, identifier, sourceID)
+	return err
+}
+
 // GetSourceByIdentifier returns a source by its identifier (email address).
 func (s *Store) GetSourceByIdentifier(identifier string) (*Source, error) {
 	row := s.db.QueryRow(`

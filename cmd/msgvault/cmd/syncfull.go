@@ -473,6 +473,9 @@ func imapSkipReason(src *store.Source) (string, error) {
 	}
 	switch imapCfg.EffectiveAuthMethod() {
 	case imaplib.AuthXOAuth2:
+		if cfg.Microsoft.ClientID == "" {
+			return fmt.Sprintf("Skipping %s (Microsoft OAuth not configured — add client_id to [microsoft] in config.toml)", src.Identifier), nil
+		}
 		msMgr := microsoft.NewManager(
 			cfg.Microsoft.ClientID,
 			cfg.Microsoft.EffectiveTenantID(),
