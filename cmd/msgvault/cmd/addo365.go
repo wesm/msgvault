@@ -54,9 +54,16 @@ Examples:
 			return fmt.Errorf("authorization failed: %w", err)
 		}
 
-		// Auto-configure IMAP for outlook.office365.com
+		// Determine the correct IMAP host from the token that was just saved.
+		// Personal accounts (hotmail.com, outlook.com, etc.) use outlook.office.com;
+		// organizational accounts use outlook.office365.com.
+		imapHost, err := msMgr.IMAPHost(email)
+		if err != nil {
+			return fmt.Errorf("determine IMAP host: %w", err)
+		}
+
 		imapCfg := &imapclient.Config{
-			Host:       "outlook.office365.com",
+			Host:       imapHost,
 			Port:       993,
 			TLS:        true,
 			Username:   email,

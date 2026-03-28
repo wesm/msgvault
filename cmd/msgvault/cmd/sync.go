@@ -81,27 +81,9 @@ Examples:
 		if len(args) == 1 {
 			// Resolve all sources for the identifier and route
 			// each by type, same as sync-full.
-			byID, lookupErr := s.GetSourcesByIdentifier(args[0])
+			allMatches, lookupErr := s.GetSourcesByIdentifierOrDisplayName(args[0])
 			if lookupErr != nil {
 				return fmt.Errorf("look up source: %w", lookupErr)
-			}
-			byName, lookupErr := s.GetSourcesByDisplayName(args[0])
-			if lookupErr != nil {
-				return fmt.Errorf("look up source by display name: %w", lookupErr)
-			}
-			seen := make(map[int64]struct{})
-			var allMatches []*store.Source
-			for _, src := range byID {
-				if _, ok := seen[src.ID]; !ok {
-					seen[src.ID] = struct{}{}
-					allMatches = append(allMatches, src)
-				}
-			}
-			for _, src := range byName {
-				if _, ok := seen[src.ID]; !ok {
-					seen[src.ID] = struct{}{}
-					allMatches = append(allMatches, src)
-				}
 			}
 			for _, src := range allMatches {
 				switch src.SourceType {

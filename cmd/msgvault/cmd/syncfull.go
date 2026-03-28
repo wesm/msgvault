@@ -75,27 +75,9 @@ Examples:
 			// keep only syncable types (gmail, imap). Non-syncable
 			// sources like mbox/apple-mail imports share the same
 			// identifier namespace but cannot be synced.
-			byID, err := s.GetSourcesByIdentifier(args[0])
+			allMatches, err := s.GetSourcesByIdentifierOrDisplayName(args[0])
 			if err != nil {
 				return fmt.Errorf("look up source: %w", err)
-			}
-			byName, err := s.GetSourcesByDisplayName(args[0])
-			if err != nil {
-				return fmt.Errorf("look up source by display name: %w", err)
-			}
-			seen := make(map[int64]struct{})
-			var allMatches []*store.Source
-			for _, src := range byID {
-				if _, ok := seen[src.ID]; !ok {
-					seen[src.ID] = struct{}{}
-					allMatches = append(allMatches, src)
-				}
-			}
-			for _, src := range byName {
-				if _, ok := seen[src.ID]; !ok {
-					seen[src.ID] = struct{}{}
-					allMatches = append(allMatches, src)
-				}
 			}
 			for _, src := range allMatches {
 				if src.SourceType == "gmail" || src.SourceType == "imap" {

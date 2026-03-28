@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -265,7 +266,32 @@ func (m *Manager) TokenSource(ctx context.Context, email string) (func(context.C
 	}, nil
 }
 
+// IMAPHost returns the correct IMAP hostname for the given email based on the
+// persisted token's scope. Must be called after Authorize completes.
+// Personal accounts use outlook.office.com; org accounts use outlook.office365.com.
+func (m *Manager) IMAPHost(email string) (string, error) {
+	tf, err := m.loadTokenFile(email)
+	if err != nil {
+		return "", fmt.Errorf("load token for %s: %w", email, err)
+	}
+	if len(tf.Scopes) > 0 && tf.Scopes[0] == ScopeIMAPPersonal {
+		return "outlook.office.com", nil
+	}
+	return "outlook.office365.com", nil
+}
+
 func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string) (*oauth2.Token, string, error) {
+	// Bind the listener before constructing the auth URL so that the redirect
+	// URI embedded in the authorization request matches exactly. Failing fast
+	// here produces a clear error instead of a silent hang.
+	ln, err := net.Listen("tcp", "localhost:"+redirectPort)
+	if err != nil {
+		return nil, "", fmt.Errorf(
+			"port %s is already in use — ensure no other process is using it and retry: %w",
+			redirectPort, err,
+		)
+	}
+
 	cfg := m.oauthConfig(scopes)
 
 	// PKCE (required by Azure AD for public clients)
@@ -329,9 +355,9 @@ func (m *Manager) browserFlow(ctx context.Context, email string, scopes []string
 		_, _ = fmt.Fprintf(w, "Authorization successful! You can close this window.")
 	})
 
-	server := &http.Server{Addr: "localhost:" + redirectPort, Handler: mux}
+	server := &http.Server{Handler: mux}
 	go func() {
-		if err := server.ListenAndServe(); err != http.ErrServerClosed {
+		if err := server.Serve(ln); err != http.ErrServerClosed {
 			select {
 			case errChan <- err:
 			default:
@@ -562,8 +588,10 @@ func (m *Manager) DeleteToken(email string) error {
 func sanitizeEmail(email string) string {
 	safe := strings.ReplaceAll(email, "/", "_")
 	safe = strings.ReplaceAll(safe, "\\", "_")
-	safe = strings.ReplaceAll(safe, "..", "_..")
-	return safe
+	safe = strings.ReplaceAll(safe, "..", "_.._")
+	// filepath.Base strips any residual directory components as a final
+	// defense-in-depth against path traversal in crafted email addresses.
+	return filepath.Base(safe)
 }
 
 func openBrowser(rawURL string) error {
