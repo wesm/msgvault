@@ -159,6 +159,7 @@ func (s *Syncer) Incremental(ctx context.Context, source *store.Source) (summary
 			} else {
 				for i, raw := range rawMessages {
 					if raw == nil {
+						s.logger.Warn("failed to fetch message (nil response)", "id", newMsgIDs[i])
 						checkpoint.ErrorsCount++
 						continue
 					}

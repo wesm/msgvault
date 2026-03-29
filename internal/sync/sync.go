@@ -190,6 +190,7 @@ func (s *Syncer) processBatch(ctx context.Context, sourceID int64, listResp *gma
 
 		for i, raw := range rawMessages {
 			if raw == nil {
+				s.logger.Warn("failed to fetch message (nil response)", "id", newIDs[i])
 				checkpoint.ErrorsCount++
 				continue
 			}

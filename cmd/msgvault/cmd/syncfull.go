@@ -166,6 +166,21 @@ Examples:
 			}
 		}
 
+		// Rebuild analytics cache if requested.
+		if syncFullRebuildCache {
+			analyticsDir := cfg.AnalyticsDir()
+			fullRebuild := false
+			if staleness := cacheNeedsBuild(dbPath, analyticsDir); staleness.FullRebuild {
+				fullRebuild = true
+			}
+			result, cacheErr := buildCache(dbPath, analyticsDir, fullRebuild)
+			if cacheErr != nil {
+				logger.Warn("cache build failed", "error", cacheErr)
+			} else if !result.Skipped {
+				logger.Info("cache build completed", "exported", result.ExportedCount)
+			}
+		}
+
 		if len(syncErrors) > 0 {
 			fmt.Println()
 			fmt.Println("Errors:")
@@ -422,11 +437,14 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%ds", s)
 }
 
+var syncFullRebuildCache bool
+
 func init() {
 	syncFullCmd.Flags().StringVar(&syncQuery, "query", "", "Gmail search query")
 	syncFullCmd.Flags().BoolVar(&syncNoResume, "noresume", false, "Force fresh sync (don't resume)")
 	syncFullCmd.Flags().StringVar(&syncBefore, "before", "", "Only messages before this date (YYYY-MM-DD)")
 	syncFullCmd.Flags().StringVar(&syncAfter, "after", "", "Only messages after this date (YYYY-MM-DD)")
 	syncFullCmd.Flags().IntVar(&syncLimit, "limit", 0, "Limit number of messages (for testing)")
+	syncFullCmd.Flags().BoolVar(&syncFullRebuildCache, "rebuild-cache", false, "Rebuild analytics cache after sync")
 	rootCmd.AddCommand(syncFullCmd)
 }
