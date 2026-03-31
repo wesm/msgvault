@@ -240,7 +240,7 @@ case "$cmd" in
     ;;
 
   # Raw SQL: query.sh sql "SELECT ..."
-  # Allowlist: single read-only statement only (SELECT, WITH, EXPLAIN, DESCRIBE, SHOW)
+  # Allowlist: single read-only statement (SELECT, WITH, DESCRIBE, SHOW)
   sql)
     # Reject multi-statement input (semicolons allow bypass)
     if [[ "$1" == *";"* ]]; then
@@ -248,10 +248,10 @@ case "$cmd" in
       exit 1
     fi
     normalized=$(echo "$1" | sed 's/^[[:space:]]*//' | tr '[:lower:]' '[:upper:]')
-    if [[ "$normalized" =~ ^(SELECT|WITH|EXPLAIN|DESCRIBE|SHOW) ]]; then
+    if [[ "$normalized" =~ ^(SELECT|WITH|DESCRIBE|SHOW) ]]; then
       duckdb -c "$1"
     else
-      echo "Error: only read-only statements allowed (SELECT, WITH, EXPLAIN, DESCRIBE, SHOW)." >&2
+      echo "Error: only read-only statements allowed (SELECT, WITH, DESCRIBE, SHOW)." >&2
       echo "Got: $(echo "$normalized" | head -c 40)" >&2
       exit 1
     fi
