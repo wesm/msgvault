@@ -28,12 +28,15 @@ type MessageSummary struct {
 	Snippet              string     `json:"snippet"`
 	FromEmail            string     `json:"from_email"`
 	FromName             string     `json:"from_name"`
+	FromPhone            string     `json:"from_phone,omitempty"` // Phone number (for WhatsApp/chat sources)
 	SentAt               time.Time  `json:"sent_at"`
 	SizeEstimate         int64      `json:"size_estimate"`
 	HasAttachments       bool       `json:"has_attachments"`
 	AttachmentCount      int        `json:"attachment_count"`
 	Labels               []string   `json:"labels"`
-	DeletedAt            *time.Time `json:"deleted_at,omitempty"` // When message was deleted from server (nil if not deleted)
+	DeletedAt            *time.Time `json:"deleted_at,omitempty"`         // When message was deleted from server (nil if not deleted)
+	MessageType          string     `json:"message_type,omitempty"`       // e.g., "email", "whatsapp" — from messages.message_type
+	ConversationTitle    string     `json:"conversation_title,omitempty"` // Group/chat name from conversations.title
 }
 
 // MessageDetail represents a full message with body and attachments.

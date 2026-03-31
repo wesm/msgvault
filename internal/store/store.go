@@ -260,6 +260,14 @@ func (s *Store) InitSchema() error {
 		{`ALTER TABLE sources ADD COLUMN sync_config JSON`, "sync_config"},
 		{`ALTER TABLE messages ADD COLUMN rfc822_message_id TEXT`, "rfc822_message_id"},
 		{`ALTER TABLE sources ADD COLUMN oauth_app TEXT`, "oauth_app"},
+		{`ALTER TABLE participants ADD COLUMN phone_number TEXT`, "phone_number"},
+		{`ALTER TABLE participants ADD COLUMN canonical_id TEXT`, "canonical_id"},
+		{`ALTER TABLE messages ADD COLUMN sender_id INTEGER REFERENCES participants(id)`, "sender_id"},
+		{`ALTER TABLE messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'email'`, "message_type"},
+		{`ALTER TABLE messages ADD COLUMN attachment_count INTEGER DEFAULT 0`, "attachment_count"},
+		{`ALTER TABLE messages ADD COLUMN deleted_from_source_at DATETIME`, "deleted_from_source_at"},
+		{`ALTER TABLE messages ADD COLUMN delete_batch_id TEXT`, "delete_batch_id"},
+		{`ALTER TABLE conversations ADD COLUMN title TEXT`, "title"},
 	} {
 		if _, err := s.db.Exec(m.sql); err != nil {
 			if !isSQLiteError(err, "duplicate column name") {

@@ -34,6 +34,10 @@ Examples:
 		}
 		defer func() { _ = s.Close() }()
 
+		if err := s.InitSchema(); err != nil {
+			return fmt.Errorf("init schema: %w", err)
+		}
+
 		source, err := s.GetSourceByIdentifier(email)
 		if err != nil {
 			return fmt.Errorf("get account: %w", err)
