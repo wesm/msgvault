@@ -237,14 +237,16 @@ case "$cmd" in
     ;;
 
   # Raw SQL: query.sh sql "SELECT ..."
-  # WARNING: No input validation. Only use with agent-constructed queries,
-  # never with raw user input. DuckDB can read/write local files.
+  # Allowlist: only SELECT, WITH, EXPLAIN, DESCRIBE, SHOW, PRAGMA
   sql)
-    if [[ "$1" =~ (DROP|DELETE|INSERT|UPDATE|CREATE|ALTER|COPY.*TO) ]]; then
-      echo "Error: write operations are not allowed. This helper is read-only." >&2
+    normalized=$(echo "$1" | sed 's/^[[:space:]]*//' | tr '[:lower:]' '[:upper:]')
+    if [[ "$normalized" =~ ^(SELECT|WITH|EXPLAIN|DESCRIBE|SHOW|PRAGMA) ]]; then
+      duckdb -c "$1"
+    else
+      echo "Error: only read-only statements allowed (SELECT, WITH, EXPLAIN, DESCRIBE, SHOW)." >&2
+      echo "Got: $(echo "$normalized" | head -c 40)" >&2
       exit 1
     fi
-    duckdb -c "$1"
     ;;
 
   help|*)
