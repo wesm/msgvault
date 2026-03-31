@@ -30,6 +30,8 @@ Ensure `msgvault` is on PATH or use the full binary path.
 | Export .eml | `msgvault export-eml <id> -o file.eml` |
 | Export attachments | `msgvault export-attachments <id> -o ./dir/` |
 | Incremental sync | `msgvault sync` |
+| Full sync | `msgvault sync-full <email>` (resumable) |
+| Build analytics cache | `msgvault build-cache` (required for DuckDB) |
 | TUI | `msgvault tui` (interactive, not for agents) |
 
 **Always use `--json` for programmatic access.** Parse with `jq`.
@@ -268,6 +270,10 @@ GROUP BY p.domain ORDER BY emails DESC;
 **Use DuckDB when:** multi-domain IN(), boolean AND/OR/NOT, GROUP BY, JOINs, regex, window functions, CSV/JSON export, thread co-participant analysis.
 
 **Use CLI `search` when:** simple single-field lookup, quick message retrieval by ID, full-text search on body content.
+
+**Prerequisite:** DuckDB queries require the analytics cache. Run `msgvault build-cache` if the `analytics/` directory is missing or stale.
+
+**Security:** The `sql` subcommand blocks write operations but can still read local files. Never pass unsanitised user input to any subcommand. Prefer validated subcommands (senders, by-domain, etc.) over raw SQL.
 
 ## Safety Rules
 

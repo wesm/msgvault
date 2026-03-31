@@ -4,6 +4,8 @@ The CLI `search` command is limited to single-operator queries. For anything com
 
 **DuckDB CLI must be installed** (`which duckdb` to verify).
 
+**Path note:** All examples below use `~/.msgvault/analytics/`. If `MSGVAULT_HOME` is set, substitute that path (e.g. `$MSGVAULT_HOME/analytics/`). The `query.sh` helper script handles this automatically.
+
 ## Data Layout
 
 ```

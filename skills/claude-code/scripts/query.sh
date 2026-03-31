@@ -8,6 +8,13 @@
 
 set -euo pipefail
 
+# Verify duckdb is available
+command -v duckdb >/dev/null 2>&1 || {
+  echo "Error: duckdb not found on PATH" >&2
+  echo "Install from https://duckdb.org/docs/installation" >&2
+  exit 1
+}
+
 DATA="${MSGVAULT_HOME:-$HOME/.msgvault}/analytics"
 
 # Verify analytics cache exists
@@ -29,8 +36,8 @@ ATTACH="read_parquet('$DATA/attachments/data.parquet')"
 # Validate integer (limit, offset)
 validate_int() {
   local val="$1" name="$2"
-  if ! [[ "$val" =~ ^[0-9]+$ ]]; then
-    echo "Error: $name must be a positive integer, got '$val'" >&2
+  if ! [[ "$val" =~ ^[0-9]+$ ]] || [ "$val" -eq 0 ] || [ "$val" -gt 100000 ]; then
+    echo "Error: $name must be a positive integer (1-100000), got '$val'" >&2
     exit 1
   fi
 }
@@ -44,10 +51,10 @@ validate_date() {
   fi
 }
 
-# Validate domain (alphanumeric, dots, hyphens only)
+# Validate domain (letters, digits, dots, hyphens — no underscores or specials)
 validate_domain() {
   local val="$1"
-  if ! [[ "$val" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+  if ! [[ "$val" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]]; then
     echo "Error: invalid domain '$val'" >&2
     exit 1
   fi
@@ -90,7 +97,7 @@ build_domain_in_list() {
 # --- Command parsing ---
 
 cmd="${1:-help}"
-shift || true
+if [ $# -gt 0 ]; then shift; fi
 
 case "$cmd" in
   # Full sender graph: query.sh senders [--after DATE] [--before DATE] [limit]
@@ -230,7 +237,13 @@ case "$cmd" in
     ;;
 
   # Raw SQL: query.sh sql "SELECT ..."
+  # WARNING: No input validation. Only use with agent-constructed queries,
+  # never with raw user input. DuckDB can read/write local files.
   sql)
+    if [[ "$1" =~ (DROP|DELETE|INSERT|UPDATE|CREATE|ALTER|COPY.*TO) ]]; then
+      echo "Error: write operations are not allowed. This helper is read-only." >&2
+      exit 1
+    fi
     duckdb -c "$1"
     ;;
 
