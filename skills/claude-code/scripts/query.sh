@@ -173,6 +173,9 @@ case "$cmd" in
     ;;
 
   # Thread co-participants: query.sh threads <email>
+  # Finds threads where <email> appears in ANY role (from/to/cc/bcc),
+  # then lists other participants. This is intentional — it answers
+  # "who else is on threads involving this person" not just threads they sent.
   threads)
     email="$1"
     validate_email "$email"
@@ -237,10 +240,15 @@ case "$cmd" in
     ;;
 
   # Raw SQL: query.sh sql "SELECT ..."
-  # Allowlist: only SELECT, WITH, EXPLAIN, DESCRIBE, SHOW, PRAGMA
+  # Allowlist: single read-only statement only (SELECT, WITH, EXPLAIN, DESCRIBE, SHOW)
   sql)
+    # Reject multi-statement input (semicolons allow bypass)
+    if [[ "$1" == *";"* ]]; then
+      echo "Error: multi-statement input not allowed (no semicolons)." >&2
+      exit 1
+    fi
     normalized=$(echo "$1" | sed 's/^[[:space:]]*//' | tr '[:lower:]' '[:upper:]')
-    if [[ "$normalized" =~ ^(SELECT|WITH|EXPLAIN|DESCRIBE|SHOW|PRAGMA) ]]; then
+    if [[ "$normalized" =~ ^(SELECT|WITH|EXPLAIN|DESCRIBE|SHOW) ]]; then
       duckdb -c "$1"
     else
       echo "Error: only read-only statements allowed (SELECT, WITH, EXPLAIN, DESCRIBE, SHOW)." >&2
@@ -264,7 +272,7 @@ Commands:
   by-domain <domains> [limit]                       Senders from comma-separated domains
   domains [limit]                                   Domain breakdown with sender counts
   classify <domains>                                Count emails per domain (classification)
-  threads <email>                                   Co-participants in threads with sender
+  threads <email>                                   Co-participants in threads involving person
   labels                                            All labels with counts
   label-messages <label> [limit]                    Messages with a specific label
   unclassified <known-domains>                      Domains NOT in the provided list
