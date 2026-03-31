@@ -65,7 +65,7 @@ validate_email() {
 # Validate label name (alphanumeric, spaces, slashes, underscores, hyphens)
 validate_label() {
   local val="$1"
-  if ! [[ "$val" =~ ^[a-zA-Z0-9\ /_&-]+$ ]]; then
+  if [[ "$val" == *"'"* ]] || [[ "$val" == *";"* ]] || [[ "$val" == *"\\"* ]]; then
     echo "Error: invalid label name '$val'" >&2
     exit 1
   fi
