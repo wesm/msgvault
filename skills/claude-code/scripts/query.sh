@@ -24,22 +24,91 @@ LABELS="read_parquet('$DATA/labels/labels.parquet')"
 MLABELS="read_parquet('$DATA/message_labels/data.parquet')"
 ATTACH="read_parquet('$DATA/attachments/data.parquet')"
 
+# --- Input validation helpers ---
+
+# Validate integer (limit, offset)
+validate_int() {
+  local val="$1" name="$2"
+  if ! [[ "$val" =~ ^[0-9]+$ ]]; then
+    echo "Error: $name must be a positive integer, got '$val'" >&2
+    exit 1
+  fi
+}
+
+# Validate date (YYYY-MM-DD)
+validate_date() {
+  local val="$1" name="$2"
+  if ! [[ "$val" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    echo "Error: $name must be YYYY-MM-DD, got '$val'" >&2
+    exit 1
+  fi
+}
+
+# Validate domain (alphanumeric, dots, hyphens only)
+validate_domain() {
+  local val="$1"
+  if ! [[ "$val" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo "Error: invalid domain '$val'" >&2
+    exit 1
+  fi
+}
+
+# Validate email address (basic check)
+validate_email() {
+  local val="$1"
+  if ! [[ "$val" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9._-]+$ ]]; then
+    echo "Error: invalid email '$val'" >&2
+    exit 1
+  fi
+}
+
+# Validate label name (alphanumeric, spaces, slashes, underscores, hyphens)
+validate_label() {
+  local val="$1"
+  if ! [[ "$val" =~ ^[a-zA-Z0-9\ /_&-]+$ ]]; then
+    echo "Error: invalid label name '$val'" >&2
+    exit 1
+  fi
+}
+
+# Build a validated SQL IN list from comma-separated domains
+build_domain_in_list() {
+  local input="$1"
+  local result=""
+  IFS=',' read -ra domains <<< "$input"
+  for d in "${domains[@]}"; do
+    validate_domain "$d"
+    if [ -n "$result" ]; then
+      result="$result,'$d'"
+    else
+      result="'$d'"
+    fi
+  done
+  echo "$result"
+}
+
+# --- Command parsing ---
+
 cmd="${1:-help}"
 shift || true
 
 case "$cmd" in
-  # Full sender graph: query.sh senders [limit] [--after YYYY-MM-DD] [--before YYYY-MM-DD]
+  # Full sender graph: query.sh senders [--after DATE] [--before DATE] [limit]
   senders)
-    limit="${1:-100}"
+    limit=100
     where=""
-    shift || true
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        --after)  where="$where AND m.sent_at >= '$2'"; shift 2 ;;
-        --before) where="$where AND m.sent_at < '$2'"; shift 2 ;;
-        *) shift ;;
+        --after)  validate_date "$2" "--after"; where="$where AND m.sent_at >= '$2'"; shift 2 ;;
+        --before) validate_date "$2" "--before"; where="$where AND m.sent_at < '$2'"; shift 2 ;;
+        *)
+          if [[ "$1" =~ ^[0-9]+$ ]]; then
+            limit="$1"
+          fi
+          shift ;;
       esac
     done
+    validate_int "$limit" "limit"
     duckdb -c "
     SELECT p.email_address, p.domain, p.display_name, COUNT(*) as emails,
            MIN(m.sent_at) as first_seen, MAX(m.sent_at) as last_seen
@@ -54,16 +123,16 @@ case "$cmd" in
 
   # Senders from specific domains: query.sh by-domain gmail.com,hotmail.com [limit]
   by-domain)
-    domains="$1"
+    in_list=$(build_domain_in_list "$1")
     limit="${2:-100}"
-    in_list=$(echo "$domains" | sed "s/,/','/g")
+    validate_int "$limit" "limit"
     duckdb -c "
     SELECT p.email_address, p.display_name, p.domain, COUNT(*) as emails,
            MIN(m.sent_at) as first_seen, MAX(m.sent_at) as last_seen
     FROM $MSG m
     JOIN $RECIP r ON r.message_id = m.id AND r.recipient_type = 'from'
     JOIN $PARTS p ON p.id = r.participant_id
-    WHERE p.domain IN ('$in_list')
+    WHERE p.domain IN ($in_list)
     GROUP BY p.email_address, p.display_name, p.domain
     ORDER BY emails DESC LIMIT $limit;
     "
@@ -72,6 +141,7 @@ case "$cmd" in
   # Domain breakdown: query.sh domains [limit]
   domains)
     limit="${1:-100}"
+    validate_int "$limit" "limit"
     duckdb -c "
     SELECT p.domain, COUNT(*) as emails, COUNT(DISTINCT p.email_address) as unique_senders,
            SUM(m.size_estimate) as total_bytes
@@ -84,14 +154,13 @@ case "$cmd" in
 
   # Count emails per domain list: query.sh classify domain1,domain2,...
   classify)
-    domains="$1"
-    in_list=$(echo "$domains" | sed "s/,/','/g")
+    in_list=$(build_domain_in_list "$1")
     duckdb -c "
     SELECT p.domain, COUNT(*) as emails, COUNT(DISTINCT p.email_address) as senders
     FROM $MSG m
     JOIN $RECIP r ON r.message_id = m.id AND r.recipient_type = 'from'
     JOIN $PARTS p ON p.id = r.participant_id
-    WHERE p.domain IN ('$in_list')
+    WHERE p.domain IN ($in_list)
     GROUP BY p.domain ORDER BY emails DESC;
     "
     ;;
@@ -99,6 +168,7 @@ case "$cmd" in
   # Thread co-participants: query.sh threads <email>
   threads)
     email="$1"
+    validate_email "$email"
     duckdb -c "
     WITH target_threads AS (
       SELECT DISTINCT m.conversation_id
@@ -131,7 +201,9 @@ case "$cmd" in
   # Messages with a specific label: query.sh label-messages <label-name> [limit]
   label-messages)
     label="$1"
+    validate_label "$label"
     limit="${2:-50}"
+    validate_int "$limit" "limit"
     duckdb -c "
     SELECT m.id, m.subject, m.sent_at, p.email_address as sender
     FROM $MSG m
@@ -146,14 +218,13 @@ case "$cmd" in
 
   # Unclassified domains: query.sh unclassified domain1,domain2,...
   unclassified)
-    domains="$1"
-    in_list=$(echo "$domains" | sed "s/,/','/g")
+    in_list=$(build_domain_in_list "$1")
     duckdb -c "
     SELECT p.domain, COUNT(*) as emails, COUNT(DISTINCT p.email_address) as senders
     FROM $MSG m
     JOIN $RECIP r ON r.message_id = m.id AND r.recipient_type = 'from'
     JOIN $PARTS p ON p.id = r.participant_id
-    WHERE p.domain NOT IN ('$in_list')
+    WHERE p.domain NOT IN ($in_list)
     GROUP BY p.domain ORDER BY emails DESC LIMIT 50;
     "
     ;;
@@ -186,12 +257,16 @@ Commands:
 
 Examples:
   query.sh senders 50 --after 2020-01-01
+  query.sh senders --after 2020-01-01 50
   query.sh by-domain gmail.com,hotmail.com
   query.sh classify example.com,supplier.co
   query.sh threads alice@example.com
   query.sh labels
   query.sh label-messages Personal 20
   query.sh unclassified mycompany.com,asana.com,gmail.com
+
+Note: the sql subcommand passes input directly to DuckDB with no
+validation. All other subcommands validate inputs to prevent injection.
 EOF
     ;;
 esac

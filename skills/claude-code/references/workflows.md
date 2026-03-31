@@ -53,13 +53,13 @@ msgvault list-domains -n 1000 --json | \
 ```bash
 # Check which domains from a list appear in the archive
 for domain in example.com supplier.co partner.org; do
-  count=$(msgvault search "from:@$domain" --limit 1 --json | jq 'length')
+  count=$(msgvault search "from:@$domain" --limit 1 --json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
   echo "$count\t$domain"
 done
 
 # Count emails per sensitive domain
 for domain in $(cat sensitive-domains.txt); do
-  count=$(msgvault search "from:@$domain" --limit 1 --json 2>/dev/null | jq 'length // 0')
+  count=$(msgvault search "from:@$domain" --limit 1 --json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
   [ "$count" -gt 0 ] && echo "$count\t$domain"
 done
 ```
@@ -72,7 +72,7 @@ msgvault search "to:person@gmail.com" --limit 500 --json
 
 # Batch check known personal senders
 while IFS= read -r sender; do
-  count=$(msgvault search "from:$sender" --limit 1 --json | jq 'length')
+  count=$(msgvault search "from:$sender" --limit 1 --json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
   [ "$count" -gt 0 ] && echo "$count\t$sender"
 done < known-personal-senders.txt
 ```
@@ -120,22 +120,26 @@ msgvault export-eml 12345 -o message.eml
 ### Find conversation threads
 ```bash
 # All emails in a thread with a specific person
-msgvault search "from:alice@example.com" --limit 100 --json | \
-  jq -r '.[].subject' | sort -u
+msgvault search "from:alice@example.com" --limit 100 --json 2>/dev/null \
+  | jq -r '.[].subject' | sort -u
 
 # Cross-reference: who else is on threads with a sender
-msgvault search "from:alice@example.com" --limit 50 --json | \
-  jq -r '.[].to, .[].cc // empty' | tr ',' '\n' | sort -u
+# Note: search --json does NOT include to/cc fields. Use query.sh instead:
+bash scripts/query.sh threads alice@example.com
+
+# Or drill into a specific message for full recipients:
+msgvault show-message <id> --json | jq '.to[].email, .cc[].email'
 ```
 
 ## Pagination for Large Queries
 
 ```bash
 # Paginate through all results (50 at a time)
+# Note: empty results return non-JSON error text, so guard with 2>/dev/null
 offset=0
 while true; do
-  results=$(msgvault search "from:@gmail.com" --limit 50 --offset $offset --json)
-  count=$(echo "$results" | jq 'length')
+  results=$(msgvault search "from:@gmail.com" --limit 50 --offset $offset --json 2>/dev/null) || break
+  count=$(echo "$results" | jq 'length' 2>/dev/null) || break
   [ "$count" -eq 0 ] && break
   echo "$results" >> all_gmail_results.json
   offset=$((offset + 50))
@@ -143,7 +147,7 @@ done
 
 # Simpler: fixed page count
 for offset in $(seq 0 50 500); do
-  msgvault search "from:@gmail.com" --limit 50 --offset $offset --json
+  msgvault search "from:@gmail.com" --limit 50 --offset $offset --json 2>/dev/null || true
 done
 ```
 
