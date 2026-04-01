@@ -22,9 +22,8 @@ shared schema, unified participant model, and dedicated TUI experience.
    available views and drill-down behavior differ.
 4. **Texts mode is read-only.** Imported text archives have no live
    delete API (iMessage reads a local DB, WhatsApp reads a backup,
-   GVoice reads a Takeout export). Deletion staging (`d`/`D`) is
-   disabled in Texts mode. Selection keybindings (`Space`/`A`) are
-   reserved for future use (e.g., export) but do not stage deletions.
+   GVoice reads a Takeout export). Deletion staging (`d`/`D`) and
+   selection (`Space`/`S`) are disabled in Texts mode.
 
 ## Schema & Persistence
 
@@ -282,7 +281,35 @@ views.
   the same way within each mode's navigation tree.
 
 The email TUI code is untouched. Texts mode is additive — new files,
-new types, new methods.
+new types, new query interface.
+
+**Separate query interface.** Text query methods live in a new
+`TextEngine` interface (in `internal/query/`), not on the existing
+`Engine` interface. `Engine` is shared across the local TUI, remote
+engine, API server, MCP server, and test mocks — adding methods to it
+would force changes across all those layers. `TextEngine` is consumed
+only by the Texts mode TUI, so it avoids that ripple.
+
+```go
+type TextEngine interface {
+    ListConversations(ctx context.Context,
+        filter TextFilter) ([]ConversationRow, error)
+    TextAggregate(ctx context.Context, viewType TextViewType,
+        opts TextAggregateOptions) ([]AggregateRow, error)
+    ListConversationMessages(ctx context.Context, convID int64,
+        filter TextFilter) ([]MessageSummary, error)
+    TextSearch(ctx context.Context, query string,
+        limit, offset int) ([]MessageSummary, error)
+    GetTextStats(ctx context.Context,
+        opts TextStatsOptions) (*TotalStats, error)
+}
+```
+
+`DuckDBEngine` implements both `Engine` and `TextEngine` (it already
+has access to the Parquet data). `SQLiteEngine` can also implement
+`TextEngine` as a fallback. The remote engine, API server, and MCP
+server do not need to implement `TextEngine` until remote Texts mode
+is added (deferred).
 
 ### Conversations View (Primary)
 
@@ -389,22 +416,12 @@ use `phone_number`/`conversation_title`).
 
 ### Query Engine
 
-The DuckDB query engine gains new methods for Texts mode — these are
-separate functions, not parameterizations of the existing email
-methods:
+`DuckDBEngine` implements the new `TextEngine` interface (see TUI
+section) alongside the existing `Engine` interface. Text query
+methods are separate functions on the same struct, not additions to
+the `Engine` interface.
 
-- `ListConversations(filter TextFilter) ([]ConversationRow, error)` —
-  queries denormalized conversation stats from Parquet, filtered and
-  sorted.
-- `TextAggregate(viewType TextViewType, opts TextAggregateOptions)
-  ([]AggregateRow, error)` — aggregates text messages by contact,
-  source, label, or time. Reuses `AggregateRow` since the shape
-  (key + count + size) fits these views.
-- `ListConversationMessages(convID int64, filter TextFilter)
-  ([]MessageSummary, error)` — messages within a single conversation,
-  chronological.
-
-Existing email query methods are unchanged — they gain an implicit
+Existing email query methods on `Engine` gain an implicit
 `message_type = 'email'` filter to exclude text messages from email
 views.
 
