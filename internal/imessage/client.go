@@ -3,6 +3,7 @@ package imessage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -24,6 +25,7 @@ type Client struct {
 	beforeDate     time.Time // only import messages before this date
 	limit          int       // max total messages to import (0 = unlimited)
 	useNanoseconds bool      // whether chat.db uses nanosecond timestamps
+	ownerHandle    string    // phone/email of device owner (from --me flag)
 	logger         *slog.Logger
 	pageSize       int
 }
@@ -44,6 +46,12 @@ func WithBeforeDate(t time.Time) ClientOption {
 // WithLimit sets the maximum number of messages to import.
 func WithLimit(n int) ClientOption {
 	return func(c *Client) { c.limit = n }
+}
+
+// WithOwnerHandle sets the device owner's phone or email for
+// recipient tracking. Used to create message_recipients rows.
+func WithOwnerHandle(handle string) ClientOption {
+	return func(c *Client) { c.ownerHandle = handle }
 }
 
 // WithImessageLogger sets the logger for the client.
@@ -154,6 +162,21 @@ func (c *Client) Import(
 		return nil, fmt.Errorf("ensure SMS label: %w", err)
 	}
 
+	// Resolve owner participant from --me flag for message_recipients
+	var ownerPID int64
+	if c.ownerHandle != "" {
+		pid, err := c.resolveParticipant(
+			s, c.ownerHandle,
+			map[string]int64{}, map[string]int64{},
+			summary,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("resolve owner handle %q: %w",
+				c.ownerHandle, err)
+		}
+		ownerPID = pid
+	}
+
 	// Track resolved participants to avoid repeated DB calls
 	phoneCache := map[string]int64{} // phone -> participantID
 	emailCache := map[string]int64{} // email -> participantID
@@ -190,7 +213,7 @@ func (c *Client) Import(
 				ctx, s, sourceID, &msg,
 				imessageLabelID, smsLabelID,
 				phoneCache, emailCache, convCache,
-				summary,
+				ownerPID, summary,
 			); err != nil {
 				c.logger.Warn(
 					"failed to import message",
@@ -296,6 +319,7 @@ func (c *Client) importMessage(
 	phoneCache map[string]int64,
 	emailCache map[string]int64,
 	convCache map[string]int64,
+	ownerPID int64,
 	summary *ImportSummary,
 ) error {
 	// Determine conversation
@@ -318,7 +342,10 @@ func (c *Client) importMessage(
 	// Resolve sender
 	var senderID sql.NullInt64
 	if msg.IsFromMe != 0 {
-		// is_from_me messages: sender is the device owner, no external handle
+		// is_from_me: sender is the device owner
+		if ownerPID > 0 {
+			senderID = sql.NullInt64{Int64: ownerPID, Valid: true}
+		}
 	} else if msg.HandleID != nil {
 		pid, err := c.resolveParticipant(
 			s, *msg.HandleID, phoneCache, emailCache, summary,
@@ -381,6 +408,19 @@ func (c *Client) importMessage(
 		}
 	}
 
+	// Write message_recipients rows
+	if err := c.writeMessageRecipients(
+		s, msgID, msg, senderID, ownerPID,
+		phoneCache, emailCache, summary,
+	); err != nil {
+		return fmt.Errorf("write message recipients: %w", err)
+	}
+
+	// Store raw data as JSON for completeness
+	if err := c.writeMessageRaw(s, msgID, msg, body); err != nil {
+		return fmt.Errorf("write message raw: %w", err)
+	}
+
 	// Label: iMessage or SMS
 	labelID := imessageLabelID
 	if msgType == "sms" {
@@ -400,6 +440,147 @@ func (c *Client) importMessage(
 
 	summary.MessagesImported++
 	return nil
+}
+
+// writeMessageRecipients creates from/to rows in message_recipients.
+// For is_from_me: from=owner, to=other chat participants.
+// For !is_from_me: from=sender handle, to=owner.
+func (c *Client) writeMessageRecipients(
+	s *store.Store,
+	msgID int64,
+	msg *messageRow,
+	senderID sql.NullInt64,
+	ownerPID int64,
+	phoneCache map[string]int64,
+	emailCache map[string]int64,
+	summary *ImportSummary,
+) error {
+	if msg.IsFromMe != 0 {
+		// Sender is the device owner
+		if ownerPID > 0 {
+			if err := s.ReplaceMessageRecipients(
+				msgID, "from", []int64{ownerPID}, nil,
+			); err != nil {
+				return err
+			}
+		}
+		// Recipients are the other chat participants
+		toPIDs := c.getChatParticipantIDs(
+			s, msg, phoneCache, emailCache, summary,
+		)
+		if len(toPIDs) > 0 {
+			if err := s.ReplaceMessageRecipients(
+				msgID, "to", toPIDs, nil,
+			); err != nil {
+				return err
+			}
+		}
+	} else {
+		// Sender is the external handle
+		if senderID.Valid {
+			if err := s.ReplaceMessageRecipients(
+				msgID, "from",
+				[]int64{senderID.Int64}, nil,
+			); err != nil {
+				return err
+			}
+		}
+		// Recipient is the device owner
+		if ownerPID > 0 {
+			if err := s.ReplaceMessageRecipients(
+				msgID, "to", []int64{ownerPID}, nil,
+			); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// getChatParticipantIDs returns participant IDs for the chat members
+// (excluding the owner). Used for "to" recipients on is_from_me messages.
+func (c *Client) getChatParticipantIDs(
+	s *store.Store,
+	msg *messageRow,
+	phoneCache map[string]int64,
+	emailCache map[string]int64,
+	summary *ImportSummary,
+) []int64 {
+	if msg.ChatROWID == nil {
+		// No chat info; fall back to handle if available
+		if msg.HandleID != nil {
+			pid, err := c.resolveParticipant(
+				s, *msg.HandleID,
+				phoneCache, emailCache, summary,
+			)
+			if err == nil && pid > 0 {
+				return []int64{pid}
+			}
+		}
+		return nil
+	}
+
+	rows, err := c.db.Query(`
+		SELECT h.id
+		FROM chat_handle_join chj
+		JOIN handle h ON h.ROWID = chj.handle_id
+		WHERE chj.chat_id = ?
+	`, *msg.ChatROWID)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+
+	var pids []int64
+	for rows.Next() {
+		var handleID string
+		if err := rows.Scan(&handleID); err != nil {
+			continue
+		}
+		pid, err := c.resolveParticipant(
+			s, handleID, phoneCache, emailCache, summary,
+		)
+		if err == nil && pid > 0 {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// writeMessageRaw serializes the message data as JSON and stores it.
+func (c *Client) writeMessageRaw(
+	s *store.Store,
+	msgID int64,
+	msg *messageRow,
+	body string,
+) error {
+	raw := map[string]interface{}{
+		"rowid":      msg.ROWID,
+		"guid":       msg.GUID,
+		"date":       msg.Date,
+		"is_from_me": msg.IsFromMe,
+		"body":       body,
+	}
+	if msg.Service != nil {
+		raw["service"] = *msg.Service
+	}
+	if msg.HandleID != nil {
+		raw["handle_id"] = *msg.HandleID
+	}
+	if msg.ChatGUID != nil {
+		raw["chat_guid"] = *msg.ChatGUID
+	}
+	if msg.ChatDisplayName != nil {
+		raw["chat_display_name"] = *msg.ChatDisplayName
+	}
+	if msg.ChatIdentifier != nil {
+		raw["chat_identifier"] = *msg.ChatIdentifier
+	}
+	rawJSON, err := json.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("marshal raw JSON: %w", err)
+	}
+	return s.UpsertMessageRawWithFormat(msgID, rawJSON, "imessage_json")
 }
 
 // ensureConversation gets or creates a conversation for the chat,

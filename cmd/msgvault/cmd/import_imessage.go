@@ -20,6 +20,7 @@ var (
 	importImessageBefore string
 	importImessageAfter  string
 	importImessageLimit  int
+	importImessageMe     string
 )
 
 var importImessageCmd = &cobra.Command{
@@ -61,6 +62,11 @@ func runImportImessage(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	if importImessageMe != "" {
+		clientOpts = append(
+			clientOpts, imessage.WithOwnerHandle(importImessageMe),
+		)
+	}
 
 	client, err := imessage.NewClient(chatDBPath, clientOpts...)
 	if err != nil {
@@ -69,7 +75,11 @@ func runImportImessage(cmd *cobra.Command, _ []string) error {
 	defer func() { _ = client.Close() }()
 
 	// Get or create the source
-	src, err := s.GetOrCreateSource("apple_messages", "imessage")
+	identifier := "local"
+	if importImessageMe != "" {
+		identifier = importImessageMe
+	}
+	src, err := s.GetOrCreateSource("apple_messages", identifier)
 	if err != nil {
 		return fmt.Errorf("get or create source: %w", err)
 	}
@@ -238,6 +248,10 @@ func init() {
 	importImessageCmd.Flags().IntVar(
 		&importImessageLimit, "limit", 0,
 		"limit number of messages (for testing)",
+	)
+	importImessageCmd.Flags().StringVar(
+		&importImessageMe, "me", "",
+		"your phone/email for recipient tracking (default: source identifier 'local')",
 	)
 	rootCmd.AddCommand(importImessageCmd)
 }
