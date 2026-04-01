@@ -369,6 +369,24 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 			messages = messages[:pageSize]
 		}
 		data.Messages = messages
+	} else {
+		// No query: show 100 most recent messages across all accounts
+		recentFilter := query.MessageFilter{
+			Sorting: query.MessageSorting{
+				Field:     query.MessageSortByDate,
+				Direction: query.SortDesc,
+			},
+			Pagination: query.Pagination{
+				Limit: 100,
+			},
+		}
+		recent, err := h.engine.ListMessages(ctx, recentFilter)
+		if err != nil {
+			slog.Error("failed to fetch recent messages", "error", err)
+		} else {
+			data.Messages = recent
+			data.ShowRecent = true
+		}
 	}
 
 	// Ensure stats bar is always shown (deep search doesn't return stats)

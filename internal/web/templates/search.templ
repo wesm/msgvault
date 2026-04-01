@@ -18,6 +18,7 @@ type SearchData struct {
 	Attachments bool
 	SortField   string
 	SortDir     string
+	ShowRecent  bool
 }
 
 func (d SearchData) baseQuery() url.Values {
@@ -154,7 +155,10 @@ templ Search(data SearchData) {
 				}
 			</div>
 		</form>
-		if data.Query == "" {
+		if data.ShowRecent && len(data.Messages) > 0 {
+			<div class="result-count">Recent messages</div>
+			@recentMessageTable(data)
+		} else if data.Query == "" && len(data.Messages) == 0 {
 			<div class="empty-state">
 				<div class="empty-state-title">Search your archive</div>
 				<p>Use Gmail-like syntax: from:user@example.com, subject:invoice, has:attachment, before:2024/01/01</p>
@@ -211,6 +215,28 @@ templ searchMessageTable(data SearchData) {
 						<th>Subject</th>
 						<th class="num">Size</th>
 					}
+				</tr>
+			</thead>
+			<tbody>
+				for _, msg := range data.Messages {
+					@messageRow(msg)
+				}
+			</tbody>
+		</table>
+		@selectionBar()
+	</form>
+}
+
+templ recentMessageTable(data SearchData) {
+	<form method="POST" action="/deletions/stage-batch" id="sel-form">
+		<table class="data-table">
+			<thead>
+				<tr>
+					<th class="sel-cell"><input type="checkbox" id="select-all" title="Select all"/></th>
+					<th>Date</th>
+					<th>From</th>
+					<th>Subject</th>
+					<th class="num">Size</th>
 				</tr>
 			</thead>
 			<tbody>
