@@ -140,6 +140,18 @@ func (m Model) textStatsString() string {
 	return ""
 }
 
+// measureMaxWidth returns the widest string length in values,
+// using headerWidth as the minimum.
+func measureMaxWidth(values []string, headerWidth int) int {
+	w := headerWidth
+	for _, v := range values {
+		if len(v) > w {
+			w = len(v)
+		}
+	}
+	return w
+}
+
 // textConversationsView renders the conversations list table.
 func (m Model) textConversationsView() string {
 	if len(m.textState.conversations) == 0 && !m.loading {
@@ -152,20 +164,48 @@ func (m Model) textConversationsView() string {
 
 	var sb strings.Builder
 
-	// Column widths
-	nameWidth := m.width - 48
+	// Visible row range
+	endRow := m.textState.scrollOffset + m.pageSize - 1
+	if endRow > len(m.textState.conversations) {
+		endRow = len(m.textState.conversations)
+	}
+
+	// Measure source column from visible data
+	sourceVals := make(
+		[]string, 0, endRow-m.textState.scrollOffset,
+	)
+	for i := m.textState.scrollOffset; i < endRow; i++ {
+		sourceVals = append(
+			sourceVals,
+			m.textState.conversations[i].SourceType,
+		)
+	}
+	sourceWidth := measureMaxWidth(sourceVals, len("Source"))
+	if sourceWidth > 16 {
+		sourceWidth = 16
+	}
+
+	// Fixed column widths
+	const (
+		indicatorWidth = 3
+		msgsWidth      = 10
+		lastMsgWidth   = 16
+		colSpacing     = 6 // gaps between columns
+	)
+	fixedTotal := indicatorWidth + sourceWidth +
+		msgsWidth + lastMsgWidth + colSpacing
+	nameWidth := m.width - fixedTotal
 	if nameWidth < 15 {
 		nameWidth = 15
-	}
-	if nameWidth > 50 {
-		nameWidth = 50
 	}
 
 	// Header
 	headerRow := fmt.Sprintf(
-		"   %-*s %10s %10s  %-16s",
+		"   %-*s  %-*s %*s  %-*s",
 		nameWidth, "Conversation",
-		"Source", "Messages", "Last Message",
+		sourceWidth, "Source",
+		msgsWidth, "Messages",
+		lastMsgWidth, "Last Message",
 	)
 	sb.WriteString(
 		tableHeaderStyle.Render(padRight(headerRow, m.width)),
@@ -177,11 +217,6 @@ func (m Model) textConversationsView() string {
 	sb.WriteString("\n")
 
 	// Data rows
-	endRow := m.textState.scrollOffset + m.pageSize - 1
-	if endRow > len(m.textState.conversations) {
-		endRow = len(m.textState.conversations)
-	}
-
 	for i := m.textState.scrollOffset; i < endRow; i++ {
 		conv := m.textState.conversations[i]
 		isCursor := i == m.textState.cursor
@@ -198,13 +233,18 @@ func (m Model) textConversationsView() string {
 		title = truncateRunes(title, nameWidth)
 		title = fmt.Sprintf("%-*s", nameWidth, title)
 
-		source := truncateRunes(conv.SourceType, 10)
+		source := truncateRunes(conv.SourceType, sourceWidth)
+		source = fmt.Sprintf("%-*s", sourceWidth, source)
 		msgs := formatCount(conv.MessageCount)
-		lastMsg := conv.LastMessageAt.Format("2006-01-02 15:04")
+		lastMsg := conv.LastMessageAt.Format(
+			"2006-01-02 15:04",
+		)
 
 		line := fmt.Sprintf(
-			"%s %10s %10s  %-16s",
-			title, source, msgs, lastMsg,
+			"%s  %s %*s  %-*s",
+			title, source,
+			msgsWidth, msgs,
+			lastMsgWidth, lastMsg,
 		)
 
 		var style lipgloss.Style
@@ -245,7 +285,8 @@ func (m Model) textConversationsView() string {
 	return sb.String()
 }
 
-// textAggregateView renders the text aggregate table (contacts, sources, etc.).
+// textAggregateView renders the text aggregate table
+// (contacts, sources, etc.).
 func (m Model) textAggregateView() string {
 	if len(m.textState.aggregateRows) == 0 && !m.loading {
 		return m.fillScreen(
@@ -257,13 +298,25 @@ func (m Model) textAggregateView() string {
 
 	var sb strings.Builder
 
-	// Column widths
-	keyWidth := m.width - 43
+	// Visible row range
+	endRow := m.textState.scrollOffset + m.pageSize - 1
+	if endRow > len(m.textState.aggregateRows) {
+		endRow = len(m.textState.aggregateRows)
+	}
+
+	// Fixed column widths
+	const (
+		indicatorWidth = 3
+		countWidth     = 10
+		sizeWidth      = 12
+		attachWidth    = 12
+		colSpacing     = 6 // gaps between columns
+	)
+	fixedTotal := indicatorWidth + countWidth +
+		sizeWidth + attachWidth + colSpacing
+	keyWidth := m.width - fixedTotal
 	if keyWidth < 20 {
 		keyWidth = 20
-	}
-	if keyWidth > 57 {
-		keyWidth = 57
 	}
 
 	// Sort indicators
@@ -286,13 +339,14 @@ func (m Model) textAggregateView() string {
 		countLabel += si
 	}
 	sizeLabel := "Size"
-	_ = sizeLabel // TextSortField has no size variant; label kept for column layout
 	attachLabel := "Attchs"
 
 	headerRow := fmt.Sprintf(
-		"   %-*s %10s %12s %12s",
+		"   %-*s %*s %*s %*s",
 		keyWidth, viewLabel,
-		countLabel, sizeLabel, attachLabel,
+		countWidth, countLabel,
+		sizeWidth, sizeLabel,
+		attachWidth, attachLabel,
 	)
 	sb.WriteString(
 		tableHeaderStyle.Render(padRight(headerRow, m.width)),
@@ -302,11 +356,6 @@ func (m Model) textAggregateView() string {
 		separatorStyle.Render(strings.Repeat("\u2500", m.width)),
 	)
 	sb.WriteString("\n")
-
-	endRow := m.textState.scrollOffset + m.pageSize - 1
-	if endRow > len(m.textState.aggregateRows) {
-		endRow = len(m.textState.aggregateRows)
-	}
 
 	for i := m.textState.scrollOffset; i < endRow; i++ {
 		row := m.textState.aggregateRows[i]
@@ -321,11 +370,11 @@ func (m Model) textAggregateView() string {
 		key = fmt.Sprintf("%-*s", keyWidth, key)
 
 		line := fmt.Sprintf(
-			"%s %10s %12s %12s",
+			"%s %*s %*s %*s",
 			key,
-			formatCount(row.Count),
-			formatBytes(row.TotalSize),
-			formatBytes(row.AttachmentSize),
+			countWidth, formatCount(row.Count),
+			sizeWidth, formatBytes(row.TotalSize),
+			attachWidth, formatBytes(row.AttachmentSize),
 		)
 
 		var style lipgloss.Style
@@ -381,10 +430,44 @@ func (m Model) textTimelineView() string {
 
 	var sb strings.Builder
 
-	// Column widths
-	dateWidth := 16
-	fromWidth := 20
-	bodyWidth := m.width - dateWidth - fromWidth - 9
+	// Visible row range
+	endRow := m.textState.scrollOffset + m.pageSize - 1
+	if endRow > len(m.textState.messages) {
+		endRow = len(m.textState.messages)
+	}
+
+	// Measure sender column from visible data
+	senderVals := make(
+		[]string, 0, endRow-m.textState.scrollOffset,
+	)
+	for i := m.textState.scrollOffset; i < endRow; i++ {
+		msg := m.textState.messages[i]
+		from := msg.FromName
+		if from == "" && msg.FromPhone != "" {
+			from = msg.FromPhone
+		}
+		if from == "" {
+			from = msg.FromEmail
+		}
+		senderVals = append(senderVals, from)
+	}
+	fromWidth := measureMaxWidth(senderVals, len("Sender"))
+	if fromWidth > 25 {
+		fromWidth = 25
+	}
+	if fromWidth < 10 {
+		fromWidth = 10
+	}
+
+	// Fixed column widths
+	const (
+		indicatorWidth = 3
+		dateWidth      = 16
+		colSpacing     = 7 // gaps between columns
+	)
+	fixedTotal := indicatorWidth + dateWidth +
+		fromWidth + colSpacing
+	bodyWidth := m.width - fixedTotal
 	if bodyWidth < 10 {
 		bodyWidth = 10
 	}
@@ -404,11 +487,6 @@ func (m Model) textTimelineView() string {
 		separatorStyle.Render(strings.Repeat("\u2500", m.width)),
 	)
 	sb.WriteString("\n")
-
-	endRow := m.textState.scrollOffset + m.pageSize - 1
-	if endRow > len(m.textState.messages) {
-		endRow = len(m.textState.messages)
-	}
 
 	for i := m.textState.scrollOffset; i < endRow; i++ {
 		msg := m.textState.messages[i]
