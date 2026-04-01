@@ -28,6 +28,14 @@ func TestNormalizePhone(t *testing.T) {
 		{"", "", true},
 		// System identifier
 		{"status@broadcast", "", true},
+		// International 00-prefix
+		{"0033624921221", "+33624921221", false},
+		// Trunk prefix (0)
+		{"+44 (0)7700 900000", "+447700900000", false},
+		// Embedded + (invalid)
+		{"1+5551234567", "", true},
+		// Too long (>15 digits)
+		{"+1234567890123456", "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {

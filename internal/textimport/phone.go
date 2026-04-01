@@ -18,36 +18,49 @@ func NormalizePhone(raw string) (string, error) {
 		return "", fmt.Errorf("not a phone number: %q", raw)
 	}
 
-	// Strip all non-digit and non-plus characters
+	// Strip trunk prefix (0) before collecting digits, e.g. "+44 (0)7700" → "+44 7700"
+	cleaned := strings.ReplaceAll(raw, "(0)", "")
+
+	// Collect digits and any leading '+'; reject embedded '+' (e.g. "1+555...")
 	var b strings.Builder
-	for _, r := range raw {
-		if r == '+' || unicode.IsDigit(r) {
+	leadingPlus := false
+	for i, r := range cleaned {
+		switch {
+		case r == '+' && i == 0:
+			leadingPlus = true
+		case r == '+':
+			return "", fmt.Errorf("embedded '+' in phone number: %q", raw)
+		case unicode.IsDigit(r):
 			b.WriteRune(r)
 		}
 	}
-	digits := b.String()
+	justDigits := b.String()
 
-	// Must start with + or be all digits
-	if digits == "" {
+	if justDigits == "" {
 		return "", fmt.Errorf("no digits in input: %q", raw)
 	}
-
-	// Strip leading + for length check
-	justDigits := strings.TrimPrefix(digits, "+")
 	if len(justDigits) < 7 {
 		return "", fmt.Errorf("too short for phone number: %q", raw)
 	}
 
-	// Ensure + prefix
-	if !strings.HasPrefix(digits, "+") {
-		// Assume US country code if 10 digits
-		if len(justDigits) == 10 {
-			digits = "+1" + justDigits
-		} else if len(justDigits) == 11 && justDigits[0] == '1' {
-			digits = "+" + justDigits
-		} else {
-			digits = "+" + justDigits
-		}
+	var digits string
+	if leadingPlus {
+		digits = "+" + justDigits
+	} else if strings.HasPrefix(justDigits, "00") {
+		// International 00-prefix → replace with +
+		digits = "+" + justDigits[2:]
+	} else if len(justDigits) == 10 {
+		// Assume US country code
+		digits = "+1" + justDigits
+	} else if len(justDigits) == 11 && justDigits[0] == '1' {
+		digits = "+" + justDigits
+	} else {
+		digits = "+" + justDigits
+	}
+
+	// E.164 max is 15 digits (country code + subscriber)
+	if len(digits)-1 > 15 {
+		return "", fmt.Errorf("too long for E.164 (max 15 digits): %q", raw)
 	}
 
 	return digits, nil
