@@ -6,15 +6,25 @@ shared schema, unified participant model, and dedicated TUI experience.
 
 ## Guiding Principles
 
-1. **Phone number is the unification key.** If you communicate with
-   someone through multiple channels (iMessage, WhatsApp, Google Voice),
-   all messages appear under one contact.
+1. **Phone number is the primary unification key.** If you communicate
+   with someone through multiple channels (iMessage, WhatsApp, Google
+   Voice) using the same phone number, all messages appear under one
+   contact. Cross-channel unification where the only shared identifier
+   is an address book entry (e.g., alice@icloud.com in iMessage and
+   +1... in WhatsApp) requires address book resolution, which is
+   deferred. Phone-based dedup handles the common case; gaps are
+   acknowledged, not hidden.
 2. **Texts are not emails.** The TUI has a separate Texts mode with
    conversation-centric navigation, not the sender-aggregate model used
    for email.
 3. **Consistent UX across modes.** Same keybindings, sort/filter
    patterns, and visual language in both Email and Texts modes. Only the
    available views and drill-down behavior differ.
+4. **Texts mode is read-only.** Imported text archives have no live
+   delete API (iMessage reads a local DB, WhatsApp reads a backup,
+   GVoice reads a Takeout export). Deletion staging (`d`/`D`) is
+   disabled in Texts mode. Selection keybindings (`Space`/`A`) are
+   reserved for future use (e.g., export) but do not stage deletions.
 
 ## Schema & Persistence
 
@@ -50,6 +60,13 @@ A shared `NormalizePhone()` utility ensures consistent E.164
 normalization across all importers. It returns an error for inputs that
 cannot be normalized (email handles, short codes), signaling the caller
 to fall through to path 2 or 3 above.
+
+**Cross-channel limitations:** Participants matched by phone number are
+unified automatically. Participants only known by email (e.g., an
+iMessage contact using their iCloud address) remain separate from the
+same person's phone-based participant until address book resolution is
+implemented. The Contacts aggregate view in Texts mode will show these
+as separate entries.
 
 ### Message Storage
 
@@ -101,6 +118,42 @@ records (`'google_voice_call'`) and voicemails
 They are accessible via the Labels aggregate view when filtered to the
 relevant label.
 
+### Conversation Stats Maintenance
+
+The `conversations` table has denormalized stats columns:
+`message_count`, `participant_count`, `last_message_at`,
+`last_message_preview`. These are required for the Conversations
+primary view.
+
+**Store-level maintenance:** The store layer maintains these stats as
+part of message insertion — not left to each importer. When a message
+is inserted for a text source (identified by `message_type`), the
+store updates the parent conversation's stats atomically:
+- `message_count` incremented
+- `last_message_at` updated if the new message is newer
+- `last_message_preview` set to the message snippet
+- `participant_count` updated when new `conversation_participants`
+  rows are added
+
+This replaces the WhatsApp importer's current approach of bulk-
+updating stats in a post-processing step. All three importers get
+correct stats automatically.
+
+### Label Persistence
+
+All importers that produce labels must create `labels` rows and link
+them via `message_labels`. This is part of the shared persistence
+contract:
+- **WhatsApp:** source-specific labels as needed
+- **iMessage:** `'iMessage'`, `'SMS'` (from service field)
+- **Google Voice:** `'sms'`, `'mms'`, `'call_received'`,
+  `'call_placed'`, `'call_missed'`, `'voicemail'`
+
+The store provides `EnsureLabel(name, sourceID)` and
+`LinkMessageLabel(messageID, labelID)`. Google Voice call/voicemail
+records depend on labels for discoverability in the Labels aggregate
+view.
+
 ### `conversation_participants`
 
 All three importers populate this table to track who is in each
@@ -120,13 +173,17 @@ No shared interface is forced — each source is too different. But all
 converge on the same store methods for persistence:
 `EnsureParticipantByPhone(phone, identifierType)`,
 `EnsureParticipant(email, identifierType)` (for email-based handles),
-`EnsureConversationWithType`, and message insertion with proper
-`message_type`/`sender_id`/`conversation_type`.
+`EnsureConversationWithType`, `EnsureLabel`, `LinkMessageLabel`, and
+message insertion with proper
+`message_type`/`sender_id`/`conversation_type`. The store handles
+conversation stats maintenance automatically on insert.
 
 ### Shared Utilities (`internal/textimport/`)
 
-- `NormalizePhone(raw string) string` — E.164 normalization
-- Progress reporting (callback-based, like WhatsApp's `ImportCLIProgress`)
+- `NormalizePhone(raw string) (string, error)` — E.164 normalization;
+  returns error for non-phone inputs
+- Progress reporting (callback-based, like WhatsApp's
+  `ImportCLIProgress`)
 
 ### iMessage Refactoring
 
@@ -135,10 +192,12 @@ Instead:
 - Read from `chat.db` directly (parsing stays the same)
 - Resolve participants via phone or email (iMessage handles can be
   either); use `NormalizePhone` first, fall back to email path
-- Set `message_type = 'imessage'` or `'sms'` (based on iMessage service field)
+- Set `message_type = 'imessage'` or `'sms'` (based on iMessage
+  service field)
 - Set `conversation_type` based on chat type (group vs 1:1)
 - Populate `conversations.title` using the fallback chain (see
   Conversation Title Fallback section)
+- Create labels (`'iMessage'`, `'SMS'`) and link to messages
 
 ### Google Voice Refactoring
 
@@ -150,6 +209,8 @@ Instead:
   `'google_voice_call'`, or `'google_voice_voicemail'`
 - Set `conversation_type` based on participant count
 - Store body text directly, raw HTML in `message_raw`
+- Create labels (`'sms'`, `'mms'`, `'call_received'`, etc.) and link
+  to messages
 
 ### WhatsApp
 
@@ -190,7 +251,10 @@ The default view when entering Texts mode. Each row shows:
 
 - Default sort: last message date (newest first)
 - Drill into a conversation: chronological message timeline
-- Messages display in compact chat style (timestamp, sender, body snippet)
+- Messages display in compact chat style (timestamp, sender, body
+  snippet)
+- Conversation stats (Messages, Participants, Last Message) come from
+  denormalized columns maintained by the store layer
 
 ### Aggregate Views (Tab to Cycle)
 
@@ -214,43 +278,65 @@ All existing patterns carry over:
 - Account filter (`a`) — doubles as source-type filter
 - Date range, attachment filter
 - Search (`/`) — queries FTS, results filtered to text messages
-- Selection (`Space`/`A`), deletion staging (`d`/`D`)
 - Sort cycling (`s`), reverse (`r`)
+
+**Read-only:** Deletion staging (`d`/`D`) and selection (`Space`/`A`)
+are disabled in Texts mode. Imported text archives have no live delete
+API — iMessage reads a local DB snapshot, WhatsApp reads a decrypted
+backup, GVoice reads a Takeout export. There is no server to delete
+from.
 
 ## Parquet Analytics
 
-### Separate Cache for Texts
+### Unified Cache with Mode Filtering
+
+Text messages are stored in the same Parquet cache as emails, with
+additional columns to support mode-specific queries. This avoids
+duplicating the entire cache/query/staleness infrastructure.
 
 ```
 ~/.msgvault/analytics/
-  messages/year=*/        # Email (existing)
-  texts/year=*/           # Text messages (new)
+  messages/year=*/        # All messages (email + text)
   _last_sync.json
 ```
 
-### Text Parquet Schema (Denormalized)
+### Additional Parquet Columns
 
-- `message_id`, `source_id`, `conversation_id`
-- `phone_number`, `display_name` (sender)
-- `message_type` (whatsapp/imessage/sms/google_voice_text/google_voice_call/google_voice_voicemail)
-- `source_type` (whatsapp/apple_messages/google_voice)
-- `conversation_title`, `conversation_type`
-- `sent_at`, `year` (partition key)
-- `body_length`, `has_attachments`, `attachment_count`
-- `to_phones[]` (recipient phone numbers)
-- `labels[]`
+The existing denormalized Parquet schema is extended with:
+- `phone_number` (sender, from `participants.phone_number`)
+- `message_type` (whatsapp/imessage/sms/google_voice_*/email)
+- `source_type` (whatsapp/apple_messages/google_voice/gmail)
+- `conversation_title` (from `conversations.title`)
+- `conversation_type` (group_chat/direct_chat/email_thread)
+- `sender_id` (from `messages.sender_id`)
+
+Email mode queries filter `WHERE message_type = 'email'` (or
+`source_type = 'gmail'`). Texts mode queries filter on the text
+message types. The DuckDB query engine branches on mode for aggregate
+key columns (email uses `from_email`/`from_domain`; texts use
+`phone_number`/`conversation_title`).
 
 ### Query Engine
 
-DuckDB query engine gets parallel methods for texts — same
-aggregate/filter patterns as email but keyed on phone numbers and
-conversations instead of email addresses and domains.
+The DuckDB query engine gains mode-aware aggregate methods. Same
+function signatures as email aggregates, but the mode determines:
+- Which `message_type` values are included
+- Which columns are used for grouping (phone vs email, conversation
+  vs domain)
+- Which views are available (Conversations is texts-only; Domains is
+  email-only)
+
+Existing email queries are unchanged — they gain an implicit
+`message_type = 'email'` filter.
 
 ## Search
 
-Text messages are indexed in `messages_fts` alongside emails. Search
-in Texts mode filters results to text message types; search in Email
-mode filters to email. The FTS table and indexing pipeline are shared.
+Text messages are indexed in `messages_fts` alongside emails. The
+FTS backfill pipeline is updated to populate the `from_addr` field
+from `participants.phone_number` (via `messages.sender_id`) for text
+messages, rather than only reading from `message_recipients` email
+fields. Search in Texts mode filters results to text message types;
+search in Email mode filters to email.
 
 ## Scope
 
@@ -259,16 +345,21 @@ mode filters to email. The FTS table and indexing pipeline are shared.
 - Refactor iMessage and Google Voice to phone-based persistence
 - Shared `NormalizePhone()` utility
 - Participant deduplication by phone number across all sources
+- Store-level conversation stats maintenance
+- Label persistence contract for all importers
 - CLI command renaming
-- TUI Texts mode (Conversations + aggregate views)
-- Text message Parquet cache and DuckDB query methods
-- FTS indexing of text messages
-- `build-cache` builds both email and text Parquet files
+- TUI Texts mode (Conversations + aggregate views), read-only
+- Unified Parquet cache with mode-aware columns and queries
+- FTS indexing of text messages (including phone-based sender lookup)
+- `build-cache` exports text messages alongside emails
 
 ### Deferred
 
 - WhatsApp web sync API (future import method)
 - MMS/iMessage attachment extraction
-- Contact name resolution from macOS address book
+- Contact name resolution from macOS address book (needed for full
+  cross-channel unification of email-only iMessage handles with
+  phone-based contacts)
 - Cross-mode unified search (emails + texts together)
 - Rich message detail view for texts (headers, raw data display)
+- Deletion support for text sources with live APIs
