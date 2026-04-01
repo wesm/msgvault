@@ -101,7 +101,8 @@ func setupTestSQLite(t *testing.T) (string, func()) {
 			id INTEGER PRIMARY KEY,
 			source_id INTEGER NOT NULL REFERENCES sources(id),
 			source_conversation_id TEXT,
-			title TEXT
+			title TEXT,
+			conversation_type TEXT NOT NULL DEFAULT 'email'
 		);
 	`
 
@@ -1138,7 +1139,7 @@ func TestBuildCache_EmptyDatabase(t *testing.T) {
 		CREATE TABLE labels (id INTEGER PRIMARY KEY, name TEXT);
 		CREATE TABLE message_labels (message_id INTEGER, label_id INTEGER);
 		CREATE TABLE attachments (message_id INTEGER, size INTEGER, filename TEXT);
-		CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_conversation_id TEXT, title TEXT);
+		CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_conversation_id TEXT, title TEXT, conversation_type TEXT NOT NULL DEFAULT 'email');
 	`)
 	_ = db.Close()
 
@@ -1338,7 +1339,7 @@ func BenchmarkBuildCache(b *testing.B) {
 		CREATE TABLE labels (id INTEGER PRIMARY KEY, name TEXT);
 		CREATE TABLE message_labels (message_id INTEGER, label_id INTEGER);
 		CREATE TABLE attachments (message_id INTEGER, size INTEGER, filename TEXT);
-		CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_conversation_id TEXT, title TEXT);
+		CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_conversation_id TEXT, title TEXT, conversation_type TEXT NOT NULL DEFAULT 'email');
 		INSERT INTO sources VALUES (1, 'test@gmail.com');
 		INSERT INTO labels VALUES (1, 'INBOX'), (2, 'Work');
 	`)
@@ -1466,7 +1467,8 @@ func setupTestSQLiteEmpty(t *testing.T) (string, func()) {
 			id INTEGER PRIMARY KEY,
 			source_id INTEGER NOT NULL REFERENCES sources(id),
 			source_conversation_id TEXT,
-			title TEXT
+			title TEXT,
+			conversation_type TEXT NOT NULL DEFAULT 'email'
 		);
 	`
 	if _, err := db.Exec(schema); err != nil {
@@ -1969,7 +1971,7 @@ func BenchmarkBuildCacheIncremental(b *testing.B) {
 		CREATE TABLE labels (id INTEGER PRIMARY KEY, name TEXT);
 		CREATE TABLE message_labels (message_id INTEGER, label_id INTEGER);
 		CREATE TABLE attachments (message_id INTEGER, size INTEGER, filename TEXT);
-		CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_conversation_id TEXT, title TEXT);
+		CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_conversation_id TEXT, title TEXT, conversation_type TEXT NOT NULL DEFAULT 'email');
 		INSERT INTO sources VALUES (1, 'test@gmail.com');
 		INSERT INTO labels VALUES (1, 'INBOX');
 		INSERT INTO participants VALUES (1, 'alice@example.com', 'example.com', 'Alice', NULL);

@@ -152,6 +152,7 @@ func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB, o
 		{"messages", "sender_id"},
 		{"messages", "message_type"},
 		{"conversations", "title"},
+		{"conversations", "conversation_type"},
 		{"sources", "source_type"},
 	} {
 		if !engine.optionalCols[col.table][col.col] {
@@ -305,6 +306,11 @@ func (e *DuckDBEngine) parquetCTEs() string {
 		convReplace = append(convReplace, "COALESCE(CAST(title AS VARCHAR), '') AS title")
 	} else {
 		convExtra = append(convExtra, "'' AS title")
+	}
+	if e.hasCol("conversations", "conversation_type") {
+		convReplace = append(convReplace, "COALESCE(CAST(conversation_type AS VARCHAR), 'email') AS conversation_type")
+	} else {
+		convExtra = append(convExtra, "'email' AS conversation_type")
 	}
 	convCTE := fmt.Sprintf("SELECT * REPLACE (\n\t\t\t\t%s\n\t\t\t)", strings.Join(convReplace, ",\n\t\t\t\t"))
 	if len(convExtra) > 0 {
@@ -602,6 +608,10 @@ func (e *DuckDBEngine) buildWhereClause(opts AggregateOptions, keyColumns ...str
 	var conditions []string
 	var args []interface{}
 
+	// Exclude text messages from email-mode queries.
+	// message_type IS NULL and '' handle old data without the column.
+	conditions = append(conditions, "(msg.message_type = 'email' OR msg.message_type IS NULL OR msg.message_type = '')")
+
 	if opts.SourceID != nil {
 		conditions = append(conditions, "msg.source_id = ?")
 		args = append(args, *opts.SourceID)
@@ -803,6 +813,10 @@ func (e *DuckDBEngine) Aggregate(ctx context.Context, groupBy ViewType, opts Agg
 func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []interface{}) {
 	var conditions []string
 	var args []interface{}
+
+	// Exclude text messages from email-mode queries.
+	// message_type IS NULL and '' handle old data without the column.
+	conditions = append(conditions, "(msg.message_type = 'email' OR msg.message_type IS NULL OR msg.message_type = '')")
 
 	if filter.SourceID != nil {
 		conditions = append(conditions, "msg.source_id = ?")

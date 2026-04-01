@@ -32,7 +32,7 @@ var buildCacheMu sync.Mutex
 // columns are added/removed/renamed in the COPY queries below so that
 // incremental builds automatically trigger a full rebuild instead of
 // producing Parquet files with mismatched schemas.
-const cacheSchemaVersion = 4 // v4: add source_type to sources Parquet; strip \r\n in SanitizeTerminal
+const cacheSchemaVersion = 5 // v5: add conversation_type to conversations Parquet
 
 // syncState tracks the message and sync-run watermarks covered by the cache.
 type syncState struct {
@@ -441,7 +441,8 @@ func buildCache(dbPath, analyticsDir string, fullRebuild bool) (*buildResult, er
 		SELECT
 			id,
 			COALESCE(TRY_CAST(source_conversation_id AS VARCHAR), '') as source_conversation_id,
-			COALESCE(TRY_CAST(title AS VARCHAR), '') as title
+			COALESCE(TRY_CAST(title AS VARCHAR), '') as title,
+			COALESCE(TRY_CAST(conversation_type AS VARCHAR), 'email') as conversation_type
 		FROM sqlite_db.conversations
 	) TO '%s/conversations.parquet' (
 		FORMAT PARQUET,

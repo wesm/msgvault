@@ -185,6 +185,10 @@ func optsToFilterConditions(opts AggregateOptions, prefix string) ([]string, []i
 	var conditions []string
 	var args []interface{}
 
+	// Exclude text messages from email-mode queries.
+	// message_type IS NULL and '' handle old data without the column.
+	conditions = append(conditions, "("+prefix+"message_type = 'email' OR "+prefix+"message_type IS NULL OR "+prefix+"message_type = '')")
+
 	if opts.SourceID != nil {
 		conditions = append(conditions, prefix+"source_id = ?")
 		args = append(args, *opts.SourceID)
@@ -252,6 +256,10 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 	}
 
 	// Include all messages (deleted messages shown with indicator in TUI)
+
+	// Exclude text messages from email-mode queries.
+	// message_type IS NULL and '' handle old data without the column.
+	conditions = append(conditions, "("+prefix+"message_type = 'email' OR "+prefix+"message_type IS NULL OR "+prefix+"message_type = '')")
 
 	if filter.SourceID != nil {
 		conditions = append(conditions, prefix+"source_id = ?")
