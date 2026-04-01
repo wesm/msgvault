@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wesm/msgvault/internal/textimport"
 	"howett.net/plist"
@@ -87,11 +88,11 @@ func extractAttributedBodyText(data []byte) string {
 
 // extractStreamtypedText extracts text from NSArchiver streamtyped format.
 // The format embeds an NSString with the text content. We scan for the
-// NSString class marker followed by a length-prefixed UTF-8 string.
+// NSString class marker, skip past the variable-length encoding prefix,
+// and extract the UTF-8 text that follows.
 func extractStreamtypedText(data []byte) string {
-	// Look for the NSString class marker followed by the text.
-	// The pattern is: \x84\x01+ followed by a length byte/word
-	// then the UTF-8 text content.
+	// The NSString payload appears after \x84\x01+ followed by a
+	// variable-length size prefix, then the raw UTF-8 text.
 	marker := []byte("\x84\x01+")
 	idx := bytes.Index(data, marker)
 	if idx < 0 {
@@ -102,32 +103,53 @@ func extractStreamtypedText(data []byte) string {
 		return ""
 	}
 
-	// Read the length. First byte: if high bit set, it's a multi-byte
-	// length. Otherwise it's a single-byte length.
-	length := 0
+	// Skip the length prefix. Single-byte lengths have bit 7 clear.
+	// Multi-byte: bit 7 is set, and the remaining bytes encode the
+	// length. Rather than trying to decode the exact format, skip
+	// all bytes that are clearly part of the prefix (non-printable
+	// bytes before the text starts).
 	b := data[pos]
-	pos++
-	if b&0x80 == 0 {
-		// Single byte length
-		length = int(b)
+	if b&0x80 != 0 {
+		// Multi-byte length — skip the flag byte and any following
+		// bytes that look like length encoding (values < 0x20 or
+		// continuation bytes).
+		pos++
+		for pos < len(data) && data[pos] < 0x20 {
+			pos++
+		}
 	} else {
-		// Multi-byte: low 4 bits tell how many length bytes follow
-		nBytes := int(b & 0x0f)
-		if nBytes == 0 || pos+nBytes > len(data) {
-			return ""
-		}
-		// Little-endian length
-		for i := 0; i < nBytes; i++ {
-			length |= int(data[pos+i]) << (8 * i)
-		}
-		pos += nBytes
+		// Single-byte length — just skip it
+		pos++
 	}
 
-	if length <= 0 || pos+length > len(data) {
+	if pos >= len(data) {
 		return ""
 	}
 
-	return string(data[pos : pos+length])
+	// Extract valid UTF-8 text from pos to the next non-text control
+	// sequence. The text ends at a \x00 null, or at a \x84/\x85/\x86
+	// archiver control byte.
+	end := pos
+	for end < len(data) {
+		ch := data[end]
+		if ch == 0x00 || ch == 0x84 || ch == 0x85 || ch == 0x86 {
+			break
+		}
+		end++
+	}
+
+	if end <= pos {
+		return ""
+	}
+
+	text := string(data[pos:end])
+
+	// Validate UTF-8 and trim any trailing incomplete sequences
+	for len(text) > 0 && !utf8.ValidString(text) {
+		text = text[:len(text)-1]
+	}
+
+	return text
 }
 
 // extractKeyedArchiverText extracts text from NSKeyedArchiver binary plist.

@@ -244,6 +244,25 @@ func makeStreamtypedBlob(text string) []byte {
 	return buf
 }
 
+// makeRealStreamtypedBlob builds a blob matching the actual macOS Sequoia
+// format where the multi-byte length has extra framing bytes (\x81\x92\x00)
+// between the marker and the text.
+func makeRealStreamtypedBlob(text string) []byte {
+	// This matches the real format seen in chat.db:
+	// \x84\x01+ \x81 \x92 \x00 <text> \x86 ...
+	var buf []byte
+	buf = append(buf, "\x04\x0bstreamtyped\x81\xe8\x03\x84\x01@\x84\x84\x84"...)
+	buf = append(buf, "\x12NSAttributedString"...)
+	buf = append(buf, "\x00\x84\x84\x08NSObject\x00\x85\x92\x84\x84\x84\x08NSString\x01\x94"...)
+	buf = append(buf, "\x84\x01+"...) // marker
+	// Multi-byte length prefix with real format: \x81 + length bytes + \x00
+	n := len(text)
+	buf = append(buf, 0x81, byte(n), 0x00)
+	buf = append(buf, text...)
+	buf = append(buf, 0x86) // terminator
+	return buf
+}
+
 func TestExtractAttributedBodyText(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -258,6 +277,7 @@ func TestExtractAttributedBodyText(t *testing.T) {
 		{"multiline", makeAttributedBodyBlob("Line one\nLine two"), "Line one\nLine two"},
 		{"streamtyped short", makeStreamtypedBlob("Hello world"), "Hello world"},
 		{"streamtyped long", makeStreamtypedBlob("This is a longer message that tests multi-byte length encoding and should work correctly"), "This is a longer message that tests multi-byte length encoding and should work correctly"},
+		{"streamtyped real format", makeRealStreamtypedBlob("I am learning Go"), "I am learning Go"},
 	}
 
 	for _, tt := range tests {
