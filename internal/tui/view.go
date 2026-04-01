@@ -182,8 +182,14 @@ func (m Model) buildTitleBar() string {
 		}
 	}
 
-	// Build line content: "msgvault [hash] - Account          update: vX.Y.Z"
-	line1Content := fmt.Sprintf("%s - %s", titleText, accountStr)
+	// Mode indicator when text engine is available
+	modeStr := ""
+	if m.textEngine != nil {
+		modeStr = " [Email]"
+	}
+
+	// Build line content: "msgvault [hash] [Email] - Account          update: vX.Y.Z"
+	line1Content := fmt.Sprintf("%s%s - %s", titleText, modeStr, accountStr)
 	if updateNotice != "" {
 		gap := m.width - 2 - lipgloss.Width(line1Content) - lipgloss.Width(updateNotice)
 		if gap > 1 {
@@ -1198,6 +1204,7 @@ var rawHelpLines = []string{
 	"  A           Select account",
 	"  f           Filter (attachments, deleted)",
 	"  e           Export attachments (in message view)",
+	"  m           Toggle Email/Texts mode",
 	"  q           Quit",
 	"",
 	"[↑/↓] Scroll  [Any other key] Close",

@@ -54,6 +54,10 @@ type Options struct {
 	// IsRemote indicates the TUI is connected to a remote server.
 	// Some features (deletion staging, attachment export) are disabled in remote mode.
 	IsRemote bool
+
+	// TextEngine provides text message query operations.
+	// When non-nil, the 'm' key toggles between Email and Texts mode.
+	TextEngine query.TextEngine
 }
 
 // modalType represents the type of modal dialog.
@@ -97,8 +101,17 @@ type selectionState struct {
 type Model struct {
 	viewState // Embedded state
 
+	// Top-level mode: Email or Texts
+	mode tuiMode
+
 	// Query engine for data access
 	engine query.Engine
+
+	// Text message query engine (nil if no text data available)
+	textEngine query.TextEngine
+
+	// Texts mode state (separate from email viewState)
+	textState textState
 
 	// Version info for title bar
 	version string
@@ -217,8 +230,17 @@ func New(engine query.Engine, opts Options) Model {
 		threadLimit = defaultThreadMessageLimit
 	}
 
+	textEngine := opts.TextEngine
+	if textEngine == nil {
+		// Try type assertion as fallback
+		if te, ok := engine.(query.TextEngine); ok {
+			textEngine = te
+		}
+	}
+
 	return Model{
 		engine:             engine,
+		textEngine:         textEngine,
 		actions:            NewActionController(engine, opts.DataDir, nil),
 		version:            opts.Version,
 		aggregateLimit:     aggLimit,
@@ -734,6 +756,89 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSearchDebounce(msg)
 	case spinnerTickMsg:
 		return m.handleSpinnerTick()
+	// Text mode messages
+	case textConversationsLoadedMsg:
+		return m.handleTextConversationsLoaded(msg)
+	case textAggregateLoadedMsg:
+		return m.handleTextAggregateLoaded(msg)
+	case textMessagesLoadedMsg:
+		return m.handleTextMessagesLoaded(msg)
+	case textSearchResultMsg:
+		return m.handleTextSearchResult(msg)
+	case textStatsLoadedMsg:
+		return m.handleTextStatsLoaded(msg)
+	}
+	return m, nil
+}
+
+// handleTextConversationsLoaded processes text conversations load completion.
+func (m Model) handleTextConversationsLoaded(msg textConversationsLoadedMsg) (tea.Model, tea.Cmd) {
+	m.transitionBuffer = ""
+	m.loading = false
+	if msg.err != nil {
+		m.err = msg.err
+		m.modal = modalError
+		m.modalResult = msg.err.Error()
+		return m, nil
+	}
+	m.textState.conversations = msg.conversations
+	m.textState.stats = msg.stats
+	return m, nil
+}
+
+// handleTextAggregateLoaded processes text aggregate load completion.
+func (m Model) handleTextAggregateLoaded(msg textAggregateLoadedMsg) (tea.Model, tea.Cmd) {
+	m.transitionBuffer = ""
+	m.loading = false
+	if msg.err != nil {
+		m.err = msg.err
+		m.modal = modalError
+		m.modalResult = msg.err.Error()
+		return m, nil
+	}
+	m.textState.aggregateRows = msg.rows
+	m.textState.stats = msg.stats
+	return m, nil
+}
+
+// handleTextMessagesLoaded processes text messages load completion.
+func (m Model) handleTextMessagesLoaded(msg textMessagesLoadedMsg) (tea.Model, tea.Cmd) {
+	m.transitionBuffer = ""
+	m.loading = false
+	if msg.err != nil {
+		m.err = msg.err
+		m.modal = modalError
+		m.modalResult = msg.err.Error()
+		return m, nil
+	}
+	m.textState.messages = msg.messages
+	m.textState.cursor = 0
+	m.textState.scrollOffset = 0
+	return m, nil
+}
+
+// handleTextSearchResult processes text search results.
+func (m Model) handleTextSearchResult(msg textSearchResultMsg) (tea.Model, tea.Cmd) {
+	m.transitionBuffer = ""
+	m.loading = false
+	if msg.err != nil {
+		m.err = msg.err
+		m.modal = modalError
+		m.modalResult = msg.err.Error()
+		return m, nil
+	}
+	// Show search results as a timeline
+	m.textState.messages = msg.messages
+	m.textState.level = textLevelTimeline
+	m.textState.cursor = 0
+	m.textState.scrollOffset = 0
+	return m, nil
+}
+
+// handleTextStatsLoaded processes text stats load completion.
+func (m Model) handleTextStatsLoaded(msg textStatsLoadedMsg) (tea.Model, tea.Cmd) {
+	if msg.err == nil {
+		m.textState.stats = msg.stats
 	}
 	return m, nil
 }
@@ -1103,6 +1208,11 @@ func (m Model) handleSpinnerTick() (tea.Model, tea.Cmd) {
 
 // handleKeyPress processes keyboard input.
 func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Route to Texts mode handler when active
+	if m.mode == modeTexts {
+		return m.handleTextKeyPress(msg)
+	}
+
 	// Handle modal first (error modals must dismiss even during search)
 	if m.modal != modalNone {
 		return m.handleModalKeys(msg)
@@ -1312,6 +1422,10 @@ func (m Model) View() string {
 // Separated from View() so transitions can capture the current output
 // before changing state (for the transitionBuffer pattern).
 func (m Model) renderView() string {
+	if m.mode == modeTexts {
+		return m.renderTextView()
+	}
+
 	switch m.level {
 	case levelAggregates, levelDrillDown:
 		return fmt.Sprintf("%s\n%s\n%s",

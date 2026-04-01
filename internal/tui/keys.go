@@ -81,7 +81,7 @@ func (m Model) handleInlineSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// handleGlobalKeys handles keys common to all views (quit, help).
+// handleGlobalKeys handles keys common to all views (quit, help, mode toggle).
 // Returns (model, cmd, true) if the key was handled, or (model, nil, false) otherwise.
 func (m Model) handleGlobalKeys(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	switch msg.String() {
@@ -94,6 +94,21 @@ func (m Model) handleGlobalKeys(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	case "?":
 		m.modal = modalHelp
 		return m, nil, true
+	case "m":
+		if m.textEngine == nil {
+			return m, nil, true
+		}
+		if m.mode == modeEmail {
+			m.mode = modeTexts
+			m.loading = true
+			spinCmd := m.startSpinner()
+			return m, tea.Batch(spinCmd, m.loadTextConversations()), true
+		}
+		m.mode = modeEmail
+		m.loading = true
+		m.aggregateRequestID++
+		spinCmd := m.startSpinner()
+		return m, tea.Batch(spinCmd, m.loadData(), m.loadStats()), true
 	}
 	return m, nil, false
 }
