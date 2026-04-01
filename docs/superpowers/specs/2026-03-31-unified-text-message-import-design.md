@@ -125,23 +125,17 @@ The `conversations` table has denormalized stats columns:
 `last_message_preview`. These are required for the Conversations
 primary view.
 
-**Recomputation, not incremental updates.** Message insertion is
-idempotent (`INSERT ... ON CONFLICT DO UPDATE`) and imports are
-expected to be re-runnable. Incrementing counters on each upsert
-would cause drift on re-imports. Instead, conversation stats are
-recomputed from table state:
+**Stats are not maintained during message insertion.** Message
+insertion is idempotent (`INSERT ... ON CONFLICT DO UPDATE`) and
+imports are expected to be re-runnable. The store does not attempt to
+detect insert-vs-update, and does not increment counters on upsert.
 
-- Each importer calls `RecomputeConversationStats(sourceID)` as a
-  post-import step (like WhatsApp already does today).
-- This runs aggregate queries against `messages` and
-  `conversation_participants` to set `message_count`,
-  `participant_count`, `last_message_at`, and `last_message_preview`
-  for all conversations belonging to that source.
-- The operation is idempotent — running it twice produces the same
-  result regardless of how many times the import ran.
-
-This keeps the existing upsert/ignore semantics untouched and gives
-all three importers correct stats via one shared store method.
+Instead, each importer calls `RecomputeConversationStats(sourceID)`
+as a post-import step (like WhatsApp already does today). This runs
+aggregate queries against `messages` and `conversation_participants`
+to set all stats columns for conversations belonging to that source.
+The operation is idempotent — running it twice produces the same
+result.
 
 ### Label Persistence
 
@@ -334,23 +328,34 @@ In Texts mode, Enter on a message in the timeline is a no-op (or
 scrolls to show the full message body inline if truncated). A proper
 text message detail view is deferred.
 
-### Filters and Interaction
+### Keybindings
 
-All existing patterns carry over:
-- Source filter (`a`) — in Texts mode, this presents a list of text
-  sources (each `sources` row where `source_type` is a text type).
-  This is a per-account filter, same as Email mode — not a source-
-  type bucket. To filter by source type (e.g., "all WhatsApp"), the
-  user selects the specific WhatsApp account. If source-type grouping
-  is needed later, it would be a new filter dimension, not a reuse of
-  the account selector.
-- Date range, attachment filter
-- Search (`/`) — queries FTS, results filtered to text messages
-- Sort cycling (`s`), reverse (`r`)
+Texts mode reuses the same key assignments as Email mode where the
+action applies. Keys that map to email-only actions are disabled.
 
-**Read-only:** Deletion staging (`d`/`D`) and selection (`Space`/`A`)
-are disabled in Texts mode. Imported text archives have no live delete
-API.
+| Key | Email mode | Texts mode |
+|-----|-----------|------------|
+| `Tab` | Cycle aggregate views | Cycle text views (Conversations → Contacts → ...) |
+| `Enter` | Drill down | Drill down (conversation → timeline; no message detail) |
+| `Esc`/`Backspace` | Go back | Go back |
+| `j`/`k`/`↑`/`↓` | Navigate rows | Navigate rows |
+| `s` | Cycle sort field | Cycle sort field |
+| `r` | Reverse sort | Reverse sort |
+| `t` | Jump to Time view | Jump to Time view |
+| `A` | Account selector | Source selector (lists text source accounts) |
+| `a` | Jump to all messages | Jump to all conversations (reset filters) |
+| `f` | Filter by attachments | Filter by attachments |
+| `/` | Search (email FTS) | Search (text FTS, plain text only) |
+| `?` | Help | Help |
+| `q` | Quit | Quit |
+| `m` | Switch to Texts mode | Switch to Email mode |
+| `Space` | Toggle selection | Disabled (no deletion staging) |
+| `d`/`D` | Stage deletion | Disabled (read-only) |
+| `x` | Clear selection | Disabled |
+
+The `A` key opens the same account selector UI but filtered to text
+sources. This is a per-account filter (same `SourceID *int64`
+plumbing), not a source-type bucket.
 
 ## Parquet Analytics
 
@@ -405,12 +410,31 @@ views.
 
 ## Search
 
+### FTS Indexing
+
 Text messages are indexed in `messages_fts` alongside emails. The
 FTS backfill pipeline is updated to populate the `from_addr` field
 from `participants.phone_number` (via `messages.sender_id`) for text
 messages, rather than only reading from `message_recipients` email
-fields. Search in Texts mode filters results to text message types;
-search in Email mode filters to email.
+fields.
+
+### Search Semantics by Mode
+
+**Email mode** retains the current Gmail-style search operators:
+`from:`, `to:`, `cc:`, `bcc:`, `subject:`, `account:`, etc. These
+resolve against `message_recipients` and email-specific fields. No
+changes.
+
+**Texts mode uses plain full-text search only.** The `/` key opens
+the same search input, but the query is treated as a plain text match
+against `messages_fts` (body + sender phone/name), filtered to text
+message types. The Gmail-style operators (`from:`, `subject:`, etc.)
+are not supported in Texts mode — they map to email-specific fields
+(`message_recipients`, `subject`) that don't apply to text messages.
+
+If structured text search is needed later (e.g., `from:+1555...`,
+`in:groupname`), it would be a new parser for text-specific
+operators. For now, plain FTS is sufficient.
 
 ## Scope
 
