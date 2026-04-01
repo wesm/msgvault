@@ -202,6 +202,48 @@ func makeAttributedBodyBlob(text string) []byte {
 	return data
 }
 
+// makeStreamtypedBlob builds an NSArchiver "streamtyped" blob containing
+// an NSAttributedString with the given text. Mirrors the format produced
+// by macOS Ventura+/Sequoia chat.db.
+func makeStreamtypedBlob(text string) []byte {
+	// Header
+	header := []byte("\x04\x0bstreamtyped\x81\xe8\x03\x84\x01@\x84\x84\x84")
+	// Class name "NSAttributedString"
+	className := []byte("\x12NSAttributedString")
+	// Parent class
+	parent := []byte("\x00\x84\x84\x08NSObject\x00\x85\x92\x84\x84\x84\x08NSString\x01\x94")
+	// Text length prefix + marker
+	marker := []byte("\x84\x01+")
+
+	var buf []byte
+	buf = append(buf, header...)
+	buf = append(buf, className...)
+	buf = append(buf, parent...)
+	buf = append(buf, marker...)
+
+	// Length encoding
+	textBytes := []byte(text)
+	n := len(textBytes)
+	if n < 128 {
+		buf = append(buf, byte(n))
+	} else {
+		// Multi-byte little-endian length
+		nBytes := 0
+		tmp := n
+		for tmp > 0 {
+			nBytes++
+			tmp >>= 8
+		}
+		buf = append(buf, 0x80|byte(nBytes))
+		for i := 0; i < nBytes; i++ {
+			buf = append(buf, byte(n>>(8*i)))
+		}
+	}
+
+	buf = append(buf, textBytes...)
+	return buf
+}
+
 func TestExtractAttributedBodyText(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -214,6 +256,8 @@ func TestExtractAttributedBodyText(t *testing.T) {
 		{"plain ASCII message", makeAttributedBodyBlob("Hello from iMessage"), "Hello from iMessage"},
 		{"unicode and emoji", makeAttributedBodyBlob("Hey! \xf0\x9f\x98\x8a"), "Hey! \xf0\x9f\x98\x8a"},
 		{"multiline", makeAttributedBodyBlob("Line one\nLine two"), "Line one\nLine two"},
+		{"streamtyped short", makeStreamtypedBlob("Hello world"), "Hello world"},
+		{"streamtyped long", makeStreamtypedBlob("This is a longer message that tests multi-byte length encoding and should work correctly"), "This is a longer message that tests multi-byte length encoding and should work correctly"},
 	}
 
 	for _, tt := range tests {

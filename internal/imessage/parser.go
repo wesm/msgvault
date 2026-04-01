@@ -1,6 +1,7 @@
 package imessage
 
 import (
+	"bytes"
 	"strings"
 	"time"
 
@@ -55,17 +56,82 @@ func resolveHandle(handleID string) (phone, email, displayName string) {
 	return "", "", handleID
 }
 
-// extractAttributedBodyText decodes an NSKeyedArchiver binary plist blob from
-// chat.db's attributedBody column and returns the plain text string.
+// extractAttributedBodyText extracts the plain text string from chat.db's
+// attributedBody column. This column uses one of two serialization formats:
 //
-// macOS Ventura+ / iOS 16+ stopped populating the plain-text "text" column for
-// most iMessages; the content lives exclusively in attributedBody as an
-// NSAttributedString archived via NSKeyedArchiver.
+//   - NSArchiver "streamtyped" — legacy format, header starts with
+//     \x04\x0bstreamtyped. The text is embedded as an NSString with a
+//     length prefix after the class hierarchy.
+//   - NSKeyedArchiver binary plist — starts with "bplist". The text lives
+//     at $objects[rootObj["NS.string"]].
+//
+// macOS Ventura+ / iOS 16+ stopped populating the plain-text "text"
+// column for most iMessages; the content lives exclusively here.
 func extractAttributedBodyText(data []byte) string {
 	if len(data) == 0 {
 		return ""
 	}
 
+	// Try streamtyped format first (most common on modern macOS)
+	if bytes.HasPrefix(data, []byte("\x04\x0bstreamtyped")) {
+		return extractStreamtypedText(data)
+	}
+
+	// Try NSKeyedArchiver binary plist
+	if bytes.HasPrefix(data, []byte("bplist")) {
+		return extractKeyedArchiverText(data)
+	}
+
+	return ""
+}
+
+// extractStreamtypedText extracts text from NSArchiver streamtyped format.
+// The format embeds an NSString with the text content. We scan for the
+// NSString class marker followed by a length-prefixed UTF-8 string.
+func extractStreamtypedText(data []byte) string {
+	// Look for the NSString class marker followed by the text.
+	// The pattern is: \x84\x01+ followed by a length byte/word
+	// then the UTF-8 text content.
+	marker := []byte("\x84\x01+")
+	idx := bytes.Index(data, marker)
+	if idx < 0 {
+		return ""
+	}
+	pos := idx + len(marker)
+	if pos >= len(data) {
+		return ""
+	}
+
+	// Read the length. First byte: if high bit set, it's a multi-byte
+	// length. Otherwise it's a single-byte length.
+	length := 0
+	b := data[pos]
+	pos++
+	if b&0x80 == 0 {
+		// Single byte length
+		length = int(b)
+	} else {
+		// Multi-byte: low 4 bits tell how many length bytes follow
+		nBytes := int(b & 0x0f)
+		if nBytes == 0 || pos+nBytes > len(data) {
+			return ""
+		}
+		// Little-endian length
+		for i := 0; i < nBytes; i++ {
+			length |= int(data[pos+i]) << (8 * i)
+		}
+		pos += nBytes
+	}
+
+	if length <= 0 || pos+length > len(data) {
+		return ""
+	}
+
+	return string(data[pos : pos+length])
+}
+
+// extractKeyedArchiverText extracts text from NSKeyedArchiver binary plist.
+func extractKeyedArchiverText(data []byte) string {
 	var archive struct {
 		Top     map[string]plist.UID `plist:"$top"`
 		Objects []interface{}        `plist:"$objects"`
