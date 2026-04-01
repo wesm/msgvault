@@ -586,6 +586,12 @@ func (s *Store) AddMessageLabels(messageID int64, labelIDs []int64) error {
 	})
 }
 
+// LinkMessageLabel links a single label to a message.
+// Uses INSERT OR IGNORE — safe to call multiple times.
+func (s *Store) LinkMessageLabel(messageID, labelID int64) error {
+	return s.AddMessageLabels(messageID, []int64{labelID})
+}
+
 // RemoveMessageLabels removes specific labels from a message.
 func (s *Store) RemoveMessageLabels(messageID int64, labelIDs []int64) error {
 	if len(labelIDs) == 0 {
