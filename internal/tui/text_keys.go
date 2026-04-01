@@ -44,8 +44,8 @@ func (m Model) handleTextKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleTextListKeys(
 	msg tea.KeyMsg,
 ) (tea.Model, tea.Cmd) {
-	// Handle list navigation
-	if m.navigateList(msg.String(), m.textRowCount()) {
+	// Handle list navigation (text-specific: operates on textState)
+	if m.navigateTextList(msg.String(), m.textRowCount()) {
 		return m, nil
 	}
 
@@ -159,6 +159,18 @@ func (m Model) handleTextInlineSearchKeys(
 		if queryStr == "" {
 			return m, nil
 		}
+		// Save current state so Esc can return from search results
+		m.textState.breadcrumbs = append(
+			m.textState.breadcrumbs,
+			textNavSnapshot{
+				level:          m.textState.level,
+				viewType:       m.textState.viewType,
+				cursor:         m.textState.cursor,
+				scrollOffset:   m.textState.scrollOffset,
+				filter:         m.textState.filter,
+				selectedConvID: m.textState.selectedConvID,
+			},
+		)
 		m.loading = true
 		return m, m.loadTextSearch(queryStr)
 
@@ -219,6 +231,59 @@ func (m *Model) textMoveCursor(delta int) {
 		m.textState.scrollOffset,
 		m.visibleRows(),
 	)
+}
+
+// navigateTextList handles list navigation keys for text mode,
+// operating on textState.cursor and textState.scrollOffset instead
+// of the email-mode viewState fields.
+// Returns true if the key was handled.
+func (m *Model) navigateTextList(key string, itemCount int) bool {
+	switch key {
+	case "up", "k":
+		if m.textState.cursor > 0 {
+			m.textState.cursor--
+			m.textState.scrollOffset = calculateScrollOffset(
+				m.textState.cursor,
+				m.textState.scrollOffset,
+				m.visibleRows(),
+			)
+		}
+		return true
+	case "down", "j":
+		if m.textState.cursor < itemCount-1 {
+			m.textState.cursor++
+			m.textState.scrollOffset = calculateScrollOffset(
+				m.textState.cursor,
+				m.textState.scrollOffset,
+				m.visibleRows(),
+			)
+		}
+		return true
+	case "pgup", "ctrl+u":
+		m.textMoveCursor(-m.visibleRows())
+		return true
+	case "pgdown", "ctrl+d":
+		m.textMoveCursor(m.visibleRows())
+		return true
+	case "home":
+		m.textState.cursor = 0
+		m.textState.scrollOffset = 0
+		return true
+	case "end", "G":
+		maxIdx := itemCount - 1
+		if maxIdx < 0 {
+			maxIdx = 0
+		}
+		m.textState.cursor = maxIdx
+		m.textState.scrollOffset = calculateScrollOffset(
+			m.textState.cursor,
+			m.textState.scrollOffset,
+			m.visibleRows(),
+		)
+		return true
+	default:
+		return false
+	}
 }
 
 // textRowCount returns the number of rows in the current text view.

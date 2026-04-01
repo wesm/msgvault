@@ -100,6 +100,7 @@ func (m Model) handleGlobalKeys(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		}
 		if m.mode == modeEmail {
 			m.mode = modeTexts
+			m.textState.filter.SourceID = m.accountFilter
 			m.loading = true
 			spinCmd := m.startSpinner()
 			return m, tea.Batch(spinCmd, m.loadTextConversations()), true
@@ -973,6 +974,10 @@ func (m Model) handleAccountSelectorKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.modal = modalNone
 		m.loading = true
+		if m.mode == modeTexts {
+			m.textState.filter.SourceID = m.accountFilter
+			return m, m.loadTextData()
+		}
 		m.aggregateRequestID++
 		return m, tea.Batch(m.loadData(), m.loadStats())
 	case "esc":
