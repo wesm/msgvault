@@ -33,19 +33,24 @@ func (e *DuckDBEngine) buildTextFilterConditions(
 	}
 	if filter.ContactPhone != "" {
 		conditions = append(conditions, `EXISTS (
-			SELECT 1 FROM mr
-			JOIN p ON p.id = mr.participant_id
-			WHERE mr.message_id = msg.id
-			  AND p.phone_number = ?
+			SELECT 1 FROM p p_filter
+			WHERE p_filter.id = msg.sender_id
+			  AND COALESCE(
+				NULLIF(p_filter.phone_number, ''),
+				p_filter.email_address
+			  ) = ?
 		)`)
 		args = append(args, filter.ContactPhone)
 	}
 	if filter.ContactName != "" {
 		conditions = append(conditions, `EXISTS (
-			SELECT 1 FROM mr
-			JOIN p ON p.id = mr.participant_id
-			WHERE mr.message_id = msg.id
-			  AND COALESCE(NULLIF(TRIM(p.display_name), ''), p.email_address) = ?
+			SELECT 1 FROM p p_filter
+			WHERE p_filter.id = msg.sender_id
+			  AND COALESCE(
+				NULLIF(TRIM(p_filter.display_name), ''),
+				NULLIF(p_filter.phone_number, ''),
+				p_filter.email_address
+			  ) = ?
 		)`)
 		args = append(args, filter.ContactName)
 	}
@@ -96,17 +101,18 @@ func (e *DuckDBEngine) ListConversations(
 ) ([]ConversationRow, error) {
 	where, args := e.buildTextFilterConditions(filter)
 
-	// Sort clause
+	// Sort clause: default to last_message_at DESC for conversations,
+	// since the zero value of SortField (SortByCount) is not meaningful here.
 	orderBy := "last_message_at DESC"
-	switch filter.SortField {
-	case SortByCount:
-		orderBy = "message_count"
-	case SortBySize:
-		orderBy = "total_size"
-	case SortByName:
-		orderBy = "title"
-	}
 	if filter.SortField != 0 {
+		switch filter.SortField {
+		case SortByCount:
+			orderBy = "message_count"
+		case SortBySize:
+			orderBy = "total_size"
+		case SortByName:
+			orderBy = "title"
+		}
 		if filter.SortDirection == SortAsc {
 			orderBy += " ASC"
 		} else {
@@ -125,6 +131,7 @@ func (e *DuckDBEngine) ListConversations(
 			SELECT
 				msg.conversation_id,
 				COUNT(*) AS message_count,
+				-- TODO: use conversation_participants table once exported to Parquet
 				COUNT(DISTINCT COALESCE(msg.sender_id, 0)) AS participant_count,
 				MAX(msg.sent_at) AS last_message_at,
 				COALESCE(SUM(CAST(msg.size_estimate AS BIGINT)), 0) AS total_size,
@@ -186,20 +193,20 @@ func textAggViewDef(
 ) (aggViewDef, error) {
 	switch view {
 	case TextViewContacts:
+		keyExpr := "COALESCE(NULLIF(p_sender.phone_number, ''), " +
+			"p_sender.email_address)"
 		return aggViewDef{
-			keyExpr: "COALESCE(NULLIF(p.phone_number, ''), p.email_address)",
-			joinClause: `JOIN mr ON mr.message_id = msg.id
-				JOIN p ON p.id = mr.participant_id`,
-			nullGuard: "COALESCE(NULLIF(p.phone_number, ''), p.email_address) IS NOT NULL",
+			keyExpr:    keyExpr,
+			joinClause: "JOIN p p_sender ON p_sender.id = msg.sender_id",
+			nullGuard:  keyExpr + " IS NOT NULL AND msg.sender_id IS NOT NULL",
 		}, nil
 	case TextViewContactNames:
-		nameExpr := "COALESCE(NULLIF(TRIM(p.display_name), ''), " +
-			"NULLIF(p.phone_number, ''), p.email_address)"
+		nameExpr := "COALESCE(NULLIF(TRIM(p_sender.display_name), ''), " +
+			"NULLIF(p_sender.phone_number, ''), p_sender.email_address)"
 		return aggViewDef{
-			keyExpr: nameExpr,
-			joinClause: `JOIN mr ON mr.message_id = msg.id
-				JOIN p ON p.id = mr.participant_id`,
-			nullGuard: nameExpr + " IS NOT NULL",
+			keyExpr:    nameExpr,
+			joinClause: "JOIN p p_sender ON p_sender.id = msg.sender_id",
+			nullGuard:  nameExpr + " IS NOT NULL AND msg.sender_id IS NOT NULL",
 		}, nil
 	case TextViewSources:
 		return aggViewDef{
@@ -396,7 +403,7 @@ func (e *DuckDBEngine) TextSearch(
 		JOIN messages m ON m.id = fts.rowid
 		LEFT JOIN participants p ON p.id = m.sender_id
 		LEFT JOIN conversations c ON c.id = m.conversation_id
-		WHERE fts.messages_fts MATCH ?
+		WHERE messages_fts MATCH ?
 		  AND m.message_type IN ('whatsapp','imessage','sms','google_voice_text')
 		ORDER BY m.sent_at DESC
 		LIMIT ? OFFSET ?

@@ -61,19 +61,24 @@ func buildSQLiteTextFilterConditions(filter TextFilter) (string, []interface{}) 
 	}
 	if filter.ContactPhone != "" {
 		conditions = append(conditions, `EXISTS (
-			SELECT 1 FROM message_recipients mr_cp
-			JOIN participants p_cp ON p_cp.id = mr_cp.participant_id
-			WHERE mr_cp.message_id = m.id
-			  AND p_cp.phone_number = ?
+			SELECT 1 FROM participants p_cp
+			WHERE p_cp.id = m.sender_id
+			  AND COALESCE(
+				NULLIF(p_cp.phone_number, ''),
+				p_cp.email_address
+			  ) = ?
 		)`)
 		args = append(args, filter.ContactPhone)
 	}
 	if filter.ContactName != "" {
 		conditions = append(conditions, `EXISTS (
-			SELECT 1 FROM message_recipients mr_cn
-			JOIN participants p_cn ON p_cn.id = mr_cn.participant_id
-			WHERE mr_cn.message_id = m.id
-			  AND COALESCE(NULLIF(TRIM(p_cn.display_name), ''), p_cn.email_address) = ?
+			SELECT 1 FROM participants p_cn
+			WHERE p_cn.id = m.sender_id
+			  AND COALESCE(
+				NULLIF(TRIM(p_cn.display_name), ''),
+				NULLIF(p_cn.phone_number, ''),
+				p_cn.email_address
+			  ) = ?
 		)`)
 		args = append(args, filter.ContactName)
 	}
@@ -225,19 +230,19 @@ func textAggSQLiteDimension(
 ) (aggDimension, error) {
 	switch view {
 	case TextViewContacts:
+		keyExpr := "COALESCE(NULLIF(p_agg.phone_number, ''), p_agg.email_address)"
 		return aggDimension{
-			keyExpr: "COALESCE(NULLIF(p_agg.phone_number, ''), p_agg.email_address)",
-			joins: `JOIN message_recipients mr_agg ON mr_agg.message_id = m.id
-				JOIN participants p_agg ON p_agg.id = mr_agg.participant_id`,
-			whereExpr: "COALESCE(NULLIF(p_agg.phone_number, ''), p_agg.email_address) IS NOT NULL",
+			keyExpr:   keyExpr,
+			joins:     "JOIN participants p_agg ON p_agg.id = m.sender_id",
+			whereExpr: keyExpr + " IS NOT NULL AND m.sender_id IS NOT NULL",
 		}, nil
 	case TextViewContactNames:
-		nameExpr := "COALESCE(NULLIF(TRIM(p_agg.display_name), ''), NULLIF(p_agg.phone_number, ''), p_agg.email_address)"
+		nameExpr := "COALESCE(NULLIF(TRIM(p_agg.display_name), ''), " +
+			"NULLIF(p_agg.phone_number, ''), p_agg.email_address)"
 		return aggDimension{
-			keyExpr: nameExpr,
-			joins: `JOIN message_recipients mr_agg ON mr_agg.message_id = m.id
-				JOIN participants p_agg ON p_agg.id = mr_agg.participant_id`,
-			whereExpr: nameExpr + " IS NOT NULL",
+			keyExpr:   nameExpr,
+			joins:     "JOIN participants p_agg ON p_agg.id = m.sender_id",
+			whereExpr: nameExpr + " IS NOT NULL AND m.sender_id IS NOT NULL",
 		}, nil
 	case TextViewSources:
 		return aggDimension{
