@@ -87,7 +87,7 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 	imp.progress.OnStart()
 
 	// Create participant for the phone owner (self).
-	selfParticipantID, err := imp.store.EnsureParticipantByPhone(opts.Phone, opts.DisplayName)
+	selfParticipantID, err := imp.store.EnsureParticipantByPhone(opts.Phone, opts.DisplayName, "whatsapp")
 	if err != nil {
 		syncErr = err
 		return nil, fmt.Errorf("ensure self participant: %w", err)
@@ -152,7 +152,7 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 			phone := normalizePhone(chat.User, chat.Server)
 			if phone == "" {
 				// Non-phone JID (e.g., lid:..., broadcast) — skip.
-			} else if participantID, err := imp.store.EnsureParticipantByPhone(phone, ""); err != nil {
+			} else if participantID, err := imp.store.EnsureParticipantByPhone(phone, "", "whatsapp"); err != nil {
 				summary.Errors++
 				imp.progress.OnError(fmt.Errorf("ensure participant %s: %w", phone, err))
 			} else {
@@ -174,7 +174,7 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 					if phone == "" {
 						continue // Non-phone JID — skip.
 					}
-					participantID, err := imp.store.EnsureParticipantByPhone(phone, "")
+					participantID, err := imp.store.EnsureParticipantByPhone(phone, "", "whatsapp")
 					if err != nil {
 						summary.Errors++
 						continue
@@ -279,7 +279,7 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 					// validation despite not being real phone numbers.
 					phone := resolveLidSender(waMsg.SenderJIDRowID, waMsg.SenderServer.String, lidMap)
 					if phone != "" {
-						pid, err := imp.store.EnsureParticipantByPhone(phone, "")
+						pid, err := imp.store.EnsureParticipantByPhone(phone, "", "whatsapp")
 						if err != nil {
 							summary.Errors++
 							imp.progress.OnError(fmt.Errorf("ensure sender participant %s: %w", phone, err))
@@ -290,7 +290,7 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 				} else if waMsg.SenderUser.Valid && waMsg.SenderUser.String != "" {
 					phone := normalizePhone(waMsg.SenderUser.String, waMsg.SenderServer.String)
 					if phone != "" {
-						pid, err := imp.store.EnsureParticipantByPhone(phone, "")
+						pid, err := imp.store.EnsureParticipantByPhone(phone, "", "whatsapp")
 						if err != nil {
 							summary.Errors++
 							imp.progress.OnError(fmt.Errorf("ensure sender participant %s: %w", phone, err))
@@ -302,7 +302,7 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 					// In a direct chat, the other person is the sender.
 					phone := normalizePhone(chat.User, chat.Server)
 					if phone != "" {
-						pid, err := imp.store.EnsureParticipantByPhone(phone, "")
+						pid, err := imp.store.EnsureParticipantByPhone(phone, "", "whatsapp")
 						if err == nil {
 							senderID = sql.NullInt64{Int64: pid, Valid: true}
 						}
@@ -421,7 +421,7 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 							if phone == "" {
 								continue
 							}
-							pid, err := imp.store.EnsureParticipantByPhone(phone, "")
+							pid, err := imp.store.EnsureParticipantByPhone(phone, "", "whatsapp")
 							if err != nil {
 								summary.Errors++
 								continue
@@ -432,7 +432,7 @@ func (imp *Importer) Import(ctx context.Context, waDBPath string, opts ImportOpt
 							if phone == "" {
 								continue // Non-phone JID — skip reaction.
 							}
-							pid, err := imp.store.EnsureParticipantByPhone(phone, "")
+							pid, err := imp.store.EnsureParticipantByPhone(phone, "", "whatsapp")
 							if err != nil {
 								summary.Errors++
 								continue

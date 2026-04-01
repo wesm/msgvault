@@ -906,8 +906,9 @@ func (s *Store) EnsureConversationWithType(sourceID int64, sourceConversationID,
 // EnsureParticipantByPhone gets or creates a participant by phone number.
 // Phone must start with "+" (E.164 format). Returns an error for empty or
 // invalid phone numbers to prevent database pollution.
-// Also creates a participant_identifiers row with identifier_type='whatsapp'.
-func (s *Store) EnsureParticipantByPhone(phone, displayName string) (int64, error) {
+// Also creates a participant_identifiers row with the given identifierType
+// (e.g., "whatsapp", "imessage", "google_voice").
+func (s *Store) EnsureParticipantByPhone(phone, displayName, identifierType string) (int64, error) {
 	if phone == "" {
 		return 0, fmt.Errorf("phone number is required")
 	}
@@ -929,31 +930,30 @@ func (s *Store) EnsureParticipantByPhone(phone, displayName string) (int64, erro
 				WHERE id = ? AND (display_name IS NULL OR display_name = '')
 			`, displayName, id) // best-effort display name update, ignore error
 		}
-		return id, nil
-	}
-	if err != sql.ErrNoRows {
+	} else if err != sql.ErrNoRows {
 		return 0, err
+	} else {
+		// Create new participant
+		result, err := s.db.Exec(`
+			INSERT INTO participants (phone_number, display_name, created_at, updated_at)
+			VALUES (?, ?, datetime('now'), datetime('now'))
+		`, phone, displayName)
+		if err != nil {
+			return 0, fmt.Errorf("insert participant: %w", err)
+		}
+
+		id, err = result.LastInsertId()
+		if err != nil {
+			return 0, err
+		}
 	}
 
-	// Create new participant
-	result, err := s.db.Exec(`
-		INSERT INTO participants (phone_number, display_name, created_at, updated_at)
-		VALUES (?, ?, datetime('now'), datetime('now'))
-	`, phone, displayName)
-	if err != nil {
-		return 0, fmt.Errorf("insert participant: %w", err)
-	}
-
-	id, err = result.LastInsertId()
-	if err != nil {
-		return 0, err
-	}
-
-	// Also create a participant_identifiers row
+	// Ensure a participant_identifiers row exists for this identifierType.
+	// INSERT OR IGNORE is idempotent: a second call with the same type is a no-op.
 	_, err = s.db.Exec(`
 		INSERT OR IGNORE INTO participant_identifiers (participant_id, identifier_type, identifier_value, is_primary)
-		VALUES (?, 'whatsapp', ?, TRUE)
-	`, id, phone)
+		VALUES (?, ?, ?, TRUE)
+	`, id, identifierType, phone)
 	if err != nil {
 		return 0, fmt.Errorf("insert participant identifier: %w", err)
 	}
