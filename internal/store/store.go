@@ -67,9 +67,10 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
-	// SQLite is single-writer; one connection eliminates
-	// cross-connection visibility issues with FK checks.
-	db.SetMaxOpenConns(1)
+	// SQLite with WAL supports one writer + multiple readers.
+	// Allow enough connections for concurrent reads (TUI async
+	// queries, FTS backfill) while SQLite handles write serialization.
+	db.SetMaxOpenConns(4)
 
 	return &Store{
 		db:     db,
