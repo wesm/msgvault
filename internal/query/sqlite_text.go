@@ -5,10 +5,39 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Compile-time interface assertion.
 var _ TextEngine = (*SQLiteEngine)(nil)
+
+// sqliteTimestampLayouts lists the datetime string formats emitted by SQLite
+// and the go-sqlite3 driver. More specific formats come first.
+var sqliteTimestampLayouts = []string{
+	"2006-01-02 15:04:05.999999999-07:00",
+	"2006-01-02T15:04:05.999999999-07:00",
+	"2006-01-02 15:04:05.999999999",
+	"2006-01-02T15:04:05.999999999",
+	"2006-01-02 15:04:05",
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04",
+	"2006-01-02T15:04",
+	"2006-01-02",
+	time.RFC3339,
+	time.RFC3339Nano,
+}
+
+// parseSQLiteTimestamp parses a datetime string from a SQLite aggregate
+// (e.g., MAX(sent_at)) that the driver returns as a plain string rather
+// than a time.Time value.
+func parseSQLiteTimestamp(s string) (time.Time, error) {
+	for _, layout := range sqliteTimestampLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unrecognized SQLite timestamp %q", s)
+}
 
 // textMsgTypeFilter returns a SQL condition restricting to text message types.
 // Uses the m. table alias used in text query methods.
@@ -164,7 +193,7 @@ func (e *SQLiteEngine) ListConversations(
 	var results []ConversationRow
 	for rows.Next() {
 		var row ConversationRow
-		var lastAt sql.NullTime
+		var lastAtStr sql.NullString
 		var totalSize int64
 		if err := rows.Scan(
 			&row.ConversationID,
@@ -172,14 +201,18 @@ func (e *SQLiteEngine) ListConversations(
 			&row.SourceType,
 			&row.MessageCount,
 			&row.ParticipantCount,
-			&lastAt,
+			&lastAtStr,
 			&row.LastPreview,
 			&totalSize,
 		); err != nil {
 			return nil, fmt.Errorf("scan conversation: %w", err)
 		}
-		if lastAt.Valid {
-			row.LastMessageAt = lastAt.Time
+		// MAX(sent_at) returns a string from SQLite; parse it manually so that
+		// the scan works regardless of column affinity on the aggregated value.
+		if lastAtStr.Valid && lastAtStr.String != "" {
+			if t, err := parseSQLiteTimestamp(lastAtStr.String); err == nil {
+				row.LastMessageAt = t
+			}
 		}
 		results = append(results, row)
 	}
