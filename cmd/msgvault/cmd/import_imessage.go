@@ -74,12 +74,10 @@ func runImportImessage(cmd *cobra.Command, _ []string) error {
 	}
 	defer func() { _ = client.Close() }()
 
-	// Get or create the source
-	identifier := "local"
-	if importImessageMe != "" {
-		identifier = importImessageMe
-	}
-	src, err := s.GetOrCreateSource("apple_messages", identifier)
+	// Get or create the source. Always use "local" — there is only one
+	// iMessage database per machine. The --me flag affects participant
+	// resolution only, not the source identifier.
+	src, err := s.GetOrCreateSource("apple_messages", "local")
 	if err != nil {
 		return fmt.Errorf("get or create source: %w", err)
 	}

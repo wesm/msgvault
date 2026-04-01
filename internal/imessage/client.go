@@ -555,11 +555,12 @@ func (c *Client) writeMessageRaw(
 	body string,
 ) error {
 	raw := map[string]interface{}{
-		"rowid":      msg.ROWID,
-		"guid":       msg.GUID,
-		"date":       msg.Date,
-		"is_from_me": msg.IsFromMe,
-		"body":       body,
+		"rowid":           msg.ROWID,
+		"guid":            msg.GUID,
+		"date":            msg.Date,
+		"is_from_me":      msg.IsFromMe,
+		"body":            body,
+		"attributed_body": msg.AttributedBody, // base64-encoded by json.Marshal; nil omitted
 	}
 	if msg.Service != nil {
 		raw["service"] = *msg.Service
