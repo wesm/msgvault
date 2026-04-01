@@ -118,26 +118,30 @@ records (`'google_voice_call'`) and voicemails
 They are accessible via the Labels aggregate view when filtered to the
 relevant label.
 
-### Conversation Stats Maintenance
+### Conversation Stats
 
 The `conversations` table has denormalized stats columns:
 `message_count`, `participant_count`, `last_message_at`,
 `last_message_preview`. These are required for the Conversations
 primary view.
 
-**Store-level maintenance:** The store layer maintains these stats as
-part of message insertion — not left to each importer. When a message
-is inserted for a text source (identified by `message_type`), the
-store updates the parent conversation's stats atomically:
-- `message_count` incremented
-- `last_message_at` updated if the new message is newer
-- `last_message_preview` set to the message snippet
-- `participant_count` updated when new `conversation_participants`
-  rows are added
+**Recomputation, not incremental updates.** Message insertion is
+idempotent (`INSERT ... ON CONFLICT DO UPDATE`) and imports are
+expected to be re-runnable. Incrementing counters on each upsert
+would cause drift on re-imports. Instead, conversation stats are
+recomputed from table state:
 
-This replaces the WhatsApp importer's current approach of bulk-
-updating stats in a post-processing step. All three importers get
-correct stats automatically.
+- Each importer calls `RecomputeConversationStats(sourceID)` as a
+  post-import step (like WhatsApp already does today).
+- This runs aggregate queries against `messages` and
+  `conversation_participants` to set `message_count`,
+  `participant_count`, `last_message_at`, and `last_message_preview`
+  for all conversations belonging to that source.
+- The operation is idempotent — running it twice produces the same
+  result regardless of how many times the import ran.
+
+This keeps the existing upsert/ignore semantics untouched and gives
+all three importers correct stats via one shared store method.
 
 ### Label Persistence
 
@@ -173,10 +177,9 @@ No shared interface is forced — each source is too different. But all
 converge on the same store methods for persistence:
 `EnsureParticipantByPhone(phone, identifierType)`,
 `EnsureParticipant(email, identifierType)` (for email-based handles),
-`EnsureConversationWithType`, `EnsureLabel`, `LinkMessageLabel`, and
-message insertion with proper
-`message_type`/`sender_id`/`conversation_type`. The store handles
-conversation stats maintenance automatically on insert.
+`EnsureConversationWithType`, `EnsureLabel`, `LinkMessageLabel`,
+`RecomputeConversationStats`, and message insertion with proper
+`message_type`/`sender_id`/`conversation_type`.
 
 ### Shared Utilities (`internal/textimport/`)
 
@@ -198,6 +201,7 @@ Instead:
 - Populate `conversations.title` using the fallback chain (see
   Conversation Title Fallback section)
 - Create labels (`'iMessage'`, `'SMS'`) and link to messages
+- Call `RecomputeConversationStats` after import completes
 
 ### Google Voice Refactoring
 
@@ -211,11 +215,13 @@ Instead:
 - Store body text directly, raw HTML in `message_raw`
 - Create labels (`'sms'`, `'mms'`, `'call_received'`, etc.) and link
   to messages
+- Call `RecomputeConversationStats` after import completes
 
 ### WhatsApp
 
 Mostly fine as-is — already follows the target pattern. Minor cleanup:
 - Use shared `NormalizePhone()` instead of internal normalization
+- Migrate bulk stats update to shared `RecomputeConversationStats`
 - Ensure consistent `raw_format` naming
 
 ### CLI Commands
@@ -234,11 +240,55 @@ import methods if needed.
 
 ## TUI Texts Mode
 
-### Mode Switching
+### New Navigation Model
 
-A new key (`m`) toggles between Email mode and Texts mode. The status
-bar shows the current mode. All existing email TUI behavior is
-unchanged in Email mode.
+Texts mode requires a different navigation shape than Email mode. The
+current TUI is built around a single-key aggregate model: `ViewType`
+selects a grouping dimension (sender, domain, label, time),
+`AggregateRow` holds one key plus counts/sizes, and drill-down goes
+from aggregate → message list → message detail. This structure does
+not accommodate conversation-first navigation.
+
+**Texts mode introduces a parallel navigation tree:**
+
+```
+Texts Mode
+├── Conversations view (primary)
+│   └── Drill: conversation → message timeline
+├── Contacts view (aggregate)
+│   └── Drill: contact → conversations with that contact → timeline
+├── Contact Names view (aggregate)
+│   └── Drill: name → conversations → timeline
+├── Sources view (aggregate)
+│   └── Drill: source → conversations from that source → timeline
+├── Labels view (aggregate)
+│   └── Drill: label → messages with that label
+└── Time view (aggregate)
+    └── Drill: period → conversations active in that period → timeline
+```
+
+**Implementation approach:** This is a new set of view types, query
+methods, and TUI states — not a parameterization of the existing email
+views.
+
+- New `TextViewType` enum: `TextViewConversations`,
+  `TextViewContacts`, `TextViewContactNames`, `TextViewSources`,
+  `TextViewLabels`, `TextViewTime`.
+- New `ConversationRow` struct for the Conversations view: `Title`,
+  `SourceType`, `MessageCount`, `ParticipantCount`, `LastMessageAt`,
+  `ConversationID`. This is not an `AggregateRow` — it has different
+  fields and different drill-down semantics.
+- New query engine methods: `ListConversations(filter)`,
+  `TextAggregate(viewType, opts)`, `ListConversationMessages(convID,
+  filter)`. These are separate from the email `Aggregate`/
+  `ListMessages` methods.
+- New TUI state machine entries for Texts mode navigation. The mode
+  key (`m`) switches between the two state machines. Keybindings that
+  overlap (Tab, Enter, Esc, `s`, `r`, `a`, `/`, `?`, `q`) behave
+  the same way within each mode's navigation tree.
+
+The email TUI code is untouched. Texts mode is additive — new files,
+new types, new methods.
 
 ### Conversations View (Primary)
 
@@ -253,8 +303,8 @@ The default view when entering Texts mode. Each row shows:
 - Drill into a conversation: chronological message timeline
 - Messages display in compact chat style (timestamp, sender, body
   snippet)
-- Conversation stats (Messages, Participants, Last Message) come from
-  denormalized columns maintained by the store layer
+- Conversation stats come from denormalized columns recomputed
+  post-import
 
 ### Aggregate Views (Tab to Cycle)
 
@@ -272,19 +322,35 @@ The default view when entering Texts mode. Each row shows:
   sources), then drill into a specific conversation
 - From Time: conversations active in that period
 
+### Message Detail
+
+Pressing Enter on a message in the timeline does not open the email-
+style detail view. The current detail model is email-shaped:
+participants are `Address{Email, Name}` only, participant loading
+reads `message_recipients`, and fallback body extraction assumes MIME
+raw format. None of this works for text messages.
+
+In Texts mode, Enter on a message in the timeline is a no-op (or
+scrolls to show the full message body inline if truncated). A proper
+text message detail view is deferred.
+
 ### Filters and Interaction
 
 All existing patterns carry over:
-- Account filter (`a`) — doubles as source-type filter
+- Source filter (`a`) — in Texts mode, this presents a list of text
+  sources (each `sources` row where `source_type` is a text type).
+  This is a per-account filter, same as Email mode — not a source-
+  type bucket. To filter by source type (e.g., "all WhatsApp"), the
+  user selects the specific WhatsApp account. If source-type grouping
+  is needed later, it would be a new filter dimension, not a reuse of
+  the account selector.
 - Date range, attachment filter
 - Search (`/`) — queries FTS, results filtered to text messages
 - Sort cycling (`s`), reverse (`r`)
 
 **Read-only:** Deletion staging (`d`/`D`) and selection (`Space`/`A`)
 are disabled in Texts mode. Imported text archives have no live delete
-API — iMessage reads a local DB snapshot, WhatsApp reads a decrypted
-backup, GVoice reads a Takeout export. There is no server to delete
-from.
+API.
 
 ## Parquet Analytics
 
@@ -311,23 +377,31 @@ The existing denormalized Parquet schema is extended with:
 - `sender_id` (from `messages.sender_id`)
 
 Email mode queries filter `WHERE message_type = 'email'` (or
-`source_type = 'gmail'`). Texts mode queries filter on the text
-message types. The DuckDB query engine branches on mode for aggregate
-key columns (email uses `from_email`/`from_domain`; texts use
-`phone_number`/`conversation_title`).
+`source_type IN ('gmail', 'imap')`). Texts mode queries filter on the
+text message types. The DuckDB query engine branches on mode for
+aggregate key columns (email uses `from_email`/`from_domain`; texts
+use `phone_number`/`conversation_title`).
 
 ### Query Engine
 
-The DuckDB query engine gains mode-aware aggregate methods. Same
-function signatures as email aggregates, but the mode determines:
-- Which `message_type` values are included
-- Which columns are used for grouping (phone vs email, conversation
-  vs domain)
-- Which views are available (Conversations is texts-only; Domains is
-  email-only)
+The DuckDB query engine gains new methods for Texts mode — these are
+separate functions, not parameterizations of the existing email
+methods:
 
-Existing email queries are unchanged — they gain an implicit
-`message_type = 'email'` filter.
+- `ListConversations(filter TextFilter) ([]ConversationRow, error)` —
+  queries denormalized conversation stats from Parquet, filtered and
+  sorted.
+- `TextAggregate(viewType TextViewType, opts TextAggregateOptions)
+  ([]AggregateRow, error)` — aggregates text messages by contact,
+  source, label, or time. Reuses `AggregateRow` since the shape
+  (key + count + size) fits these views.
+- `ListConversationMessages(convID int64, filter TextFilter)
+  ([]MessageSummary, error)` — messages within a single conversation,
+  chronological.
+
+Existing email query methods are unchanged — they gain an implicit
+`message_type = 'email'` filter to exclude text messages from email
+views.
 
 ## Search
 
@@ -345,13 +419,16 @@ search in Email mode filters to email.
 - Refactor iMessage and Google Voice to phone-based persistence
 - Shared `NormalizePhone()` utility
 - Participant deduplication by phone number across all sources
-- Store-level conversation stats maintenance
+- `RecomputeConversationStats` shared store method
 - Label persistence contract for all importers
 - CLI command renaming
-- TUI Texts mode (Conversations + aggregate views), read-only
+- TUI Texts mode with new navigation model (Conversations +
+  aggregates + message timeline), read-only, detail view disabled
+- New query engine methods for text conversations and aggregates
 - Unified Parquet cache with mode-aware columns and queries
 - FTS indexing of text messages (including phone-based sender lookup)
 - `build-cache` exports text messages alongside emails
+- Source filter in Texts mode (per-account, same plumbing as email)
 
 ### Deferred
 
@@ -361,5 +438,6 @@ search in Email mode filters to email.
   cross-channel unification of email-only iMessage handles with
   phone-based contacts)
 - Cross-mode unified search (emails + texts together)
-- Rich message detail view for texts (headers, raw data display)
+- Rich message detail view for texts
 - Deletion support for text sources with live APIs
+- Source-type bucket filter (filter by "all WhatsApp" vs per-account)
