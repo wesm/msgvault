@@ -74,25 +74,9 @@ func runImportImessage(cmd *cobra.Command, _ []string) error {
 	}
 	defer func() { _ = client.Close() }()
 
-	// Reuse any existing apple_messages source to preserve dedup keys
-	// from previous imports (which may have used --me as the identifier).
-	// Prefer a legacy (non-"local") source when both exist.
-	var src *store.Source
-	existingSources, listErr := s.ListSources("apple_messages")
-	if listErr == nil && len(existingSources) > 0 {
-		// Prefer legacy source (non-"local") for backward compat
-		src = existingSources[0]
-		for _, s := range existingSources {
-			if s.Identifier != "local" {
-				src = s
-				break
-			}
-		}
-	} else {
-		src, err = s.GetOrCreateSource("apple_messages", "local")
-		if err != nil {
-			return fmt.Errorf("get or create source: %w", err)
-		}
+	src, err := resolveImessageSource(s)
+	if err != nil {
+		return fmt.Errorf("get or create source: %w", err)
 	}
 
 	ctx, cancel := context.WithCancel(cmd.Context())
@@ -241,6 +225,22 @@ func printImessageSummary(
 		rate := float64(summary.MessagesImported) / elapsed.Seconds()
 		fmt.Printf("  Rate:             %.1f messages/sec\n", rate)
 	}
+}
+
+// resolveImessageSource finds or creates the apple_messages source.
+// Prefers a legacy (non-"local") source when both exist, to preserve
+// dedup keys from imports that used --me as the identifier.
+func resolveImessageSource(s *store.Store) (*store.Source, error) {
+	sources, err := s.ListSources("apple_messages")
+	if err == nil && len(sources) > 0 {
+		for _, src := range sources {
+			if src.Identifier != "local" {
+				return src, nil
+			}
+		}
+		return sources[0], nil
+	}
+	return s.GetOrCreateSource("apple_messages", "local")
 }
 
 func init() {
