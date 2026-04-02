@@ -99,10 +99,11 @@ func OpenReadOnly(dbPath string) (*Store, error) {
 		)
 	}
 
-	// URI format required for mode=ro (SQLITE_OPEN_READONLY).
-	// No _journal_mode pragma — the DB is already WAL; setting it
-	// would require write access.
-	dsn := "file:" + dbPath + "?mode=ro&_busy_timeout=5000"
+	// Use _query_only instead of mode=ro. WAL-mode databases may need
+	// to create or update -wal/-shm sidecar files on open, which fails
+	// under SQLITE_OPEN_READONLY. _query_only opens normally (so SQLite
+	// can manage sidecars) but rejects all write SQL at the query layer.
+	dsn := dbPath + "?_query_only=true&_busy_timeout=5000"
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database (read-only): %w", err)
