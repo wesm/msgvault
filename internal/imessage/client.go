@@ -614,18 +614,19 @@ func (c *Client) ensureConversation(
 		return id, false, nil
 	}
 
-	// Determine conversation type and title
+	// Determine conversation type from chat GUID format.
+	// iMessage uses "any;+;" for group chats, "any;-;" for 1:1 direct.
 	convType := "direct_chat"
-	title := ""
-	if msg.ChatIdentifier != nil &&
-		strings.Contains(*msg.ChatIdentifier, "chat;+;") {
+	if chatGUID != "" && strings.Contains(chatGUID, ";+;") {
 		convType = "group_chat"
 	}
 
+	// Build conversation title.
+	title := ""
 	if msg.ChatDisplayName != nil && *msg.ChatDisplayName != "" {
 		title = *msg.ChatDisplayName
 	} else if convType == "direct_chat" && msg.HandleID != nil {
-		// For 1:1 chats, use the participant's phone/email as title
+		// For 1:1 chats, use the other party's phone/email
 		phone, email, name := resolveHandle(*msg.HandleID)
 		if name != "" {
 			title = name
@@ -635,6 +636,8 @@ func (c *Client) ensureConversation(
 			title = email
 		}
 	}
+	// Group chats without a display_name: title will be set after
+	// participants are resolved (below).
 
 	convID, err := s.EnsureConversationWithType(
 		sourceID, chatGUID, convType, title,
@@ -652,7 +655,63 @@ func (c *Client) ensureConversation(
 		)
 	}
 
+	// For group chats without a title, build one from participants
+	if title == "" && convType == "group_chat" {
+		title = c.buildGroupTitle(ctx, s, convID)
+		if title != "" {
+			_, _ = s.DB().Exec(
+				"UPDATE conversations SET title = ? WHERE id = ?",
+				title, convID,
+			)
+		}
+	}
+
 	return convID, true, nil
+}
+
+// buildGroupTitle builds a group chat title from participant names/phones.
+// Returns something like "Alice, +15551234567, Bob" (up to 4 names).
+func (c *Client) buildGroupTitle(
+	ctx context.Context, s *store.Store, convID int64,
+) string {
+	rows, err := s.DB().QueryContext(ctx, `
+		SELECT COALESCE(
+			NULLIF(p.display_name, ''),
+			NULLIF(p.phone_number, ''),
+			NULLIF(p.email_address, ''),
+			'?'
+		)
+		FROM conversation_participants cp
+		JOIN participants p ON p.id = cp.participant_id
+		WHERE cp.conversation_id = ?
+		ORDER BY p.id
+		LIMIT 5
+	`, convID)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = rows.Close() }()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			continue
+		}
+		// Skip "Me" placeholder
+		if name == "Me" || name == "me@imessage.local" {
+			continue
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	if len(names) > 4 {
+		return strings.Join(names[:3], ", ") +
+			fmt.Sprintf(" +%d more", len(names)-3)
+	}
+	return strings.Join(names, ", ")
 }
 
 // linkChatParticipants resolves all handles in a chat and links them
