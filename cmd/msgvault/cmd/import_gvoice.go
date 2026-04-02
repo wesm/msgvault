@@ -89,12 +89,14 @@ func runImportGvoice(cmd *cobra.Command, args []string) error {
 		if ctx.Err() != nil {
 			fmt.Println("\nImport interrupted.")
 			printGvoiceSummary(summary, startTime)
+			rebuildCacheAfterWrite(cfg.DatabaseDSN())
 			return nil
 		}
 		return fmt.Errorf("import failed: %w", err)
 	}
 
 	printGvoiceSummary(summary, startTime)
+	rebuildCacheAfterWrite(cfg.DatabaseDSN())
 	return nil
 }
 
