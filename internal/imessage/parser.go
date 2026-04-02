@@ -108,25 +108,37 @@ func extractStreamtypedText(data []byte) string {
 		return ""
 	}
 
-	// Decode the length prefix to know exactly how many text bytes follow.
+	// Decode the length prefix.
+	//
+	// Format after the \x84\x01+ marker:
+	//   Single-byte: 0x00-0x7F = length, then text immediately follows.
+	//   Multi-byte:  0x81 <len_byte> [framing_bytes...] <text> 0x86
+	//     The 0x81 flag means "1 length byte follows". The length byte
+	//     can be any value (including printable ASCII). After the length
+	//     byte, skip remaining framing bytes (0x00, 0x92, etc.) until
+	//     valid text starts.
 	b := data[pos]
-	textLen := -1
+	var textLen int
 	if b&0x80 == 0 {
 		// Single-byte length (0x00-0x7F)
 		textLen = int(b)
 		pos++
 	} else {
-		// Multi-byte length: flag byte has bit 7 set. Skip the flag
-		// and all subsequent non-text framing bytes (high bytes, nulls,
-		// and other control bytes) until we find text content.
-		pos++
+		// Multi-byte: 0x81 means 1 length byte follows
+		pos++ // skip the 0x81 flag
+		if pos >= len(data) {
+			return ""
+		}
+		textLen = int(data[pos])
+		pos++ // skip the length byte
+		// Skip remaining framing bytes (nulls, high bytes) before text
 		for pos < len(data) {
 			fb := data[pos]
-			if (fb >= 0x20 && fb < 0x7F) ||
-				(fb >= 0xC2 && fb <= 0xF4) {
-				break
+			if fb == 0x00 || (fb >= 0x80 && fb <= 0xBF) {
+				pos++
+				continue
 			}
-			pos++
+			break
 		}
 	}
 
@@ -134,7 +146,7 @@ func extractStreamtypedText(data []byte) string {
 		return ""
 	}
 
-	// If we decoded an exact length, use it directly
+	// Use the decoded length to extract exactly the right bytes
 	if textLen > 0 {
 		end := pos + textLen
 		if end > len(data) {
@@ -147,21 +159,12 @@ func extractStreamtypedText(data []byte) string {
 		return text
 	}
 
-	// Without a decoded length, extract until an archiver control
-	// sequence or null byte. The 0x86 byte reliably marks the end
-	// of text in multi-byte format. The 0x84/0x85 bytes can also
-	// appear as UTF-8 continuation bytes, so only treat them as
-	// terminators when the text so far is already valid UTF-8.
+	// Fallback: extract until archiver control byte or end
 	end := pos
 	for end < len(data) {
 		ch := data[end]
 		if ch == 0x00 || ch == 0x86 {
 			break
-		}
-		if ch == 0x84 || ch == 0x85 {
-			if utf8.ValidString(string(data[pos:end])) {
-				break
-			}
 		}
 		end++
 	}

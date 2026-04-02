@@ -285,6 +285,8 @@ func TestExtractAttributedBodyText(t *testing.T) {
 		{"streamtyped long", makeStreamtypedBlob("This is a longer message that tests multi-byte length encoding and should work correctly"), "This is a longer message that tests multi-byte length encoding and should work correctly"},
 		{"streamtyped multi-byte length >127", makeStreamtypedBlob(longText), longText},
 		{"streamtyped real format", makeRealStreamtypedBlob("I am learning Go"), "I am learning Go"},
+		{"streamtyped real format 50 bytes", makeRealStreamtypedBlob("Yeah, we should catch up soon! How about Thursday?"), "Yeah, we should catch up soon! How about Thursday?"},
+		{"streamtyped real format 100 bytes", makeRealStreamtypedBlob("This is exactly one hundred bytes of text for testing the mid-range length encoding in streamtyped!!"), "This is exactly one hundred bytes of text for testing the mid-range length encoding in streamtyped!!"},
 		{"streamtyped real format long", makeRealStreamtypedBlob(longText), longText},
 	}
 

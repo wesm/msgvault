@@ -818,6 +818,7 @@ func (m Model) handleTextMessagesLoaded(msg textMessagesLoadedMsg) (tea.Model, t
 		return m, nil
 	}
 	m.textState.messages = msg.messages
+	m.textState.unfilteredMessages = nil // clear stale search snapshot
 	m.textState.cursor = 0
 	m.textState.scrollOffset = 0
 	return m, nil

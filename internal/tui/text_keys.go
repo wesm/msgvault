@@ -410,13 +410,21 @@ func (m Model) textRowCount() int {
 }
 
 // cycleTextSortField cycles between sort fields for text views.
+// Conversations: Name → Count → LastMessage (3 columns).
+// Aggregates: Name → Count only (no LastMessage column).
 func (m *Model) cycleTextSortField() {
-	// Cycle follows column order: Name → Count → LastMessage
+	isConv := m.textState.level == textLevelConversations ||
+		m.textState.level == textLevelDrillConversations
+
 	switch m.textState.filter.SortField {
 	case query.TextSortByName:
 		m.textState.filter.SortField = query.TextSortByCount
 	case query.TextSortByCount:
-		m.textState.filter.SortField = query.TextSortByLastMessage
+		if isConv {
+			m.textState.filter.SortField = query.TextSortByLastMessage
+		} else {
+			m.textState.filter.SortField = query.TextSortByName
+		}
 	default:
 		m.textState.filter.SortField = query.TextSortByName
 	}
