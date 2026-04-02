@@ -48,7 +48,20 @@ charset detection issues in the MIME parser.`,
 			return fmt.Errorf("init schema: %w", err)
 		}
 
-		return repairEncoding(s)
+		if err := repairEncoding(s); err != nil {
+			return err
+		}
+
+		analyticsDir := cfg.AnalyticsDir()
+		if _, err := buildCache(dbPath, analyticsDir, true); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"Warning: cache rebuild failed: %v\n", err)
+			fmt.Fprintf(os.Stderr,
+				"Run 'msgvault build-cache --full-rebuild' to retry.\n")
+		} else {
+			fmt.Println("\nAnalytics cache rebuilt.")
+		}
+		return nil
 	},
 }
 
@@ -133,7 +146,6 @@ func repairEncoding(s *store.Store) error {
 		fmt.Printf("  Skipped rows:  %d (scan errors)\n", stats.skippedRows)
 	}
 	fmt.Printf("  Total fields:  %d\n", total)
-	fmt.Println("\nRun 'msgvault build-cache --full-rebuild' to update the analytics cache.")
 	return nil
 }
 
