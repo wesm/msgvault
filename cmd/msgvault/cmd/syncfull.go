@@ -167,15 +167,17 @@ Examples:
 		}
 
 		// Rebuild analytics cache if requested.
+		var cacheErr error
 		if syncFullRebuildCache {
 			analyticsDir := cfg.AnalyticsDir()
 			fullRebuild := false
 			if staleness := cacheNeedsBuild(dbPath, analyticsDir); staleness.FullRebuild {
 				fullRebuild = true
 			}
-			result, cacheErr := buildCache(dbPath, analyticsDir, fullRebuild)
-			if cacheErr != nil {
-				syncErrors = append(syncErrors, fmt.Sprintf("cache rebuild: %v", cacheErr))
+			result, err := buildCache(dbPath, analyticsDir, fullRebuild)
+			if err != nil {
+				cacheErr = err
+				fmt.Printf("\nCache rebuild failed: %v\n", err)
 			} else if !result.Skipped {
 				logger.Info("cache build completed", "exported", result.ExportedCount)
 			}
@@ -189,6 +191,9 @@ Examples:
 			}
 			return fmt.Errorf("%d account(s) failed to sync: %s",
 				len(syncErrors), strings.Join(syncErrors, "; "))
+		}
+		if cacheErr != nil {
+			return fmt.Errorf("cache rebuild failed: %w", cacheErr)
 		}
 
 		return nil
