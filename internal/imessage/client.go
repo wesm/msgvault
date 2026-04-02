@@ -670,10 +670,21 @@ func (c *Client) ensureConversation(
 }
 
 // buildGroupTitle builds a group chat title from participant names/phones.
-// Returns something like "Alice, +15551234567, Bob" (up to 4 names).
+// Returns something like "Alice, +15551234567, Bob" or "Alice, Bob +3 more".
 func (c *Client) buildGroupTitle(
 	ctx context.Context, s *store.Store, convID int64,
 ) string {
+	// Get total non-self participant count
+	var totalCount int
+	_ = s.DB().QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM conversation_participants cp
+		JOIN participants p ON p.id = cp.participant_id
+		WHERE cp.conversation_id = ?
+		  AND COALESCE(p.email_address, '') != 'me@imessage.local'
+		  AND COALESCE(p.display_name, '') != 'Me'
+	`, convID).Scan(&totalCount)
+
+	// Get first few names for display
 	rows, err := s.DB().QueryContext(ctx, `
 		SELECT COALESCE(
 			NULLIF(p.display_name, ''),
@@ -684,8 +695,10 @@ func (c *Client) buildGroupTitle(
 		FROM conversation_participants cp
 		JOIN participants p ON p.id = cp.participant_id
 		WHERE cp.conversation_id = ?
+		  AND COALESCE(p.email_address, '') != 'me@imessage.local'
+		  AND COALESCE(p.display_name, '') != 'Me'
 		ORDER BY p.id
-		LIMIT 5
+		LIMIT 3
 	`, convID)
 	if err != nil {
 		return ""
@@ -698,18 +711,14 @@ func (c *Client) buildGroupTitle(
 		if err := rows.Scan(&name); err != nil {
 			continue
 		}
-		// Skip "Me" placeholder
-		if name == "Me" || name == "me@imessage.local" {
-			continue
-		}
 		names = append(names, name)
 	}
 	if len(names) == 0 {
 		return ""
 	}
-	if len(names) > 4 {
-		return strings.Join(names[:3], ", ") +
-			fmt.Sprintf(" +%d more", len(names)-3)
+	if totalCount > len(names) {
+		return strings.Join(names, ", ") +
+			fmt.Sprintf(" +%d more", totalCount-len(names))
 	}
 	return strings.Join(names, ", ")
 }
