@@ -49,10 +49,12 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("PostgreSQL is not yet supported in the Go implementation; use SQLite path instead")
 	}
 
-	// Ensure directory exists
-	dir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("create db directory: %w", err)
+	// Ensure directory exists (skip for in-memory databases)
+	if dbPath != ":memory:" && !strings.Contains(dbPath, ":memory:") {
+		dir := filepath.Dir(dbPath)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("create db directory: %w", err)
+		}
 	}
 
 	dsn := dbPath + defaultSQLiteParams
@@ -67,9 +69,16 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
-	// SQLite is single-writer; one connection eliminates
-	// cross-connection visibility issues with FK checks.
-	db.SetMaxOpenConns(1)
+	// SQLite with WAL supports one writer + multiple readers.
+	// Allow enough connections for concurrent reads (TUI async
+	// queries, FTS backfill) while SQLite handles write serialization.
+	// Exception: :memory: databases are per-connection, so multiple
+	// connections would create separate databases.
+	if dbPath == ":memory:" || strings.Contains(dbPath, ":memory:") {
+		db.SetMaxOpenConns(1)
+	} else {
+		db.SetMaxOpenConns(4)
+	}
 
 	return &Store{
 		db:     db,
@@ -260,6 +269,15 @@ func (s *Store) InitSchema() error {
 		{`ALTER TABLE sources ADD COLUMN sync_config JSON`, "sync_config"},
 		{`ALTER TABLE messages ADD COLUMN rfc822_message_id TEXT`, "rfc822_message_id"},
 		{`ALTER TABLE sources ADD COLUMN oauth_app TEXT`, "oauth_app"},
+		{`ALTER TABLE participants ADD COLUMN phone_number TEXT`, "phone_number"},
+		{`ALTER TABLE participants ADD COLUMN canonical_id TEXT`, "canonical_id"},
+		{`ALTER TABLE messages ADD COLUMN sender_id INTEGER REFERENCES participants(id)`, "sender_id"},
+		{`ALTER TABLE messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'email'`, "message_type"},
+		{`ALTER TABLE messages ADD COLUMN attachment_count INTEGER DEFAULT 0`, "attachment_count"},
+		{`ALTER TABLE messages ADD COLUMN deleted_from_source_at DATETIME`, "deleted_from_source_at"},
+		{`ALTER TABLE messages ADD COLUMN delete_batch_id TEXT`, "delete_batch_id"},
+		{`ALTER TABLE conversations ADD COLUMN title TEXT`, "title"},
+		{`ALTER TABLE conversations ADD COLUMN conversation_type TEXT NOT NULL DEFAULT 'email_thread'`, "conversation_type"},
 	} {
 		if _, err := s.db.Exec(m.sql); err != nil {
 			if !isSQLiteError(err, "duplicate column name") {

@@ -12,6 +12,14 @@ import (
 	"github.com/wesm/msgvault/internal/mime"
 )
 
+// emailOnlyFilterMsg is the SQL condition restricting to email messages with "msg." alias (DuckDB).
+// NULL and empty string handle old data where message_type was not yet populated.
+const emailOnlyFilterMsg = "(msg.message_type = 'email' OR msg.message_type IS NULL OR msg.message_type = '')"
+
+// emailOnlyFilterM is the SQL condition restricting to email messages with "m." alias (SQLite).
+// NULL and empty string handle old data where message_type was not yet populated.
+const emailOnlyFilterM = "(m.message_type = 'email' OR m.message_type IS NULL OR m.message_type = '')"
+
 // fetchLabelsForMessageList adds labels to message summaries using a batch query.
 // tablePrefix is "" for direct SQLite or "sqlite_db." for DuckDB's sqlite_scan.
 func fetchLabelsForMessageList(ctx context.Context, db *sql.DB, tablePrefix string, messages []MessageSummary) error {

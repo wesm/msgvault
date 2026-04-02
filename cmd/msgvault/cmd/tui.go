@@ -142,11 +142,18 @@ Remote Mode:
 			}
 		}
 
+		// Check if engine supports text queries
+		var textEngine query.TextEngine
+		if te, ok := engine.(query.TextEngine); ok {
+			textEngine = te
+		}
+
 		// Create and run TUI
 		model := tui.New(engine, tui.Options{
-			DataDir:  cfg.Data.DataDir,
-			Version:  Version,
-			IsRemote: isRemote,
+			DataDir:    cfg.Data.DataDir,
+			Version:    Version,
+			IsRemote:   isRemote,
+			TextEngine: textEngine,
 		})
 		p := tea.NewProgram(model, tea.WithAltScreen())
 

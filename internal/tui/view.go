@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/textutil"
 )
 
 // Monochrome theme - adaptive for light and dark terminals
@@ -181,8 +182,14 @@ func (m Model) buildTitleBar() string {
 		}
 	}
 
-	// Build line content: "msgvault [hash] - Account          update: vX.Y.Z"
-	line1Content := fmt.Sprintf("%s - %s", titleText, accountStr)
+	// Mode indicator when text engine is available
+	modeStr := ""
+	if m.textEngine != nil {
+		modeStr = " [Email]"
+	}
+
+	// Build line content: "msgvault [hash] [Email] - Account          update: vX.Y.Z"
+	line1Content := fmt.Sprintf("%s%s - %s", titleText, modeStr, accountStr)
 	if updateNotice != "" {
 		gap := m.width - 2 - lipgloss.Width(line1Content) - lipgloss.Width(updateNotice)
 		if gap > 1 {
@@ -289,7 +296,25 @@ func (m Model) headerView() string {
 // aggregateTableView renders the aggregate data table.
 func (m Model) aggregateTableView() string {
 	if len(m.rows) == 0 && !m.loading && !m.inlineSearchActive && m.searchQuery == "" && m.err == nil {
-		return m.fillScreen(normalRowStyle.Render(padRight("No data", m.width)), 1)
+		var sb strings.Builder
+		sb.WriteString(tableHeaderStyle.Render(padRight("   "+viewTypeAbbrev(m.viewType), m.width)))
+		sb.WriteString("\n")
+		sb.WriteString(separatorStyle.Render(strings.Repeat("\u2500", m.width)))
+		sb.WriteString("\n")
+		sb.WriteString(normalRowStyle.Render(padRight("   No data", m.width)))
+		sb.WriteString("\n")
+		// 1 "No data" + (pageSize-2) blanks = pageSize-1 data rows,
+		// then +1 info line = pageSize body rows total.
+		for i := 1; i < m.pageSize-1; i++ {
+			sb.WriteString(normalRowStyle.Render(strings.Repeat(" ", m.width)))
+			sb.WriteString("\n")
+		}
+		sb.WriteString(m.renderInfoLine("", m.loading))
+		s := sb.String()
+		if m.modal != modalNone {
+			return m.overlayModal(s)
+		}
+		return s
 	}
 
 	var sb strings.Builder
@@ -527,16 +552,34 @@ func (m Model) messageListView() string {
 		date := msg.SentAt.Format("2006-01-02 15:04")
 
 		// Format from (rune-aware for international names)
-		from := msg.FromEmail
+		// Sanitize untrusted metadata to prevent terminal control-sequence injection.
+		from := textutil.SanitizeTerminal(msg.FromEmail)
 		if msg.FromName != "" {
-			from = msg.FromName
+			from = textutil.SanitizeTerminal(msg.FromName)
+		}
+		// For chat messages: fall back to phone number, then group title
+		if from == "" && msg.FromPhone != "" {
+			from = textutil.SanitizeTerminal(msg.FromPhone)
+		}
+		if from == "" && msg.ConversationTitle != "" {
+			from = textutil.SanitizeTerminal(msg.ConversationTitle)
 		}
 		from = truncateRunes(from, fromWidth)
 		from = fmt.Sprintf("%-*s", fromWidth, from)
 		from = highlightTerms(from, m.searchQuery)
 
 		// Format subject with indicators (rune-aware)
-		subject := msg.Subject
+		// For chat messages without a subject, show snippet or group title
+		subject := textutil.SanitizeTerminal(msg.Subject)
+		if subject == "" && msg.MessageType == "whatsapp" {
+			title := textutil.SanitizeTerminal(msg.ConversationTitle)
+			snippet := textutil.SanitizeTerminal(msg.Snippet)
+			if title != "" {
+				subject = title + ": " + snippet
+			} else {
+				subject = snippet
+			}
+		}
 		if msg.DeletedAt != nil {
 			subject = "🗑 " + subject // Deleted from server indicator
 		}
@@ -878,12 +921,19 @@ func (m Model) threadView() string {
 		dateStr := msg.SentAt.Format("2006-01-02 15:04")
 
 		// Format from/subject with deleted indicator
-		fromSubject := msg.FromEmail
+		// Sanitize untrusted metadata to prevent terminal control-sequence injection.
+		fromSubject := textutil.SanitizeTerminal(msg.FromEmail)
 		if msg.FromName != "" {
-			fromSubject = msg.FromName
+			fromSubject = textutil.SanitizeTerminal(msg.FromName)
+		}
+		// For chat messages: fall back to phone number
+		if fromSubject == "" && msg.FromPhone != "" {
+			fromSubject = textutil.SanitizeTerminal(msg.FromPhone)
 		}
 		if msg.Subject != "" {
-			fromSubject = truncateRunes(fromSubject, 18) + ": " + msg.Subject
+			fromSubject = truncateRunes(fromSubject, 18) + ": " + textutil.SanitizeTerminal(msg.Subject)
+		} else if msg.MessageType == "whatsapp" && msg.Snippet != "" {
+			fromSubject = truncateRunes(fromSubject, 18) + ": " + textutil.SanitizeTerminal(msg.Snippet)
 		}
 		if msg.DeletedAt != nil {
 			fromSubject = "🗑 " + fromSubject // Deleted from server indicator
@@ -1172,6 +1222,7 @@ var rawHelpLines = []string{
 	"  A           Select account",
 	"  f           Filter (attachments, deleted)",
 	"  e           Export attachments (in message view)",
+	"  m           Toggle Email/Texts mode",
 	"  q           Quit",
 	"",
 	"[↑/↓] Scroll  [Any other key] Close",

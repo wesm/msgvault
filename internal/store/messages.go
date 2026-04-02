@@ -586,6 +586,12 @@ func (s *Store) AddMessageLabels(messageID int64, labelIDs []int64) error {
 	})
 }
 
+// LinkMessageLabel links a single label to a message.
+// Uses INSERT OR IGNORE — safe to call multiple times.
+func (s *Store) LinkMessageLabel(messageID, labelID int64) error {
+	return s.AddMessageLabels(messageID, []int64{labelID})
+}
+
 // RemoveMessageLabels removes specific labels from a message.
 func (s *Store) RemoveMessageLabels(messageID int64, labelIDs []int64) error {
 	if len(labelIDs) == 0 {
@@ -847,7 +853,13 @@ func (s *Store) backfillFTSBatch(fromID, toID int64) (int64, error) {
 	result, err := s.db.Exec(`
 		INSERT OR REPLACE INTO messages_fts (rowid, message_id, subject, body, from_addr, to_addr, cc_addr)
 		SELECT m.id, m.id, COALESCE(m.subject, ''), COALESCE(mb.body_text, ''),
-			COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ') FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'from'), ''),
+			COALESCE(
+				CASE WHEN m.message_type != 'email' AND m.message_type IS NOT NULL AND m.message_type != ''
+				     THEN (SELECT COALESCE(p.phone_number, p.email_address) FROM participants p WHERE p.id = m.sender_id)
+				END,
+				(SELECT GROUP_CONCAT(p.email_address, ' ') FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'from'),
+				''
+			),
 			COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ') FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'to'), ''),
 			COALESCE((SELECT GROUP_CONCAT(p.email_address, ' ') FROM message_recipients mr JOIN participants p ON p.id = mr.participant_id WHERE mr.message_id = m.id AND mr.recipient_type = 'cc'), '')
 		FROM messages m
@@ -858,6 +870,208 @@ func (s *Store) backfillFTSBatch(fromID, toID int64) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+// RecomputeConversationStats updates the denormalized stats columns on all conversations
+// belonging to the given source. It recomputes message_count, participant_count,
+// last_message_at, and last_message_preview from the current table state.
+// Safe to call multiple times — always produces the same result (idempotent).
+func (s *Store) RecomputeConversationStats(sourceID int64) error {
+	_, err := s.db.Exec(`
+		UPDATE conversations SET
+			message_count = (
+				SELECT COUNT(*) FROM messages
+				WHERE conversation_id = conversations.id
+			),
+			participant_count = (
+				SELECT COUNT(*) FROM conversation_participants
+				WHERE conversation_id = conversations.id
+			),
+			last_message_at = (
+				SELECT MAX(COALESCE(sent_at, received_at, internal_date))
+				FROM messages
+				WHERE conversation_id = conversations.id
+			),
+			last_message_preview = (
+				SELECT snippet FROM messages
+				WHERE conversation_id = conversations.id
+				ORDER BY COALESCE(sent_at, received_at, internal_date) DESC, id DESC
+				LIMIT 1
+			)
+		WHERE source_id = ?
+	`, sourceID)
+	if err != nil {
+		return fmt.Errorf("recompute conversation stats: %w", err)
+	}
+	return nil
+}
+
+// EnsureConversationWithType gets or creates a conversation with an explicit conversation_type.
+// Unlike EnsureConversation (which hardcodes 'email_thread'), this accepts the type as a parameter,
+// making it suitable for WhatsApp and other messaging platforms.
+func (s *Store) EnsureConversationWithType(sourceID int64, sourceConversationID, conversationType, title string) (int64, error) {
+	// Try to get existing
+	var id int64
+	err := s.db.QueryRow(`
+		SELECT id FROM conversations
+		WHERE source_id = ? AND source_conversation_id = ?
+	`, sourceID, sourceConversationID).Scan(&id)
+
+	if err == nil {
+		// Update conversation_type and title if they've changed.
+		// Only update title when the new value is non-empty (don't blank out existing titles).
+		if title != "" {
+			_, _ = s.db.Exec(`
+				UPDATE conversations SET conversation_type = ?, title = ?, updated_at = datetime('now')
+				WHERE id = ? AND (conversation_type != ? OR title != ? OR title IS NULL)
+			`, conversationType, title, id, conversationType, title)
+		} else {
+			_, _ = s.db.Exec(`
+				UPDATE conversations SET conversation_type = ?, updated_at = datetime('now')
+				WHERE id = ? AND conversation_type != ?
+			`, conversationType, id, conversationType)
+		}
+		return id, nil
+	}
+	if err != sql.ErrNoRows {
+		return 0, err
+	}
+
+	// Create new
+	result, err := s.db.Exec(`
+		INSERT INTO conversations (source_id, source_conversation_id, conversation_type, title, created_at, updated_at)
+		VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+	`, sourceID, sourceConversationID, conversationType, title)
+	if err != nil {
+		return 0, err
+	}
+
+	return result.LastInsertId()
+}
+
+// EnsureParticipantByPhone gets or creates a participant by phone number.
+// Phone must start with "+" (E.164 format). Returns an error for empty or
+// invalid phone numbers to prevent database pollution.
+// Also creates a participant_identifiers row with the given identifierType
+// (e.g., "whatsapp", "imessage", "google_voice").
+func (s *Store) EnsureParticipantByPhone(phone, displayName, identifierType string) (int64, error) {
+	if phone == "" {
+		return 0, fmt.Errorf("phone number is required")
+	}
+	if !strings.HasPrefix(phone, "+") {
+		return 0, fmt.Errorf("phone number must be in E.164 format (starting with +), got %q", phone)
+	}
+
+	// Try to get existing by phone
+	var id int64
+	err := s.db.QueryRow(`
+		SELECT id FROM participants WHERE phone_number = ?
+	`, phone).Scan(&id)
+
+	if err == nil {
+		// Update display name if provided and currently empty
+		if displayName != "" {
+			_, _ = s.db.Exec(`
+				UPDATE participants SET display_name = ?
+				WHERE id = ? AND (display_name IS NULL OR display_name = '')
+			`, displayName, id) // best-effort display name update, ignore error
+		}
+	} else if err != sql.ErrNoRows {
+		return 0, err
+	} else {
+		// Create new participant
+		result, err := s.db.Exec(`
+			INSERT INTO participants (phone_number, display_name, created_at, updated_at)
+			VALUES (?, ?, datetime('now'), datetime('now'))
+		`, phone, displayName)
+		if err != nil {
+			return 0, fmt.Errorf("insert participant: %w", err)
+		}
+
+		id, err = result.LastInsertId()
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	// Ensure a participant_identifiers row exists for this identifierType.
+	// INSERT OR IGNORE is idempotent: a second call with the same type is a no-op.
+	_, err = s.db.Exec(`
+		INSERT OR IGNORE INTO participant_identifiers (participant_id, identifier_type, identifier_value, is_primary)
+		VALUES (?, ?, ?, TRUE)
+	`, id, identifierType, phone)
+	if err != nil {
+		return 0, fmt.Errorf("insert participant identifier: %w", err)
+	}
+
+	return id, nil
+}
+
+// UpdateParticipantDisplayNameByPhone updates the display_name for an existing
+// participant identified by phone number. Only updates if display_name is currently
+// empty. Returns true if a participant was found and updated, false if not found
+// or name was already set. Does NOT create new participants.
+func (s *Store) UpdateParticipantDisplayNameByPhone(phone, displayName string) (bool, error) {
+	if phone == "" || displayName == "" {
+		return false, nil
+	}
+
+	result, err := s.db.Exec(`
+		UPDATE participants SET display_name = ?, updated_at = datetime('now')
+		WHERE phone_number = ? AND (display_name IS NULL OR display_name = '')
+	`, displayName, phone)
+	if err != nil {
+		return false, err
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
+// EnsureConversationParticipant adds a participant to a conversation.
+// Uses INSERT OR IGNORE to be idempotent.
+func (s *Store) EnsureConversationParticipant(conversationID, participantID int64, role string) error {
+	_, err := s.db.Exec(`
+		INSERT OR IGNORE INTO conversation_participants (conversation_id, participant_id, role, joined_at)
+		VALUES (?, ?, ?, datetime('now'))
+	`, conversationID, participantID, role)
+	return err
+}
+
+// UpsertReaction inserts or ignores a reaction.
+func (s *Store) UpsertReaction(messageID, participantID int64, reactionType, reactionValue string, createdAt time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT OR IGNORE INTO reactions (message_id, participant_id, reaction_type, reaction_value, created_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, messageID, participantID, reactionType, reactionValue, createdAt)
+	return err
+}
+
+// UpsertMessageRawWithFormat stores compressed raw data with an explicit format.
+// Unlike UpsertMessageRaw (which hardcodes 'mime'), this accepts the format as a parameter.
+func (s *Store) UpsertMessageRawWithFormat(messageID int64, rawData []byte, format string) error {
+	// Compress with zlib
+	var compressed bytes.Buffer
+	w := zlib.NewWriter(&compressed)
+	if _, err := w.Write(rawData); err != nil {
+		return fmt.Errorf("compress: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("close compressor: %w", err)
+	}
+
+	_, err := s.db.Exec(`
+		INSERT INTO message_raw (message_id, raw_data, raw_format, compression)
+		VALUES (?, ?, ?, 'zlib')
+		ON CONFLICT(message_id) DO UPDATE SET
+			raw_data = excluded.raw_data,
+			raw_format = excluded.raw_format,
+			compression = excluded.compression
+	`, messageID, compressed.Bytes(), format)
+	return err
 }
 
 // UpsertAttachment stores an attachment record.
