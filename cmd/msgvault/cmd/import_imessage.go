@@ -107,12 +107,14 @@ func runImportImessage(cmd *cobra.Command, _ []string) error {
 		if ctx.Err() != nil {
 			fmt.Println("\nImport interrupted.")
 			printImessageSummary(summary, startTime)
+			rebuildCacheAfterWrite(cfg.DatabaseDSN())
 			return nil
 		}
 		return fmt.Errorf("import failed: %w", err)
 	}
 
 	printImessageSummary(summary, startTime)
+	rebuildCacheAfterWrite(cfg.DatabaseDSN())
 	return nil
 }
 
