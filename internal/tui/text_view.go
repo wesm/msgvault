@@ -168,7 +168,7 @@ func (m Model) textConversationsView() string {
 
 	// Visible row range
 	// Available data rows = pageSize - header(1) - separator(1) - info(1)
-	availRows := m.pageSize - 1
+	availRows := m.pageSize - 3
 	if availRows < 1 {
 		availRows = 1
 	}
@@ -319,7 +319,7 @@ func (m Model) textAggregateView() string {
 	var sb strings.Builder
 
 	// Available data rows = pageSize - header(1) - separator(1) - info(1)
-	aggAvailRows := m.pageSize - 1
+	aggAvailRows := m.pageSize - 3
 	if aggAvailRows < 1 {
 		aggAvailRows = 1
 	}
@@ -456,6 +456,29 @@ func (m Model) textTimelineView() string {
 
 	var sb strings.Builder
 
+	// Header + separator (matches conversations/aggregate views so
+	// the footer doesn't shift when drilling into a conversation)
+	convTitle := ""
+	for _, c := range m.textState.conversations {
+		if c.ConversationID == m.textState.selectedConvID {
+			convTitle = c.Title
+			break
+		}
+	}
+	if convTitle == "" {
+		convTitle = "Messages"
+	}
+	sb.WriteString(
+		tableHeaderStyle.Render(
+			padRight("   "+convTitle, m.width),
+		),
+	)
+	sb.WriteString("\n")
+	sb.WriteString(
+		separatorStyle.Render(strings.Repeat("\u2500", m.width)),
+	)
+	sb.WriteString("\n")
+
 	// Build rendered lines for visible messages. Each message
 	// produces multiple screen lines: a header + wrapped body.
 	type chatLine struct {
@@ -527,7 +550,11 @@ func (m Model) textTimelineView() string {
 	}
 
 	// Ensure cursor is visible
-	visibleLines := m.pageSize - 1
+	// Available lines = pageSize - header(1) - separator(1) - info(1)
+	visibleLines := m.pageSize - 3
+	if visibleLines < 1 {
+		visibleLines = 1
+	}
 	scrollLine := m.textState.scrollOffset
 	if cursorLine < scrollLine {
 		scrollLine = cursorLine
@@ -596,8 +623,12 @@ func (m Model) textTimelineView() string {
 	// Note: can't mutate m here since View is read-only;
 	// the scrollOffset is maintained by the key handler.
 
-	// Info line
-	sb.WriteString(m.renderNotificationLine())
+	// Info line (with search bar when active)
+	var infoContent string
+	if m.inlineSearchActive {
+		infoContent = "/" + m.searchInput.View()
+	}
+	sb.WriteString(m.renderInfoLine(infoContent, m.loading))
 
 	if m.modal != modalNone {
 		return m.overlayModal(sb.String())
