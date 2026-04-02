@@ -168,7 +168,7 @@ func (m Model) textConversationsView() string {
 
 	// Visible row range
 	// Available data rows = pageSize - header(1) - separator(1) - info(1)
-	availRows := m.pageSize - 3
+	availRows := m.pageSize - 5
 	if availRows < 1 {
 		availRows = 1
 	}
@@ -206,13 +206,26 @@ func (m Model) textConversationsView() string {
 		nameWidth = 15
 	}
 
-	// Header
+	// Header with sort indicators
+	sortArrow := func(field query.TextSortField) string {
+		if m.textState.filter.SortField == field {
+			if m.textState.filter.SortDirection == query.SortDesc {
+				return "\u2193"
+			}
+			return "\u2191"
+		}
+		return ""
+	}
+	convLabel := "Conversation" + sortArrow(query.TextSortByName)
+	msgsLabel := "Messages" + sortArrow(query.TextSortByCount)
+	lastLabel := "Last Message" + sortArrow(query.TextSortByLastMessage)
+
 	headerRow := fmt.Sprintf(
 		"   %-*s  %-*s %*s  %-*s",
-		nameWidth, "Conversation",
+		nameWidth, convLabel,
 		sourceWidth, "Source",
-		msgsWidth, "Messages",
-		lastMsgWidth, "Last Message",
+		msgsWidth, msgsLabel,
+		lastMsgWidth, lastLabel,
 	)
 	sb.WriteString(
 		tableHeaderStyle.Render(padRight(headerRow, m.width)),
@@ -306,7 +319,7 @@ func (m Model) textAggregateView() string {
 	var sb strings.Builder
 
 	// Available data rows = pageSize - header(1) - separator(1) - info(1)
-	aggAvailRows := m.pageSize - 3
+	aggAvailRows := m.pageSize - 5
 	if aggAvailRows < 1 {
 		aggAvailRows = 1
 	}
