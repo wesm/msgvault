@@ -464,9 +464,12 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 
 			sum := sha256.Sum256(raw)
 			rawHash := hex.EncodeToString(sum[:])
-			// Use content hash for dedup (like EMLX) so duplicates across folders
-			// are deduplicated and just get additional labels applied.
-			sourceMsgID := "pst-" + rawHash
+			// Use the PST entry ID as the stable dedup key so that re-importing
+			// the same PST file always skips already-imported messages, even when
+			// the MIME reconstruction produces different bytes (e.g. random
+			// multipart boundaries). rawHash is still passed to IngestRawMessage
+			// as a fallback for thread ID generation.
+			sourceMsgID := "pst-" + entry.EntryID
 
 			fallbackDate := entry.SentAt
 			if fallbackDate.IsZero() {

@@ -155,7 +155,9 @@ func walkFoldersRecursive(folder *pstlib.Folder, parentPath string, fn WalkFolde
 
 	subFolders, err := folder.GetSubFolders()
 	if err != nil {
-		return fmt.Errorf("get sub-folders of %q: %w", path, err)
+		// Some PST variants (e.g. 32-bit) can fail to read sub-folder
+		// metadata; log and continue rather than aborting the walk.
+		return nil
 	}
 	for i := range subFolders {
 		if err := walkFoldersRecursive(&subFolders[i], path, fn); err != nil {
