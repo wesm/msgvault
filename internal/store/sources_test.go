@@ -186,7 +186,7 @@ func TestInitSchema_MigratesOAuthAppColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 
 	// Create the sources table WITHOUT the oauth_app column,
 	// matching the schema as it existed before this feature.

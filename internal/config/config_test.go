@@ -1429,7 +1429,9 @@ client_id = "test-client-id-123"
 tenant_id = "my-tenant"
 `
 	configPath := filepath.Join(tmpDir, "config.toml")
-	os.WriteFile(configPath, []byte(configContent), 0644)
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg, err := Load(configPath, tmpDir)
 	if err != nil {

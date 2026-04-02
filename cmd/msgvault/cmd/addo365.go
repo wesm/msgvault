@@ -31,11 +31,11 @@ Examples:
 		email := args[0]
 
 		if cfg.Microsoft.ClientID == "" {
-			return fmt.Errorf("Microsoft OAuth not configured.\n\n" +
+			return fmt.Errorf("microsoft OAuth not configured\n\n" +
 				"Add to your config.toml:\n\n" +
 				"  [microsoft]\n" +
 				"  client_id = \"your-azure-app-client-id\"\n\n" +
-				"See docs for Azure AD app registration setup.")
+				"See docs for Azure AD app registration setup")
 		}
 
 		tenantID := cfg.Microsoft.EffectiveTenantID()
@@ -76,7 +76,7 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("open database: %w", err)
 		}
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 
 		if err := s.InitSchema(); err != nil {
 			return fmt.Errorf("init schema: %w", err)

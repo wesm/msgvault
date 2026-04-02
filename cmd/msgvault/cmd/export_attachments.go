@@ -95,8 +95,8 @@ func runExportAttachments(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("output directory not writable: %w", err)
 	}
-	tmpFile.Close()
-	os.Remove(tmpFile.Name())
+	_ = tmpFile.Close()
+	_ = os.Remove(tmpFile.Name())
 
 	// Export
 	attachmentsDir := cfg.AttachmentsDir()

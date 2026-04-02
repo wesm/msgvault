@@ -470,7 +470,7 @@ func (s *Server) handleUploadToken(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := tmpFile.Write(data); err != nil {
 		_ = tmpFile.Close()
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to write token")
 		return
 	}

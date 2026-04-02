@@ -1958,7 +1958,7 @@ func TestBuildCache_ErrorDoesNotWriteStateFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	analyticsDir := filepath.Join(tmpDir, "analytics")
 	stateFile := filepath.Join(analyticsDir, "_last_sync.json")
