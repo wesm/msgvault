@@ -174,22 +174,8 @@ Examples:
 			}
 		}
 
-		// Rebuild analytics cache if requested.
-		var cacheErr error
-		if syncRebuildCache {
-			analyticsDir := cfg.AnalyticsDir()
-			fullRebuild := false
-			if staleness := cacheNeedsBuild(dbPath, analyticsDir); staleness.FullRebuild {
-				fullRebuild = true
-			}
-			result, err := buildCache(dbPath, analyticsDir, fullRebuild)
-			if err != nil {
-				cacheErr = err
-				fmt.Printf("\nCache rebuild failed: %v\n", err)
-			} else if !result.Skipped {
-				logger.Info("cache build completed", "exported", result.ExportedCount)
-			}
-		}
+		// Rebuild analytics cache.
+		rebuildCacheAfterWrite(dbPath)
 
 		if len(syncErrors) > 0 {
 			fmt.Println()
@@ -199,9 +185,6 @@ Examples:
 			}
 			return fmt.Errorf("%d account(s) failed to sync: %s",
 				len(syncErrors), strings.Join(syncErrors, "; "))
-		}
-		if cacheErr != nil {
-			return fmt.Errorf("cache rebuild failed: %w", cacheErr)
 		}
 
 		return nil
@@ -284,9 +267,6 @@ func runIncrementalSync(ctx context.Context, s *store.Store, getOAuthMgr func(st
 	return nil
 }
 
-var syncRebuildCache bool
-
 func init() {
-	syncIncrementalCmd.Flags().BoolVar(&syncRebuildCache, "rebuild-cache", false, "Rebuild analytics cache after sync")
 	rootCmd.AddCommand(syncIncrementalCmd)
 }
