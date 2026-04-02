@@ -39,5 +39,8 @@ __pycache__/
 *.swo
 .projects/
 
+# Nix
+.direnv/
+
 # Claude Code
 .claude/
