@@ -165,13 +165,17 @@ Examples:
 			attachmentsDir = ""
 		}
 
+		var importErr error
 		if identifier != "" {
 			// Manual fallback: single import with explicit identifier.
-			return importSingleAccount(ctx, cmd, st, mailDir, identifier, attachmentsDir)
+			importErr = importSingleAccount(ctx, cmd, st, mailDir, identifier, attachmentsDir)
+		} else {
+			// Auto mode: discover accounts from V10 layout + Accounts4.sqlite.
+			importErr = importAutoAccounts(ctx, cmd, st, mailDir, attachmentsDir)
 		}
 
-		// Auto mode: discover accounts from V10 layout + Accounts4.sqlite.
-		return importAutoAccounts(ctx, cmd, st, mailDir, attachmentsDir)
+		rebuildCacheAfterWrite(dbPath)
+		return importErr
 	},
 }
 
