@@ -49,10 +49,12 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("PostgreSQL is not yet supported in the Go implementation; use SQLite path instead")
 	}
 
-	// Ensure directory exists
-	dir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("create db directory: %w", err)
+	// Ensure directory exists (skip for in-memory databases)
+	if dbPath != ":memory:" && !strings.Contains(dbPath, ":memory:") {
+		dir := filepath.Dir(dbPath)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("create db directory: %w", err)
+		}
 	}
 
 	dsn := dbPath + defaultSQLiteParams
@@ -70,7 +72,13 @@ func Open(dbPath string) (*Store, error) {
 	// SQLite with WAL supports one writer + multiple readers.
 	// Allow enough connections for concurrent reads (TUI async
 	// queries, FTS backfill) while SQLite handles write serialization.
-	db.SetMaxOpenConns(4)
+	// Exception: :memory: databases are per-connection, so multiple
+	// connections would create separate databases.
+	if dbPath == ":memory:" || strings.Contains(dbPath, ":memory:") {
+		db.SetMaxOpenConns(1)
+	} else {
+		db.SetMaxOpenConns(4)
+	}
 
 	return &Store{
 		db:     db,

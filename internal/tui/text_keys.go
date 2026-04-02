@@ -203,24 +203,30 @@ func (m Model) handleTextInlineSearchKeys(
 		if queryStr == "" {
 			return m, nil
 		}
-		// Save current state so Esc can return from search results
-		m.textState.breadcrumbs = append(
-			m.textState.breadcrumbs,
-			textNavSnapshot{
-				level:          m.textState.level,
-				viewType:       m.textState.viewType,
-				cursor:         m.textState.cursor,
-				scrollOffset:   m.textState.scrollOffset,
-				filter:         m.textState.filter,
-				selectedConvID: m.textState.selectedConvID,
-			},
-		)
 		// In timeline view, filter locally (messages already loaded
 		// with full body text). In other views, use global FTS.
 		if m.textState.level == textLevelTimeline {
+			// Save unfiltered messages on first search so repeated
+			// searches filter from the original set, not stacked results.
+			if m.textState.unfilteredMessages == nil {
+				m.textState.unfilteredMessages = m.textState.messages
+				// Push breadcrumb only on first search to avoid stacking
+				m.textState.breadcrumbs = append(
+					m.textState.breadcrumbs,
+					textNavSnapshot{
+						level:          m.textState.level,
+						viewType:       m.textState.viewType,
+						cursor:         m.textState.cursor,
+						scrollOffset:   m.textState.scrollOffset,
+						filter:         m.textState.filter,
+						selectedConvID: m.textState.selectedConvID,
+					},
+				)
+			}
+			source := m.textState.unfilteredMessages
 			needle := strings.ToLower(queryStr)
 			var filtered []query.MessageSummary
-			for _, msg := range m.textState.messages {
+			for _, msg := range source {
 				body := strings.ToLower(msg.BodyText)
 				if body == "" {
 					body = strings.ToLower(msg.Snippet)
@@ -238,6 +244,18 @@ func (m Model) handleTextInlineSearchKeys(
 			m.textState.scrollOffset = 0
 			return m, nil
 		}
+		// Save current state so Esc can return from search results
+		m.textState.breadcrumbs = append(
+			m.textState.breadcrumbs,
+			textNavSnapshot{
+				level:          m.textState.level,
+				viewType:       m.textState.viewType,
+				cursor:         m.textState.cursor,
+				scrollOffset:   m.textState.scrollOffset,
+				filter:         m.textState.filter,
+				selectedConvID: m.textState.selectedConvID,
+			},
+		)
 		m.loading = true
 		return m, m.loadTextSearch(queryStr)
 
@@ -468,6 +486,24 @@ func (m Model) textDrillDown() (tea.Model, tea.Cmd) {
 
 // textGoBack returns to the previous text navigation state.
 func (m Model) textGoBack() (tea.Model, tea.Cmd) {
+	// If we have unfiltered messages (from a timeline search), restore
+	// them directly without reloading. This is instant and avoids
+	// re-querying the database.
+	if m.textState.unfilteredMessages != nil {
+		m.textState.messages = m.textState.unfilteredMessages
+		m.textState.unfilteredMessages = nil
+		// Pop the search breadcrumb
+		if len(m.textState.breadcrumbs) > 0 {
+			snap := m.textState.breadcrumbs[len(m.textState.breadcrumbs)-1]
+			m.textState.breadcrumbs = m.textState.breadcrumbs[:len(m.textState.breadcrumbs)-1]
+			m.textState.cursor = snap.cursor
+			m.textState.scrollOffset = snap.scrollOffset
+		} else {
+			m.textState.cursor = 0
+			m.textState.scrollOffset = 0
+		}
+		return m, nil
+	}
 	if len(m.textState.breadcrumbs) == 0 {
 		return m, nil
 	}

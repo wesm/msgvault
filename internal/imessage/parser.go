@@ -90,9 +90,14 @@ func extractAttributedBodyText(data []byte) string {
 // The format embeds an NSString with the text content. We scan for the
 // NSString class marker, skip past the variable-length encoding prefix,
 // and extract the UTF-8 text that follows.
+//
+// After the marker (\x84\x01+), there is a length prefix:
+//   - Single-byte: bit 7 clear (0x00-0x7F), value is the text length
+//   - Multi-byte: bit 7 set, followed by length bytes and framing bytes
+//     (including 0x92 and other high bytes)
+//
+// The text content is always clean UTF-8 surrounded by binary framing.
 func extractStreamtypedText(data []byte) string {
-	// The NSString payload appears after \x84\x01+ followed by a
-	// variable-length size prefix, then the raw UTF-8 text.
 	marker := []byte("\x84\x01+")
 	idx := bytes.Index(data, marker)
 	if idx < 0 {
@@ -103,37 +108,60 @@ func extractStreamtypedText(data []byte) string {
 		return ""
 	}
 
-	// Skip the length prefix. Single-byte lengths have bit 7 clear.
-	// Multi-byte: bit 7 is set, and the remaining bytes encode the
-	// length. Rather than trying to decode the exact format, skip
-	// all bytes that are clearly part of the prefix (non-printable
-	// bytes before the text starts).
+	// Decode the length prefix to know exactly how many text bytes follow.
 	b := data[pos]
-	if b&0x80 != 0 {
-		// Multi-byte length — skip the flag byte and any following
-		// bytes that look like length encoding (values < 0x20 or
-		// continuation bytes).
+	textLen := -1
+	if b&0x80 == 0 {
+		// Single-byte length (0x00-0x7F)
+		textLen = int(b)
 		pos++
-		for pos < len(data) && data[pos] < 0x20 {
+	} else {
+		// Multi-byte length: flag byte has bit 7 set. Skip the flag
+		// and all subsequent non-text framing bytes (high bytes, nulls,
+		// and other control bytes) until we find text content.
+		pos++
+		for pos < len(data) {
+			fb := data[pos]
+			if (fb >= 0x20 && fb < 0x7F) ||
+				(fb >= 0xC2 && fb <= 0xF4) {
+				break
+			}
 			pos++
 		}
-	} else {
-		// Single-byte length — just skip it
-		pos++
 	}
 
 	if pos >= len(data) {
 		return ""
 	}
 
-	// Extract valid UTF-8 text from pos to the next non-text control
-	// sequence. The text ends at a \x00 null, or at a \x84/\x85/\x86
-	// archiver control byte.
+	// If we decoded an exact length, use it directly
+	if textLen > 0 {
+		end := pos + textLen
+		if end > len(data) {
+			end = len(data)
+		}
+		text := string(data[pos:end])
+		for len(text) > 0 && !utf8.ValidString(text) {
+			text = text[:len(text)-1]
+		}
+		return text
+	}
+
+	// Without a decoded length, extract until an archiver control
+	// sequence or null byte. The 0x86 byte reliably marks the end
+	// of text in multi-byte format. The 0x84/0x85 bytes can also
+	// appear as UTF-8 continuation bytes, so only treat them as
+	// terminators when the text so far is already valid UTF-8.
 	end := pos
 	for end < len(data) {
 		ch := data[end]
-		if ch == 0x00 || ch == 0x84 || ch == 0x85 || ch == 0x86 {
+		if ch == 0x00 || ch == 0x86 {
 			break
+		}
+		if ch == 0x84 || ch == 0x85 {
+			if utf8.ValidString(string(data[pos:end])) {
+				break
+			}
 		}
 		end++
 	}
@@ -143,12 +171,9 @@ func extractStreamtypedText(data []byte) string {
 	}
 
 	text := string(data[pos:end])
-
-	// Validate UTF-8 and trim any trailing incomplete sequences
 	for len(text) > 0 && !utf8.ValidString(text) {
 		text = text[:len(text)-1]
 	}
-
 	return text
 }
 

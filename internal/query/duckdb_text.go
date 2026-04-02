@@ -305,7 +305,9 @@ func (e *DuckDBEngine) ListConversationMessages(
 		)
 	}
 
-	// Fallback to Parquet (snippet only, no body text)
+	// Fallback to Parquet (snippet only, no body text).
+	// NOTE: search results will only show snippets, not full body
+	// text, since Parquet files do not contain message bodies.
 	where, args := e.buildTextFilterConditions(filter)
 	where += " AND msg.conversation_id = ?"
 	args = append(args, convID)
@@ -315,13 +317,18 @@ func (e *DuckDBEngine) ListConversationMessages(
 		limit = 500
 	}
 
+	direction := "ASC"
+	if filter.SortDirection == SortDesc {
+		direction = "DESC"
+	}
+
 	query := fmt.Sprintf(`
 		WITH %s,
 		filtered_msgs AS (
 			SELECT msg.id
 			FROM msg
 			WHERE %s
-			ORDER BY msg.sent_at ASC
+			ORDER BY msg.sent_at %s
 			LIMIT ? OFFSET ?
 		),
 		msg_sender AS (
@@ -368,8 +375,8 @@ func (e *DuckDBEngine) ListConversationMessages(
 		LEFT JOIN msg_sender ms ON ms.message_id = msg.id
 		LEFT JOIN direct_sender ds ON ds.message_id = msg.id
 		LEFT JOIN conv c ON c.id = msg.conversation_id
-		ORDER BY msg.sent_at ASC
-	`, e.parquetCTEs(), where)
+		ORDER BY msg.sent_at %s
+	`, e.parquetCTEs(), where, direction, direction)
 
 	args = append(args, limit, filter.Pagination.Offset)
 
@@ -384,6 +391,10 @@ func (e *DuckDBEngine) ListConversationMessages(
 
 // TextSearch performs plain full-text search over text messages via FTS5.
 // Returns empty results if SQLite is not available.
+//
+// Known limitation: results contain snippets but not full BodyText, so the
+// chat timeline will show truncated previews for search results rather than
+// the complete message body.
 func (e *DuckDBEngine) TextSearch(
 	ctx context.Context, query string, limit, offset int,
 ) ([]MessageSummary, error) {

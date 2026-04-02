@@ -245,8 +245,9 @@ func makeStreamtypedBlob(text string) []byte {
 }
 
 // makeRealStreamtypedBlob builds a blob matching the actual macOS Sequoia
-// format where the multi-byte length has extra framing bytes (\x81\x92\x00)
-// between the marker and the text.
+// format where the multi-byte length has extra framing bytes (0x81, 0x92, 0x00)
+// between the marker and the text. The 0x92 byte is > 0x20, which the
+// original parser couldn't skip.
 func makeRealStreamtypedBlob(text string) []byte {
 	// This matches the real format seen in chat.db:
 	// \x84\x01+ \x81 \x92 \x00 <text> \x86 ...
@@ -255,15 +256,20 @@ func makeRealStreamtypedBlob(text string) []byte {
 	buf = append(buf, "\x12NSAttributedString"...)
 	buf = append(buf, "\x00\x84\x84\x08NSObject\x00\x85\x92\x84\x84\x84\x08NSString\x01\x94"...)
 	buf = append(buf, "\x84\x01+"...) // marker
-	// Multi-byte length prefix with real format: \x81 + length bytes + \x00
+	// Multi-byte length prefix with actual 0x92 framing byte (> 0x20)
 	n := len(text)
-	buf = append(buf, 0x81, byte(n), 0x00)
+	buf = append(buf, 0x81, byte(n), 0x92, 0x00)
 	buf = append(buf, text...)
 	buf = append(buf, 0x86) // terminator
 	return buf
 }
 
 func TestExtractAttributedBodyText(t *testing.T) {
+	// Build a test string > 127 bytes to exercise multi-byte length encoding.
+	longText := "This message is longer than one hundred and twenty-seven bytes " +
+		"to exercise the multi-byte length encoding path in streamtyped format parsing. " +
+		"Extra padding here."
+
 	tests := []struct {
 		name  string
 		input []byte
@@ -277,7 +283,9 @@ func TestExtractAttributedBodyText(t *testing.T) {
 		{"multiline", makeAttributedBodyBlob("Line one\nLine two"), "Line one\nLine two"},
 		{"streamtyped short", makeStreamtypedBlob("Hello world"), "Hello world"},
 		{"streamtyped long", makeStreamtypedBlob("This is a longer message that tests multi-byte length encoding and should work correctly"), "This is a longer message that tests multi-byte length encoding and should work correctly"},
+		{"streamtyped multi-byte length >127", makeStreamtypedBlob(longText), longText},
 		{"streamtyped real format", makeRealStreamtypedBlob("I am learning Go"), "I am learning Go"},
+		{"streamtyped real format long", makeRealStreamtypedBlob(longText), longText},
 	}
 
 	for _, tt := range tests {

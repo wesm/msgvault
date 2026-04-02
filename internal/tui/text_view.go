@@ -173,7 +173,9 @@ func (m Model) textConversationsView() string {
 			padRight("   No conversations", m.width),
 		))
 		sb.WriteString("\n")
-		for i := 1; i < m.pageSize-2; i++ {
+		// 1 "No data" + (pageSize-2) blanks = pageSize-1 data rows,
+		// then +1 info line = pageSize body rows total.
+		for i := 1; i < m.pageSize-1; i++ {
 			sb.WriteString(normalRowStyle.Render(
 				strings.Repeat(" ", m.width),
 			))
@@ -345,7 +347,9 @@ func (m Model) textAggregateView() string {
 			padRight("   No data", m.width),
 		))
 		sb.WriteString("\n")
-		for i := 1; i < m.pageSize-2; i++ {
+		// 1 "No data" + (pageSize-2) blanks = pageSize-1 data rows,
+		// then +1 info line = pageSize body rows total.
+		for i := 1; i < m.pageSize-1; i++ {
 			sb.WriteString(normalRowStyle.Render(
 				strings.Repeat(" ", m.width),
 			))
@@ -503,7 +507,9 @@ func (m Model) textTimelineView() string {
 			padRight("   No messages", m.width),
 		))
 		sb.WriteString("\n")
-		for i := 1; i < m.pageSize-2; i++ {
+		// 1 "No messages" + (pageSize-2) blanks = pageSize-1 data rows,
+		// then +1 info line = pageSize body rows total.
+		for i := 1; i < m.pageSize-1; i++ {
 			sb.WriteString(normalRowStyle.Render(
 				strings.Repeat(" ", m.width),
 			))
@@ -612,7 +618,7 @@ func (m Model) textTimelineView() string {
 		cursorLine++
 	}
 
-	// Ensure cursor is visible
+	// Ensure cursor is visible with some body context.
 	// Available lines = pageSize - header(1) - separator(1) - info(1)
 	visibleLines := m.pageSize - 1
 	if visibleLines < 1 {
@@ -622,8 +628,11 @@ func (m Model) textTimelineView() string {
 	if cursorLine < scrollLine {
 		scrollLine = cursorLine
 	}
-	if cursorLine >= scrollLine+visibleLines {
-		scrollLine = cursorLine - visibleLines + 3
+	// Show the message header plus a few body lines (not just
+	// the header), so long messages don't appear cut off.
+	cursorEndLine := cursorLine + 3
+	if cursorEndLine >= scrollLine+visibleLines {
+		scrollLine = cursorEndLine - visibleLines + 1
 	}
 	if scrollLine < 0 {
 		scrollLine = 0

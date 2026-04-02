@@ -783,6 +783,9 @@ func (m Model) handleTextConversationsLoaded(msg textConversationsLoadedMsg) (te
 	}
 	m.textState.conversations = msg.conversations
 	m.textState.stats = msg.stats
+	// Clamp cursor/scrollOffset to new data bounds to prevent
+	// out-of-range panics after account change or filter.
+	m.textState.clampCursorToConversations()
 	return m, nil
 }
 
@@ -798,6 +801,9 @@ func (m Model) handleTextAggregateLoaded(msg textAggregateLoadedMsg) (tea.Model,
 	}
 	m.textState.aggregateRows = msg.rows
 	m.textState.stats = msg.stats
+	// Clamp cursor/scrollOffset to new data bounds to prevent
+	// out-of-range panics after account change or filter.
+	m.textState.clampCursorToAggregates()
 	return m, nil
 }
 

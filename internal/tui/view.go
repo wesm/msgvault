@@ -303,7 +303,9 @@ func (m Model) aggregateTableView() string {
 		sb.WriteString("\n")
 		sb.WriteString(normalRowStyle.Render(padRight("   No data", m.width)))
 		sb.WriteString("\n")
-		for i := 1; i < m.pageSize-2; i++ {
+		// 1 "No data" + (pageSize-2) blanks = pageSize-1 data rows,
+		// then +1 info line = pageSize body rows total.
+		for i := 1; i < m.pageSize-1; i++ {
 			sb.WriteString(normalRowStyle.Render(strings.Repeat(" ", m.width)))
 			sb.WriteString("\n")
 		}

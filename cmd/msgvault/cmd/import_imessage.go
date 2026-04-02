@@ -228,15 +228,21 @@ func printImessageSummary(
 }
 
 // resolveImessageSource finds or creates the apple_messages source.
-// Prefers a legacy (non-"local") source when both exist, to preserve
-// dedup keys from imports that used --me as the identifier.
+// Among non-"local" sources, prefers the one with the highest ID
+// (most recently created), which is more likely in active use.
 func resolveImessageSource(s *store.Store) (*store.Source, error) {
 	sources, err := s.ListSources("apple_messages")
 	if err == nil && len(sources) > 0 {
+		var best *store.Source
 		for _, src := range sources {
 			if src.Identifier != "local" {
-				return src, nil
+				if best == nil || src.ID > best.ID {
+					best = src
+				}
 			}
+		}
+		if best != nil {
+			return best, nil
 		}
 		return sources[0], nil
 	}
