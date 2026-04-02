@@ -162,7 +162,10 @@ func (c *Client) Import(
 		return nil, fmt.Errorf("ensure SMS label: %w", err)
 	}
 
-	// Resolve owner participant from --me flag for message_recipients
+	// Resolve owner participant for sender attribution on is_from_me messages.
+	// When --me is provided, resolve that handle (phone/email).
+	// Otherwise, create a generic "Me" participant so outbound messages
+	// aren't shown as "Unknown".
 	var ownerPID int64
 	if c.ownerHandle != "" {
 		pid, err := c.resolveParticipant(
@@ -175,6 +178,16 @@ func (c *Client) Import(
 				c.ownerHandle, err)
 		}
 		ownerPID = pid
+	} else {
+		// No --me flag: create a "Me" participant by email convention
+		pidMap, err := s.EnsureParticipantsBatch(
+			[]mime.Address{{Email: "me@imessage.local", Name: "Me"}},
+		)
+		if err == nil {
+			if id, ok := pidMap["me@imessage.local"]; ok {
+				ownerPID = id
+			}
+		}
 	}
 
 	// Track resolved participants to avoid repeated DB calls
