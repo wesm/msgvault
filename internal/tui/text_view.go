@@ -24,7 +24,9 @@ func (m Model) renderTextView() string {
 		body = m.textConversationsView()
 	}
 	footer := m.textFooterView()
-	return fmt.Sprintf("%s\n%s\n%s", header, body, footer)
+	// \x1b[J clears from cursor to end of screen, preventing
+	// stale content when switching between views of different heights.
+	return fmt.Sprintf("%s\n%s\n%s\x1b[J", header, body, footer)
 }
 
 // textHeaderView renders the Texts mode header (title bar + breadcrumb).
@@ -157,11 +159,32 @@ func measureMaxWidth(values []string, headerWidth int) int {
 // textConversationsView renders the conversations list table.
 func (m Model) textConversationsView() string {
 	if len(m.textState.conversations) == 0 && !m.loading {
-		return m.fillScreen(
-			normalRowStyle.Render(
-				padRight("No conversations", m.width),
-			), 1,
-		)
+		var sb strings.Builder
+		// Still render header + separator for consistent height
+		sb.WriteString(tableHeaderStyle.Render(
+			padRight("   Conversations", m.width),
+		))
+		sb.WriteString("\n")
+		sb.WriteString(separatorStyle.Render(
+			strings.Repeat("\u2500", m.width),
+		))
+		sb.WriteString("\n")
+		sb.WriteString(normalRowStyle.Render(
+			padRight("   No conversations", m.width),
+		))
+		sb.WriteString("\n")
+		for i := 1; i < m.pageSize-2; i++ {
+			sb.WriteString(normalRowStyle.Render(
+				strings.Repeat(" ", m.width),
+			))
+			sb.WriteString("\n")
+		}
+		sb.WriteString(m.renderInfoLine("", m.loading))
+		s := sb.String()
+		if m.modal != modalNone {
+			return m.overlayModal(s)
+		}
+		return s
 	}
 
 	var sb strings.Builder
@@ -309,11 +332,31 @@ func (m Model) textConversationsView() string {
 // (contacts, sources, etc.).
 func (m Model) textAggregateView() string {
 	if len(m.textState.aggregateRows) == 0 && !m.loading {
-		return m.fillScreen(
-			normalRowStyle.Render(
-				padRight("No data", m.width),
-			), 1,
-		)
+		var sb strings.Builder
+		sb.WriteString(tableHeaderStyle.Render(
+			padRight("   "+m.textState.viewType.String(), m.width),
+		))
+		sb.WriteString("\n")
+		sb.WriteString(separatorStyle.Render(
+			strings.Repeat("\u2500", m.width),
+		))
+		sb.WriteString("\n")
+		sb.WriteString(normalRowStyle.Render(
+			padRight("   No data", m.width),
+		))
+		sb.WriteString("\n")
+		for i := 1; i < m.pageSize-2; i++ {
+			sb.WriteString(normalRowStyle.Render(
+				strings.Repeat(" ", m.width),
+			))
+			sb.WriteString("\n")
+		}
+		sb.WriteString(m.renderInfoLine("", m.loading))
+		s := sb.String()
+		if m.modal != modalNone {
+			return m.overlayModal(s)
+		}
+		return s
 	}
 
 	var sb strings.Builder
@@ -447,11 +490,31 @@ func (m Model) textAggregateView() string {
 // body text with word wrapping — like reading a chat app.
 func (m Model) textTimelineView() string {
 	if len(m.textState.messages) == 0 && !m.loading {
-		return m.fillScreen(
-			normalRowStyle.Render(
-				padRight("No messages", m.width),
-			), 1,
-		)
+		var sb strings.Builder
+		sb.WriteString(tableHeaderStyle.Render(
+			padRight("   Messages", m.width),
+		))
+		sb.WriteString("\n")
+		sb.WriteString(separatorStyle.Render(
+			strings.Repeat("\u2500", m.width),
+		))
+		sb.WriteString("\n")
+		sb.WriteString(normalRowStyle.Render(
+			padRight("   No messages", m.width),
+		))
+		sb.WriteString("\n")
+		for i := 1; i < m.pageSize-2; i++ {
+			sb.WriteString(normalRowStyle.Render(
+				strings.Repeat(" ", m.width),
+			))
+			sb.WriteString("\n")
+		}
+		sb.WriteString(m.renderInfoLine("", m.loading))
+		s := sb.String()
+		if m.modal != modalNone {
+			return m.overlayModal(s)
+		}
+		return s
 	}
 
 	var sb strings.Builder

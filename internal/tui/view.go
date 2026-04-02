@@ -296,7 +296,23 @@ func (m Model) headerView() string {
 // aggregateTableView renders the aggregate data table.
 func (m Model) aggregateTableView() string {
 	if len(m.rows) == 0 && !m.loading && !m.inlineSearchActive && m.searchQuery == "" && m.err == nil {
-		return m.fillScreen(normalRowStyle.Render(padRight("No data", m.width)), 1)
+		var sb strings.Builder
+		sb.WriteString(tableHeaderStyle.Render(padRight("   "+viewTypeAbbrev(m.viewType), m.width)))
+		sb.WriteString("\n")
+		sb.WriteString(separatorStyle.Render(strings.Repeat("\u2500", m.width)))
+		sb.WriteString("\n")
+		sb.WriteString(normalRowStyle.Render(padRight("   No data", m.width)))
+		sb.WriteString("\n")
+		for i := 1; i < m.pageSize-2; i++ {
+			sb.WriteString(normalRowStyle.Render(strings.Repeat(" ", m.width)))
+			sb.WriteString("\n")
+		}
+		sb.WriteString(m.renderInfoLine("", m.loading))
+		s := sb.String()
+		if m.modal != modalNone {
+			return m.overlayModal(s)
+		}
+		return s
 	}
 
 	var sb strings.Builder
