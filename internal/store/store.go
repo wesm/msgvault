@@ -121,13 +121,14 @@ func OpenReadOnly(dbPath string) (*Store, error) {
 		readOnly: true,
 	}
 
-	// Probe FTS5 availability so callers see the correct state.
-	var ftsCount int
-	if err := db.QueryRow(
-		"SELECT COUNT(*) FROM sqlite_master " +
-			"WHERE type='table' AND name='messages_fts'",
-	).Scan(&ftsCount); err == nil {
-		s.fts5Available = ftsCount > 0
+	// Probe actual FTS5 capability by querying the virtual table.
+	// Checking sqlite_master alone is insufficient: a binary built
+	// without FTS5 support will fail with "no such module: fts5"
+	// even if the table exists from a prior FTS5-enabled build.
+	var ftsProbe int
+	err = db.QueryRow("SELECT 1 FROM messages_fts LIMIT 1").Scan(&ftsProbe)
+	if err == nil || err == sql.ErrNoRows {
+		s.fts5Available = true
 	}
 
 	return s, nil

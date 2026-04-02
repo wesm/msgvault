@@ -47,9 +47,9 @@ Add to Claude Desktop config:
 		defer func() { _ = s.Close() }()
 
 		if stale, col := s.SchemaStale(); stale {
-			fmt.Fprintf(os.Stderr,
-				"Warning: database schema is outdated (missing %s); "+
-					"run 'msgvault init-db' to update\n", col)
+			return fmt.Errorf(
+				"database schema is outdated (missing %s); "+
+					"run 'msgvault init-db' to update", col)
 		}
 
 		var engine query.Engine
