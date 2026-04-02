@@ -38,11 +38,19 @@ Add to Claude Desktop config:
 		// Open read-only: MCP is a query-only workload. This avoids
 		// SQLite write-lock contention when multiple MCP processes
 		// (one per Claude Code session) access the same database.
+		// Schema migrations and FTS backfill are write operations
+		// handled by init-db / sync / tui — not by MCP.
 		s, err := store.OpenReadOnly(dbPath)
 		if err != nil {
 			return fmt.Errorf("open database: %w", err)
 		}
 		defer func() { _ = s.Close() }()
+
+		if stale, col := s.SchemaStale(); stale {
+			fmt.Fprintf(os.Stderr,
+				"Warning: database schema is outdated (missing %s); "+
+					"run 'msgvault init-db' to update\n", col)
+		}
 
 		var engine query.Engine
 		analyticsDir := cfg.AnalyticsDir()

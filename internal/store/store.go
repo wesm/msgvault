@@ -115,11 +115,22 @@ func OpenReadOnly(dbPath string) (*Store, error) {
 
 	db.SetMaxOpenConns(4)
 
-	return &Store{
+	s := &Store{
 		db:       db,
 		dbPath:   dbPath,
 		readOnly: true,
-	}, nil
+	}
+
+	// Probe FTS5 availability so callers see the correct state.
+	var ftsCount int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master " +
+			"WHERE type='table' AND name='messages_fts'",
+	).Scan(&ftsCount); err == nil {
+		s.fts5Available = ftsCount > 0
+	}
+
+	return s, nil
 }
 
 // Close checkpoints the WAL (unless read-only) and closes the database.
@@ -282,6 +293,23 @@ func (s *Store) Rebind(query string) string {
 // FTS5Available returns whether FTS5 full-text search is available.
 func (s *Store) FTS5Available() bool {
 	return s.fts5Available
+}
+
+// SchemaStale checks whether the database schema is missing columns
+// added by recent migrations. Returns true and the first missing
+// column name if the schema needs updating. Read-only safe.
+func (s *Store) SchemaStale() (stale bool, missing string) {
+	// Check the most recently added migration column. If it exists,
+	// all earlier migrations have also been applied.
+	var count int
+	err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('conversations') " +
+			"WHERE name = 'conversation_type'",
+	).Scan(&count)
+	if err != nil || count == 0 {
+		return true, "conversations.conversation_type"
+	}
+	return false, ""
 }
 
 // InitSchema initializes the database schema.
