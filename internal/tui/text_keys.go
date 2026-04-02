@@ -393,13 +393,14 @@ func (m Model) textRowCount() int {
 
 // cycleTextSortField cycles between sort fields for text views.
 func (m *Model) cycleTextSortField() {
+	// Cycle follows column order: Name → Count → LastMessage
 	switch m.textState.filter.SortField {
-	case query.TextSortByLastMessage:
+	case query.TextSortByName:
 		m.textState.filter.SortField = query.TextSortByCount
 	case query.TextSortByCount:
-		m.textState.filter.SortField = query.TextSortByName
-	default:
 		m.textState.filter.SortField = query.TextSortByLastMessage
+	default:
+		m.textState.filter.SortField = query.TextSortByName
 	}
 }
 
