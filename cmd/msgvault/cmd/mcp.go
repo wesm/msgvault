@@ -34,23 +34,15 @@ Add to Claude Desktop config:
   }`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dbPath := cfg.DatabaseDSN()
-		s, err := store.Open(dbPath)
+
+		// Open read-only: MCP is a query-only workload. This avoids
+		// SQLite write-lock contention when multiple MCP processes
+		// (one per Claude Code session) access the same database.
+		s, err := store.OpenReadOnly(dbPath)
 		if err != nil {
 			return fmt.Errorf("open database: %w", err)
 		}
 		defer func() { _ = s.Close() }()
-
-		// Ensure schema is up to date
-		if err := s.InitSchema(); err != nil {
-			return fmt.Errorf("init schema: %w", err)
-		}
-
-		// Build FTS index in background — MCP should start serving immediately
-		if s.NeedsFTSBackfill() {
-			go func() {
-				_, _ = s.BackfillFTS(nil)
-			}()
-		}
 
 		var engine query.Engine
 		analyticsDir := cfg.AnalyticsDir()

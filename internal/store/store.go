@@ -20,6 +20,7 @@ var schemaFS embed.FS
 type Store struct {
 	db            *sql.DB
 	dbPath        string
+	readOnly      bool // Opened via OpenReadOnly; skips WAL checkpoint on close
 	fts5Available bool // Whether FTS5 is available for full-text search
 }
 
@@ -86,12 +87,49 @@ func Open(dbPath string) (*Store, error) {
 	}, nil
 }
 
-// Close checkpoints the WAL and closes the database connection.
+// OpenReadOnly opens an existing database in read-only mode. Suitable for
+// query-only workloads (MCP server) where multiple processes access the
+// same database concurrently. Does not create the database, run migrations,
+// or checkpoint WAL on close.
+func OpenReadOnly(dbPath string) (*Store, error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, fmt.Errorf(
+			"database not found: %s "+
+				"(run 'msgvault init-db' first)", dbPath,
+		)
+	}
+
+	// URI format required for mode=ro (SQLITE_OPEN_READONLY).
+	// No _journal_mode pragma — the DB is already WAL; setting it
+	// would require write access.
+	dsn := "file:" + dbPath + "?mode=ro&_busy_timeout=5000"
+	db, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open database (read-only): %w", err)
+	}
+
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping database: %w", err)
+	}
+
+	db.SetMaxOpenConns(4)
+
+	return &Store{
+		db:       db,
+		dbPath:   dbPath,
+		readOnly: true,
+	}, nil
+}
+
+// Close checkpoints the WAL (unless read-only) and closes the database.
 func (s *Store) Close() error {
-	// Checkpoint WAL before closing to fold it back into the main database.
-	// This prevents WAL accumulation across sessions and reduces the risk of
-	// corruption from stale WAL entries.
-	_ = s.CheckpointWAL()
+	if !s.readOnly {
+		// Checkpoint WAL before closing to fold it back into the main
+		// database. This prevents WAL accumulation across sessions and
+		// reduces the risk of corruption from stale WAL entries.
+		_ = s.CheckpointWAL()
+	}
 	return s.db.Close()
 }
 
