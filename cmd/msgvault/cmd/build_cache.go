@@ -787,8 +787,6 @@ func exportToCSV(db *sql.DB, query string, dest string) error {
 // rebuild (deletions/mutations) or incremental export (new messages
 // only) is needed. Logs a warning on failure — the data is safe in
 // SQLite.
-//
-//nolint:unused // called by sync and import commands (wired up in follow-on commits)
 func rebuildCacheAfterWrite(dbPath string) {
 	analyticsDir := cfg.AnalyticsDir()
 	fullRebuild := false
