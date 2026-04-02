@@ -183,7 +183,7 @@ Examples:
 			}
 			result, cacheErr := buildCache(dbPath, analyticsDir, fullRebuild)
 			if cacheErr != nil {
-				logger.Warn("cache build failed", "error", cacheErr)
+				syncErrors = append(syncErrors, fmt.Sprintf("cache rebuild: %v", cacheErr))
 			} else if !result.Skipped {
 				logger.Info("cache build completed", "exported", result.ExportedCount)
 			}
