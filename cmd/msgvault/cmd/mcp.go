@@ -46,10 +46,19 @@ Add to Claude Desktop config:
 		}
 		defer func() { _ = s.Close() }()
 
-		if stale, col := s.SchemaStale(); stale {
+		if stale, col, err := s.SchemaStale(); err != nil {
+			return fmt.Errorf("check schema: %w", err)
+		} else if stale {
 			return fmt.Errorf(
 				"database schema is outdated (missing %s); "+
 					"run 'msgvault init-db' to update", col)
+		}
+
+		if s.FTS5Available() && s.NeedsFTSBackfill() {
+			fmt.Fprintf(os.Stderr,
+				"Warning: full-text search index needs populating; "+
+					"body-text search will return incomplete results "+
+					"until 'msgvault tui' or 'msgvault search' is run\n")
 		}
 
 		var engine query.Engine

@@ -298,9 +298,11 @@ func (s *Store) FTS5Available() bool {
 }
 
 // SchemaStale checks whether the database schema is missing columns
-// added by recent migrations. Returns true and the first missing
-// column name if the schema needs updating. Read-only safe.
-func (s *Store) SchemaStale() (stale bool, missing string) {
+// added by recent migrations. Returns (stale, column, err). Only
+// reports stale when the PRAGMA succeeds and the column is absent;
+// query errors are returned separately so callers don't misdiagnose
+// corruption or permission problems as outdated schema.
+func (s *Store) SchemaStale() (bool, string, error) {
 	// Check the most recently added migration column. If it exists,
 	// all earlier migrations have also been applied.
 	var count int
@@ -308,10 +310,13 @@ func (s *Store) SchemaStale() (stale bool, missing string) {
 		"SELECT COUNT(*) FROM pragma_table_info('conversations') " +
 			"WHERE name = 'conversation_type'",
 	).Scan(&count)
-	if err != nil || count == 0 {
-		return true, "conversations.conversation_type"
+	if err != nil {
+		return false, "", fmt.Errorf("check schema version: %w", err)
 	}
-	return false, ""
+	if count == 0 {
+		return true, "conversations.conversation_type", nil
+	}
+	return false, "", nil
 }
 
 // InitSchema initializes the database schema.
