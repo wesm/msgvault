@@ -136,6 +136,17 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 		return nil, fmt.Errorf("get/create source: %w", err)
 	}
 
+	// Set display name to the PST filename so it appears in list-accounts / get_stats.
+	pstBase := filepath.Base(absPath)
+	if !src.DisplayName.Valid || src.DisplayName.String == "" {
+		if err := st.UpdateSourceDisplayName(src.ID, pstBase); err != nil {
+			log.Warn("failed to set source display name", "error", err)
+		} else {
+			src.DisplayName.Valid = true
+			src.DisplayName.String = pstBase
+		}
+	}
+
 	// Resume or start sync.
 	var (
 		syncID int64
