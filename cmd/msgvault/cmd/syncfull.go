@@ -52,6 +52,16 @@ Examples:
 		if syncLimit < 0 {
 			return fmt.Errorf("--limit must be a non-negative number")
 		}
+		if syncAfter != "" {
+			if _, err := time.Parse("2006-01-02", syncAfter); err != nil {
+				return fmt.Errorf("invalid --after date %q (expected YYYY-MM-DD): %w", syncAfter, err)
+			}
+		}
+		if syncBefore != "" {
+			if _, err := time.Parse("2006-01-02", syncBefore); err != nil {
+				return fmt.Errorf("invalid --before date %q (expected YYYY-MM-DD): %w", syncBefore, err)
+			}
+		}
 
 		// Open database
 		dbPath := cfg.DatabaseDSN()

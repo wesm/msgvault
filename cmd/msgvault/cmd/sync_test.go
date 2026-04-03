@@ -482,6 +482,77 @@ func TestSyncCmd_BrokenOAuthDoesNotBlockIMAP(t *testing.T) {
 	}
 }
 
+// TestSyncFullCmd_MalformedDateRejectsBeforeSync verifies that a
+// malformed --after flag is rejected before any source is synced,
+// even in a mixed Gmail+IMAP setup where Gmail would otherwise
+// succeed first.
+func TestSyncFullCmd_MalformedDateRejectsBeforeSync(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/msgvault.db"
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := s.InitSchema(); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	// Create both Gmail and IMAP sources so the command would
+	// normally iterate both before hitting IMAP date validation.
+	_, err = s.GetOrCreateSource("gmail", "g@example.com")
+	if err != nil {
+		t.Fatalf("create gmail source: %v", err)
+	}
+	_, err = s.GetOrCreateSource("imap", "i@example.com")
+	if err != nil {
+		t.Fatalf("create imap source: %v", err)
+	}
+	_ = s.Close()
+
+	savedCfg := cfg
+	savedLogger := logger
+	savedAfter := syncAfter
+	defer func() {
+		cfg = savedCfg
+		logger = savedLogger
+		syncAfter = savedAfter
+	}()
+
+	cfg = &config.Config{
+		HomeDir: tmpDir,
+		Data:    config.DataConfig{DataDir: tmpDir},
+	}
+	logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	syncAfter = "not-a-date"
+
+	testCmd := &cobra.Command{
+		Use:  "sync-full [email]",
+		Args: cobra.MaximumNArgs(1),
+		RunE: syncFullCmd.RunE,
+	}
+
+	root := newTestRootCmd()
+	root.AddCommand(testCmd)
+	root.SetArgs([]string{"sync-full"})
+
+	getOutput := captureStdout(t)
+	err = root.Execute()
+	output := getOutput()
+
+	if err == nil {
+		t.Fatal("expected error for malformed date")
+	}
+	if !strings.Contains(err.Error(), "--after") {
+		t.Errorf("error should mention --after; got: %s", err.Error())
+	}
+	// No source should have been attempted.
+	if strings.Contains(output, "Starting full sync") {
+		t.Error("no sync should start when date flag is invalid")
+	}
+}
+
 // TestSyncFullCmd_MalformedIMAPDateFlagErrors verifies that malformed
 // --after/--before flags produce a clear error for IMAP sources
 // instead of silently syncing the entire mailbox.
