@@ -490,7 +490,15 @@ func (s *Store) EnsureLabel(
 	sourceID int64,
 	sourceLabelID, name, labelType string,
 ) (int64, error) {
-	return ensureLabelWith(s.db, sourceID, sourceLabelID, name, labelType)
+	var id int64
+	err := s.withTx(func(tx *sql.Tx) error {
+		var txErr error
+		id, txErr = ensureLabelWith(
+			tx, sourceID, sourceLabelID, name, labelType,
+		)
+		return txErr
+	})
+	return id, err
 }
 
 // ensureLabelWith is the core label-upsert logic, parameterised on the
@@ -519,15 +527,10 @@ func ensureLabelWith(
 			return id, nil
 		}
 		// Label was renamed — update the name. If another row already
-		// claims the target name, give it a temporary name to avoid a
-		// UNIQUE violation. When called via EnsureLabelsBatch (inside
-		// a transaction), that row is corrected later in the same tx.
-		if _, err = q.Exec(`
-			UPDATE labels
-			SET name = CAST(id AS TEXT) || '/' || name
-			WHERE source_id = ? AND name = ? AND id != ?
-		`, sourceID, name, id); err != nil {
-			return 0, fmt.Errorf("clear conflicting label name: %w", err)
+		// claims the target name, merge it: move its message-label
+		// associations to the canonical row and delete the stale one.
+		if err = mergeLabelByName(q, sourceID, name, id); err != nil {
+			return 0, err
 		}
 		if _, err = q.Exec(`
 			UPDATE labels SET name = ?, label_type = ?
@@ -561,6 +564,46 @@ func ensureLabelWith(
 		return 0, err
 	}
 	return id, nil
+}
+
+// mergeLabelByName finds a label with the given name (excluding keepID)
+// and merges it into keepID: message-label associations are reassigned
+// and the stale row is deleted. No-op if no conflicting label exists.
+func mergeLabelByName(
+	q dbQuerier, sourceID int64, name string, keepID int64,
+) error {
+	var conflictID int64
+	err := q.QueryRow(`
+		SELECT id FROM labels
+		WHERE source_id = ? AND name = ? AND id != ?
+	`, sourceID, name, keepID).Scan(&conflictID)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("find conflicting label: %w", err)
+	}
+	// Reassign message-label associations. OR IGNORE skips rows
+	// where the message already has keepID (avoids PK violation).
+	if _, err = q.Exec(`
+		UPDATE OR IGNORE message_labels
+		SET label_id = ? WHERE label_id = ?
+	`, keepID, conflictID); err != nil {
+		return fmt.Errorf("reassign label associations: %w", err)
+	}
+	// Remove any remaining rows that couldn't be reassigned
+	// (duplicates skipped by OR IGNORE above).
+	if _, err = q.Exec(`
+		DELETE FROM message_labels WHERE label_id = ?
+	`, conflictID); err != nil {
+		return fmt.Errorf("clean up duplicate associations: %w", err)
+	}
+	if _, err = q.Exec(`
+		DELETE FROM labels WHERE id = ?
+	`, conflictID); err != nil {
+		return fmt.Errorf("delete conflicting label: %w", err)
+	}
+	return nil
 }
 
 // LabelInfo holds the name and type for a label to be ensured.

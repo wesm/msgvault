@@ -376,17 +376,29 @@ func TestStore_EnsureLabel_RenameSwap(t *testing.T) {
 	f := storetest.New(t)
 
 	// L1="Foo" exists, and L1 is renamed to the name of an existing
-	// label "Bar" (which has source_label_id "L2"). The rename should
-	// clear L2's claim on "Bar" so L1 can take it.
-	_, err := f.Store.EnsureLabel(f.Source.ID, "L1", "Foo", "user")
+	// label "Bar" (which has source_label_id "L2"). The rename merges
+	// L2 into L1 so L1 can take the name.
+	lid1, err := f.Store.EnsureLabel(f.Source.ID, "L1", "Foo", "user")
 	testutil.MustNoErr(t, err, "create L1=Foo")
 
-	_, err = f.Store.EnsureLabel(f.Source.ID, "L2", "Bar", "user")
+	lid2, err := f.Store.EnsureLabel(f.Source.ID, "L2", "Bar", "user")
 	testutil.MustNoErr(t, err, "create L2=Bar")
 
-	// L1 renamed to "Bar" — should succeed by clearing L2's name lock
-	_, err = f.Store.EnsureLabel(f.Source.ID, "L1", "Bar", "user")
+	// Tag a message with L2 so we can verify associations survive merge
+	msgID := f.CreateMessage("swap-msg")
+	err = f.Store.ReplaceMessageLabels(msgID, []int64{lid2})
+	testutil.MustNoErr(t, err, "tag message with L2")
+
+	// L1 renamed to "Bar" — merges L2 into L1
+	lid1After, err := f.Store.EnsureLabel(f.Source.ID, "L1", "Bar", "user")
 	testutil.MustNoErr(t, err, "rename L1=Bar (was L2's name)")
+
+	if lid1After != lid1 {
+		t.Errorf("L1 ID changed: got %d, want %d", lid1After, lid1)
+	}
+
+	// Message should now be associated with L1 (not the deleted L2)
+	f.AssertLabelCount(msgID, 1)
 }
 
 func TestStore_EnsureLabelsBatch(t *testing.T) {
