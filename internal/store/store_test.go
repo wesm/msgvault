@@ -316,6 +316,79 @@ func TestStore_Label(t *testing.T) {
 	}
 }
 
+func TestStore_EnsureLabel_NameConflict(t *testing.T) {
+	f := storetest.New(t)
+
+	// Create label L1 with name "Work"
+	lid1, err := f.Store.EnsureLabel(f.Source.ID, "L1", "Work", "user")
+	testutil.MustNoErr(t, err, "create L1")
+
+	// Insert a different label L2 with the same name — should upsert,
+	// not crash with UNIQUE constraint violation (#232).
+	lid2, err := f.Store.EnsureLabel(f.Source.ID, "L2", "Work", "user")
+	testutil.MustNoErr(t, err, "create L2 with same name")
+
+	if lid2 != lid1 {
+		t.Errorf("L2 ID = %d, want %d (should reuse existing row)", lid2, lid1)
+	}
+
+	// L1's source_label_id was overwritten — looking up L2 should work
+	lid2Again, err := f.Store.EnsureLabel(f.Source.ID, "L2", "Work", "user")
+	testutil.MustNoErr(t, err, "re-lookup L2")
+	if lid2Again != lid1 {
+		t.Errorf("re-lookup L2 ID = %d, want %d", lid2Again, lid1)
+	}
+}
+
+func TestStore_EnsureLabel_Rename(t *testing.T) {
+	f := storetest.New(t)
+
+	// Create label L1 with name "OldName"
+	lid, err := f.Store.EnsureLabel(f.Source.ID, "L1", "OldName", "user")
+	testutil.MustNoErr(t, err, "create L1")
+
+	// Same source_label_id, different name (label was renamed in Gmail)
+	lid2, err := f.Store.EnsureLabel(f.Source.ID, "L1", "NewName", "user")
+	testutil.MustNoErr(t, err, "rename L1")
+
+	if lid2 != lid {
+		t.Errorf("renamed label ID = %d, want %d", lid2, lid)
+	}
+}
+
+func TestStore_EnsureLabel_RenameAndReuse(t *testing.T) {
+	f := storetest.New(t)
+
+	// Scenario: L1 named "Foo" is renamed to "Bar", then L2 takes "Foo".
+	_, err := f.Store.EnsureLabel(f.Source.ID, "L1", "Foo", "user")
+	testutil.MustNoErr(t, err, "create L1=Foo")
+
+	// L1 renamed to "Bar" — should update name in place
+	_, err = f.Store.EnsureLabel(f.Source.ID, "L1", "Bar", "user")
+	testutil.MustNoErr(t, err, "rename L1=Bar")
+
+	// New label L2 takes the old name "Foo" — should succeed
+	_, err = f.Store.EnsureLabel(f.Source.ID, "L2", "Foo", "user")
+	testutil.MustNoErr(t, err, "create L2=Foo")
+}
+
+func TestStore_EnsureLabel_RenameSwap(t *testing.T) {
+	f := storetest.New(t)
+
+	// L1="Foo" exists, and L1 is renamed to the name of an existing
+	// label "Bar" (which has source_label_id "L2"). The rename should
+	// clear L2's claim on "Bar" so L1 can take it.
+	_, err := f.Store.EnsureLabel(f.Source.ID, "L1", "Foo", "user")
+	testutil.MustNoErr(t, err, "create L1=Foo")
+
+	_, err = f.Store.EnsureLabel(f.Source.ID, "L2", "Bar", "user")
+	testutil.MustNoErr(t, err, "create L2=Bar")
+
+	// L1 renamed to "Bar" — should succeed by clearing L2's name lock
+	_, err = f.Store.EnsureLabel(f.Source.ID, "L1", "Bar", "user")
+	testutil.MustNoErr(t, err, "rename L1=Bar (was L2's name)")
+}
+
 func TestStore_EnsureLabelsBatch(t *testing.T) {
 	f := storetest.New(t)
 

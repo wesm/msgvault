@@ -476,31 +476,73 @@ type Label struct {
 	LabelType     sql.NullString
 }
 
-// EnsureLabel gets or creates a label.
-func (s *Store) EnsureLabel(sourceID int64, sourceLabelID, name, labelType string) (int64, error) {
-	// Try to get existing
+// EnsureLabel gets or creates a label, handling renames and ID changes.
+//
+// Labels are identified by source_label_id (Gmail label ID) but have a
+// UNIQUE constraint on (source_id, name). This function handles:
+//   - Existing label found by source_label_id: updates name if renamed
+//   - Name conflict with different source_label_id: upserts, adopting
+//     the new source_label_id (handles deleted+recreated labels, imports)
+func (s *Store) EnsureLabel(
+	sourceID int64,
+	sourceLabelID, name, labelType string,
+) (int64, error) {
+	// Look up by canonical identifier (Gmail label ID).
 	var id int64
+	var existingName string
 	err := s.db.QueryRow(`
-		SELECT id FROM labels WHERE source_id = ? AND source_label_id = ?
-	`, sourceID, sourceLabelID).Scan(&id)
+		SELECT id, name FROM labels
+		WHERE source_id = ? AND source_label_id = ?
+	`, sourceID, sourceLabelID).Scan(&id, &existingName)
 
 	if err == nil {
+		if existingName == name {
+			return id, nil
+		}
+		// Label was renamed in Gmail — update the name. If another
+		// row already claims the target name, give it a temporary
+		// name to avoid a UNIQUE violation. That row will be fixed
+		// when its own EnsureLabel call runs later in the batch, or
+		// left with the temp name if the label was deleted in Gmail.
+		_, _ = s.db.Exec(`
+			UPDATE labels
+			SET name = CAST(id AS TEXT) || '/' || name
+			WHERE source_id = ? AND name = ? AND id != ?
+		`, sourceID, name, id)
+		_, err = s.db.Exec(`
+			UPDATE labels SET name = ?, label_type = ?
+			WHERE id = ?
+		`, name, labelType, id)
+		if err != nil {
+			return 0, fmt.Errorf("update label name: %w", err)
+		}
 		return id, nil
 	}
 	if err != sql.ErrNoRows {
 		return 0, err
 	}
 
-	// Create new
-	result, err := s.db.Exec(`
+	// Not found by source_label_id — upsert by name. Handles the case
+	// where a label with this name exists from a previous import or
+	// with a stale/NULL source_label_id.
+	_, err = s.db.Exec(`
 		INSERT INTO labels (source_id, source_label_id, name, label_type)
 		VALUES (?, ?, ?, ?)
+		ON CONFLICT(source_id, name) DO UPDATE SET
+			source_label_id = excluded.source_label_id,
+			label_type = excluded.label_type
 	`, sourceID, sourceLabelID, name, labelType)
 	if err != nil {
 		return 0, err
 	}
 
-	return result.LastInsertId()
+	err = s.db.QueryRow(`
+		SELECT id FROM labels WHERE source_id = ? AND name = ?
+	`, sourceID, name).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 // LabelInfo holds the name and type for a label to be ensured.
