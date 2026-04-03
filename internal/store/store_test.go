@@ -423,6 +423,48 @@ func TestStore_EnsureLabelsBatch(t *testing.T) {
 	}
 }
 
+func TestStore_EnsureLabelsBatch_CrossRename(t *testing.T) {
+	f := storetest.New(t)
+
+	// Initial state: L1="Foo", L2="Bar"
+	initial := map[string]store.LabelInfo{
+		"L1": {Name: "Foo", Type: "user"},
+		"L2": {Name: "Bar", Type: "user"},
+	}
+	ids, err := f.Store.EnsureLabelsBatch(f.Source.ID, initial)
+	testutil.MustNoErr(t, err, "initial batch")
+
+	l1ID, l2ID := ids["L1"], ids["L2"]
+
+	// Tag messages with each label
+	msg1 := f.CreateMessage("cross-1")
+	msg2 := f.CreateMessage("cross-2")
+	err = f.Store.ReplaceMessageLabels(msg1, []int64{l1ID})
+	testutil.MustNoErr(t, err, "tag msg1 with L1")
+	err = f.Store.ReplaceMessageLabels(msg2, []int64{l2ID})
+	testutil.MustNoErr(t, err, "tag msg2 with L2")
+
+	// Cross-rename: L1→"Bar", L2→"Foo"
+	swapped := map[string]store.LabelInfo{
+		"L1": {Name: "Bar", Type: "user"},
+		"L2": {Name: "Foo", Type: "user"},
+	}
+	ids2, err := f.Store.EnsureLabelsBatch(f.Source.ID, swapped)
+	testutil.MustNoErr(t, err, "cross-rename batch")
+
+	// IDs should be preserved
+	if ids2["L1"] != l1ID {
+		t.Errorf("L1 id changed: got %d, want %d", ids2["L1"], l1ID)
+	}
+	if ids2["L2"] != l2ID {
+		t.Errorf("L2 id changed: got %d, want %d", ids2["L2"], l2ID)
+	}
+
+	// Message associations should be unchanged
+	f.AssertLabelCount(msg1, 1)
+	f.AssertLabelCount(msg2, 1)
+}
+
 func TestStore_MessageLabels(t *testing.T) {
 	f := storetest.New(t)
 

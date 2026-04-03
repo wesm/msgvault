@@ -622,14 +622,41 @@ func IsSystemLabel(sourceLabelID string) bool {
 }
 
 // EnsureLabelsBatch ensures all labels exist and returns a map of
-// source_label_id -> internal ID. All mutations run in a single
-// transaction so intermediate states (e.g. temporary names from
-// conflict resolution) are never visible outside the batch.
+// source_label_id -> internal ID. Runs in a single transaction with
+// a two-phase rename to handle cross-renames safely (e.g. L1:Foo→Bar
+// and L2:Bar→Foo in the same batch).
 func (s *Store) EnsureLabelsBatch(
 	sourceID int64, labels map[string]LabelInfo,
 ) (map[string]int64, error) {
 	result := make(map[string]int64, len(labels))
 	err := s.withTx(func(tx *sql.Tx) error {
+		// Phase 1: Move all renamed labels to temporary names so
+		// that cross-renames don't cause one label to incorrectly
+		// merge the other. Temp names use the row PK (unique by
+		// construction) with a prefix that can't be a real label.
+		for sourceLabelID, info := range labels {
+			var id int64
+			var curName string
+			err := tx.QueryRow(`
+				SELECT id, name FROM labels
+				WHERE source_id = ? AND source_label_id = ?
+			`, sourceID, sourceLabelID).Scan(&id, &curName)
+			if err != nil || curName == info.Name {
+				continue
+			}
+			if _, err = tx.Exec(`
+				UPDATE labels SET name = CAST(id AS TEXT) || X'00'
+				WHERE id = ?
+			`, id); err != nil {
+				return fmt.Errorf(
+					"clear name for label %s: %w", sourceLabelID, err,
+				)
+			}
+		}
+
+		// Phase 2: Apply final names. After phase 1 any remaining
+		// name conflict is from a label NOT in this batch, which
+		// is safe to merge (dead/imported label).
 		for sourceLabelID, info := range labels {
 			id, err := ensureLabelWith(
 				tx, sourceID, sourceLabelID, info.Name, info.Type,
