@@ -223,14 +223,18 @@ func buildAPIClient(ctx context.Context, src *store.Source, getOAuthMgr func(str
 
 		var since, before time.Time
 		if syncAfter != "" {
-			if t, err := time.Parse("2006-01-02", syncAfter); err == nil {
-				since = t
+			t, err := time.Parse("2006-01-02", syncAfter)
+			if err != nil {
+				return nil, fmt.Errorf("invalid --after date %q (expected YYYY-MM-DD): %w", syncAfter, err)
 			}
+			since = t
 		}
 		if syncBefore != "" {
-			if t, err := time.Parse("2006-01-02", syncBefore); err == nil {
-				before = t
+			t, err := time.Parse("2006-01-02", syncBefore)
+			if err != nil {
+				return nil, fmt.Errorf("invalid --before date %q (expected YYYY-MM-DD): %w", syncBefore, err)
 			}
+			before = t
 		}
 		if !since.IsZero() || !before.IsZero() {
 			opts = append(opts, imaplib.WithDateFilter(since, before))

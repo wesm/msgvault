@@ -36,6 +36,7 @@ func WithDateFilter(since, before time.Time) Option {
 		c.before = before
 	}
 }
+
 // fetchChunkSize is the maximum number of UIDs per UID FETCH command.
 // Large FETCH sets cause server-side timeouts on big mailboxes; chunking
 // keeps each round-trip short.

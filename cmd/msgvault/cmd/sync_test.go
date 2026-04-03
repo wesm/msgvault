@@ -482,6 +482,95 @@ func TestSyncCmd_BrokenOAuthDoesNotBlockIMAP(t *testing.T) {
 	}
 }
 
+// TestSyncFullCmd_MalformedIMAPDateFlagErrors verifies that malformed
+// --after/--before flags produce a clear error for IMAP sources
+// instead of silently syncing the entire mailbox.
+func TestSyncFullCmd_MalformedIMAPDateFlagErrors(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/msgvault.db"
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := s.InitSchema(); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	src, err := s.GetOrCreateSource("imap", "i@example.com")
+	if err != nil {
+		t.Fatalf("create imap source: %v", err)
+	}
+	// Store a minimal IMAP config so buildAPIClient reaches
+	// the date-parsing code instead of failing on missing config.
+	if err := s.UpdateSourceSyncConfig(src.ID, `{"host":"localhost","port":993,"username":"i@example.com","tls":true}`); err != nil {
+		t.Fatalf("set sync config: %v", err)
+	}
+	_ = s.Close()
+
+	savedCfg := cfg
+	savedLogger := logger
+	savedAfter := syncAfter
+	savedBefore := syncBefore
+	defer func() {
+		cfg = savedCfg
+		logger = savedLogger
+		syncAfter = savedAfter
+		syncBefore = savedBefore
+	}()
+
+	cfg = &config.Config{
+		HomeDir: tmpDir,
+		Data:    config.DataConfig{DataDir: tmpDir},
+	}
+	logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	for _, tc := range []struct {
+		name   string
+		after  string
+		before string
+		errStr string
+	}{
+		{"bad after", "not-a-date", "", "--after"},
+		{"bad before", "", "2024/01/01", "--before"},
+		{"bad both", "Jan 1", "tomorrow", "--after"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			syncAfter = tc.after
+			syncBefore = tc.before
+
+			testCmd := &cobra.Command{
+				Use:  "sync-full [email]",
+				Args: cobra.MaximumNArgs(1),
+				RunE: syncFullCmd.RunE,
+			}
+
+			root := newTestRootCmd()
+			root.AddCommand(testCmd)
+			root.SetArgs([]string{
+				"sync-full", "i@example.com",
+			})
+
+			err := root.Execute()
+			if err == nil {
+				t.Fatal("expected error for malformed date")
+			}
+			if !strings.Contains(err.Error(), tc.errStr) {
+				t.Errorf(
+					"error should mention %q; got: %s",
+					tc.errStr, err.Error(),
+				)
+			}
+			if !strings.Contains(err.Error(), "YYYY-MM-DD") {
+				t.Errorf(
+					"error should mention expected format; got: %s",
+					err.Error(),
+				)
+			}
+		})
+	}
+}
+
 // TestSyncCmd_GmailOnlyBrokenOAuthSurfacesError verifies that when
 // only Gmail sources exist and OAuth is broken, the actual error is
 // returned, not "no accounts are ready to sync".
