@@ -498,8 +498,10 @@ func TestSyncFullCmd_MalformedDateRejectsBeforeSync(t *testing.T) {
 		t.Fatalf("init schema: %v", err)
 	}
 
-	// Create both Gmail and IMAP sources so the command would
-	// normally iterate both before hitting IMAP date validation.
+	// Create both Gmail and IMAP sources. The Gmail source is
+	// made fully syncable (OAuth config + token) so that without
+	// the early validation it would be selected and synced before
+	// the IMAP source rejects the malformed date.
 	_, err = s.GetOrCreateSource("gmail", "g@example.com")
 	if err != nil {
 		t.Fatalf("create gmail source: %v", err)
@@ -509,6 +511,21 @@ func TestSyncFullCmd_MalformedDateRejectsBeforeSync(t *testing.T) {
 		t.Fatalf("create imap source: %v", err)
 	}
 	_ = s.Close()
+
+	// Write OAuth client secrets and a fake token so the Gmail
+	// source passes discovery checks (HasAnyConfig + HasToken).
+	secretsPath := filepath.Join(tmpDir, "client_secret.json")
+	if err := os.WriteFile(secretsPath, []byte(fakeClientSecrets), 0600); err != nil {
+		t.Fatalf("write client secrets: %v", err)
+	}
+	tokensDir := filepath.Join(tmpDir, "tokens")
+	if err := os.MkdirAll(tokensDir, 0700); err != nil {
+		t.Fatalf("create tokens dir: %v", err)
+	}
+	fakeToken := `{"access_token":"fake","token_type":"Bearer"}`
+	if err := os.WriteFile(filepath.Join(tokensDir, "g@example.com.json"), []byte(fakeToken), 0600); err != nil {
+		t.Fatalf("write fake token: %v", err)
+	}
 
 	savedCfg := cfg
 	savedLogger := logger
@@ -522,6 +539,7 @@ func TestSyncFullCmd_MalformedDateRejectsBeforeSync(t *testing.T) {
 	cfg = &config.Config{
 		HomeDir: tmpDir,
 		Data:    config.DataConfig{DataDir: tmpDir},
+		OAuth:   config.OAuthConfig{ClientSecrets: secretsPath},
 	}
 	logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 
@@ -547,7 +565,8 @@ func TestSyncFullCmd_MalformedDateRejectsBeforeSync(t *testing.T) {
 	if !strings.Contains(err.Error(), "--after") {
 		t.Errorf("error should mention --after; got: %s", err.Error())
 	}
-	// No source should have been attempted.
+	// No source should have been attempted — the date error
+	// must fire before source discovery, not after Gmail syncs.
 	if strings.Contains(output, "Starting full sync") {
 		t.Error("no sync should start when date flag is invalid")
 	}
