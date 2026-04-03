@@ -641,8 +641,13 @@ func (s *Store) EnsureLabelsBatch(
 				SELECT id, name FROM labels
 				WHERE source_id = ? AND source_label_id = ?
 			`, sourceID, sourceLabelID).Scan(&id, &curName)
-			if err != nil || curName == info.Name {
+			if err == sql.ErrNoRows || curName == info.Name {
 				continue
+			}
+			if err != nil {
+				return fmt.Errorf(
+					"check label %s: %w", sourceLabelID, err,
+				)
 			}
 			if _, err = tx.Exec(`
 				UPDATE labels SET name = CAST(id AS TEXT) || X'00'
