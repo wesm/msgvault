@@ -72,6 +72,8 @@ type MessageSummary struct {
 	Subject        string   `json:"subject"`
 	From           string   `json:"from"`
 	To             []string `json:"to"`
+	Cc             []string `json:"cc,omitempty"`
+	Bcc            []string `json:"bcc,omitempty"`
 	SentAt         string   `json:"sent_at"`
 	DeletedAt      string   `json:"deleted_at,omitempty"`
 	Snippet        string   `json:"snippet"`
@@ -131,6 +133,8 @@ func toMessageSummary(m APIMessage) MessageSummary {
 		Subject:        m.Subject,
 		From:           m.From,
 		To:             to,
+		Cc:             m.Cc,
+		Bcc:            m.Bcc,
 		SentAt:         m.SentAt.UTC().Format(time.RFC3339),
 		DeletedAt:      formatDeletedAt(m.DeletedAt),
 		Snippet:        m.Snippet,
