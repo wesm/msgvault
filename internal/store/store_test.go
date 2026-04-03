@@ -399,6 +399,7 @@ func TestStore_EnsureLabel_RenameSwap(t *testing.T) {
 
 	// Message should now be associated with L1 (not the deleted L2)
 	f.AssertLabelCount(msgID, 1)
+	f.AssertMessageHasLabel(msgID, lid1)
 }
 
 func TestStore_EnsureLabelsBatch(t *testing.T) {
@@ -460,9 +461,11 @@ func TestStore_EnsureLabelsBatch_CrossRename(t *testing.T) {
 		t.Errorf("L2 id changed: got %d, want %d", ids2["L2"], l2ID)
 	}
 
-	// Message associations should be unchanged
+	// Each message should still be linked to its original label ID
 	f.AssertLabelCount(msg1, 1)
+	f.AssertMessageHasLabel(msg1, l1ID)
 	f.AssertLabelCount(msg2, 1)
+	f.AssertMessageHasLabel(msg2, l2ID)
 }
 
 func TestStore_MessageLabels(t *testing.T) {

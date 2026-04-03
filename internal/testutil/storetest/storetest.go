@@ -173,6 +173,20 @@ func (f *Fixture) AssertLabelCount(msgID int64, want int) {
 	}
 }
 
+// AssertMessageHasLabel asserts that a message is linked to a specific label ID.
+func (f *Fixture) AssertMessageHasLabel(msgID, labelID int64) {
+	f.T.Helper()
+	var count int
+	err := f.Store.DB().QueryRow(
+		f.Store.Rebind("SELECT COUNT(*) FROM message_labels WHERE message_id = ? AND label_id = ?"),
+		msgID, labelID,
+	).Scan(&count)
+	testutil.MustNoErr(f.T, err, "check message_labels")
+	if count != 1 {
+		f.T.Errorf("message %d should have label %d, but count=%d", msgID, labelID, count)
+	}
+}
+
 // AssertRecipientCount asserts the number of recipients of a given type for a message.
 func (f *Fixture) AssertRecipientCount(msgID int64, typ string, want int) {
 	f.T.Helper()
