@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	imap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
@@ -28,6 +29,13 @@ func WithTokenSource(fn func(ctx context.Context) (string, error)) Option {
 	return func(c *Client) { c.tokenSource = fn }
 }
 
+// WithDateFilter restricts IMAP SEARCH to messages within the given date range.
+func WithDateFilter(since, before time.Time) Option {
+	return func(c *Client) {
+		c.since = since
+		c.before = before
+	}
+}
 // fetchChunkSize is the maximum number of UIDs per UID FETCH command.
 // Large FETCH sets cause server-side timeouts on big mailboxes; chunking
 // keeps each round-trip short.
@@ -54,6 +62,8 @@ type Client struct {
 	allMailFolder    string               // mailbox with \All attribute (empty if not detected)
 	msgIDToLabels    map[string][]string  // RFC822 Message-ID → mailbox memberships
 	seenRFC822IDs    map[string]bool      // dedup across All Mail + Trash/Spam
+	since            time.Time            // IMAP SINCE date filter (zero = no filter)
+	before           time.Time            // IMAP BEFORE date filter (zero = no filter)
 }
 
 // NewClient creates a new IMAP client.
@@ -261,8 +271,16 @@ func (c *Client) enumerateMailbox(
 		}
 	}
 
+	criteria := &imap.SearchCriteria{}
+	if !c.since.IsZero() {
+		criteria.Since = c.since
+	}
+	if !c.before.IsZero() {
+		criteria.Before = c.before
+	}
+
 	searchData, err := c.conn.UIDSearch(
-		&imap.SearchCriteria{},
+		criteria,
 		nil,
 	).Wait()
 	if err != nil {
@@ -278,7 +296,7 @@ func (c *Client) enumerateMailbox(
 				return nil, selErr
 			}
 			searchData, err = c.conn.UIDSearch(
-				&imap.SearchCriteria{},
+				criteria,
 				nil,
 			).Wait()
 			if err != nil {

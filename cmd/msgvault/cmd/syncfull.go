@@ -221,6 +221,21 @@ func buildAPIClient(ctx context.Context, src *store.Source, getOAuthMgr func(str
 		var opts []imaplib.Option
 		opts = append(opts, imaplib.WithLogger(logger))
 
+		var since, before time.Time
+		if syncAfter != "" {
+			if t, err := time.Parse("2006-01-02", syncAfter); err == nil {
+				since = t
+			}
+		}
+		if syncBefore != "" {
+			if t, err := time.Parse("2006-01-02", syncBefore); err == nil {
+				before = t
+			}
+		}
+		if !since.IsZero() || !before.IsZero() {
+			opts = append(opts, imaplib.WithDateFilter(since, before))
+		}
+
 		switch imapCfg.EffectiveAuthMethod() {
 		case imaplib.AuthXOAuth2:
 			if cfg.Microsoft.ClientID == "" {
@@ -258,10 +273,15 @@ func runFullSync(ctx context.Context, s *store.Store, getOAuthMgr func(string) (
 	}
 	defer func() { _ = apiClient.Close() }()
 
-	// Build query from flags (Gmail only).
+	// Build query from flags (Gmail only; IMAP date filters are
+	// handled via WithDateFilter on the client).
 	query := buildSyncQuery()
 	if query != "" && src.SourceType == "imap" {
-		fmt.Printf("Warning: --query/--before/--after are not supported for IMAP sources and will be ignored.\n\n")
+		// --after/--before are handled natively by IMAP SEARCH;
+		// only warn about --query which has no IMAP equivalent.
+		if syncQuery != "" {
+			fmt.Printf("Warning: --query is not supported for IMAP sources and will be ignored.\n\n")
+		}
 		query = ""
 	}
 
