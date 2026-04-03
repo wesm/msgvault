@@ -476,21 +476,40 @@ type Label struct {
 	LabelType     sql.NullString
 }
 
+// dbQuerier abstracts *sql.DB and *sql.Tx for functions that need to
+// run both standalone and inside a transaction.
+type dbQuerier interface {
+	QueryRow(query string, args ...interface{}) *sql.Row
+	Exec(query string, args ...interface{}) (sql.Result, error)
+}
+
 // EnsureLabel gets or creates a label, handling renames and ID changes.
+// For batch operations prefer EnsureLabelsBatch which runs in a single
+// transaction.
+func (s *Store) EnsureLabel(
+	sourceID int64,
+	sourceLabelID, name, labelType string,
+) (int64, error) {
+	return ensureLabelWith(s.db, sourceID, sourceLabelID, name, labelType)
+}
+
+// ensureLabelWith is the core label-upsert logic, parameterised on the
+// database handle so it works both standalone and inside a transaction.
 //
 // Labels are identified by source_label_id (Gmail label ID) but have a
 // UNIQUE constraint on (source_id, name). This function handles:
 //   - Existing label found by source_label_id: updates name if renamed
 //   - Name conflict with different source_label_id: upserts, adopting
 //     the new source_label_id (handles deleted+recreated labels, imports)
-func (s *Store) EnsureLabel(
+func ensureLabelWith(
+	q dbQuerier,
 	sourceID int64,
 	sourceLabelID, name, labelType string,
 ) (int64, error) {
 	// Look up by canonical identifier (Gmail label ID).
 	var id int64
 	var existingName string
-	err := s.db.QueryRow(`
+	err := q.QueryRow(`
 		SELECT id, name FROM labels
 		WHERE source_id = ? AND source_label_id = ?
 	`, sourceID, sourceLabelID).Scan(&id, &existingName)
@@ -499,21 +518,21 @@ func (s *Store) EnsureLabel(
 		if existingName == name {
 			return id, nil
 		}
-		// Label was renamed in Gmail — update the name. If another
-		// row already claims the target name, give it a temporary
-		// name to avoid a UNIQUE violation. That row will be fixed
-		// when its own EnsureLabel call runs later in the batch, or
-		// left with the temp name if the label was deleted in Gmail.
-		_, _ = s.db.Exec(`
+		// Label was renamed — update the name. If another row already
+		// claims the target name, give it a temporary name to avoid a
+		// UNIQUE violation. When called via EnsureLabelsBatch (inside
+		// a transaction), that row is corrected later in the same tx.
+		if _, err = q.Exec(`
 			UPDATE labels
 			SET name = CAST(id AS TEXT) || '/' || name
 			WHERE source_id = ? AND name = ? AND id != ?
-		`, sourceID, name, id)
-		_, err = s.db.Exec(`
+		`, sourceID, name, id); err != nil {
+			return 0, fmt.Errorf("clear conflicting label name: %w", err)
+		}
+		if _, err = q.Exec(`
 			UPDATE labels SET name = ?, label_type = ?
 			WHERE id = ?
-		`, name, labelType, id)
-		if err != nil {
+		`, name, labelType, id); err != nil {
 			return 0, fmt.Errorf("update label name: %w", err)
 		}
 		return id, nil
@@ -525,18 +544,17 @@ func (s *Store) EnsureLabel(
 	// Not found by source_label_id — upsert by name. Handles the case
 	// where a label with this name exists from a previous import or
 	// with a stale/NULL source_label_id.
-	_, err = s.db.Exec(`
+	if _, err = q.Exec(`
 		INSERT INTO labels (source_id, source_label_id, name, label_type)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(source_id, name) DO UPDATE SET
 			source_label_id = excluded.source_label_id,
 			label_type = excluded.label_type
-	`, sourceID, sourceLabelID, name, labelType)
-	if err != nil {
+	`, sourceID, sourceLabelID, name, labelType); err != nil {
 		return 0, err
 	}
 
-	err = s.db.QueryRow(`
+	err = q.QueryRow(`
 		SELECT id FROM labels WHERE source_id = ? AND name = ?
 	`, sourceID, name).Scan(&id)
 	if err != nil {
@@ -560,18 +578,29 @@ func IsSystemLabel(sourceLabelID string) bool {
 	return strings.HasPrefix(sourceLabelID, "CATEGORY_")
 }
 
-// EnsureLabelsBatch ensures all labels exist and returns a map of source_label_id -> internal ID.
-func (s *Store) EnsureLabelsBatch(sourceID int64, labels map[string]LabelInfo) (map[string]int64, error) {
-	result := make(map[string]int64)
-
-	for sourceLabelID, info := range labels {
-		id, err := s.EnsureLabel(sourceID, sourceLabelID, info.Name, info.Type)
-		if err != nil {
-			return nil, err
+// EnsureLabelsBatch ensures all labels exist and returns a map of
+// source_label_id -> internal ID. All mutations run in a single
+// transaction so intermediate states (e.g. temporary names from
+// conflict resolution) are never visible outside the batch.
+func (s *Store) EnsureLabelsBatch(
+	sourceID int64, labels map[string]LabelInfo,
+) (map[string]int64, error) {
+	result := make(map[string]int64, len(labels))
+	err := s.withTx(func(tx *sql.Tx) error {
+		for sourceLabelID, info := range labels {
+			id, err := ensureLabelWith(
+				tx, sourceID, sourceLabelID, info.Name, info.Type,
+			)
+			if err != nil {
+				return err
+			}
+			result[sourceLabelID] = id
 		}
-		result[sourceLabelID] = id
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-
 	return result, nil
 }
 
