@@ -399,8 +399,14 @@ func TestMessageSummaryCcBccInResponse(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected 'cc' array, got %T", msg["cc"])
 	}
-	if len(cc) != 2 {
-		t.Errorf("cc count = %d, want 2", len(cc))
+	wantCc := map[string]bool{"cc1@example.com": true, "cc2@example.com": true}
+	if len(cc) != len(wantCc) {
+		t.Errorf("cc count = %d, want %d", len(cc), len(wantCc))
+	}
+	for _, v := range cc {
+		if !wantCc[v.(string)] {
+			t.Errorf("unexpected cc address %q", v)
+		}
 	}
 
 	bcc, ok := msg["bcc"].([]interface{})

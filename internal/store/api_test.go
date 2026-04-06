@@ -224,8 +224,14 @@ func TestGetMessageCcBcc(t *testing.T) {
 	if len(m.To) != 1 || m.To[0] != "to@example.com" {
 		t.Errorf("To = %v, want [to@example.com]", m.To)
 	}
+	wantCc := map[string]bool{"cc1@example.com": true, "cc2@example.com": true}
 	if len(m.Cc) != 2 {
 		t.Errorf("Cc count = %d, want 2", len(m.Cc))
+	}
+	for _, addr := range m.Cc {
+		if !wantCc[addr] {
+			t.Errorf("unexpected Cc address %q", addr)
+		}
 	}
 	if len(m.Bcc) != 1 || m.Bcc[0] != "bcc@example.com" {
 		t.Errorf("Bcc = %v, want [bcc@example.com]", m.Bcc)
@@ -247,18 +253,35 @@ func TestListMessagesCcBcc(t *testing.T) {
 
 	db := st.DB()
 
-	// Insert a CC participant
-	if _, err := db.Exec(
-		`INSERT INTO participants (id, email_address, domain, created_at, updated_at)
-		 VALUES (10, 'cc@example.com', 'example.com', datetime('now'), datetime('now'))`,
-	); err != nil {
-		t.Fatalf("insert participant: %v", err)
+	// Insert CC and BCC participants
+	for _, p := range []struct {
+		id    int
+		email string
+	}{
+		{10, "cc@example.com"},
+		{11, "bcc@example.com"},
+	} {
+		if _, err := db.Exec(
+			`INSERT INTO participants (id, email_address, domain, created_at, updated_at)
+			 VALUES (?, ?, 'example.com', datetime('now'), datetime('now'))`,
+			p.id, p.email,
+		); err != nil {
+			t.Fatalf("insert participant %s: %v", p.email, err)
+		}
 	}
-	if _, err := db.Exec(
-		`INSERT INTO message_recipients (message_id, participant_id, recipient_type)
-		 VALUES (?, 10, 'cc')`, msgID,
-	); err != nil {
-		t.Fatalf("insert recipient: %v", err)
+	for _, r := range []struct {
+		participantID int
+		recipientType string
+	}{
+		{10, "cc"},
+		{11, "bcc"},
+	} {
+		if _, err := db.Exec(
+			`INSERT INTO message_recipients (message_id, participant_id, recipient_type)
+			 VALUES (?, ?, ?)`, msgID, r.participantID, r.recipientType,
+		); err != nil {
+			t.Fatalf("insert recipient %s: %v", r.recipientType, err)
+		}
 	}
 
 	messages, total, err := st.ListMessages(0, 100)
@@ -270,6 +293,9 @@ func TestListMessagesCcBcc(t *testing.T) {
 	}
 	if len(messages[0].Cc) != 1 || messages[0].Cc[0] != "cc@example.com" {
 		t.Errorf("Cc = %v, want [cc@example.com]", messages[0].Cc)
+	}
+	if len(messages[0].Bcc) != 1 || messages[0].Bcc[0] != "bcc@example.com" {
+		t.Errorf("Bcc = %v, want [bcc@example.com]", messages[0].Bcc)
 	}
 }
 
