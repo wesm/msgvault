@@ -163,6 +163,116 @@ func TestParseSQLiteTime(t *testing.T) {
 	}
 }
 
+func TestGetMessageCcBcc(t *testing.T) {
+	st := openTestStore(t)
+
+	source, err := st.GetOrCreateSource("gmail", "test@example.com")
+	if err != nil {
+		t.Fatalf("GetOrCreateSource: %v", err)
+	}
+	convID, err := st.EnsureConversation(source.ID, "thread-1", "Thread")
+	if err != nil {
+		t.Fatalf("EnsureConversation: %v", err)
+	}
+	msgID := seedMessage(t, st, source.ID, convID, "msg-cc-bcc", "CC/BCC test", "snippet")
+
+	db := st.DB()
+
+	// Insert participants
+	for _, p := range []struct {
+		id    int
+		email string
+	}{
+		{1, "to@example.com"},
+		{2, "cc1@example.com"},
+		{3, "cc2@example.com"},
+		{4, "bcc@example.com"},
+	} {
+		if _, err := db.Exec(
+			`INSERT INTO participants (id, email_address, domain, created_at, updated_at)
+			 VALUES (?, ?, 'example.com', datetime('now'), datetime('now'))`,
+			p.id, p.email,
+		); err != nil {
+			t.Fatalf("insert participant %s: %v", p.email, err)
+		}
+	}
+
+	// Insert message_recipients
+	for _, r := range []struct {
+		participantID int
+		recipientType string
+	}{
+		{1, "to"},
+		{2, "cc"},
+		{3, "cc"},
+		{4, "bcc"},
+	} {
+		if _, err := db.Exec(
+			`INSERT INTO message_recipients (message_id, participant_id, recipient_type)
+			 VALUES (?, ?, ?)`,
+			msgID, r.participantID, r.recipientType,
+		); err != nil {
+			t.Fatalf("insert recipient %s: %v", r.recipientType, err)
+		}
+	}
+
+	// Test GetMessage
+	m, err := st.GetMessage(msgID)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if len(m.To) != 1 || m.To[0] != "to@example.com" {
+		t.Errorf("To = %v, want [to@example.com]", m.To)
+	}
+	if len(m.Cc) != 2 {
+		t.Errorf("Cc count = %d, want 2", len(m.Cc))
+	}
+	if len(m.Bcc) != 1 || m.Bcc[0] != "bcc@example.com" {
+		t.Errorf("Bcc = %v, want [bcc@example.com]", m.Bcc)
+	}
+}
+
+func TestListMessagesCcBcc(t *testing.T) {
+	st := openTestStore(t)
+
+	source, err := st.GetOrCreateSource("gmail", "test@example.com")
+	if err != nil {
+		t.Fatalf("GetOrCreateSource: %v", err)
+	}
+	convID, err := st.EnsureConversation(source.ID, "thread-1", "Thread")
+	if err != nil {
+		t.Fatalf("EnsureConversation: %v", err)
+	}
+	msgID := seedMessage(t, st, source.ID, convID, "msg-list-cc", "List CC test", "snippet")
+
+	db := st.DB()
+
+	// Insert a CC participant
+	if _, err := db.Exec(
+		`INSERT INTO participants (id, email_address, domain, created_at, updated_at)
+		 VALUES (10, 'cc@example.com', 'example.com', datetime('now'), datetime('now'))`,
+	); err != nil {
+		t.Fatalf("insert participant: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO message_recipients (message_id, participant_id, recipient_type)
+		 VALUES (?, 10, 'cc')`, msgID,
+	); err != nil {
+		t.Fatalf("insert recipient: %v", err)
+	}
+
+	messages, total, err := st.ListMessages(0, 100)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("total = %d, want 1", total)
+	}
+	if len(messages[0].Cc) != 1 || messages[0].Cc[0] != "cc@example.com" {
+		t.Errorf("Cc = %v, want [cc@example.com]", messages[0].Cc)
+	}
+}
+
 func TestSearchMessagesLikeLiteralWildcards(t *testing.T) {
 	st := openTestStore(t)
 
