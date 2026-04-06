@@ -46,19 +46,30 @@ func (q *Query) IsEmpty() bool {
 // operatorFn handles a parsed operator:value pair by applying it to the query.
 type operatorFn func(q *Query, value string, now time.Time)
 
+// normalizeAddr normalizes an address filter value. If it looks like a bare
+// domain (contains "." but no "@"), it is prefixed with "@" so downstream
+// engines treat it as a domain pattern (e.g. "example.com" -> "@example.com").
+func normalizeAddr(v string) string {
+	v = strings.ToLower(v)
+	if !strings.Contains(v, "@") && strings.Contains(v, ".") {
+		v = "@" + v
+	}
+	return v
+}
+
 // operators maps operator names to their handler functions.
 var operators = map[string]operatorFn{
 	"from": func(q *Query, v string, _ time.Time) {
-		q.FromAddrs = append(q.FromAddrs, strings.ToLower(v))
+		q.FromAddrs = append(q.FromAddrs, normalizeAddr(v))
 	},
 	"to": func(q *Query, v string, _ time.Time) {
-		q.ToAddrs = append(q.ToAddrs, strings.ToLower(v))
+		q.ToAddrs = append(q.ToAddrs, normalizeAddr(v))
 	},
 	"cc": func(q *Query, v string, _ time.Time) {
-		q.CcAddrs = append(q.CcAddrs, strings.ToLower(v))
+		q.CcAddrs = append(q.CcAddrs, normalizeAddr(v))
 	},
 	"bcc": func(q *Query, v string, _ time.Time) {
-		q.BccAddrs = append(q.BccAddrs, strings.ToLower(v))
+		q.BccAddrs = append(q.BccAddrs, normalizeAddr(v))
 	},
 	"subject": func(q *Query, v string, _ time.Time) {
 		q.SubjectTerms = append(q.SubjectTerms, v)

@@ -209,6 +209,41 @@ func TestParse(t *testing.T) {
 			},
 		},
 		{
+			name: "DomainNormalization",
+			tests: []testCase{
+				{
+					name:  "from bare domain gets @ prefix",
+					query: "from:example.com",
+					want:  Query{FromAddrs: []string{"@example.com"}},
+				},
+				{
+					name:  "from with @ prefix unchanged",
+					query: "from:@example.com",
+					want:  Query{FromAddrs: []string{"@example.com"}},
+				},
+				{
+					name:  "from full email unchanged",
+					query: "from:alice@example.com",
+					want:  Query{FromAddrs: []string{"alice@example.com"}},
+				},
+				{
+					name:  "to bare domain gets @ prefix",
+					query: "to:example.com",
+					want:  Query{ToAddrs: []string{"@example.com"}},
+				},
+				{
+					name:  "from bare word without dot unchanged",
+					query: "from:alice",
+					want:  Query{FromAddrs: []string{"alice"}},
+				},
+				{
+					name:  "from subdomain gets @ prefix",
+					query: "from:mail.example.co.uk",
+					want:  Query{FromAddrs: []string{"@mail.example.co.uk"}},
+				},
+			},
+		},
+		{
 			name: "ComplexQuery",
 			tests: []testCase{
 				{
