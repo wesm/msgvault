@@ -318,6 +318,18 @@ Examples:
 			}
 		}
 
+		// Open database early so we can resolve account identifiers.
+		dbPath := cfg.DatabaseDSN()
+		s, err := store.Open(dbPath)
+		if err != nil {
+			return fmt.Errorf("open database: %w", err)
+		}
+		defer func() { _ = s.Close() }()
+
+		if err := s.InitSchema(); err != nil {
+			return fmt.Errorf("init schema: %w", err)
+		}
+
 		// Collect unique accounts from manifests
 		accountSet := make(map[string]bool)
 		for _, m := range manifests {
@@ -342,25 +354,33 @@ Examples:
 				return fmt.Errorf("multiple accounts in pending batches (%v) - use --account flag to specify which account", accounts)
 			}
 		} else {
-			// Verify all manifests match the specified account
+			// Resolve the user-supplied value to a source.
+			// IMAP identifiers are URLs (imaps://user@host:port)
+			// but the user may pass the email/display name.
+			resolved, err := s.GetSourcesByIdentifierOrDisplayName(account)
+			if err != nil {
+				return fmt.Errorf("look up source for %s: %w", account, err)
+			}
+			var found *store.Source
+			for _, c := range resolved {
+				if c.SourceType == "gmail" || c.SourceType == "imap" {
+					found = c
+					break
+				}
+			}
+			if found == nil {
+				return fmt.Errorf("no gmail or imap source found for %s", account)
+			}
+			// Canonicalize to stored identifier so manifest
+			// comparisons work for IMAP display-name lookups.
+			account = found.Identifier
+
+			// Verify all manifests match the resolved account
 			for _, m := range manifests {
 				if m.Filters.Account != "" && m.Filters.Account != account {
 					return fmt.Errorf("batch %s is for account %s, not %s - filter batches by account or execute separately", m.ID, m.Filters.Account, account)
 				}
 			}
-		}
-
-		// Open database
-		dbPath := cfg.DatabaseDSN()
-		s, err := store.Open(dbPath)
-		if err != nil {
-			return fmt.Errorf("open database: %w", err)
-		}
-		defer func() { _ = s.Close() }()
-
-		// Ensure schema is up to date (creates new indexes, etc.)
-		if err := s.InitSchema(); err != nil {
-			return fmt.Errorf("init schema: %w", err)
 		}
 
 		// Set up context with cancellation
