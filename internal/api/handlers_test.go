@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -372,6 +373,106 @@ func TestMessageSummaryNilSlices(t *testing.T) {
 	}
 	if len(labels) != 0 {
 		t.Errorf("expected empty 'labels' array, got %v", labels)
+	}
+}
+
+func TestMessageSummaryCcBccInResponse(t *testing.T) {
+	srv, ms := newTestServerWithMockStore(t)
+	ms.messages[0].Cc = []string{"cc1@example.com", "cc2@example.com"}
+	ms.messages[0].Bcc = []string{"bcc@example.com"}
+
+	req := httptest.NewRequest("GET", "/api/v1/messages", nil)
+	w := httptest.NewRecorder()
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	msg := resp["messages"].([]interface{})[0].(map[string]interface{})
+
+	ccRaw, ok := msg["cc"].([]interface{})
+	if !ok {
+		t.Fatalf("expected 'cc' array, got %T", msg["cc"])
+	}
+	var gotCc []string
+	for _, v := range ccRaw {
+		gotCc = append(gotCc, v.(string))
+	}
+	slices.Sort(gotCc)
+	wantCc := []string{"cc1@example.com", "cc2@example.com"}
+	if !slices.Equal(gotCc, wantCc) {
+		t.Errorf("cc = %v, want %v", gotCc, wantCc)
+	}
+
+	bcc, ok := msg["bcc"].([]interface{})
+	if !ok {
+		t.Fatalf("expected 'bcc' array, got %T", msg["bcc"])
+	}
+	if len(bcc) != 1 || bcc[0] != "bcc@example.com" {
+		t.Errorf("bcc = %v, want [bcc@example.com]", bcc)
+	}
+}
+
+func TestMessageSummaryCcBccOmittedWhenEmpty(t *testing.T) {
+	srv, _ := newTestServerWithMockStore(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/messages", nil)
+	w := httptest.NewRecorder()
+	srv.Router().ServeHTTP(w, req)
+
+	// Parse raw JSON to check field presence
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	var messages []json.RawMessage
+	if err := json.Unmarshal(raw["messages"], &messages); err != nil {
+		t.Fatalf("decode messages: %v", err)
+	}
+
+	var msg map[string]json.RawMessage
+	if err := json.Unmarshal(messages[0], &msg); err != nil {
+		t.Fatalf("decode message: %v", err)
+	}
+
+	if _, exists := msg["cc"]; exists {
+		t.Error("expected 'cc' to be omitted from JSON when empty")
+	}
+	if _, exists := msg["bcc"]; exists {
+		t.Error("expected 'bcc' to be omitted from JSON when empty")
+	}
+}
+
+func TestGetMessageCcBccInResponse(t *testing.T) {
+	srv, ms := newTestServerWithMockStore(t)
+	ms.messages[0].Cc = []string{"cc@example.com"}
+	ms.messages[0].Bcc = []string{"bcc@example.com"}
+
+	req := httptest.NewRequest("GET", "/api/v1/messages/1", nil)
+	w := httptest.NewRecorder()
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp MessageDetail
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(resp.Cc) != 1 || resp.Cc[0] != "cc@example.com" {
+		t.Errorf("cc = %v, want [cc@example.com]", resp.Cc)
+	}
+	if len(resp.Bcc) != 1 || resp.Bcc[0] != "bcc@example.com" {
+		t.Errorf("bcc = %v, want [bcc@example.com]", resp.Bcc)
 	}
 }
 

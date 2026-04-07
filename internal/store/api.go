@@ -14,6 +14,8 @@ type APIMessage struct {
 	Subject        string
 	From           string
 	To             []string
+	Cc             []string
+	Bcc            []string
 	SentAt         time.Time
 	Snippet        string
 	Labels         []string
@@ -76,21 +78,9 @@ func (s *Store) ListMessages(offset, limit int) ([]APIMessage, int64, error) {
 		return messages, total, nil
 	}
 
-	// Batch-load recipients for all messages
-	recipientMap, err := s.batchGetRecipients(ids, "to")
-	if err != nil {
+	// Batch-load recipients and labels for all messages
+	if err := s.batchPopulate(messages, ids); err != nil {
 		return nil, 0, err
-	}
-
-	// Batch-load labels for all messages
-	labelMap, err := s.batchGetLabels(ids)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	for i := range messages {
-		messages[i].To = recipientMap[messages[i].ID]
-		messages[i].Labels = labelMap[messages[i].ID]
 	}
 
 	return messages, total, nil
@@ -136,6 +126,14 @@ func (s *Store) GetMessage(id int64) (*APIMessage, error) {
 
 	// Get recipients (single message, per-row is fine)
 	m.To, err = s.getRecipients(m.ID, "to")
+	if err != nil {
+		return nil, err
+	}
+	m.Cc, err = s.getRecipients(m.ID, "cc")
+	if err != nil {
+		return nil, err
+	}
+	m.Bcc, err = s.getRecipients(m.ID, "bcc")
 	if err != nil {
 		return nil, err
 	}
@@ -353,12 +351,22 @@ func (s *Store) batchPopulate(messages []APIMessage, ids []int64) error {
 	if err != nil {
 		return err
 	}
+	ccMap, err := s.batchGetRecipients(ids, "cc")
+	if err != nil {
+		return err
+	}
+	bccMap, err := s.batchGetRecipients(ids, "bcc")
+	if err != nil {
+		return err
+	}
 	labelMap, err := s.batchGetLabels(ids)
 	if err != nil {
 		return err
 	}
 	for i := range messages {
 		messages[i].To = recipientMap[messages[i].ID]
+		messages[i].Cc = ccMap[messages[i].ID]
+		messages[i].Bcc = bccMap[messages[i].ID]
 		messages[i].Labels = labelMap[messages[i].ID]
 	}
 	return nil
