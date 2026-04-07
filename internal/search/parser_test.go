@@ -241,6 +241,21 @@ func TestParse(t *testing.T) {
 					query: "from:mail.example.co.uk",
 					want:  Query{FromAddrs: []string{"@mail.example.co.uk"}},
 				},
+				{
+					name:  "from dotted local part unchanged",
+					query: "from:john.doe",
+					want:  Query{FromAddrs: []string{"john.doe"}},
+				},
+				{
+					name:  "dotted local part with three segments unchanged",
+					query: "to:first.middle.last",
+					want:  Query{ToAddrs: []string{"first.middle.last"}},
+				},
+				{
+					name:  "from two-letter ccTLD detected as domain",
+					query: "from:company.io",
+					want:  Query{FromAddrs: []string{"@company.io"}},
+				},
 			},
 		},
 		{

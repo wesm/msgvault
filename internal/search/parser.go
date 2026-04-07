@@ -47,14 +47,44 @@ func (q *Query) IsEmpty() bool {
 type operatorFn func(q *Query, value string, now time.Time)
 
 // normalizeAddr normalizes an address filter value. If it looks like a bare
-// domain (contains "." but no "@"), it is prefixed with "@" so downstream
-// engines treat it as a domain pattern (e.g. "example.com" -> "@example.com").
+// domain (e.g. "example.com"), it is prefixed with "@" so downstream engines
+// treat it as a domain pattern. Dotted local parts like "john.doe" are left
+// unchanged because the suffix is not a recognized TLD.
 func normalizeAddr(v string) string {
 	v = strings.ToLower(v)
-	if !strings.Contains(v, "@") && strings.Contains(v, ".") {
+	if !strings.Contains(v, "@") && looksLikeDomain(v) {
 		v = "@" + v
 	}
 	return v
+}
+
+// looksLikeDomain returns true if v appears to be a bare domain name
+// rather than a dotted local part. The value is treated as a domain
+// only when its suffix (after the last dot) is a recognized TLD.
+func looksLikeDomain(v string) bool {
+	dot := strings.LastIndex(v, ".")
+	if dot == -1 || dot == 0 || dot == len(v)-1 {
+		return false
+	}
+	return isKnownTLD(v[dot+1:])
+}
+
+// isKnownTLD returns true if s matches a recognized top-level domain.
+// All 2-letter alphabetic strings are accepted as ccTLDs; longer
+// strings are checked against a set of common gTLDs.
+func isKnownTLD(s string) bool {
+	if len(s) == 2 {
+		return s[0] >= 'a' && s[0] <= 'z' &&
+			s[1] >= 'a' && s[1] <= 'z'
+	}
+	switch s {
+	case "com", "org", "net", "edu", "gov", "mil", "int",
+		"info", "biz", "name", "mobi",
+		"app", "dev", "xyz", "tech", "cloud",
+		"site", "online", "store", "blog":
+		return true
+	}
+	return false
 }
 
 // operators maps operator names to their handler functions.
