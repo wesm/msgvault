@@ -11,10 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/deletion"
-	"github.com/wesm/msgvault/internal/gmail"
 	"github.com/wesm/msgvault/internal/oauth"
 	"github.com/wesm/msgvault/internal/store"
 )
@@ -320,11 +318,6 @@ Examples:
 			}
 		}
 
-		// Validate config
-		if !cfg.OAuth.HasAnyConfig() {
-			return errOAuthNotConfigured()
-		}
-
 		// Collect unique accounts from manifests
 		accountSet := make(map[string]bool)
 		for _, m := range manifests {
@@ -370,20 +363,6 @@ Examples:
 			return fmt.Errorf("init schema: %w", err)
 		}
 
-		// Resolve OAuth credentials for this account
-		appName := ""
-		src, srcErr := findGmailSource(s, account)
-		if srcErr != nil {
-			return fmt.Errorf("look up source for %s: %w", account, srcErr)
-		}
-		if src != nil {
-			appName = sourceOAuthApp(src)
-		}
-		clientSecretsPath, err := cfg.OAuth.ClientSecretsFor(appName)
-		if err != nil {
-			return err
-		}
-
 		// Set up context with cancellation
 		ctx, cancel := context.WithCancel(cmd.Context())
 		defer cancel()
@@ -397,59 +376,73 @@ Examples:
 			cancel()
 		}()
 
-		// Determine which scopes we need
-		needsBatchDelete := !deleteTrash
-		var requiredScopes []string
-		if needsBatchDelete {
-			requiredScopes = oauth.ScopesDeletion
-		} else {
-			requiredScopes = oauth.Scopes
-		}
-
-		// Create OAuth manager with appropriate scopes
-		oauthMgr, err := oauth.NewManagerWithScopes(clientSecretsPath, cfg.TokensDir(), logger, requiredScopes)
+		// Look up the source to determine account type (gmail vs imap).
+		sources, err := s.GetSourcesByIdentifier(account)
 		if err != nil {
-			return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
+			return fmt.Errorf("look up source for %s: %w", account, err)
+		}
+		var src *store.Source
+		for _, candidate := range sources {
+			if candidate.SourceType == "gmail" || candidate.SourceType == "imap" {
+				src = candidate
+				break
+			}
+		}
+		if src == nil {
+			return fmt.Errorf("no gmail or imap source found for %s", account)
 		}
 
-		// Proactively check if we need scope escalation before making API calls.
-		// Legacy tokens (saved before scope tracking) won't have scope metadata,
-		// so we only trigger proactive escalation when we positively know the
-		// token lacks the required scope.
-		if needsBatchDelete && !oauthMgr.HasScope(account, "https://mail.google.com/") {
-			// Only trigger proactive escalation when we have scope metadata.
-			// Legacy tokens (saved before scope tracking) fall through to
-			// reactive detection on the first API call.
-			if oauthMgr.HasScopeMetadata(account) {
-				// Token has scope metadata but lacks deletion scope — escalate now
-				if err := promptScopeEscalation(ctx, oauthMgr, account, needsBatchDelete, clientSecretsPath); err != nil {
-					if errors.Is(err, errUserCanceled) {
-						return nil
-					}
-					return err
-				}
-				// Re-create OAuth manager with new token
-				oauthMgr, err = oauth.NewManagerWithScopes(clientSecretsPath, cfg.TokensDir(), logger, requiredScopes)
+		// For Gmail, handle scope escalation before building the client.
+		// buildAPIClient uses standard scopes; deletion may need elevated ones.
+		var clientSecretsPath string
+		if src.SourceType == "gmail" {
+			if !cfg.OAuth.HasAnyConfig() {
+				return errOAuthNotConfigured()
+			}
+			appName := sourceOAuthApp(src)
+			clientSecretsPath, err = cfg.OAuth.ClientSecretsFor(appName)
+			if err != nil {
+				return err
+			}
+
+			needsBatchDelete := !deleteTrash
+			if needsBatchDelete {
+				requiredScopes := oauth.ScopesDeletion
+				oauthMgr, err := oauth.NewManagerWithScopes(clientSecretsPath, cfg.TokensDir(), logger, requiredScopes)
 				if err != nil {
 					return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
 				}
+				if !oauthMgr.HasScope(account, "https://mail.google.com/") && oauthMgr.HasScopeMetadata(account) {
+					if err := promptScopeEscalation(ctx, oauthMgr, account, needsBatchDelete, clientSecretsPath); err != nil {
+						if errors.Is(err, errUserCanceled) {
+							return nil
+						}
+						return err
+					}
+				}
 			}
-			// If no scope metadata at all (legacy token), fall through to reactive detection
 		}
 
-		interactive := isatty.IsTerminal(os.Stdin.Fd()) ||
-			isatty.IsCygwinTerminal(os.Stdin.Fd())
-		tokenSource, err := getTokenSourceWithReauth(ctx, oauthMgr, account, interactive)
+		// Build API client — reuses the same factory as sync.
+		getOAuthMgr := func(appName string) (*oauth.Manager, error) {
+			secretsPath := clientSecretsPath
+			if secretsPath == "" {
+				var err error
+				secretsPath, err = cfg.OAuth.ClientSecretsFor(appName)
+				if err != nil {
+					return nil, err
+				}
+			}
+			scopes := oauth.Scopes
+			if !deleteTrash {
+				scopes = oauth.ScopesDeletion
+			}
+			return oauth.NewManagerWithScopes(secretsPath, cfg.TokensDir(), logger, scopes)
+		}
+		client, err := buildAPIClient(ctx, src, getOAuthMgr)
 		if err != nil {
 			return err
 		}
-
-		// Create Gmail client
-		rateLimiter := gmail.NewRateLimiter(float64(cfg.Sync.RateLimitQPS))
-		client := gmail.NewClient(tokenSource,
-			gmail.WithLogger(logger),
-			gmail.WithRateLimiter(rateLimiter),
-		)
 		defer func() { _ = client.Close() }()
 
 		// Create executor
@@ -488,8 +481,12 @@ Examples:
 					return nil
 				}
 
-				// Check if this is a scope error - offer to re-authorize
-				if isInsufficientScopeError(execErr) {
+				// Check if this is a scope error - offer to re-authorize (Gmail only)
+				if src.SourceType == "gmail" && isInsufficientScopeError(execErr) {
+					oauthMgr, mgrErr := getOAuthMgr(sourceOAuthApp(src))
+					if mgrErr != nil {
+						return mgrErr
+					}
 					if err := promptScopeEscalation(ctx, oauthMgr, account, !useTrash, clientSecretsPath); err != nil {
 						if errors.Is(err, errUserCanceled) {
 							return nil
@@ -715,7 +712,7 @@ func init() {
 	deleteStagedCmd.Flags().BoolVarP(&deleteYes, "yes", "y", false, "Skip confirmation")
 	deleteStagedCmd.Flags().BoolVar(&deleteDryRun, "dry-run", false, "Show what would be deleted")
 	deleteStagedCmd.Flags().BoolVarP(&deleteList, "list", "l", false, "List staged batches without executing")
-	deleteStagedCmd.Flags().StringVar(&deleteAccount, "account", "", "Gmail account to use")
+	deleteStagedCmd.Flags().StringVar(&deleteAccount, "account", "", "Account to use (Gmail or IMAP)")
 
 	rootCmd.AddCommand(listDeletionsCmd)
 	rootCmd.AddCommand(showDeletionCmd)
