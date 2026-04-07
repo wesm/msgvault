@@ -361,16 +361,23 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("look up source for %s: %w", account, err)
 			}
-			var found *store.Source
+			var syncable []*store.Source
 			for _, c := range resolved {
 				if c.SourceType == "gmail" || c.SourceType == "imap" {
-					found = c
-					break
+					syncable = append(syncable, c)
 				}
 			}
-			if found == nil {
+			if len(syncable) == 0 {
 				return fmt.Errorf("no gmail or imap source found for %s", account)
 			}
+			if len(syncable) > 1 {
+				var types []string
+				for _, c := range syncable {
+					types = append(types, fmt.Sprintf("%s (%s)", c.Identifier, c.SourceType))
+				}
+				return fmt.Errorf("multiple accounts match %q: %s\nUse the full identifier with --account to disambiguate", account, strings.Join(types, ", "))
+			}
+			found := syncable[0]
 			// Canonicalize to stored identifier so manifest
 			// comparisons work for IMAP display-name lookups.
 			account = found.Identifier
