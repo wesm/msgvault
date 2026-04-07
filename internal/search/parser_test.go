@@ -256,6 +256,16 @@ func TestParse(t *testing.T) {
 					query: "from:company.io",
 					want:  Query{FromAddrs: []string{"@company.io"}},
 				},
+				{
+					name:  "new gTLD email detected as domain",
+					query: "from:contact.email",
+					want:  Query{FromAddrs: []string{"@contact.email"}},
+				},
+				{
+					name:  "new gTLD news detected as domain",
+					query: "from:brand.news",
+					want:  Query{FromAddrs: []string{"@brand.news"}},
+				},
 			},
 		},
 		{

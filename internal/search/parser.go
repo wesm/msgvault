@@ -69,22 +69,44 @@ func looksLikeDomain(v string) bool {
 	return isKnownTLD(v[dot+1:])
 }
 
+// knownGTLDs contains common generic top-level domains (3+ chars).
+// Two-letter ccTLDs are handled separately by length check.
+// For unlisted TLDs, use the explicit @ prefix (e.g. from:@brand.pizza).
+var knownGTLDs = map[string]bool{
+	// Original gTLDs
+	"com": true, "org": true, "net": true,
+	"edu": true, "gov": true, "mil": true, "int": true,
+	// Early generic
+	"info": true, "biz": true, "name": true, "mobi": true,
+	// Popular new gTLDs (by registration volume)
+	"top": true, "xyz": true, "app": true, "dev": true,
+	"shop": true, "online": true, "site": true, "store": true,
+	"tech": true, "cloud": true, "blog": true, "space": true,
+	"click": true, "vip": true, "cfd": true,
+	// Business / professional
+	"agency": true, "business": true, "center": true,
+	"company": true, "digital": true, "email": true,
+	"media": true, "network": true, "services": true,
+	"solutions": true, "studio": true, "team": true,
+	"work": true, "world": true, "zone": true,
+	// Industry
+	"design": true, "events": true, "expert": true,
+	"finance": true, "health": true, "host": true,
+	"legal": true, "live": true, "marketing": true,
+	"news": true, "support": true, "trade": true, "web": true,
+	// Regional
+	"asia": true,
+}
+
 // isKnownTLD returns true if s matches a recognized top-level domain.
 // All 2-letter alphabetic strings are accepted as ccTLDs; longer
-// strings are checked against a set of common gTLDs.
+// strings are checked against knownGTLDs.
 func isKnownTLD(s string) bool {
 	if len(s) == 2 {
 		return s[0] >= 'a' && s[0] <= 'z' &&
 			s[1] >= 'a' && s[1] <= 'z'
 	}
-	switch s {
-	case "com", "org", "net", "edu", "gov", "mil", "int",
-		"info", "biz", "name", "mobi",
-		"app", "dev", "xyz", "tech", "cloud",
-		"site", "online", "store", "blog":
-		return true
-	}
-	return false
+	return knownGTLDs[s]
 }
 
 // operators maps operator names to their handler functions.
