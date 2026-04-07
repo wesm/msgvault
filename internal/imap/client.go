@@ -105,6 +105,11 @@ func (c *Client) connect(ctx context.Context) error {
 		return fmt.Errorf("dial IMAP %s: %w", addr, err)
 	}
 
+	if err := conn.WaitGreeting(); err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("IMAP greeting from %s: %w", addr, err)
+	}
+
 	switch c.config.EffectiveAuthMethod() {
 	case AuthXOAuth2:
 		if c.tokenSource == nil {
