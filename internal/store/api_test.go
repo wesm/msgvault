@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -224,14 +225,11 @@ func TestGetMessageCcBcc(t *testing.T) {
 	if len(m.To) != 1 || m.To[0] != "to@example.com" {
 		t.Errorf("To = %v, want [to@example.com]", m.To)
 	}
-	wantCc := map[string]bool{"cc1@example.com": true, "cc2@example.com": true}
-	if len(m.Cc) != 2 {
-		t.Errorf("Cc count = %d, want 2", len(m.Cc))
-	}
-	for _, addr := range m.Cc {
-		if !wantCc[addr] {
-			t.Errorf("unexpected Cc address %q", addr)
-		}
+	gotCc := slices.Clone(m.Cc)
+	slices.Sort(gotCc)
+	wantCc := []string{"cc1@example.com", "cc2@example.com"}
+	if !slices.Equal(gotCc, wantCc) {
+		t.Errorf("Cc = %v, want %v", m.Cc, wantCc)
 	}
 	if len(m.Bcc) != 1 || m.Bcc[0] != "bcc@example.com" {
 		t.Errorf("Bcc = %v, want [bcc@example.com]", m.Bcc)

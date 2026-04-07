@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -395,18 +396,18 @@ func TestMessageSummaryCcBccInResponse(t *testing.T) {
 
 	msg := resp["messages"].([]interface{})[0].(map[string]interface{})
 
-	cc, ok := msg["cc"].([]interface{})
+	ccRaw, ok := msg["cc"].([]interface{})
 	if !ok {
 		t.Fatalf("expected 'cc' array, got %T", msg["cc"])
 	}
-	wantCc := map[string]bool{"cc1@example.com": true, "cc2@example.com": true}
-	if len(cc) != len(wantCc) {
-		t.Errorf("cc count = %d, want %d", len(cc), len(wantCc))
+	var gotCc []string
+	for _, v := range ccRaw {
+		gotCc = append(gotCc, v.(string))
 	}
-	for _, v := range cc {
-		if !wantCc[v.(string)] {
-			t.Errorf("unexpected cc address %q", v)
-		}
+	slices.Sort(gotCc)
+	wantCc := []string{"cc1@example.com", "cc2@example.com"}
+	if !slices.Equal(gotCc, wantCc) {
+		t.Errorf("cc = %v, want %v", gotCc, wantCc)
 	}
 
 	bcc, ok := msg["bcc"].([]interface{})
