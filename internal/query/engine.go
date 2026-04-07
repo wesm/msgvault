@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"time"
 
 	"github.com/wesm/msgvault/internal/search"
 )
@@ -63,6 +64,10 @@ type Engine interface {
 	// GetGmailIDsByFilter returns Gmail message IDs (source_message_id) matching a filter.
 	// This is useful for batch operations like staging messages for deletion.
 	GetGmailIDsByFilter(ctx context.Context, filter MessageFilter) ([]string, error)
+
+	// SearchByDomains returns messages where any participant (from, to, cc, or bcc)
+	// belongs to one of the given domains.
+	SearchByDomains(ctx context.Context, domains []string, after, before *time.Time, limit, offset int) ([]MessageSummary, error)
 
 	// Account queries
 	ListAccounts(ctx context.Context) ([]AccountInfo, error)

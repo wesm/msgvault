@@ -1133,6 +1133,93 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	return collectGmailIDs(rows)
 }
 
+// SearchByDomains returns messages where any participant (from, to, cc, or bcc)
+// belongs to one of the given domains.
+func (e *SQLiteEngine) SearchByDomains(ctx context.Context, domains []string, after, before *time.Time, limit, offset int) ([]MessageSummary, error) {
+	if len(domains) == 0 {
+		return nil, nil
+	}
+
+	// Build domain placeholders
+	placeholders := make([]string, len(domains))
+	args := make([]interface{}, len(domains))
+	for i, d := range domains {
+		placeholders[i] = "?"
+		args[i] = strings.ToLower(d)
+	}
+	domainList := strings.Join(placeholders, ", ")
+
+	var conditions []string
+	conditions = append(conditions, emailOnlyFilterM)
+
+	// Any participant with matching domain
+	conditions = append(conditions, fmt.Sprintf(`EXISTS (
+		SELECT 1 FROM message_recipients mr_dom
+		JOIN participants p_dom ON p_dom.id = mr_dom.participant_id
+		WHERE mr_dom.message_id = m.id
+		AND LOWER(p_dom.domain) IN (%s)
+	)`, domainList))
+
+	if after != nil {
+		conditions = append(conditions, "m.sent_at >= ?")
+		args = append(args, after.Format("2006-01-02"))
+	}
+	if before != nil {
+		conditions = append(conditions, "m.sent_at < ?")
+		args = append(args, before.Format("2006-01-02"))
+	}
+
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	query := fmt.Sprintf(`
+		SELECT m.id, m.source_message_id, m.conversation_id, m.subject, m.snippet,
+			COALESCE(p_from.email_address, '') as from_email,
+			COALESCE(mr_from.display_name, p_from.display_name, '') as from_name,
+			m.sent_at, m.size_estimate, m.has_attachments, m.attachment_count
+		FROM messages m
+		LEFT JOIN message_recipients mr_from ON mr_from.message_id = m.id AND mr_from.recipient_type = 'from'
+		LEFT JOIN participants p_from ON p_from.id = mr_from.participant_id
+		WHERE %s
+		ORDER BY m.sent_at DESC, m.id DESC
+		LIMIT ? OFFSET ?
+	`, strings.Join(conditions, " AND "))
+
+	args = append(args, limit, offset)
+
+	rows, err := e.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("search by domains: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []MessageSummary
+	for rows.Next() {
+		var msg MessageSummary
+		var sentAt string
+		if err := rows.Scan(
+			&msg.ID, &msg.SourceMessageID, &msg.ConversationID,
+			&msg.Subject, &msg.Snippet,
+			&msg.FromEmail, &msg.FromName,
+			&sentAt, &msg.SizeEstimate,
+			&msg.HasAttachments, &msg.AttachmentCount,
+		); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		if t, err := time.Parse("2006-01-02 15:04:05+00:00", sentAt); err == nil {
+			msg.SentAt = t
+		} else if t, err := time.Parse("2006-01-02T15:04:05Z", sentAt); err == nil {
+			msg.SentAt = t
+		}
+		results = append(results, msg)
+	}
+	return results, rows.Err()
+}
+
 // Search performs a Gmail-style search query.
 // buildSearchQueryParts builds the WHERE conditions, args, joins, and FTS join
 // for a search query. This is shared between Search and SearchFastCount.

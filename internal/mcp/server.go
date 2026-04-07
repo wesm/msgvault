@@ -21,6 +21,7 @@ const (
 	ToolGetStats            = "get_stats"
 	ToolAggregate           = "aggregate"
 	ToolStageDeletion       = "stage_deletion"
+	ToolSearchByDomains     = "search_by_domains"
 	ToolFindSimilarMessages = "find_similar_messages"
 )
 
@@ -122,6 +123,7 @@ func ServeWithOptions(ctx context.Context, opts ServeOptions) error {
 	s.AddTool(getStatsTool(), h.getStats)
 	s.AddTool(aggregateTool(), h.aggregate)
 	s.AddTool(stageDeletionTool(), h.stageDeletion)
+	s.AddTool(searchByDomainsTool(), h.searchByDomains)
 	if opts.Backend != nil {
 		s.AddTool(findSimilarMessagesTool(), h.findSimilarMessages)
 	}
@@ -245,6 +247,21 @@ func aggregateTool() mcp.Tool {
 		),
 		withAccount(),
 		withLimit("50"),
+		withAfter(),
+		withBefore(),
+	)
+}
+
+func searchByDomainsTool() mcp.Tool {
+	return mcp.NewTool(ToolSearchByDomains,
+		mcp.WithDescription("Find emails where any participant (from, to, or cc) belongs to one of the given domains. Useful for finding all communication with a company regardless of direction."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithString("domains",
+			mcp.Required(),
+			mcp.Description("Comma-separated domain names (e.g. 'gobright.com,ascentae.com')"),
+		),
+		withLimit("100"),
+		withOffset(),
 		withAfter(),
 		withBefore(),
 	)

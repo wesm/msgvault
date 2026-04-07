@@ -689,6 +689,10 @@ func (e *Engine) GetGmailIDsByFilter(ctx context.Context, filter query.MessageFi
 	return nil, ErrNotSupported
 }
 
+func (e *Engine) SearchByDomains(ctx context.Context, domains []string, after, before *time.Time, limit, offset int) ([]query.MessageSummary, error) {
+	return nil, ErrNotSupported
+}
+
 // ListAccounts returns all configured accounts.
 func (e *Engine) ListAccounts(ctx context.Context) ([]query.AccountInfo, error) {
 	accounts, err := e.store.ListAccounts()

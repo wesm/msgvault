@@ -1009,3 +1009,44 @@ func (h *handlers) stageDeletion(ctx context.Context, req mcp.CallToolRequest) (
 
 	return jsonResult(resp)
 }
+
+func (h *handlers) searchByDomains(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+
+	domainsStr, _ := args["domains"].(string)
+	domainsStr = strings.TrimSpace(domainsStr)
+	if domainsStr == "" {
+		return mcp.NewToolResultError("domains is required"), nil
+	}
+
+	// Split and clean domain list
+	var domains []string
+	for _, d := range strings.Split(domainsStr, ",") {
+		d = strings.TrimSpace(d)
+		if d != "" {
+			domains = append(domains, d)
+		}
+	}
+	if len(domains) == 0 {
+		return mcp.NewToolResultError("at least one domain is required"), nil
+	}
+
+	limit := limitArg(args, "limit", 100)
+	offset := limitArg(args, "offset", 0)
+
+	afterDate, err := getDateArg(args, "after")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	beforeDate, err := getDateArg(args, "before")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	results, err := h.engine.SearchByDomains(ctx, domains, afterDate, beforeDate, limit, offset)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("search by domains failed: %v", err)), nil
+	}
+
+	return jsonResult(results)
+}

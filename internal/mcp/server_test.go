@@ -1542,3 +1542,107 @@ func TestFindSimilarMessages_NoActiveGeneration(t *testing.T) {
 		t.Fatalf("expected 'no_active_generation' error, got: %s", txt)
 	}
 }
+
+func TestSearchByDomains(t *testing.T) {
+	eng := &querytest.MockEngine{
+		SearchResults: []query.MessageSummary{
+			testutil.NewMessageSummary(1).WithSubject("From Acme").WithFromEmail("alice@acme.com").Build(),
+			testutil.NewMessageSummary(2).WithSubject("To Acme").WithFromEmail("bob@example.com").Build(),
+		},
+	}
+	h := newTestHandlers(eng)
+
+	t.Run("valid domains", func(t *testing.T) {
+		msgs := runTool[[]query.MessageSummary](t, "search_by_domains", h.searchByDomains,
+			map[string]any{"domains": "acme.com,example.com"})
+		if len(msgs) != 2 {
+			t.Fatalf("expected 2 messages, got %d", len(msgs))
+		}
+	})
+
+	t.Run("domains with whitespace", func(t *testing.T) {
+		msgs := runTool[[]query.MessageSummary](t, "search_by_domains", h.searchByDomains,
+			map[string]any{"domains": " acme.com , example.com "})
+		if len(msgs) != 2 {
+			t.Fatalf("expected 2 messages, got %d", len(msgs))
+		}
+	})
+
+	t.Run("missing domains", func(t *testing.T) {
+		runToolExpectError(t, "search_by_domains", h.searchByDomains, map[string]any{})
+	})
+
+	t.Run("empty domains string", func(t *testing.T) {
+		runToolExpectError(t, "search_by_domains", h.searchByDomains,
+			map[string]any{"domains": ""})
+	})
+
+	t.Run("whitespace-only domains", func(t *testing.T) {
+		runToolExpectError(t, "search_by_domains", h.searchByDomains,
+			map[string]any{"domains": "  ,  , "})
+	})
+
+	t.Run("arguments forwarded correctly", func(t *testing.T) {
+		var capturedDomains []string
+		var capturedLimit, capturedOffset int
+		eng := &querytest.MockEngine{
+			SearchByDomainsFunc: func(_ context.Context, domains []string, after, before *time.Time, limit, offset int) ([]query.MessageSummary, error) {
+				capturedDomains = domains
+				capturedLimit = limit
+				capturedOffset = offset
+				if after == nil {
+					t.Fatal("expected after to be set")
+				}
+				if before == nil {
+					t.Fatal("expected before to be set")
+				}
+				return []query.MessageSummary{
+					testutil.NewMessageSummary(1).WithSubject("Match").Build(),
+				}, nil
+			},
+		}
+		h := newTestHandlers(eng)
+
+		msgs := runTool[[]query.MessageSummary](t, "search_by_domains", h.searchByDomains,
+			map[string]any{
+				"domains": "acme.com,globex.com",
+				"limit":   float64(50),
+				"offset":  float64(10),
+				"after":   "2024-01-01",
+				"before":  "2024-12-31",
+			})
+		if len(msgs) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(msgs))
+		}
+		if len(capturedDomains) != 2 || capturedDomains[0] != "acme.com" || capturedDomains[1] != "globex.com" {
+			t.Fatalf("unexpected domains: %v", capturedDomains)
+		}
+		if capturedLimit != 50 {
+			t.Fatalf("expected limit 50, got %d", capturedLimit)
+		}
+		if capturedOffset != 10 {
+			t.Fatalf("expected offset 10, got %d", capturedOffset)
+		}
+	})
+
+	t.Run("default limit and offset", func(t *testing.T) {
+		var capturedLimit, capturedOffset int
+		eng := &querytest.MockEngine{
+			SearchByDomainsFunc: func(_ context.Context, _ []string, _, _ *time.Time, limit, offset int) ([]query.MessageSummary, error) {
+				capturedLimit = limit
+				capturedOffset = offset
+				return nil, nil
+			},
+		}
+		h := newTestHandlers(eng)
+
+		runTool[[]query.MessageSummary](t, "search_by_domains", h.searchByDomains,
+			map[string]any{"domains": "acme.com"})
+		if capturedLimit != 100 {
+			t.Fatalf("expected default limit 100, got %d", capturedLimit)
+		}
+		if capturedOffset != 0 {
+			t.Fatalf("expected default offset 0, got %d", capturedOffset)
+		}
+	})
+}
