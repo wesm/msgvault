@@ -27,6 +27,12 @@ require an attacker with the same privileges as the user — they already
 own everything this tool touches. Auth on loopback-only endpoints with
 no configured API key is also by design.
 
+Anyone with access to the CLI or HTTP API is a privileged user. Do not
+flag SQL injection, statement validation, DDL bypass, or multi-statement
+risks on the query interface — the user is trusted and can already do
+anything via direct database access. The query surface is a convenience
+layer, not a security boundary.
+
 IMAP passwords are stored on disk with restricted file permissions
 (0600), equivalent to OAuth tokens and API keys in the same data
 directory. If the data directory is compromised, the user must rotate
