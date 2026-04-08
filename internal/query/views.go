@@ -361,7 +361,9 @@ const sqlVSenders = `
 CREATE OR REPLACE VIEW v_senders AS
 SELECT
     p.email_address AS from_email,
-    FIRST(mr.display_name) AS from_name,
+    COALESCE(
+        NULLIF(TRIM(FIRST(p.display_name)), ''), p.email_address
+    ) AS from_name,
     p.domain AS from_domain,
     COUNT(*) AS message_count,
     SUM(m.size_estimate) AS total_size,
@@ -421,7 +423,7 @@ SELECT
     c.source_conversation_id,
     c.title AS conversation_title,
     c.conversation_type,
-    COUNT(*) AS message_count,
+    COUNT(DISTINCT m.id) AS message_count,
     MIN(m.sent_at) AS first_message_at,
     MAX(m.sent_at) AS last_message_at,
     CAST(
