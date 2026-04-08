@@ -612,6 +612,44 @@ func (s *Server) handleAddAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 // ============================================================================
+// Raw SQL Query Endpoint
+// ============================================================================
+
+type queryRequest struct {
+	SQL string `json:"sql"`
+}
+
+// handleQuery executes a raw SQL query against DuckDB views.
+// POST /api/v1/query
+func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
+	querier, ok := s.engine.(query.SQLQuerier)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable,
+			"engine_unavailable",
+			"SQL query requires DuckDB engine (analytics cache may not be built)")
+		return
+	}
+
+	var req queryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "Invalid request body")
+		return
+	}
+	if req.SQL == "" {
+		writeError(w, http.StatusBadRequest, "missing_sql", "Field 'sql' is required")
+		return
+	}
+
+	result, err := querier.QuerySQL(r.Context(), req.SQL)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "query_error", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// ============================================================================
 // TUI Aggregate Endpoints
 // ============================================================================
 

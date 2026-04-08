@@ -134,6 +134,7 @@ func (s *Server) setupRouter() chi.Router {
 		r.Get("/search", s.handleSearch)
 
 		// TUI aggregate endpoints (require query engine)
+		r.Post("/query", s.handleQuery)
 		r.Get("/aggregates", s.handleAggregates)
 		r.Get("/aggregates/sub", s.handleSubAggregates)
 		r.Get("/messages/filter", s.handleFilteredMessages)

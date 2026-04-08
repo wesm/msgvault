@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -1272,5 +1273,91 @@ func TestHandleDeepSearchMissingQuery(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+// mockSQLQueryEngine wraps MockEngine and adds SQLQuerier support.
+type mockSQLQueryEngine struct {
+	querytest.MockEngine
+	queryResult *query.QueryResult
+	queryErr    error
+}
+
+func (m *mockSQLQueryEngine) QuerySQL(_ context.Context, _ string) (*query.QueryResult, error) {
+	return m.queryResult, m.queryErr
+}
+
+func TestHandleQuery(t *testing.T) {
+	engine := &mockSQLQueryEngine{
+		queryResult: &query.QueryResult{
+			Columns:  []string{"from_email"},
+			Rows:     [][]any{{"alice@example.com"}},
+			RowCount: 1,
+		},
+	}
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{APIPort: 8080},
+	}
+	srv := NewServerWithOptions(ServerOptions{
+		Config: cfg,
+		Engine: engine,
+		Logger: testLogger(),
+	})
+
+	body := `{"sql": "SELECT from_email FROM v_senders LIMIT 1"}`
+	req := httptest.NewRequest("POST", "/api/v1/query", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var result query.QueryResult
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if result.RowCount != 1 {
+		t.Errorf("row_count = %d, want 1", result.RowCount)
+	}
+	if len(result.Columns) != 1 || result.Columns[0] != "from_email" {
+		t.Errorf("columns = %v, want [from_email]", result.Columns)
+	}
+}
+
+func TestHandleQuery_SQLiteEngine503(t *testing.T) {
+	engine := query.NewSQLiteEngine(nil)
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{APIPort: 8080},
+	}
+	srv := NewServerWithOptions(ServerOptions{
+		Config: cfg,
+		Engine: engine,
+		Logger: testLogger(),
+	})
+
+	body := `{"sql": "SELECT 1"}`
+	req := httptest.NewRequest("POST", "/api/v1/query", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d, body: %s",
+			w.Code, http.StatusServiceUnavailable, w.Body.String())
+	}
+
+	var errResp ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if errResp.Error != "engine_unavailable" {
+		t.Errorf("error = %q, want 'engine_unavailable'", errResp.Error)
 	}
 }
