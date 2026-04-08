@@ -15,8 +15,9 @@ the `duckdb` CLI binary against raw Parquet files, which:
 ## Design
 
 Expose a SQL query interface over DuckDB views that encapsulate the
-Parquet file layout. V1 is CLI-only (`msgvault query`). The view layer
-is also reusable internally by `DuckDBEngine`.
+Parquet file layout. Two access methods: a CLI subcommand for local use
+and an HTTP endpoint on the existing `serve` daemon. The view layer is
+also reusable internally by `DuckDBEngine`.
 
 ### View Layer
 
@@ -44,7 +45,7 @@ means consumers always see a stable schema regardless of cache age.
 
 | View | Definition |
 |------|-----------|
-| `v_messages` | Messages with sender resolved via the existing dual-path logic: `message_recipients` (email sources) OR `messages.sender_id` (chat sources), with `phone_number` included. Includes label list as `list()` aggregate. |
+| `v_messages` | Messages with sender resolved via the existing dual-path logic: `message_recipients` (email sources) OR `messages.sender_id` (chat sources), with `phone_number` included. Labels as JSON text via `to_json(list(...))` (not raw DuckDB LIST — see Serialization). |
 | `v_senders` | Per-sender aggregates: message count, total size, attachment count, first/last message date. Uses the same sender resolution as `v_messages`. |
 | `v_domains` | Per-domain aggregates: message count, total size, sender count. |
 | `v_threads` | Messages grouped by conversation with participant email list. |
@@ -59,6 +60,14 @@ the logic in `DuckDBEngine` (`duckdb.go:852`): check both
 Convenience views are defined as SQL over the base views, not over raw
 Parquet paths. If a base view changes, convenience views adapt
 automatically.
+
+**Serialization contract:** All convenience view columns use types that
+serialize cleanly through Go's `database/sql` and across json/csv/table
+output formats. Multi-value columns (labels, participant lists) are
+stored as JSON text via `to_json(list(...))`, not raw DuckDB LIST types.
+This matches the existing pattern in `DuckDBEngine` (`duckdb.go:1332`,
+`duckdb.go:1863`) where `to_json(...)` is used to avoid unstable LIST
+scanning behavior.
 
 ### Connection Model
 
@@ -102,6 +111,44 @@ msgvault query --format table "SELECT * FROM v_labels ORDER BY message_count DES
 SQL via `db.Query`, serializes results. The CLI is a local-only tool
 running in the user's process with no network exposure.
 
+### HTTP Endpoint
+
+```
+POST /api/v1/query
+Content-Type: application/json
+Authorization: Bearer <api-key>
+
+{"sql": "SELECT * FROM v_senders ORDER BY message_count DESC LIMIT 10"}
+```
+
+**Response:**
+```json
+{
+  "columns": ["from_email", "message_count", "total_size"],
+  "rows": [
+    ["alice@example.com", 1234, 5678901]
+  ],
+  "row_count": 1
+}
+```
+
+**Behavior:**
+- Uses the same view layer as the CLI command
+- Returns columnar JSON (column names + row arrays) for efficiency
+- SQL errors return 400 with the DuckDB error message
+- Requires authentication (existing API key mechanism)
+- Returns 503 when the Parquet cache is unavailable (consistent with
+  the existing SQLite fallback behavior in `serve.go:89` — the query
+  endpoint requires DuckDB/Parquet and does not fall back to SQLite)
+
+Users are responsible for securing their msgvault installations
+(network binding, API keys, firewall rules).
+
+**Implementation:** New handler `handleQuery` in
+`internal/api/handlers.go`, registered on the existing chi router in
+`internal/api/server.go`. Reuses the `DuckDBEngine`'s connection (which
+already has views registered) rather than opening a separate connection.
+
 ### Claude Code Skill
 
 Thin skill that teaches Claude to use `msgvault query`:
@@ -126,24 +173,6 @@ a reference doc with view schemas and example queries.
   internal CTE-based queries can migrate to use the same views, but
   that's a separate concern.
 
-### Future: HTTP Endpoint
-
-A remote SQL endpoint (`POST /api/v1/query`) is not in V1 scope.
-Exposing arbitrary DuckDB SQL over HTTP requires:
-
-- **Statement validation**: DuckDB supports INSTALL, LOAD, ATTACH,
-  CREATE, and other DDL that is not constrained by Parquet read-only
-  semantics. A network-facing endpoint needs an allowlist of permitted
-  statement types (SELECT only) or DuckDB's access mode restrictions.
-- **Resource limits**: query timeout, result size cap, concurrent query
-  limits.
-- **Fallback behavior**: `serve` falls back to SQLite when the Parquet
-  cache is stale/incomplete (`serve.go:89`). The query endpoint needs to
-  either return 503 or define a SQLite-backed fallback for that state.
-
-These constraints are worth getting right rather than shipping with
-"read-only by construction" hand-waving.
-
 ## Implementation Scope
 
 ### New files
@@ -155,9 +184,12 @@ These constraints are worth getting right rather than shipping with
 ### Modified files
 - `internal/query/duckdb.go` -- call `RegisterViews` at startup,
   optionally migrate internal queries to use views
+- `internal/api/server.go` -- register query endpoint
+- `internal/api/handlers.go` -- add `handleQuery`
 - `cmd/msgvault/cmd/root.go` -- register query subcommand
 
 ### Tests
 - `internal/query/views_test.go` -- verify views create successfully
   and return expected columns against test Parquet fixtures
 - `cmd/msgvault/cmd/query_test.go` -- CLI integration test
+- `internal/api/handlers_test.go` -- HTTP query endpoint test
