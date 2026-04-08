@@ -145,7 +145,7 @@ func TestRegisterViews_ConvenienceViews(t *testing.T) {
 		err := engine.db.QueryRowContext(ctx,
 			"SELECT message_count, total_size "+
 				"FROM v_senders "+
-				"WHERE email_address = 'bob@corp.com'",
+				"WHERE from_email = 'bob@corp.com'",
 		).Scan(&msgCount, &totalSize)
 		if err != nil {
 			t.Fatalf("scan v_senders: %v", err)
@@ -203,13 +203,18 @@ func TestRegisterViews_ConvenienceViews(t *testing.T) {
 			t.Errorf("expected at least 1 thread, got %d", count)
 		}
 
-		// Verify participant_emails is valid JSON
+		// Verify participant_emails, conversation_title, conversation_type
 		var participantEmails sql.NullString
+		var convTitle, convType string
 		err = engine.db.QueryRowContext(ctx,
-			"SELECT participant_emails FROM v_threads LIMIT 1",
-		).Scan(&participantEmails)
+			"SELECT participant_emails, conversation_title, conversation_type FROM v_threads LIMIT 1",
+		).Scan(&participantEmails, &convTitle, &convType)
 		if err != nil {
-			t.Fatalf("scan v_threads participant_emails: %v", err)
+			t.Fatalf("scan v_threads columns: %v", err)
+		}
+		if convType != "email" {
+			t.Errorf("conversation_type = %q, want %q",
+				convType, "email")
 		}
 	})
 }

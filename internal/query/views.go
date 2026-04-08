@@ -310,9 +310,12 @@ SELECT
     m.has_attachments,
     m.attachment_count,
     m.message_type,
+    m.year,
+    m.month,
     COALESCE(ms.from_email, ds.from_email, '') AS from_email,
     COALESCE(ms.from_name, ds.from_name, '') AS from_name,
     COALESCE(ms.from_domain, ds.from_domain, '') AS from_domain,
+    COALESCE(ms.from_phone, ds.from_phone, '') AS from_phone,
     CAST(
         COALESCE(to_json(ml_agg.labels), '[]') AS VARCHAR
     ) AS labels,
@@ -325,7 +328,8 @@ LEFT JOIN (
         FIRST(
             COALESCE(mr.display_name, p.display_name, '')
         ) AS from_name,
-        FIRST(p.domain) AS from_domain
+        FIRST(p.domain) AS from_domain,
+        FIRST(COALESCE(p.phone_number, '')) AS from_phone
     FROM message_recipients mr
     JOIN participants p ON p.id = mr.participant_id
     WHERE mr.recipient_type = 'from'
@@ -336,7 +340,8 @@ LEFT JOIN (
         msg.id AS message_id,
         COALESCE(p.email_address, '') AS from_email,
         COALESCE(p.display_name, '') AS from_name,
-        COALESCE(p.domain, '') AS from_domain
+        COALESCE(p.domain, '') AS from_domain,
+        COALESCE(p.phone_number, '') AS from_phone
     FROM messages msg
     JOIN participants p ON p.id = msg.sender_id
     WHERE msg.sender_id IS NOT NULL
@@ -355,9 +360,9 @@ LEFT JOIN (
 const sqlVSenders = `
 CREATE OR REPLACE VIEW v_senders AS
 SELECT
-    p.email_address,
-    FIRST(mr.display_name) AS display_name,
-    p.domain,
+    p.email_address AS from_email,
+    FIRST(mr.display_name) AS from_name,
+    p.domain AS from_domain,
     COUNT(*) AS message_count,
     SUM(m.size_estimate) AS total_size,
     COALESCE(SUM(att.attachment_size), 0) AS attachment_size,
@@ -414,6 +419,8 @@ CREATE OR REPLACE VIEW v_threads AS
 SELECT
     c.id AS conversation_id,
     c.source_conversation_id,
+    c.title AS conversation_title,
+    c.conversation_type,
     COUNT(*) AS message_count,
     MIN(m.sent_at) AS first_message_at,
     MAX(m.sent_at) AS last_message_at,
@@ -427,5 +434,5 @@ FROM conversations c
 JOIN messages m ON m.conversation_id = c.id
 LEFT JOIN message_recipients mr ON mr.message_id = m.id
 LEFT JOIN participants p ON p.id = mr.participant_id
-GROUP BY c.id, c.source_conversation_id
+GROUP BY c.id, c.source_conversation_id, c.title, c.conversation_type
 `
