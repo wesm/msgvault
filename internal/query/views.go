@@ -110,10 +110,43 @@ func buildViewSQL(def viewDef, probedCols map[string]bool) string {
 	)
 }
 
+// probeAllOptionalColumns probes Parquet schemas for all tables that
+// have optional columns, returning a map of table name -> column set.
+// Used by both RegisterViews and RegisterViewsWithColumns.
+func probeAllOptionalColumns(db *sql.DB, analyticsDir string) map[string]map[string]bool {
+	msgGlob := filepath.Join(analyticsDir, "messages", "**", "*.parquet")
+	tablePath := func(name string) string {
+		return filepath.Join(analyticsDir, name, "*.parquet")
+	}
+	return map[string]map[string]bool{
+		"messages":      probeColumns(db, msgGlob, true),
+		"participants":  probeColumns(db, tablePath("participants"), false),
+		"conversations": probeColumns(db, tablePath("conversations"), false),
+		"sources":       probeColumns(db, tablePath("sources"), false),
+	}
+}
+
 // RegisterViews creates DuckDB views over the Parquet files in
 // analyticsDir. Each view normalises types and supplies defaults
 // for optional columns that may be absent in older cache files.
 func RegisterViews(db *sql.DB, analyticsDir string) error {
+	optCols := probeAllOptionalColumns(db, analyticsDir)
+	return RegisterViewsWithColumns(db, analyticsDir, optCols)
+}
+
+// RegisterViewsWithColumns is like RegisterViews but uses pre-computed
+// optional column info instead of probing Parquet schemas. Used by
+// NewDuckDBEngine which already probed columns during initialisation.
+func RegisterViewsWithColumns(db *sql.DB, analyticsDir string, optCols map[string]map[string]bool) error {
+	if err := createBaseViews(db, analyticsDir, optCols); err != nil {
+		return fmt.Errorf("create base views: %w", err)
+	}
+	return createConvenienceViews(db)
+}
+
+// createBaseViews creates the raw Parquet-backed views using the
+// pre-computed optional column map so no additional Parquet probes occur.
+func createBaseViews(db *sql.DB, analyticsDir string, optCols map[string]map[string]bool) error {
 	msgGlob := filepath.Join(
 		analyticsDir, "messages", "**", "*.parquet",
 	)
@@ -121,11 +154,12 @@ func RegisterViews(db *sql.DB, analyticsDir string) error {
 		return filepath.Join(analyticsDir, name, "*.parquet")
 	}
 
-	// Probe schemas for optional columns.
-	msgCols := probeColumns(db, msgGlob, true)
-	partCols := probeColumns(db, tablePath("participants"), false)
-	convCols := probeColumns(db, tablePath("conversations"), false)
-	srcCols := probeColumns(db, tablePath("sources"), false)
+	colsFor := func(table string) map[string]bool {
+		if cols, ok := optCols[table]; ok {
+			return cols
+		}
+		return map[string]bool{}
+	}
 
 	defs := []struct {
 		def   viewDef
@@ -164,7 +198,7 @@ func RegisterViews(db *sql.DB, analyticsDir string) error {
 					},
 				},
 			},
-			probe: msgCols,
+			probe: colsFor("messages"),
 		},
 		{
 			def: viewDef{
@@ -184,7 +218,7 @@ func RegisterViews(db *sql.DB, analyticsDir string) error {
 					},
 				},
 			},
-			probe: partCols,
+			probe: colsFor("participants"),
 		},
 		{
 			def: viewDef{
@@ -250,7 +284,7 @@ func RegisterViews(db *sql.DB, analyticsDir string) error {
 					},
 				},
 			},
-			probe: convCols,
+			probe: colsFor("conversations"),
 		},
 		{
 			def: viewDef{
@@ -267,7 +301,7 @@ func RegisterViews(db *sql.DB, analyticsDir string) error {
 					},
 				},
 			},
-			probe: srcCols,
+			probe: colsFor("sources"),
 		},
 	}
 
@@ -281,7 +315,7 @@ func RegisterViews(db *sql.DB, analyticsDir string) error {
 			return fmt.Errorf("create view %s: %w", d.def.name, err)
 		}
 	}
-	return createConvenienceViews(db)
+	return nil
 }
 
 // createConvenienceViews builds higher-level views on top of the

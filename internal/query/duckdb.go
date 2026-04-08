@@ -164,7 +164,8 @@ func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB, o
 	}
 
 	// Register SQL views over Parquet files for raw SQL access.
-	if err := RegisterViews(db, analyticsDir); err != nil {
+	// Pass the already-probed optionalCols to avoid a redundant schema probe.
+	if err := RegisterViewsWithColumns(db, analyticsDir, engine.optionalCols); err != nil {
 		log.Printf("[warn] failed to register SQL views: %v", err)
 		// Non-fatal: existing CTE-based queries still work.
 	}
