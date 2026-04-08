@@ -116,7 +116,7 @@ LIMIT 20
 
 ```sql
 SELECT m.subject, m.from_email, m.sent_at, a.filename, a.size
-FROM messages m
+FROM v_messages m
 JOIN attachments a ON a.message_id = m.id
 ORDER BY a.size DESC
 LIMIT 20

@@ -57,6 +57,26 @@ func TestDuckDBEngine_QuerySQL_Error(t *testing.T) {
 	}
 }
 
+func TestDuckDBEngine_QuerySQL_RejectsNonReadOnly(t *testing.T) {
+	builder := NewTestDataBuilder(t)
+	builder.AddSource("test@example.com")
+	engine := builder.BuildEngine()
+	defer func() { _ = engine.Close() }()
+
+	cases := []string{
+		"DROP VIEW messages",
+		"SET threads = 1",
+		"CREATE TABLE evil (id INT)",
+		"  drop view messages",
+	}
+	for _, ddl := range cases {
+		_, err := engine.QuerySQL(context.Background(), ddl)
+		if err == nil {
+			t.Errorf("expected error for %q, got nil", ddl)
+		}
+	}
+}
+
 func TestRegisterViews_BaseViews(t *testing.T) {
 	builder := NewTestDataBuilder(t)
 	srcID := builder.AddSource("alice@example.com")
@@ -191,15 +211,20 @@ func TestRegisterViews_ConvenienceViews(t *testing.T) {
 	})
 
 	t.Run("v_senders", func(t *testing.T) {
+		var fromName string
 		var msgCount int64
 		var totalSize int64
 		err := engine.db.QueryRowContext(ctx,
-			"SELECT message_count, total_size "+
+			"SELECT from_name, message_count, total_size "+
 				"FROM v_senders "+
 				"WHERE from_email = 'bob@corp.com'",
-		).Scan(&msgCount, &totalSize)
+		).Scan(&fromName, &msgCount, &totalSize)
 		if err != nil {
 			t.Fatalf("scan v_senders: %v", err)
+		}
+		if fromName != "Bob Smith" {
+			t.Errorf("from_name = %q, want %q",
+				fromName, "Bob Smith")
 		}
 		if msgCount != 2 {
 			t.Errorf("message_count = %d, want 2", msgCount)
@@ -242,16 +267,32 @@ func TestRegisterViews_ConvenienceViews(t *testing.T) {
 	})
 
 	t.Run("v_threads", func(t *testing.T) {
-		var count int
+		// Both messages share the same conversation (auto-assigned),
+		// so we expect exactly 2 threads (one per conversation).
+		var threadCount int
 		err := engine.db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM v_threads "+
-				"WHERE message_count >= 1",
-		).Scan(&count)
+			"SELECT COUNT(*) FROM v_threads",
+		).Scan(&threadCount)
 		if err != nil {
-			t.Fatalf("scan v_threads: %v", err)
+			t.Fatalf("scan v_threads count: %v", err)
 		}
-		if count < 1 {
-			t.Errorf("expected at least 1 thread, got %d", count)
+		if threadCount != 2 {
+			t.Errorf("thread count = %d, want 2", threadCount)
+		}
+
+		// Sum of message_count across all threads should be 2.
+		var totalMsgCount int64
+		err = engine.db.QueryRowContext(ctx,
+			"SELECT SUM(message_count) FROM v_threads",
+		).Scan(&totalMsgCount)
+		if err != nil {
+			t.Fatalf("scan v_threads sum: %v", err)
+		}
+		if totalMsgCount != 2 {
+			t.Errorf(
+				"total message_count = %d, want 2",
+				totalMsgCount,
+			)
 		}
 
 		// Verify participant_emails, conversation_title, conversation_type

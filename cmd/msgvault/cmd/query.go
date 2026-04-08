@@ -132,8 +132,11 @@ func scanRow(
 		return nil, fmt.Errorf("scan row: %w", err)
 	}
 	for i, v := range vals {
-		if b, ok := v.([]byte); ok {
+		switch b := v.(type) {
+		case []byte:
 			vals[i] = string(b)
+		case nil:
+			vals[i] = ""
 		}
 	}
 	return vals, nil

@@ -184,9 +184,16 @@ func (e *DuckDBEngine) Close() error {
 // QuerySQL executes an arbitrary SQL query against the DuckDB engine
 // and returns the results in a columnar format. Views registered by
 // RegisterViews (base + convenience) are available.
+// Only read-only SQL (SELECT, WITH, DESCRIBE, EXPLAIN) is allowed to
+// protect the shared engine session from DDL side-effects.
 func (e *DuckDBEngine) QuerySQL(
 	ctx context.Context, sqlStr string,
 ) (*QueryResult, error) {
+	if !isReadOnlySQL(sqlStr) {
+		return nil, fmt.Errorf(
+			"only SELECT, WITH, DESCRIBE, and EXPLAIN statements are allowed",
+		)
+	}
 	rows, err := e.db.QueryContext(ctx, sqlStr)
 	if err != nil {
 		return nil, fmt.Errorf("execute query: %w", err)
@@ -220,6 +227,20 @@ func (e *DuckDBEngine) QuerySQL(
 	}
 	result.RowCount = len(result.Rows)
 	return result, nil
+}
+
+// isReadOnlySQL returns true if the SQL statement starts with a
+// read-only prefix (SELECT, WITH, DESCRIBE, or EXPLAIN).
+func isReadOnlySQL(sqlStr string) bool {
+	trimmed := strings.TrimSpace(strings.ToUpper(sqlStr))
+	for _, prefix := range []string{
+		"SELECT ", "WITH ", "DESCRIBE ", "EXPLAIN ",
+	} {
+		if strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // hasSQLite returns true if DuckDB's sqlite_scanner extension is loaded,

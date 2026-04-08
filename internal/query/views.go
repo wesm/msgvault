@@ -29,7 +29,7 @@ func probeColumns(
 	cols := make(map[string]bool)
 	hiveOpt := ""
 	if hivePartitioning {
-		hiveOpt = ", hive_partitioning=true"
+		hiveOpt = ", hive_partitioning=true, union_by_name=true"
 	}
 	escaped := strings.ReplaceAll(pathPattern, "'", "''")
 	q := fmt.Sprintf(
@@ -409,7 +409,9 @@ CREATE OR REPLACE VIEW v_senders AS
 SELECT
     p.email_address AS from_email,
     COALESCE(
-        NULLIF(TRIM(FIRST(p.display_name)), ''), p.email_address
+        NULLIF(TRIM(FIRST(mr.display_name)), ''),
+        NULLIF(TRIM(FIRST(p.display_name)), ''),
+        p.email_address
     ) AS from_name,
     p.domain AS from_domain,
     COUNT(*) AS message_count,

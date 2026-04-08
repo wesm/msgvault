@@ -23,7 +23,7 @@ Hive-partitioned by year. Use `WHERE year = YYYY` for partition pruning.
 | has_attachments | BOOLEAN | True if message has attachments |
 | attachment_count | INTEGER | Number of attachments (0 if none) |
 | sender_id | BIGINT | Participant ID for chat messages (NULL for email) |
-| message_type | VARCHAR | Message type (empty string for email, 'chat' for chat) |
+| message_type | VARCHAR | Source type (e.g. email, whatsapp, imessage) |
 | year | INTEGER | Year of sent_at (partition key) |
 | month | INTEGER | Month of sent_at (1–12) |
 | deleted_from_source_at | TIMESTAMP | When deleted from Gmail (NULL if still present) |
@@ -78,14 +78,14 @@ Links messages to participants with a role type.
 | id | BIGINT | Internal conversation ID |
 | source_conversation_id | VARCHAR | Gmail thread ID |
 | title | VARCHAR | Conversation title (empty string if none) |
-| conversation_type | VARCHAR | 'email' or 'chat' |
+| conversation_type | VARCHAR | Thread type (e.g. email, direct_chat, group_chat) |
 
 ### sources
 
 | Column | Type | Description |
 |--------|------|-------------|
 | id | BIGINT | Internal source ID |
-| source_type | VARCHAR | 'gmail' or 'emlx' |
+| source_type | VARCHAR | Account type (e.g. gmail, imap, mbox, apple-mail) |
 
 (Additional columns such as email address are present but not normalised in the view.)
 
@@ -111,7 +111,7 @@ Messages with sender fully resolved and labels as a JSON array. Use this instead
 | size_estimate | BIGINT | Estimated size in bytes |
 | has_attachments | BOOLEAN | True if message has attachments |
 | attachment_count | INTEGER | Number of attachments |
-| message_type | VARCHAR | 'email' or 'chat' |
+| message_type | VARCHAR | Source type (e.g. email, whatsapp, imessage) |
 | year | INTEGER | Year (partition key) |
 | month | INTEGER | Month (1–12) |
 | from_email | VARCHAR | Sender email address |
@@ -171,7 +171,7 @@ Per-conversation aggregates with participant list.
 | conversation_id | BIGINT | Internal conversation ID |
 | source_conversation_id | VARCHAR | Gmail thread ID |
 | conversation_title | VARCHAR | Conversation title (may be empty) |
-| conversation_type | VARCHAR | 'email' or 'chat' |
+| conversation_type | VARCHAR | Thread type (e.g. email, direct_chat, group_chat) |
 | message_count | BIGINT | Number of messages in this thread |
 | first_message_at | TIMESTAMP | Earliest message in thread |
 | last_message_at | TIMESTAMP | Most recent message in thread |
