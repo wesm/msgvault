@@ -16,12 +16,12 @@
       packages = forAllSystems (pkgs: {
         default =
           let
-            # Pin Go 1.25.8 until nixpkgs-unstable catches up from staging
+            # Pin Go 1.25.9 until nixpkgs-unstable catches up from staging
             go_pinned = pkgs.go_1_25.overrideAttrs (old: rec {
-              version = "1.25.8";
+              version = "1.25.9";
               src = pkgs.fetchurl {
                 url = "https://go.dev/dl/go${version}.src.tar.gz";
-                hash = "sha256-6YjUokRqx/4/baoImljpk2pSo4E1Wt7ByJgyMKjWxZ4=";
+                hash = "sha256-/nJssjgdGp8bwYFSXDCCn97ifrEBTWy3XCi5KNUfEJc=";
               };
             });
           in
