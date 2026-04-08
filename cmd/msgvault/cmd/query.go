@@ -151,11 +151,8 @@ func scanRow(
 		return nil, fmt.Errorf("scan row: %w", err)
 	}
 	for i, v := range vals {
-		switch b := v.(type) {
-		case []byte:
+		if b, ok := v.([]byte); ok {
 			vals[i] = string(b)
-		case nil:
-			vals[i] = ""
 		}
 	}
 	return vals, nil
@@ -174,6 +171,15 @@ func writeJSON(
 	return enc.Encode(result)
 }
 
+// displayVal formats a value for CSV/table output. SQL NULLs
+// become empty strings; other values use fmt.Sprintf.
+func displayVal(v any) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", v)
+}
+
 func writeCSV(
 	w io.Writer, cols []string, rows [][]any,
 ) error {
@@ -186,7 +192,7 @@ func writeCSV(
 	for _, row := range rows {
 		record := make([]string, len(row))
 		for i, v := range row {
-			record[i] = fmt.Sprintf("%v", v)
+			record[i] = displayVal(v)
 		}
 		if err := cw.Write(record); err != nil {
 			return fmt.Errorf("write csv row: %w", err)
@@ -205,7 +211,7 @@ func writeTable(
 	for i, row := range rows {
 		strRows[i] = make([]string, len(row))
 		for j, v := range row {
-			strRows[i][j] = fmt.Sprintf("%v", v)
+			strRows[i][j] = displayVal(v)
 		}
 	}
 

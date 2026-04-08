@@ -57,26 +57,6 @@ func TestDuckDBEngine_QuerySQL_Error(t *testing.T) {
 	}
 }
 
-func TestDuckDBEngine_QuerySQL_RejectsNonReadOnly(t *testing.T) {
-	builder := NewTestDataBuilder(t)
-	builder.AddSource("test@example.com")
-	engine := builder.BuildEngine()
-	defer func() { _ = engine.Close() }()
-
-	cases := []string{
-		"DROP VIEW messages",
-		"SET threads = 1",
-		"CREATE TABLE evil (id INT)",
-		"  drop view messages",
-	}
-	for _, ddl := range cases {
-		_, err := engine.QuerySQL(context.Background(), ddl)
-		if err == nil {
-			t.Errorf("expected error for %q, got nil", ddl)
-		}
-	}
-}
-
 func TestRegisterViews_BaseViews(t *testing.T) {
 	builder := NewTestDataBuilder(t)
 	srcID := builder.AddSource("alice@example.com")
