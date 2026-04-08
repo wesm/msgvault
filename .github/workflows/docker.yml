@@ -23,8 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Only allow package writes for pushes to main/tags, not PRs
-      packages: ${{ github.event_name != 'pull_request' && 'write' || 'read' }}
+      packages: write
 
     steps:
       - name: Checkout
