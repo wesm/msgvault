@@ -1,11 +1,24 @@
 package query
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"path/filepath"
 	"strings"
 )
+
+// QueryResult holds raw SQL query results in a columnar format.
+type QueryResult struct {
+	Columns  []string `json:"columns"`
+	Rows     [][]any  `json:"rows"`
+	RowCount int      `json:"row_count"`
+}
+
+// SQLQuerier is implemented by engines that support raw SQL queries.
+type SQLQuerier interface {
+	QuerySQL(ctx context.Context, sql string) (*QueryResult, error)
+}
 
 // probeColumns checks which columns exist in a Parquet file.
 // Returns a set of column names present in the schema.

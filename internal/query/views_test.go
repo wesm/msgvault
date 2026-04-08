@@ -6,6 +6,57 @@ import (
 	"testing"
 )
 
+func TestDuckDBEngine_QuerySQL(t *testing.T) {
+	builder := NewTestDataBuilder(t)
+	srcID := builder.AddSource("test@example.com")
+	bob := builder.AddParticipant(
+		"bob@example.com", "example.com", "Bob",
+	)
+	msgID := builder.AddMessage(MessageOpt{
+		Subject: "Test", SourceID: srcID, SizeEstimate: 100,
+	})
+	builder.AddFrom(msgID, bob, "Bob")
+
+	engine := builder.BuildEngine()
+	defer func() { _ = engine.Close() }()
+
+	ctx := context.Background()
+	result, err := engine.QuerySQL(ctx,
+		"SELECT from_email, message_count FROM v_senders")
+	if err != nil {
+		t.Fatalf("QuerySQL: %v", err)
+	}
+	if len(result.Columns) < 2 {
+		t.Fatalf(
+			"columns = %v, want at least 2", result.Columns,
+		)
+	}
+	if result.Columns[0] != "from_email" {
+		t.Errorf(
+			"columns[0] = %q, want from_email",
+			result.Columns[0],
+		)
+	}
+	if result.RowCount != 1 {
+		t.Errorf("row_count = %d, want 1", result.RowCount)
+	}
+}
+
+func TestDuckDBEngine_QuerySQL_Error(t *testing.T) {
+	builder := NewTestDataBuilder(t)
+	builder.AddSource("test@example.com")
+	engine := builder.BuildEngine()
+	defer func() { _ = engine.Close() }()
+
+	_, err := engine.QuerySQL(
+		context.Background(),
+		"SELECT * FROM nonexistent_table",
+	)
+	if err == nil {
+		t.Fatal("expected error for bad SQL")
+	}
+}
+
 func TestRegisterViews_BaseViews(t *testing.T) {
 	builder := NewTestDataBuilder(t)
 	srcID := builder.AddSource("alice@example.com")

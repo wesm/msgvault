@@ -163,6 +163,12 @@ func NewDuckDBEngine(analyticsDir string, sqlitePath string, sqliteDB *sql.DB, o
 		log.Printf("[warn] Parquet cache missing columns %v — run 'msgvault build-cache --full-rebuild' to update", missing)
 	}
 
+	// Register SQL views over Parquet files for raw SQL access.
+	if err := RegisterViews(db, analyticsDir); err != nil {
+		log.Printf("[warn] failed to register SQL views: %v", err)
+		// Non-fatal: existing CTE-based queries still work.
+	}
+
 	return engine, nil
 }
 
@@ -172,6 +178,47 @@ func (e *DuckDBEngine) Close() error {
 	e.dropSearchCache()
 	e.searchCacheMu.Unlock()
 	return e.db.Close()
+}
+
+// QuerySQL executes an arbitrary SQL query against the DuckDB engine
+// and returns the results in a columnar format. Views registered by
+// RegisterViews (base + convenience) are available.
+func (e *DuckDBEngine) QuerySQL(
+	ctx context.Context, sqlStr string,
+) (*QueryResult, error) {
+	rows, err := e.db.QueryContext(ctx, sqlStr)
+	if err != nil {
+		return nil, fmt.Errorf("execute query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("get columns: %w", err)
+	}
+
+	result := &QueryResult{Columns: cols}
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, fmt.Errorf("scan row: %w", err)
+		}
+		for i, v := range vals {
+			if b, ok := v.([]byte); ok {
+				vals[i] = string(b)
+			}
+		}
+		result.Rows = append(result.Rows, vals)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rows: %w", err)
+	}
+	result.RowCount = len(result.Rows)
+	return result, nil
 }
 
 // hasSQLite returns true if DuckDB's sqlite_scanner extension is loaded,
@@ -191,33 +238,11 @@ func (e *DuckDBEngine) parquetPath(table string) string {
 }
 
 // probeParquetColumns checks which columns exist in a Parquet table's files.
-// Returns a map of column_name -> true for columns that exist.
-// On any error (files missing, unreadable, etc.), returns an empty map — callers
-// should treat absent keys as "column does not exist" and supply defaults.
-func (e *DuckDBEngine) probeParquetColumns(pathPattern string, hivePartitioning bool) map[string]bool {
-	cols := make(map[string]bool)
-	hiveOpt := ""
-	if hivePartitioning {
-		hiveOpt = ", hive_partitioning=true"
-	}
-	escapedPath := strings.ReplaceAll(pathPattern, "'", "''")
-	query := fmt.Sprintf("DESCRIBE SELECT * FROM read_parquet('%s'%s)", escapedPath, hiveOpt)
-	rows, err := e.db.Query(query)
-	if err != nil {
-		// No Parquet files or unreadable — treat all optional cols as missing.
-		return cols
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var colName, colType, isNull, key, dflt, extra sql.NullString
-		if err := rows.Scan(&colName, &colType, &isNull, &key, &dflt, &extra); err != nil {
-			continue
-		}
-		if colName.Valid {
-			cols[colName.String] = true
-		}
-	}
-	return cols
+// Delegates to the standalone probeColumns in views.go.
+func (e *DuckDBEngine) probeParquetColumns(
+	pathPattern string, hivePartitioning bool,
+) map[string]bool {
+	return probeColumns(e.db, pathPattern, hivePartitioning)
 }
 
 // hasCol returns true if the named column exists in the Parquet schema for the given table.
