@@ -268,5 +268,164 @@ func RegisterViews(db *sql.DB, analyticsDir string) error {
 			return fmt.Errorf("create view %s: %w", d.def.name, err)
 		}
 	}
+	return createConvenienceViews(db)
+}
+
+// createConvenienceViews builds higher-level views on top of the
+// base Parquet views. Each view joins or aggregates the base views
+// to provide ready-to-query datasets.
+func createConvenienceViews(db *sql.DB) error {
+	views := []struct {
+		name string
+		sql  string
+	}{
+		{"v_messages", sqlVMessages},
+		{"v_senders", sqlVSenders},
+		{"v_domains", sqlVDomains},
+		{"v_labels", sqlVLabels},
+		{"v_threads", sqlVThreads},
+	}
+	for _, v := range views {
+		if _, err := db.Exec(v.sql); err != nil {
+			return fmt.Errorf("create view %s: %w", v.name, err)
+		}
+	}
 	return nil
 }
+
+// sqlVMessages: messages with sender resolved via dual-path
+// (message_recipients for email, messages.sender_id for chat)
+// and labels as sorted JSON array.
+const sqlVMessages = `
+CREATE OR REPLACE VIEW v_messages AS
+SELECT
+    m.id,
+    m.source_id,
+    m.source_message_id,
+    m.conversation_id,
+    m.subject,
+    m.snippet,
+    m.sent_at,
+    m.size_estimate,
+    m.has_attachments,
+    m.attachment_count,
+    m.message_type,
+    COALESCE(ms.from_email, ds.from_email, '') AS from_email,
+    COALESCE(ms.from_name, ds.from_name, '') AS from_name,
+    COALESCE(ms.from_domain, ds.from_domain, '') AS from_domain,
+    CAST(
+        COALESCE(to_json(ml_agg.labels), '[]') AS VARCHAR
+    ) AS labels,
+    m.deleted_from_source_at
+FROM messages m
+LEFT JOIN (
+    SELECT
+        mr.message_id,
+        FIRST(p.email_address) AS from_email,
+        FIRST(
+            COALESCE(mr.display_name, p.display_name, '')
+        ) AS from_name,
+        FIRST(p.domain) AS from_domain
+    FROM message_recipients mr
+    JOIN participants p ON p.id = mr.participant_id
+    WHERE mr.recipient_type = 'from'
+    GROUP BY mr.message_id
+) ms ON ms.message_id = m.id
+LEFT JOIN (
+    SELECT
+        msg.id AS message_id,
+        COALESCE(p.email_address, '') AS from_email,
+        COALESCE(p.display_name, '') AS from_name,
+        COALESCE(p.domain, '') AS from_domain
+    FROM messages msg
+    JOIN participants p ON p.id = msg.sender_id
+    WHERE msg.sender_id IS NOT NULL
+) ds ON ds.message_id = m.id AND ms.message_id IS NULL
+LEFT JOIN (
+    SELECT
+        ml.message_id,
+        list(l.name ORDER BY l.name) AS labels
+    FROM message_labels ml
+    JOIN labels l ON l.id = ml.label_id
+    GROUP BY ml.message_id
+) ml_agg ON ml_agg.message_id = m.id
+`
+
+// sqlVSenders: per-sender aggregates.
+const sqlVSenders = `
+CREATE OR REPLACE VIEW v_senders AS
+SELECT
+    p.email_address,
+    FIRST(mr.display_name) AS display_name,
+    p.domain,
+    COUNT(*) AS message_count,
+    SUM(m.size_estimate) AS total_size,
+    COALESCE(SUM(att.attachment_size), 0) AS attachment_size,
+    COALESCE(SUM(att.attachment_count), 0) AS attachment_count,
+    MIN(m.sent_at) AS first_message_at,
+    MAX(m.sent_at) AS last_message_at
+FROM message_recipients mr
+JOIN participants p ON p.id = mr.participant_id
+JOIN messages m ON m.id = mr.message_id
+LEFT JOIN (
+    SELECT
+        message_id,
+        SUM(size) AS attachment_size,
+        COUNT(*) AS attachment_count
+    FROM attachments
+    GROUP BY message_id
+) att ON att.message_id = m.id
+WHERE mr.recipient_type = 'from'
+GROUP BY p.email_address, p.domain
+`
+
+// sqlVDomains: per-domain aggregates.
+const sqlVDomains = `
+CREATE OR REPLACE VIEW v_domains AS
+SELECT
+    p.domain,
+    COUNT(*) AS message_count,
+    SUM(m.size_estimate) AS total_size,
+    COUNT(DISTINCT p.email_address) AS sender_count
+FROM message_recipients mr
+JOIN participants p ON p.id = mr.participant_id
+JOIN messages m ON m.id = mr.message_id
+WHERE mr.recipient_type = 'from'
+GROUP BY p.domain
+`
+
+// sqlVLabels: label name with message count and total size.
+const sqlVLabels = `
+CREATE OR REPLACE VIEW v_labels AS
+SELECT
+    l.name,
+    COUNT(*) AS message_count,
+    SUM(m.size_estimate) AS total_size
+FROM message_labels ml
+JOIN labels l ON l.id = ml.label_id
+JOIN messages m ON m.id = ml.message_id
+GROUP BY l.name
+`
+
+// sqlVThreads: per-conversation aggregates with participant
+// emails as a JSON array.
+const sqlVThreads = `
+CREATE OR REPLACE VIEW v_threads AS
+SELECT
+    c.id AS conversation_id,
+    c.source_conversation_id,
+    COUNT(*) AS message_count,
+    MIN(m.sent_at) AS first_message_at,
+    MAX(m.sent_at) AS last_message_at,
+    CAST(
+        COALESCE(
+            to_json(list(DISTINCT p.email_address)),
+            '[]'
+        ) AS VARCHAR
+    ) AS participant_emails
+FROM conversations c
+JOIN messages m ON m.conversation_id = c.id
+LEFT JOIN message_recipients mr ON mr.message_id = m.id
+LEFT JOIN participants p ON p.id = mr.participant_id
+GROUP BY c.id, c.source_conversation_id
+`
