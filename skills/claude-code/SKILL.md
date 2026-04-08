@@ -14,7 +14,7 @@ triggers:
 
 Run SQL against the msgvault email archive via `msgvault query`. The analytics cache is DuckDB over Parquet — queries run in milliseconds. No DuckDB binary or Parquet path knowledge required.
 
-**Prerequisite:** Run `msgvault build-cache` once if the cache is missing or stale.
+The analytics cache is built automatically when stale or missing.
 
 ## Quick Start
 

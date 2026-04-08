@@ -44,14 +44,33 @@ Examples:
   msgvault query --format table "SELECT name, message_count FROM v_labels"`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		dbPath := cfg.DatabaseDSN()
 		analyticsDir := cfg.AnalyticsDir()
+
+		staleness := cacheNeedsBuild(dbPath, analyticsDir)
+		if staleness.NeedsBuild {
+			fmt.Fprintf(os.Stderr,
+				"Building analytics cache (%s)...\n",
+				staleness.Reason)
+			result, err := buildCache(
+				dbPath, analyticsDir, staleness.FullRebuild,
+			)
+			if err != nil {
+				return fmt.Errorf("build cache: %w", err)
+			}
+			if !result.Skipped {
+				fmt.Fprintf(os.Stderr,
+					"Cached %d messages.\n",
+					result.ExportedCount)
+			}
+		}
+
 		if !query.HasCompleteParquetData(analyticsDir) {
 			return fmt.Errorf(
-				"analytics cache not found in %s\n"+
-					"Run 'msgvault build-cache' first",
-				analyticsDir,
-			)
+				"analytics cache is empty — sync some " +
+					"messages first")
 		}
+
 		return executeQuery(
 			analyticsDir, args[0], queryFormat, os.Stdout,
 		)
