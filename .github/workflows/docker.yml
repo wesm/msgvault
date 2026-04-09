@@ -19,7 +19,52 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build:
+  # PR validation: build and smoke-test only, no registry access
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Test image (amd64)
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --load \
+            --tag msgvault:test \
+            --build-arg VERSION=test \
+            --build-arg COMMIT=$(echo $GITHUB_SHA | cut -c1-8) \
+            --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+            .
+
+          # Smoke test: version command
+          echo "--- Version test ---"
+          docker run --rm msgvault:test version
+
+          # Smoke test: help command
+          echo "--- Help test ---"
+          docker run --rm msgvault:test --help
+
+          # Smoke test: init-db (creates database)
+          echo "--- Init DB test ---"
+          mkdir -p /tmp/msgvault-test && chmod 777 /tmp/msgvault-test
+          docker run --rm -v /tmp/msgvault-test:/data msgvault:test init-db
+          test -f /tmp/msgvault-test/msgvault.db || { echo "FATAL: database not created"; exit 1; }
+          echo "Database created successfully"
+
+          # Cleanup
+          rm -rf /tmp/msgvault-test
+
+  # Publish: build multi-arch and push to GHCR (main/tags only)
+  publish:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -36,7 +81,6 @@ jobs:
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
       - name: Log in to Container Registry
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ${{ env.REGISTRY }}
@@ -75,7 +119,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -84,34 +128,3 @@ jobs:
             BUILD_DATE=${{ steps.build_args.outputs.build_date }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Test image (amd64)
-        if: github.event_name == 'pull_request'
-        run: |
-          # Build single-arch for testing
-          docker buildx build \
-            --platform linux/amd64 \
-            --load \
-            --tag msgvault:test \
-            --build-arg VERSION=test \
-            --build-arg COMMIT=$(echo $GITHUB_SHA | cut -c1-8) \
-            --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
-            .
-
-          # Smoke test: version command
-          echo "--- Version test ---"
-          docker run --rm msgvault:test version
-
-          # Smoke test: help command
-          echo "--- Help test ---"
-          docker run --rm msgvault:test --help
-
-          # Smoke test: init-db (creates database)
-          echo "--- Init DB test ---"
-          mkdir -p /tmp/msgvault-test && chmod 777 /tmp/msgvault-test
-          docker run --rm -v /tmp/msgvault-test:/data msgvault:test init-db
-          test -f /tmp/msgvault-test/msgvault.db || { echo "FATAL: database not created"; exit 1; }
-          echo "Database created successfully"
-
-          # Cleanup
-          rm -rf /tmp/msgvault-test
