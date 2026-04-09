@@ -11,41 +11,39 @@
         nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ] (
           system: fn nixpkgs.legacyPackages.${system}
         );
+
+      # Pin Go 1.25.9 until nixpkgs-unstable catches up from staging
+      goPinned = pkgs: pkgs.go_1_25.overrideAttrs (old: rec {
+        version = "1.25.9";
+        src = pkgs.fetchurl {
+          url = "https://go.dev/dl/go${version}.src.tar.gz";
+          hash = "sha256-DsnvjrzqCXqsN97K6fCachi0Uc2Wvn1u1RPY5Lz5Cc8=";
+        };
+      });
     in
     {
       packages = forAllSystems (pkgs: {
-        default =
-          let
-            # Pin Go 1.25.9 until nixpkgs-unstable catches up from staging
-            go_pinned = pkgs.go_1_25.overrideAttrs (old: rec {
-              version = "1.25.9";
-              src = pkgs.fetchurl {
-                url = "https://go.dev/dl/go${version}.src.tar.gz";
-                hash = "sha256-DsnvjrzqCXqsN97K6fCachi0Uc2Wvn1u1RPY5Lz5Cc8=";
-              };
-            });
-          in
-          (pkgs.buildGoModule.override { go = go_pinned; }) {
-            pname = "msgvault";
-            version = "0.11.0";
-            src = ./.;
-            vendorHash = "sha256-JtfZwLpeyVsX/Yvb3EV7L+Gk/lFYaMJcrmID6eEvz84=";
-            proxyVendor = true;
-            subPackages = [ "cmd/msgvault" ];
-            tags = [ "fts5" ];
-            ldflags = [
-              "-X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=nix-dev"
-            ];
-          };
+        default = (pkgs.buildGoModule.override { go = goPinned pkgs; }) {
+          pname = "msgvault";
+          version = "0.11.0";
+          src = ./.;
+          vendorHash = "sha256-JtfZwLpeyVsX/Yvb3EV7L+Gk/lFYaMJcrmID6eEvz84=";
+          proxyVendor = true;
+          subPackages = [ "cmd/msgvault" ];
+          tags = [ "fts5" ];
+          ldflags = [
+            "-X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=nix-dev"
+          ];
+        };
       });
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [
-            go
-            golangci-lint
-            gcc
-            prek
+          packages = [
+            (goPinned pkgs)
+            pkgs.golangci-lint
+            pkgs.gcc
+            pkgs.prek
           ];
         };
       });
