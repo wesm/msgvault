@@ -1458,10 +1458,10 @@ func (e *DuckDBEngine) getMessageByQuery(ctx context.Context, whereClause string
 // Search performs a Gmail-style search query.
 // Uses direct SQLite connection for FTS5 support when available,
 // falls back to LIKE queries via sqlite_scan otherwise.
-func (e *DuckDBEngine) Search(ctx context.Context, q *search.Query, sorting MessageSorting, limit, offset int) ([]MessageSummary, error) {
+func (e *DuckDBEngine) Search(ctx context.Context, q *search.Query, limit, offset int) ([]MessageSummary, error) {
 	// Prefer direct SQLite for FTS5 support
 	if e.sqliteEngine != nil {
-		return e.sqliteEngine.Search(ctx, q, sorting, limit, offset)
+		return e.sqliteEngine.Search(ctx, q, limit, offset)
 	}
 
 	// Fall back to sqlite_scan with LIKE queries (no FTS)
@@ -1856,7 +1856,7 @@ type ParquetSyncState struct {
 // SearchFast searches message metadata in Parquet files (no body text).
 // This is much faster than FTS search for large archives.
 // Searches: subject, sender email/name (case-insensitive).
-func (e *DuckDBEngine) SearchFast(ctx context.Context, q *search.Query, filter MessageFilter, sorting MessageSorting, limit, offset int) ([]MessageSummary, error) {
+func (e *DuckDBEngine) SearchFast(ctx context.Context, q *search.Query, filter MessageFilter, limit, offset int) ([]MessageSummary, error) {
 	conditions, args := e.buildSearchConditions(q, filter)
 
 	if limit == 0 {
@@ -2210,7 +2210,7 @@ func (e *DuckDBEngine) computeSearchStats(ctx context.Context) *TotalStats {
 // is served directly from the cached temp table. A new search invalidates the
 // old cache.
 func (e *DuckDBEngine) SearchFastWithStats(ctx context.Context, q *search.Query, queryStr string,
-	filter MessageFilter, sorting MessageSorting, statsGroupBy ViewType, limit, offset int) (*SearchFastResult, error) {
+	filter MessageFilter, statsGroupBy ViewType, limit, offset int) (*SearchFastResult, error) {
 
 	conditions, args := e.buildSearchConditions(q, filter)
 

@@ -1204,14 +1204,14 @@ func (e *SQLiteEngine) buildSearchQueryParts(ctx context.Context, q *search.Quer
 	return conditions, args, joins, ftsJoin
 }
 
-func (e *SQLiteEngine) Search(ctx context.Context, q *search.Query, sorting MessageSorting, limit, offset int) ([]MessageSummary, error) {
+func (e *SQLiteEngine) Search(ctx context.Context, q *search.Query, limit, offset int) ([]MessageSummary, error) {
 	conditions, args, joins, ftsJoin := e.buildSearchQueryParts(ctx, q)
 	return e.executeSearchQuery(ctx, conditions, args, joins, ftsJoin, limit, offset)
 }
 
 // SearchFast searches using the same FTS5 path as Search but merges
 // MessageFilter context into the query (drill-down filters, hide-deleted, etc.).
-func (e *SQLiteEngine) SearchFast(ctx context.Context, q *search.Query, filter MessageFilter, sorting MessageSorting, limit, offset int) ([]MessageSummary, error) {
+func (e *SQLiteEngine) SearchFast(ctx context.Context, q *search.Query, filter MessageFilter, limit, offset int) ([]MessageSummary, error) {
 	mergedQuery := MergeFilterIntoQuery(q, filter)
 	conditions, args, joins, ftsJoin := e.buildSearchQueryParts(ctx, mergedQuery)
 	return e.executeSearchQuery(ctx, conditions, args, joins, ftsJoin, limit, offset)
@@ -1468,9 +1468,9 @@ func (e *SQLiteEngine) SearchFastCount(ctx context.Context, q *search.Query, fil
 // SQLite doesn't benefit from temp table materialization, so we just call the
 // existing methods independently.
 func (e *SQLiteEngine) SearchFastWithStats(ctx context.Context, q *search.Query, queryStr string,
-	filter MessageFilter, sorting MessageSorting, statsGroupBy ViewType, limit, offset int) (*SearchFastResult, error) {
+	filter MessageFilter, statsGroupBy ViewType, limit, offset int) (*SearchFastResult, error) {
 
-	results, err := e.SearchFast(ctx, q, filter, sorting, limit, offset)
+	results, err := e.SearchFast(ctx, q, filter, limit, offset)
 	if err != nil {
 		return nil, err
 	}
