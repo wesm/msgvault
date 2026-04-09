@@ -28,13 +28,13 @@ type Engine interface {
 	GetAttachment(ctx context.Context, id int64) (*AttachmentInfo, error)
 
 	// Search - full-text search using FTS5 (includes message body)
-	Search(ctx context.Context, query *search.Query, limit, offset int) ([]MessageSummary, error)
+	Search(ctx context.Context, query *search.Query, sorting MessageSorting, limit, offset int) ([]MessageSummary, error)
 
 	// SearchFast searches message metadata only (no body text).
 	// This is much faster for large archives as it queries Parquet files directly.
 	// Searches: subject, sender email/name (case-insensitive).
 	// The filter parameter allows contextual search within a drill-down.
-	SearchFast(ctx context.Context, query *search.Query, filter MessageFilter, limit, offset int) ([]MessageSummary, error)
+	SearchFast(ctx context.Context, query *search.Query, filter MessageFilter, sorting MessageSorting, limit, offset int) ([]MessageSummary, error)
 
 	// SearchFastCount returns the total count of messages matching a search query.
 	// This is used for pagination UI to show "N of M results".
@@ -49,7 +49,7 @@ type Engine interface {
 	// queryStr is the raw search string (needed for stats; search.Query doesn't store it).
 	// statsGroupBy controls which view's key columns are used for stats search filtering.
 	SearchFastWithStats(ctx context.Context, query *search.Query, queryStr string,
-		filter MessageFilter, statsGroupBy ViewType, limit, offset int) (*SearchFastResult, error)
+		filter MessageFilter, sorting MessageSorting, statsGroupBy ViewType, limit, offset int) (*SearchFastResult, error)
 
 	// GetGmailIDsByFilter returns Gmail message IDs (source_message_id) matching a filter.
 	// This is useful for batch operations like staging messages for deletion.

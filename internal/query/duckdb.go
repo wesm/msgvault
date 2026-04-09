@@ -418,6 +418,25 @@ func escapeILIKE(s string) string {
 	return s
 }
 
+// escapeRegex escapes special regex characters for use in DuckDB's regexp_matches function
+func escapeRegex(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, ".", "\\.")
+	s = strings.ReplaceAll(s, "*", "\\*")
+	s = strings.ReplaceAll(s, "+", "\\+")
+	s = strings.ReplaceAll(s, "?", "\\?")
+	s = strings.ReplaceAll(s, "[", "\\[")
+	s = strings.ReplaceAll(s, "]", "\\]")
+	s = strings.ReplaceAll(s, "(", "\\(")
+	s = strings.ReplaceAll(s, ")", "\\)")
+	s = strings.ReplaceAll(s, "{", "\\{")
+	s = strings.ReplaceAll(s, "}", "\\}")
+	s = strings.ReplaceAll(s, "|", "\\|")
+	s = strings.ReplaceAll(s, "^", "\\^")
+	s = strings.ReplaceAll(s, "$", "\\$")
+	return s
+}
+
 // buildWhereClause builds WHERE conditions for Parquet queries.
 // Column references use msg. prefix to be explicit since aggregate queries join multiple CTEs.
 // buildAggregateSearchConditions builds SQL conditions for a search query in aggregate views.
@@ -438,24 +457,25 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyCol
 
 	// Text terms: always search subject + sender, plus the view's grouping
 	// key columns when provided (e.g., label name in Labels view).
+	// Uses word-boundary regex (\b) to match whole words only.
 	for _, term := range q.TextTerms {
-		termPattern := "%" + escapeILIKE(term) + "%"
+		regexPattern := "(?i)\\b" + escapeRegex(term)
 		var parts []string
-		parts = append(parts, `msg.subject ILIKE ? ESCAPE '\'`)
-		args = append(args, termPattern)
-		parts = append(parts, `COALESCE(msg.snippet, '') ILIKE ? ESCAPE '\'`)
-		args = append(args, termPattern)
+		parts = append(parts, `regexp_matches(COALESCE(msg.subject, ''), ?)`)
+		args = append(args, regexPattern)
+		parts = append(parts, `regexp_matches(COALESCE(msg.snippet, ''), ?)`)
+		args = append(args, regexPattern)
 		parts = append(parts, `EXISTS (
 			SELECT 1 FROM mr mr_search
 			JOIN p p_search ON p_search.id = mr_search.participant_id
 			WHERE mr_search.message_id = msg.id
 			  AND mr_search.recipient_type = 'from'
-			  AND (p_search.email_address ILIKE ? ESCAPE '\' OR p_search.display_name ILIKE ? ESCAPE '\')
+			  AND (regexp_matches(p_search.email_address, ?) OR regexp_matches(COALESCE(p_search.display_name, ''), ?))
 		)`)
-		args = append(args, termPattern, termPattern)
+		args = append(args, regexPattern, regexPattern)
 		for _, col := range keyColumns {
-			parts = append(parts, col+` ILIKE ? ESCAPE '\'`)
-			args = append(args, termPattern)
+			parts = append(parts, `regexp_matches(COALESCE(`+col+`, ''), ?)`)
+			args = append(args, regexPattern)
 		}
 		conditions = append(conditions, "("+strings.Join(parts, " OR ")+")")
 	}
@@ -1438,10 +1458,10 @@ func (e *DuckDBEngine) getMessageByQuery(ctx context.Context, whereClause string
 // Search performs a Gmail-style search query.
 // Uses direct SQLite connection for FTS5 support when available,
 // falls back to LIKE queries via sqlite_scan otherwise.
-func (e *DuckDBEngine) Search(ctx context.Context, q *search.Query, limit, offset int) ([]MessageSummary, error) {
+func (e *DuckDBEngine) Search(ctx context.Context, q *search.Query, sorting MessageSorting, limit, offset int) ([]MessageSummary, error) {
 	// Prefer direct SQLite for FTS5 support
 	if e.sqliteEngine != nil {
-		return e.sqliteEngine.Search(ctx, q, limit, offset)
+		return e.sqliteEngine.Search(ctx, q, sorting, limit, offset)
 	}
 
 	// Fall back to sqlite_scan with LIKE queries (no FTS)
@@ -1836,7 +1856,7 @@ type ParquetSyncState struct {
 // SearchFast searches message metadata in Parquet files (no body text).
 // This is much faster than FTS search for large archives.
 // Searches: subject, sender email/name (case-insensitive).
-func (e *DuckDBEngine) SearchFast(ctx context.Context, q *search.Query, filter MessageFilter, limit, offset int) ([]MessageSummary, error) {
+func (e *DuckDBEngine) SearchFast(ctx context.Context, q *search.Query, filter MessageFilter, sorting MessageSorting, limit, offset int) ([]MessageSummary, error) {
 	conditions, args := e.buildSearchConditions(q, filter)
 
 	if limit == 0 {
@@ -2190,7 +2210,7 @@ func (e *DuckDBEngine) computeSearchStats(ctx context.Context) *TotalStats {
 // is served directly from the cached temp table. A new search invalidates the
 // old cache.
 func (e *DuckDBEngine) SearchFastWithStats(ctx context.Context, q *search.Query, queryStr string,
-	filter MessageFilter, statsGroupBy ViewType, limit, offset int) (*SearchFastResult, error) {
+	filter MessageFilter, sorting MessageSorting, statsGroupBy ViewType, limit, offset int) (*SearchFastResult, error) {
 
 	conditions, args := e.buildSearchConditions(q, filter)
 
@@ -2366,18 +2386,20 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 		args = append(args, filter.TimeRange.Period)
 	}
 
-	// Text search terms - search subject, snippet, and sender fields (fast path)
+	// Text search terms - search subject, snippet, and from fields (fast path).
+	// Use word-boundary regex (\b) to match whole words only.
+	// Case-insensitive via (?i).
 	if len(q.TextTerms) > 0 {
 		for _, term := range q.TextTerms {
-			termPattern := "%" + escapeILIKE(term) + "%"
+			regexPattern := "(?i)\\b" + escapeRegex(term)
 			conditions = append(conditions, `(
-				msg.subject ILIKE ? ESCAPE '\' OR
-				COALESCE(msg.snippet, '') ILIKE ? ESCAPE '\' OR
-				COALESCE(ms.from_email, ds.from_email, '') ILIKE ? ESCAPE '\' OR
-				COALESCE(ms.from_name, ds.from_name, '') ILIKE ? ESCAPE '\' OR
-				COALESCE(ms.from_phone, ds.from_phone, '') ILIKE ? ESCAPE '\'
+				regexp_matches(COALESCE(msg.subject, ''), ?) OR
+				regexp_matches(COALESCE(msg.snippet, ''), ?) OR
+				regexp_matches(COALESCE(ms.from_email, ds.from_email, ''), ?) OR
+				regexp_matches(COALESCE(ms.from_name, ds.from_name, ''), ?) OR
+				regexp_matches(COALESCE(ms.from_phone, ds.from_phone, ''), ?)
 			)`)
-			args = append(args, termPattern, termPattern, termPattern, termPattern, termPattern)
+			args = append(args, regexPattern, regexPattern, regexPattern, regexPattern, regexPattern)
 		}
 	}
 
