@@ -55,10 +55,7 @@ func ResolveMboxExport(exportPath string, importsDir string, log *slog.Logger) (
 	}
 
 	ext := strings.ToLower(filepath.Ext(abs))
-	switch ext {
-	case ".mbox", ".mbx":
-		return []string{abs}, nil
-	case ".zip":
+	if ext == ".zip" {
 		// Use a cheap cache key derived from zip entry metadata (central directory)
 		// plus basic zip file metadata. This avoids hashing multi-GB zip files, but
 		// is not a cryptographic integrity check.
@@ -100,9 +97,11 @@ func ResolveMboxExport(exportPath string, importsDir string, log *slog.Logger) (
 			return nil, fmt.Errorf("extract dir %q escapes imports dir %q", destDir, importsAbs)
 		}
 		return ExtractMboxFromZip(abs, destDir, log)
-	default:
-		return nil, fmt.Errorf("unsupported export format %q (expected .mbox/.mbx or .zip)", ext)
 	}
+
+	// Any non-zip file is treated as mbox. Invalid files fail at parse
+	// time when no "From " separators are found.
+	return []string{abs}, nil
 }
 
 func zipMboxCacheKey(zipPath string) (string, error) {

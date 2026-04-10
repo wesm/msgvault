@@ -34,8 +34,8 @@ var importMboxCmd = &cobra.Command{
 	Short: "Import an MBOX export into msgvault",
 	Long: `Import an MBOX export into msgvault.
 
-The export file may be a plain .mbox/.mbx file or a .zip containing one or
-more .mbox files.
+The export file may be a plain mbox file (any extension) or a .zip containing
+one or more .mbox files.
 
 This is useful for email providers that offer an export but no IMAP/POP access.
 The importer stores raw MIME, bodies, recipients, and optional attachments.
