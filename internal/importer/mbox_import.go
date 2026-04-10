@@ -61,6 +61,7 @@ type MboxImportSummary struct {
 	MessagesAdded     int64
 	MessagesUpdated   int64
 	MessagesSkipped   int64
+	LabelsUpdated     int64
 	Errors            int64
 	HardErrors        bool
 }
@@ -328,6 +329,18 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 
 			if exists {
 				summary.MessagesSkipped++
+
+				// Add labels to existing message (same pattern as emlx importer).
+				if len(labelIDs) > 0 {
+					if msgID, ok := existingWithRaw[p.SourceMsg]; ok && msgID > 0 {
+						if err := st.AddMessageLabels(msgID, labelIDs); err != nil {
+							log.Warn("failed to add labels to existing message",
+								"source_message_id", p.SourceMsg, "error", err)
+						} else {
+							summary.LabelsUpdated++
+						}
+					}
+				}
 
 				// Update checkpoint offset even when skipping so resumption progresses.
 				if !checkpointBlocked {

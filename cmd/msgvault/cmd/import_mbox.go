@@ -232,13 +232,14 @@ Examples:
 		}
 
 		var (
-			totalProcessed int64
-			totalAdded     int64
-			totalUpdated   int64
-			totalSkipped   int64
-			totalErrors    int64
-			totalBytes     int64
-			hadHardErrors  bool
+			totalProcessed     int64
+			totalAdded         int64
+			totalUpdated       int64
+			totalSkipped       int64
+			totalLabelsUpdated int64
+			totalErrors        int64
+			totalBytes         int64
+			hadHardErrors      bool
 		)
 		type processedFile struct {
 			Path    string
@@ -264,6 +265,7 @@ Examples:
 			totalAdded += summary.MessagesAdded
 			totalUpdated += summary.MessagesUpdated
 			totalSkipped += summary.MessagesSkipped
+			totalLabelsUpdated += summary.LabelsUpdated
 			totalErrors += summary.Errors
 			totalBytes += summary.BytesProcessed
 			if summary.HardErrors {
@@ -308,6 +310,7 @@ Examples:
 		_, _ = fmt.Fprintf(out, "  Added:          %d messages\n", totalAdded)
 		_, _ = fmt.Fprintf(out, "  Updated:        %d messages\n", totalUpdated)
 		_, _ = fmt.Fprintf(out, "  Skipped:        %d messages\n", totalSkipped)
+		_, _ = fmt.Fprintf(out, "  Labels updated: %d messages\n", totalLabelsUpdated)
 		_, _ = fmt.Fprintf(out, "  Errors:         %d\n", totalErrors)
 		_, _ = fmt.Fprintf(out, "  Bytes:          %.2f MB\n", float64(totalBytes)/(1024*1024))
 
