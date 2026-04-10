@@ -51,15 +51,23 @@ switch treats any non-.zip file as mbox. Remove the extension switch
 entirely — if it's a regular file and not a zip, attempt mbox import.
 
 **Change for zip entries (locations 3-6):** Do NOT blindly process all
-zip entries (READMEs, metadata files would break the import). Instead,
-sniff candidate entries: skip entries that are clearly non-mbox (e.g.
-`.txt`, `.json`, `.xml`, `.md`, `.csv`) and accept entries that either
-have a known mbox extension OR have no extension. This prevents
-regression on mixed archives while allowing extensionless mbox files
-inside zips.
+zip entries (READMEs, metadata files would break the import). Use a
+two-tier filter:
 
-**Change for cache discovery (location 7):** Match the same sniffing
-logic — accept files with known mbox extensions or no extension.
+1. Always accept entries with `.mbox` or `.mbx` extension (existing).
+2. For extensionless entries, use `mbox.Validate()` (reads first few KB
+   looking for `From ` separators) to confirm content before extracting.
+3. Skip entries with any other extension (`.txt`, `.json`, `.md`, etc.).
+
+Extract an `isMboxCandidate(name string) bool` helper for the extension
+check (returns true for `.mbox`, `.mbx`, or no extension). The content
+sniff via `mbox.Validate()` applies only during extraction, not during
+cache key computation (location 3) where we don't want to read content.
+For cache keying, use extension-only filtering (accept `.mbox`, `.mbx`,
+and extensionless).
+
+**Change for cache discovery (location 7):** Use `isMboxCandidate()` —
+accept files with known mbox extensions or no extension.
 
 **Testing:** Existing tests plus:
 - Bare file with no extension
@@ -94,7 +102,9 @@ updates.
 **Change:** When a duplicate is detected and `labelIDs` is non-empty:
 1. Look up the existing message ID (from the existence check)
 2. Call `st.AddMessageLabels(msgID, labelIDs)`
-3. Track with `summary.LabelsAdded` counter
+3. Track with `summary.LabelsUpdated` counter (counts messages where
+   label add was attempted — `AddMessageLabels` uses INSERT OR IGNORE
+   and does not return rows-affected, so we count attempts not inserts)
 4. Log at debug level
 
 This matches the existing pattern in the emlx importer
@@ -145,18 +155,25 @@ The CLI path uses `search.Parse()` → `query.SQLiteEngine.Search()` which
 supports `from:`, `to:`, `label:`, `subject:`, `has:attachment`,
 `before:`, `after:` operators via `buildSearchQueryParts()`.
 
-**Change:** Switch `handleSearch()` to use `s.engine.Search()` (the
-`Server` struct already has an `engine` field):
+**Change:** Switch `handleSearch()` to use `s.engine` (the `Server`
+struct already has an `engine` field) with the existing
+`SearchFast`/`SearchFastCount` methods:
 
 1. Parse query with `search.Parse(queryStr)`
 2. Set `q.HideDeleted = true` to preserve current API behavior
-3. Call `s.engine.Search(ctx, q, pageSize, offset)`
-4. Convert `[]query.MessageSummary` to API response format
+3. Call `s.engine.SearchFastCount(ctx, q, filter)` for total
+4. Call `s.engine.SearchFast(ctx, q, filter, pageSize, offset)` for rows
+5. Convert `[]query.MessageSummary` to API response format
 
-**Total count:** `s.engine.Search()` does not return a total. Add a
-`s.engine.SearchCount(ctx, q)` method that runs the same WHERE clause
-with `COUNT(*)` instead of selecting rows. This preserves the paginated
-total in the API response.
+No new interface methods needed — `SearchFastCount` already exists on
+`query.Engine` and is implemented by `SQLiteEngine`, `DuckDBEngine`,
+and `MockEngine`.
+
+**Recipients:** `toMessageSummaryFromQuery()` hardcodes `To: []string{}`
+because `query.MessageSummary` does not include recipients. The current
+store-based path batch-populates To/Cc/Bcc via `store.BatchLoadRecipients`.
+To preserve this, after getting search results from the engine, call
+`s.store.BatchLoadRecipients(messageIDs)` and merge into the response.
 
 **Fallback:** If `s.engine` is nil (server started without query engine),
 fall back to existing `s.store.SearchMessages()` for basic FTS-only
@@ -183,9 +200,11 @@ runtime.
 - Update user creation: `adduser -D -h /home/msgvault -u 1000 -s /bin/sh msgvault`
 - Keep build stage unchanged (`golang:1.25-bookworm`)
 
-**Verification:** After building, run `docker run --rm msgvault ldd /usr/local/bin/msgvault`
-to confirm all shared libraries resolve. Verify `msgvault serve` starts
-and `/health` responds.
+**Verification:** After building, run
+`docker run --rm --entrypoint ldd msgvault /usr/local/bin/msgvault`
+to confirm all shared libraries resolve (image has
+`ENTRYPOINT ["msgvault"]` so `--entrypoint` override is required).
+Verify `msgvault serve` starts and `/health` responds.
 
 **Testing:** Build image on CI. Verify health endpoint.
 
