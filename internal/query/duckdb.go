@@ -418,6 +418,19 @@ func escapeILIKE(s string) string {
 	return s
 }
 
+// startsWithWordChar reports whether s begins with a regex word character
+// [a-zA-Z0-9_]. Used to decide whether \b is appropriate as a prefix.
+func startsWithWordChar(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	c := s[0]
+	return (c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') ||
+		c == '_'
+}
+
 // escapeRegex escapes special regex characters for use in DuckDB's regexp_matches function
 func escapeRegex(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
@@ -457,9 +470,16 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyCol
 
 	// Text terms: always search subject + sender, plus the view's grouping
 	// key columns when provided (e.g., label name in Labels view).
-	// Uses word-boundary regex (\b) to match whole words only.
+	// Uses word-boundary regex (\b) for terms starting with word chars.
+	// Terms starting with non-word chars (e.g., +, @, #) skip \b
+	// since it requires a word/non-word transition that fails at
+	// string start or after whitespace.
 	for _, term := range q.TextTerms {
-		regexPattern := "(?i)\\b" + escapeRegex(term)
+		escaped := escapeRegex(term)
+		regexPattern := "(?i)" + escaped
+		if startsWithWordChar(term) {
+			regexPattern = "(?i)\\b" + escaped
+		}
 		var parts []string
 		parts = append(parts, `regexp_matches(COALESCE(msg.subject, ''), ?)`)
 		args = append(args, regexPattern)
@@ -2387,11 +2407,15 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 	}
 
 	// Text search terms - search subject, snippet, and from fields (fast path).
-	// Use word-boundary regex (\b) to match whole words only.
-	// Case-insensitive via (?i).
+	// Use word-boundary regex (\b) for terms starting with word chars.
+	// Terms starting with non-word chars skip \b (see startsWithWordChar).
 	if len(q.TextTerms) > 0 {
 		for _, term := range q.TextTerms {
-			regexPattern := "(?i)\\b" + escapeRegex(term)
+			escaped := escapeRegex(term)
+			regexPattern := "(?i)" + escaped
+			if startsWithWordChar(term) {
+				regexPattern = "(?i)\\b" + escaped
+			}
 			conditions = append(conditions, `(
 				regexp_matches(COALESCE(msg.subject, ''), ?) OR
 				regexp_matches(COALESCE(msg.snippet, ''), ?) OR

@@ -1839,7 +1839,7 @@ func TestBuildWhereClause_SearchOperators(t *testing.T) {
 		{
 			name:        "text terms",
 			searchQuery: "hello world",
-			wantClauses: []string{"msg.subject ILIKE", "ESCAPE"},
+			wantClauses: []string{"regexp_matches(COALESCE(msg.subject"},
 		},
 		{
 			name:        "from operator",
@@ -1899,16 +1899,17 @@ func TestBuildWhereClause_EscapedArgs(t *testing.T) {
 	opts := AggregateOptions{SearchQuery: "100%_off"}
 	_, args := engine.buildWhereClause(opts)
 
-	// The escaped pattern should appear in args
+	// With regex search, % and _ are not special so appear unescaped.
+	// Term starts with word char '1', so \b prefix is applied.
 	found := false
 	for _, arg := range args {
-		if s, ok := arg.(string); ok && strings.Contains(s, "100\\%\\_off") {
+		if s, ok := arg.(string); ok && strings.Contains(s, "\\b100%_off") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected escaped pattern '100\\%%\\_off' in args, got: %v", args)
+		t.Errorf("expected regex pattern containing '\\b100%%_off' in args, got: %v", args)
 	}
 }
 
@@ -2007,7 +2008,7 @@ func TestAggregateByLabel_WithLabelSearch(t *testing.T) {
 }
 
 // TestBuildSearchConditions_EscapedWildcards verifies that buildSearchConditions
-// escapes ILIKE wildcards and uses ESCAPE clause for all text patterns.
+// escapes wildcards: regex for TextTerms, ILIKE ESCAPE for operators.
 func TestBuildSearchConditions_EscapedWildcards(t *testing.T) {
 	engine := &DuckDBEngine{}
 
@@ -2022,8 +2023,8 @@ func TestBuildSearchConditions_EscapedWildcards(t *testing.T) {
 			query: &search.Query{
 				TextTerms: []string{"100%_off"},
 			},
-			wantClauses: []string{"ESCAPE '\\'"},
-			wantInArgs:  []string{"100\\%\\_off"},
+			wantClauses: []string{"regexp_matches(COALESCE(msg.subject"},
+			wantInArgs:  []string{"\\b100%_off"},
 		},
 		{
 			name: "from: with wildcards",

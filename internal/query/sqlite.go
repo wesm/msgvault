@@ -1167,15 +1167,11 @@ func (e *SQLiteEngine) buildSearchQueryParts(ctx context.Context, q *search.Quer
 			ftsJoin = "JOIN messages_fts fts ON fts.rowid = m.id"
 			ftsTerms := make([]string, len(q.TextTerms))
 			for i, term := range q.TextTerms {
-				// Strip FTS5 special chars to prevent query injection
+				// Quote all terms to prevent FTS5 special chars
+				// (-, :, (, ), etc.) from being parsed as query syntax.
 				term = strings.ReplaceAll(term, "\"", "\"\"")
 				term = strings.ReplaceAll(term, "*", "")
-				if strings.Contains(term, " ") {
-					// Phrase query — quoted with prefix on last token
-					ftsTerms[i] = fmt.Sprintf("\"%s\"*", term)
-				} else {
-					ftsTerms[i] = term + "*"
-				}
+				ftsTerms[i] = fmt.Sprintf("\"%s\"*", term)
 			}
 			conditions = append(conditions, "messages_fts MATCH ?")
 			args = append(args, strings.Join(ftsTerms, " "))
