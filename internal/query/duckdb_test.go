@@ -2119,6 +2119,53 @@ func TestBuildSearchConditions_EscapedWildcards(t *testing.T) {
 	}
 }
 
+// TestBuildSearchConditions_UsesILIKENotRegex verifies that the fast search
+// path uses ILIKE (fast on Parquet scans) instead of regexp_matches (slow).
+func TestBuildSearchConditions_UsesILIKENotRegex(t *testing.T) {
+	engine := &DuckDBEngine{}
+
+	q := &search.Query{TextTerms: []string{"hello"}}
+	conditions, args := engine.buildSearchConditions(q, MessageFilter{})
+	where := strings.Join(conditions, " AND ")
+
+	// Must use ILIKE, not regexp_matches
+	if strings.Contains(where, "regexp_matches") {
+		t.Errorf("fast search path should use ILIKE, not regexp_matches\ngot: %s", where)
+	}
+	if !strings.Contains(where, "ILIKE") {
+		t.Errorf("fast search path should contain ILIKE\ngot: %s", where)
+	}
+
+	// Args should be ILIKE patterns (%%term%%), not regex patterns
+	for _, arg := range args {
+		if s, ok := arg.(string); ok && strings.Contains(s, "(?i)") {
+			t.Errorf("fast search args should not contain regex patterns, got: %q", s)
+		}
+	}
+}
+
+// TestBuildAggregateSearchConditions_UsesILIKENotRegex verifies that the
+// aggregate search path also uses ILIKE instead of regexp_matches.
+func TestBuildAggregateSearchConditions_UsesILIKENotRegex(t *testing.T) {
+	engine := &DuckDBEngine{}
+
+	conditions, args := engine.buildAggregateSearchConditions("hello world")
+	where := strings.Join(conditions, " AND ")
+
+	if strings.Contains(where, "regexp_matches") {
+		t.Errorf("aggregate search should use ILIKE, not regexp_matches\ngot: %s", where)
+	}
+	if !strings.Contains(where, "ILIKE") {
+		t.Errorf("aggregate search should contain ILIKE\ngot: %s", where)
+	}
+
+	for _, arg := range args {
+		if s, ok := arg.(string); ok && strings.Contains(s, "(?i)") {
+			t.Errorf("aggregate search args should not contain regex patterns, got: %q", s)
+		}
+	}
+}
+
 // =============================================================================
 // RecipientName tests
 // =============================================================================

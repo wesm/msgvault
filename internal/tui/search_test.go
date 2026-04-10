@@ -1505,5 +1505,86 @@ func TestZeroSearchResultsRendersSearchBar(t *testing.T) {
 	})
 }
 
+// TestStaleLoadMessagesDoesNotOverwriteSearch verifies that an in-flight
+// loadMessages response (e.g., from pressing "a" or "v" before searching)
+// does not overwrite search results. This was a race condition: the TUI would
+// show stale "all messages" results instead of the filtered search results.
+func TestStaleLoadMessagesDoesNotOverwriteSearch(t *testing.T) {
+	allMessages := makeMessages(50)
+	searchResults := []query.MessageSummary{
+		{ID: 901, Subject: "Search Hit 1"},
+		{ID: 902, Subject: "Search Hit 2"},
+	}
+
+	model := NewBuilder().
+		WithMessages(allMessages...).
+		WithLevel(levelMessageList).
+		WithPageSize(20).WithSize(100, 30).
+		Build()
+
+	// Simulate: user presses "v" (sort toggle) which fires loadMessages
+	// with loadRequestID=N.
+	staleLoadRequestID := model.loadRequestID
+
+	// Simulate: user then activates search, which should increment loadRequestID
+	// to invalidate the pending loadMessages.
+	model.searchQuery = "test"
+	model.inlineSearchActive = true
+	model.searchRequestID++
+	model.loadRequestID++ // This is the fix under test
+
+	// Simulate: search results arrive and are applied.
+	model = applySearchResults(t, model, model.searchRequestID, searchResults, 2)
+	if len(model.messages) != 2 {
+		t.Fatalf("expected 2 search results, got %d", len(model.messages))
+	}
+
+	// Simulate: the stale loadMessages response arrives with the OLD requestID.
+	staleMsg := messagesLoadedMsg{
+		messages:  allMessages,
+		requestID: staleLoadRequestID,
+	}
+	model, _ = sendMsg(t, model, staleMsg)
+
+	// The stale response must be ignored — search results should remain.
+	if len(model.messages) != 2 {
+		t.Errorf("stale loadMessages overwrote search results: expected 2 messages, got %d", len(model.messages))
+	}
+	if model.messages[0].Subject != "Search Hit 1" {
+		t.Errorf("expected first message 'Search Hit 1', got %q", model.messages[0].Subject)
+	}
+}
+
+// TestSearchClearsStaleMessages verifies that starting an inline search
+// immediately clears the message list so stale "all messages" results
+// are never visible during the search transition.
+func TestSearchClearsStaleMessages(t *testing.T) {
+	allMessages := makeMessages(50)
+
+	model := NewBuilder().
+		WithMessages(allMessages...).
+		WithLevel(levelMessageList).
+		WithPageSize(20).WithSize(100, 30).
+		Build()
+
+	if len(model.messages) != 50 {
+		t.Fatalf("expected 50 pre-loaded messages, got %d", len(model.messages))
+	}
+
+	// Simulate debounce firing with a search query.
+	debounceMsg := searchDebounceMsg{
+		query:      "test",
+		debounceID: model.inlineSearchDebounce,
+	}
+	model.inlineSearchActive = true
+	model, _ = sendMsg(t, model, debounceMsg)
+
+	// Messages should be nil immediately — not showing stale results while
+	// waiting for the async search to complete.
+	if model.messages != nil {
+		t.Errorf("expected messages to be nil after search starts, got %d messages", len(model.messages))
+	}
+}
+
 // TestHighlightedColumnsAligned verifies that highlighting search terms in
 // aggregate rows doesn't break column alignment.
