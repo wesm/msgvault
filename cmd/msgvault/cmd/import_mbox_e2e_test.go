@@ -24,7 +24,7 @@ func TestImportMboxCmd_EndToEnd_MboxFile(t *testing.T) {
 	prevCfg := cfg
 	prevLogger := logger
 	prevSourceType := importMboxSourceType
-	prevLabel := importMboxLabel
+	prevLabel := importMboxLabels
 	prevNoResume := importMboxNoResume
 	prevCheckpointInterval := importMboxCheckpointInterval
 	prevNoAttachments := importMboxNoAttachments
@@ -37,7 +37,7 @@ func TestImportMboxCmd_EndToEnd_MboxFile(t *testing.T) {
 		cfg = prevCfg
 		logger = prevLogger
 		importMboxSourceType = prevSourceType
-		importMboxLabel = prevLabel
+		importMboxLabels = prevLabel
 		importMboxNoResume = prevNoResume
 		importMboxCheckpointInterval = prevCheckpointInterval
 		importMboxNoAttachments = prevNoAttachments
@@ -151,7 +151,7 @@ func TestImportMboxCmd_AttachmentFailureIsBestEffort(t *testing.T) {
 	prevCfg := cfg
 	prevLogger := logger
 	prevSourceType := importMboxSourceType
-	prevLabel := importMboxLabel
+	prevLabel := importMboxLabels
 	prevNoResume := importMboxNoResume
 	prevCheckpointInterval := importMboxCheckpointInterval
 	prevNoAttachments := importMboxNoAttachments
@@ -164,7 +164,7 @@ func TestImportMboxCmd_AttachmentFailureIsBestEffort(t *testing.T) {
 		cfg = prevCfg
 		logger = prevLogger
 		importMboxSourceType = prevSourceType
-		importMboxLabel = prevLabel
+		importMboxLabels = prevLabel
 		importMboxNoResume = prevNoResume
 		importMboxCheckpointInterval = prevCheckpointInterval
 		importMboxNoAttachments = prevNoAttachments
@@ -230,7 +230,7 @@ func TestImportMboxCmd_ReturnsCanceledWhenContextCanceled(t *testing.T) {
 	prevLogger := logger
 	prevRootCtx := rootCmd.Context()
 	prevSourceType := importMboxSourceType
-	prevLabel := importMboxLabel
+	prevLabel := importMboxLabels
 	prevNoResume := importMboxNoResume
 	prevCheckpointInterval := importMboxCheckpointInterval
 	prevNoAttachments := importMboxNoAttachments
@@ -245,7 +245,7 @@ func TestImportMboxCmd_ReturnsCanceledWhenContextCanceled(t *testing.T) {
 		logger = prevLogger
 		rootCmd.SetContext(prevRootCtx)
 		importMboxSourceType = prevSourceType
-		importMboxLabel = prevLabel
+		importMboxLabels = prevLabel
 		importMboxNoResume = prevNoResume
 		importMboxCheckpointInterval = prevCheckpointInterval
 		importMboxNoAttachments = prevNoAttachments
@@ -314,7 +314,7 @@ func TestImportMboxCmd_EndToEnd_ZipResumeAcrossFiles(t *testing.T) {
 	prevCfg := cfg
 	prevLogger := logger
 	prevSourceType := importMboxSourceType
-	prevLabel := importMboxLabel
+	prevLabel := importMboxLabels
 	prevNoResume := importMboxNoResume
 	prevCheckpointInterval := importMboxCheckpointInterval
 	prevNoAttachments := importMboxNoAttachments
@@ -327,7 +327,7 @@ func TestImportMboxCmd_EndToEnd_ZipResumeAcrossFiles(t *testing.T) {
 		cfg = prevCfg
 		logger = prevLogger
 		importMboxSourceType = prevSourceType
-		importMboxLabel = prevLabel
+		importMboxLabels = prevLabel
 		importMboxNoResume = prevNoResume
 		importMboxCheckpointInterval = prevCheckpointInterval
 		importMboxNoAttachments = prevNoAttachments

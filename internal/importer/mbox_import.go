@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/wesm/msgvault/internal/mbox"
@@ -23,8 +24,8 @@ type MboxImportOptions struct {
 	// Identifier is the sources.identifier (e.g. "you@hey.com").
 	Identifier string
 
-	// Label, if non-empty, is applied to all imported messages.
-	Label string
+	// Labels, if non-empty, are applied to all imported messages.
+	Labels []string
 
 	// NoResume forces a fresh import even if an active sync run exists for the source.
 	NoResume bool
@@ -184,15 +185,21 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 		log.Warn("failed to save initial checkpoint", "error", err)
 	}
 
-	// Ensure label (once).
+	// Ensure labels (once). Deduplicate to avoid PK violations.
 	var labelIDs []int64
-	if opts.Label != "" {
-		labelID, err := st.EnsureLabel(src.ID, opts.Label, opts.Label, "user")
+	seen := make(map[string]bool)
+	for _, lbl := range opts.Labels {
+		lbl = strings.TrimSpace(lbl)
+		if lbl == "" || seen[lbl] {
+			continue
+		}
+		seen[lbl] = true
+		labelID, err := st.EnsureLabel(src.ID, lbl, lbl, "user")
 		if err != nil {
 			failSync(err.Error())
-			return nil, fmt.Errorf("ensure label: %w", err)
+			return nil, fmt.Errorf("ensure label %q: %w", lbl, err)
 		}
-		labelIDs = []int64{labelID}
+		labelIDs = append(labelIDs, labelID)
 	}
 
 	// Open file and (if resuming) seek.

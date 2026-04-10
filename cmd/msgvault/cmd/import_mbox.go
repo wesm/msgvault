@@ -17,7 +17,7 @@ import (
 
 var (
 	importMboxSourceType         string
-	importMboxLabel              string
+	importMboxLabels             []string
 	importMboxNoResume           bool
 	importMboxCheckpointInterval int
 	importMboxNoAttachments      bool
@@ -250,7 +250,7 @@ Examples:
 			summary, err := importer.ImportMbox(ctx, st, mboxPath, importer.MboxImportOptions{
 				SourceType:         importMboxSourceType,
 				Identifier:         identifier,
-				Label:              importMboxLabel,
+				Labels:             importMboxLabels,
 				NoResume:           importMboxNoResume,
 				CheckpointInterval: importMboxCheckpointInterval,
 				AttachmentsDir:     attachmentsDir,
@@ -327,7 +327,7 @@ func init() {
 	rootCmd.AddCommand(importMboxCmd)
 
 	importMboxCmd.Flags().StringVar(&importMboxSourceType, "source-type", "mbox", "Source type to record in the database (e.g. mbox, hey)")
-	importMboxCmd.Flags().StringVar(&importMboxLabel, "label", "", "Label to apply to newly imported messages")
+	importMboxCmd.Flags().StringSliceVar(&importMboxLabels, "label", nil, "Label(s) to apply to imported messages (repeatable, or comma-separated)")
 	importMboxCmd.Flags().BoolVar(&importMboxNoResume, "no-resume", false, "Do not resume from an interrupted import")
 	importMboxCmd.Flags().IntVar(&importMboxCheckpointInterval, "checkpoint-interval", 200, "Save progress every N messages")
 	importMboxCmd.Flags().BoolVar(&importMboxNoAttachments, "no-attachments", false, "Do not store attachments (disk or database). Messages will still be marked as having attachments. Note: rerunning later without --no-attachments will not backfill attachments for already-imported messages.")

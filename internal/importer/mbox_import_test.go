@@ -75,7 +75,7 @@ func TestImportMbox_IngestsMessagesThreadsAndAttachments(t *testing.T) {
 	summary, err := ImportMbox(context.Background(), st, mboxPath, MboxImportOptions{
 		SourceType:         "hey",
 		Identifier:         "me@hey.com",
-		Label:              "hey",
+		Labels:             []string{"hey"},
 		NoResume:           true,
 		CheckpointInterval: 1,
 		AttachmentsDir:     attachmentsDir,
