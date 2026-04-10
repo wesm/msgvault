@@ -271,7 +271,19 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	offset := (page - 1) * pageSize
 
-	messages, total, err := s.store.SearchMessages(query, offset, pageSize)
+	parsedQuery := search.Parse(query)
+	parsedQuery.HideDeleted = true
+
+	var (
+		messages []store.APIMessage
+		total    int64
+		err      error
+	)
+	if parsedQuery.HasOperators() {
+		messages, total, err = s.store.SearchMessagesQuery(parsedQuery, offset, pageSize)
+	} else {
+		messages, total, err = s.store.SearchMessages(query, offset, pageSize)
+	}
 	if err != nil {
 		s.logger.Error("search failed", "query", query, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Search failed")

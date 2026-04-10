@@ -16,6 +16,7 @@ import (
 	"github.com/wesm/msgvault/internal/config"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/scheduler"
+	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/store"
 )
 
@@ -25,6 +26,7 @@ type MessageStore interface {
 	ListMessages(offset, limit int) ([]APIMessage, int64, error)
 	GetMessage(id int64) (*APIMessage, error)
 	SearchMessages(query string, offset, limit int) ([]APIMessage, int64, error)
+	SearchMessagesQuery(q *search.Query, offset, limit int) ([]APIMessage, int64, error)
 }
 
 // StoreStats is an alias for store.Stats — single source of truth.

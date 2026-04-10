@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/wesm/msgvault/internal/config"
+	"github.com/wesm/msgvault/internal/search"
 )
 
 // testLogger returns a logger for tests that discards output
@@ -86,6 +87,10 @@ func (m *mockStore) GetMessage(id int64) (*APIMessage, error) {
 }
 
 func (m *mockStore) SearchMessages(query string, offset, limit int) ([]APIMessage, int64, error) {
+	return m.messages, m.total, nil
+}
+
+func (m *mockStore) SearchMessagesQuery(q *search.Query, offset, limit int) ([]APIMessage, int64, error) {
 	return m.messages, m.total, nil
 }
 

@@ -359,6 +359,22 @@ func parseRelativeDate(value string, now time.Time) *time.Time {
 	return &result
 }
 
+// HasOperators returns true if the query contains any structured
+// operators beyond plain text terms.
+func (q *Query) HasOperators() bool {
+	return len(q.FromAddrs) > 0 ||
+		len(q.ToAddrs) > 0 ||
+		len(q.CcAddrs) > 0 ||
+		len(q.BccAddrs) > 0 ||
+		len(q.SubjectTerms) > 0 ||
+		len(q.Labels) > 0 ||
+		q.HasAttachment != nil ||
+		q.BeforeDate != nil ||
+		q.AfterDate != nil ||
+		q.LargerThan != nil ||
+		q.SmallerThan != nil
+}
+
 // parseSize parses size strings like 5M, 100K, 1G into bytes.
 func parseSize(value string) *int64 {
 	value = strings.TrimSpace(strings.ToUpper(value))

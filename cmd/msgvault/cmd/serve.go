@@ -18,6 +18,7 @@ import (
 	"github.com/wesm/msgvault/internal/oauth"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/scheduler"
+	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/sync"
 )
@@ -239,6 +240,10 @@ func (a *storeAPIAdapter) GetMessage(id int64) (*api.APIMessage, error) {
 
 func (a *storeAPIAdapter) SearchMessages(query string, offset, limit int) ([]api.APIMessage, int64, error) {
 	return a.store.SearchMessages(query, offset, limit)
+}
+
+func (a *storeAPIAdapter) SearchMessagesQuery(q *search.Query, offset, limit int) ([]api.APIMessage, int64, error) {
+	return a.store.SearchMessagesQuery(q, offset, limit)
 }
 
 // schedulerAdapter adapts scheduler.Scheduler to api.SyncScheduler.
