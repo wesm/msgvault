@@ -399,9 +399,12 @@ func (s *Syncer) syncLabels(ctx context.Context, sourceID int64) (map[string]int
 
 	labelInfos := make(map[string]store.LabelInfo)
 	for _, l := range labels {
-		labelType := "user"
-		if store.IsSystemLabel(l.ID) {
-			labelType = "system"
+		labelType := l.Type
+		if labelType == "" {
+			labelType = "user"
+			if store.IsSystemLabel(l.ID) {
+				labelType = "system"
+			}
 		}
 		labelInfos[l.ID] = store.LabelInfo{Name: l.Name, Type: labelType}
 	}

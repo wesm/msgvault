@@ -35,7 +35,7 @@ This is the Go implementation providing sync, search, and TUI functionality
 in a single binary.`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Skip config loading for commands that don't need it
-		if cmd.Name() == "version" || cmd.Name() == "update" || cmd.Name() == "quickstart" || cmd.Name() == "completion" {
+		if cmd.Name() == "version" || cmd.Name() == "update" || cmd.Name() == "quickstart" || cmd.Name() == "completion" || cmd.Name() == cobra.ShellCompRequestCmd || cmd.Name() == cobra.ShellCompNoDescRequestCmd {
 			return nil
 		}
 

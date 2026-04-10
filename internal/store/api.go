@@ -330,6 +330,16 @@ func (s *Store) SearchMessagesQuery(
 			"m.has_attachments = 1")
 	}
 
+	// larger: / smaller:
+	if q.LargerThan != nil {
+		conditions = append(conditions, "m.size_estimate > ?")
+		args = append(args, *q.LargerThan)
+	}
+	if q.SmallerThan != nil {
+		conditions = append(conditions, "m.size_estimate < ?")
+		args = append(args, *q.SmallerThan)
+	}
+
 	// after: / before:
 	if q.AfterDate != nil {
 		conditions = append(conditions,
@@ -354,6 +364,9 @@ func (s *Store) SearchMessagesQuery(
 
 	var total int64
 	if err := s.db.QueryRow(countSQL, args...).Scan(&total); err != nil {
+		if ftsJoin != "" {
+			return s.searchMessagesQueryNoFTS(q, offset, limit)
+		}
 		return nil, 0, fmt.Errorf("count search results: %w", err)
 	}
 

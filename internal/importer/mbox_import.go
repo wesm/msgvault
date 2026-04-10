@@ -324,6 +324,13 @@ func ImportMbox(ctx context.Context, st *store.Store, mboxPath string, opts Mbox
 					log.Warn("existence check failed; attempting ingest anyway", "error", err)
 				} else {
 					_, exists = one[p.SourceMsg]
+					// Merge into existingWithRaw so label update can find the message ID.
+					if existingWithRaw == nil {
+						existingWithRaw = make(map[string]int64)
+					}
+					for k, v := range one {
+						existingWithRaw[k] = v
+					}
 				}
 			}
 

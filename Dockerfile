@@ -35,7 +35,7 @@ RUN CGO_ENABLED=1 go build \
     ./cmd/msgvault
 
 # Runtime stage — wolfi-base provides current glibc for CGO/DuckDB bindings
-FROM chainguard/wolfi-base:latest
+FROM cgr.dev/chainguard/wolfi-base:latest
 
 # Install runtime dependencies (libstdc++ required for CGO/DuckDB)
 RUN apk update && apk add --no-cache \
