@@ -66,9 +66,9 @@ Use --starttls for STARTTLS upgrade on port 143.
 Use --no-tls for a plain unencrypted connection (not recommended).
 
 You will be prompted to enter your password interactively.
-For scripting, pipe the password via stdin to avoid exposing it in
-shell history or process listings:
+For scripting, pipe the password via stdin or set the environment variable:
   read -s PASS && echo "$PASS" | msgvault add-imap --host ... --username ...
+  MSGVAULT_IMAP_PASSWORD="..." msgvault add-imap --host ... --username ...
 
 Security note: Your password is stored on disk with restricted file
 permissions (0600). For stronger security, use an app-specific password
@@ -99,28 +99,32 @@ Examples:
 			Username: imapUsername,
 		}
 
-		prompt := fmt.Sprintf("Password for %s@%s:", imapUsername, imapHost)
-		method, promptOut := choosePasswordStrategy(
-			isatty.IsTerminal(os.Stdin.Fd()),
-			isatty.IsCygwinTerminal(os.Stdin.Fd()),
-			isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd()),
-			isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd()),
-		)
-
 		var (
 			password string
 			err      error
 		)
-		switch method {
-		case passwordInteractive:
-			password, err = readPasswordInteractive(prompt, promptOut)
-		case passwordNoPrompt:
-			return fmt.Errorf("cannot read password: no terminal available for prompt (try piping the password via stdin)")
-		case passwordPipe:
-			password, err = readPasswordFromPipe(os.Stdin)
-		}
-		if err != nil {
-			return err
+		if envPass := os.Getenv("MSGVAULT_IMAP_PASSWORD"); envPass != "" {
+			password = envPass
+			fmt.Fprintln(os.Stderr, "Using password from MSGVAULT_IMAP_PASSWORD environment variable")
+		} else {
+			prompt := fmt.Sprintf("Password for %s@%s:", imapUsername, imapHost)
+			method, promptOut := choosePasswordStrategy(
+				isatty.IsTerminal(os.Stdin.Fd()),
+				isatty.IsCygwinTerminal(os.Stdin.Fd()),
+				isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd()),
+				isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd()),
+			)
+			switch method {
+			case passwordInteractive:
+				password, err = readPasswordInteractive(prompt, promptOut)
+			case passwordNoPrompt:
+				return fmt.Errorf("cannot read password: no terminal available for prompt (try piping the password via stdin or setting MSGVAULT_IMAP_PASSWORD)")
+			case passwordPipe:
+				password, err = readPasswordFromPipe(os.Stdin)
+			}
+			if err != nil {
+				return err
+			}
 		}
 
 		// Test connection
