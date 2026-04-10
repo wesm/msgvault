@@ -34,19 +34,18 @@ RUN CGO_ENABLED=1 go build \
     -o /msgvault \
     ./cmd/msgvault
 
-# Runtime stage
-FROM debian:bookworm-slim@sha256:98f4b71de414932439ac6ac690d7060df1f27161073c5036a7553723881bffbe
+# Runtime stage — wolfi-base provides current glibc for CGO/DuckDB bindings
+FROM chainguard/wolfi-base:latest
 
-# Install runtime dependencies (libstdc++6 required for CGO/DuckDB)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install runtime dependencies (libstdc++ required for CGO/DuckDB)
+RUN apk update && apk add --no-cache \
     ca-certificates \
     tzdata \
     wget \
-    libstdc++6 \
-    && rm -rf /var/lib/apt/lists/*
+    libstdc++
 
 # Create non-root user
-RUN useradd -m -u 1000 -s /bin/sh msgvault
+RUN adduser -D -h /home/msgvault -u 1000 -s /bin/sh msgvault
 
 # Copy binary from builder
 COPY --from=builder /msgvault /usr/local/bin/msgvault
