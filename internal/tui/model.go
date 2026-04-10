@@ -1187,11 +1187,12 @@ func (m Model) handleSearchDebounce(msg searchDebounceMsg) (tea.Model, tea.Cmd) 
 		m.searchFilter.WithAttachmentsOnly = m.filters.attachmentsOnly
 		m.searchFilter.HideDeletedFromSource = m.filters.hideDeletedFromSource
 		m.searchRequestID++
+		m.loadRequestID++ // Invalidate any in-flight loadMessages to prevent overwriting search results
 		if msg.query == "" {
 			// Empty query: reload unfiltered messages
-			m.loadRequestID++
 			return m, tea.Batch(spinCmd, m.loadMessages())
 		}
+		m.messages = nil // Clear stale messages immediately so they don't show during search
 		return m, tea.Batch(spinCmd, m.loadSearch(msg.query))
 	}
 	// Aggregate views: reload aggregates with search filter

@@ -418,38 +418,6 @@ func escapeILIKE(s string) string {
 	return s
 }
 
-// startsWithWordChar reports whether s begins with a regex word character
-// [a-zA-Z0-9_]. Used to decide whether \b is appropriate as a prefix.
-func startsWithWordChar(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-	c := s[0]
-	return (c >= 'a' && c <= 'z') ||
-		(c >= 'A' && c <= 'Z') ||
-		(c >= '0' && c <= '9') ||
-		c == '_'
-}
-
-// escapeRegex escapes special regex characters for use in DuckDB's regexp_matches function
-func escapeRegex(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, ".", "\\.")
-	s = strings.ReplaceAll(s, "*", "\\*")
-	s = strings.ReplaceAll(s, "+", "\\+")
-	s = strings.ReplaceAll(s, "?", "\\?")
-	s = strings.ReplaceAll(s, "[", "\\[")
-	s = strings.ReplaceAll(s, "]", "\\]")
-	s = strings.ReplaceAll(s, "(", "\\(")
-	s = strings.ReplaceAll(s, ")", "\\)")
-	s = strings.ReplaceAll(s, "{", "\\{")
-	s = strings.ReplaceAll(s, "}", "\\}")
-	s = strings.ReplaceAll(s, "|", "\\|")
-	s = strings.ReplaceAll(s, "^", "\\^")
-	s = strings.ReplaceAll(s, "$", "\\$")
-	return s
-}
-
 // buildWhereClause builds WHERE conditions for Parquet queries.
 // Column references use msg. prefix to be explicit since aggregate queries join multiple CTEs.
 // buildAggregateSearchConditions builds SQL conditions for a search query in aggregate views.
