@@ -589,10 +589,7 @@ func (c *Client) ListLabels(ctx context.Context) ([]*gmailapi.Label, error) {
 			return fmt.Errorf("LIST: %w", err)
 		}
 		for _, item := range items {
-			labelType := "user"
-			if item.Mailbox == "INBOX" {
-				labelType = "system"
-			}
+			labelType := classifyLabelType(item.Mailbox, item.Attrs)
 			labels = append(labels, &gmailapi.Label{
 				ID:   item.Mailbox,
 				Name: item.Mailbox,
