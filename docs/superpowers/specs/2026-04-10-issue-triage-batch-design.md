@@ -36,19 +36,34 @@ non-attributed folders. Verify system/user classification.
 **File:** `internal/importer/mboxzip/mbox_zip.go`
 
 **Current behavior:** Files without `.mbox` or `.mbx` extension are rejected.
+Extension checks exist at 7 locations:
 
-**Change:** Remove extension enforcement at all three locations:
-- Initial file classification (~line 59): treat non-zip files as mbox
-  regardless of extension
-- Zip entry filtering (~line 234): process all entries in zip files, not
-  just those with `.mbox`/`.mbx` extensions
-- Error message (~line 104): update to reflect new behavior
+1. `ResolveMboxExport` switch (~line 59): rejects non-.mbox/.mbx/.zip
+2. `ResolveMboxExport` error (~line 104): error message lists extensions
+3. `zipMboxCacheKey` (~line 136): skips non-.mbox/.mbx zip entries
+4. `ExtractMboxFromZipWithLimits` (~line 234): skips zip entries
+5. `validateExtractedMboxCache` (~line 433): rejects unexpected files
+6. `expectedMboxFilesFromZip` (~line 527): skips zip entries
+7. `findExtractedMboxFiles` (~line 694): skips non-.mbox/.mbx files
 
-Mbox format has a clear `From ` line marker — invalid files fail at parse
-time with an actionable error message. No need for extension gatekeeping.
+**Change for bare files (locations 1-2):** The `default` case in the
+switch treats any non-.zip file as mbox. Remove the extension switch
+entirely — if it's a regular file and not a zip, attempt mbox import.
 
-**Testing:** Existing tests should continue to pass. Add a test with a
-file that has no extension.
+**Change for zip entries (locations 3-6):** Do NOT blindly process all
+zip entries (READMEs, metadata files would break the import). Instead,
+sniff candidate entries: skip entries that are clearly non-mbox (e.g.
+`.txt`, `.json`, `.xml`, `.md`, `.csv`) and accept entries that either
+have a known mbox extension OR have no extension. This prevents
+regression on mixed archives while allowing extensionless mbox files
+inside zips.
+
+**Change for cache discovery (location 7):** Match the same sniffing
+logic — accept files with known mbox extensions or no extension.
+
+**Testing:** Existing tests plus:
+- Bare file with no extension
+- Zip containing extensionless mbox alongside a README.txt
 
 ## 3. import-mbox: support multiple --label flags (#189)
 
@@ -109,6 +124,10 @@ msgvault completion fish > ~/.config/fish/completions/msgvault.fish
 subcommands for each shell, calling `rootCmd.GenBashCompletionV2()`,
 `rootCmd.GenZshCompletion()`, etc.
 
+**Root pre-run skip:** Add `"completion"` to the config-loading skip
+list in `root.go:38` (`cmd.Name() == "completion"`). Without this,
+completion generation fails on machines without a valid msgvault config.
+
 **Testing:** Verify command runs and produces non-empty output for each
 shell.
 
@@ -116,39 +135,59 @@ shell.
 
 **Files:**
 - `internal/api/handlers.go` — `handleSearch()`
+- `internal/api/server.go` — `Server` struct (has `engine query.Engine`)
+- `internal/query/sqlite.go` — `SQLiteEngine.Search()`
 - `internal/search/parser.go` — `Parse()`
 
-**Current behavior:** HTTP API passes the raw query string directly to
-`store.SearchMessages()`. CLI uses `search.Parse()` to support operators
-like `from:`, `to:`, `label:`, `subject:`, etc.
+**Current behavior:** `handleSearch()` calls `s.store.SearchMessages(rawQuery, offset, pageSize)`
+which does raw FTS5/LIKE search with hardcoded `deleted_from_source_at IS NULL`.
+The CLI path uses `search.Parse()` → `query.SQLiteEngine.Search()` which
+supports `from:`, `to:`, `label:`, `subject:`, `has:attachment`,
+`before:`, `after:` operators via `buildSearchQueryParts()`.
 
-**Change:** In `handleSearch()`, pass the query through `search.Parse()`
-and use the structured query to build the search, same as the CLI path.
+**Change:** Switch `handleSearch()` to use `s.engine.Search()` (the
+`Server` struct already has an `engine` field):
 
-Need to trace how `search.Parse()` result flows into the store layer and
-ensure the API can use the same code path. May need to add a
-store method that accepts a parsed query, or convert the parsed query
-into SQL the same way the CLI search does.
+1. Parse query with `search.Parse(queryStr)`
+2. Set `q.HideDeleted = true` to preserve current API behavior
+3. Call `s.engine.Search(ctx, q, pageSize, offset)`
+4. Convert `[]query.MessageSummary` to API response format
 
-**Testing:** Test API endpoint with `from:`, `label:`, and plain text
-queries. Verify results match CLI search.
+**Total count:** `s.engine.Search()` does not return a total. Add a
+`s.engine.SearchCount(ctx, q)` method that runs the same WHERE clause
+with `COUNT(*)` instead of selecting rows. This preserves the paginated
+total in the API response.
+
+**Fallback:** If `s.engine` is nil (server started without query engine),
+fall back to existing `s.store.SearchMessages()` for basic FTS-only
+search.
+
+**Testing:** Test API endpoint with `from:user@example.com`,
+`label:SENT`, and plain text queries.
 
 ## 7. Dockerfile: fix GLIBC issue (#173)
 
 **File:** `Dockerfile`
 
-**Current behavior:** Runtime base is `debian:bookworm-slim` which has
-GLIBC 2.36. The binary requires GLIBC 2.38+ (from the build stage's
-newer bookworm).
+**Current behavior:** Build stage uses `golang:1.25-bookworm` and
+runtime uses `debian:bookworm-slim`. Both are nominally bookworm, but
+the golang image may ship a newer glibc than the slim runtime (different
+package versions, or CGO deps like DuckDB may link against newer
+symbols). Issue reporter confirms the binary requires GLIBC_2.38 at
+runtime.
 
-**Change:** Switch runtime base to `chainguard/wolfi-base:latest`:
+**Change:** Switch runtime base to `chainguard/wolfi-base:latest`
+(rolling release with current glibc, smaller image):
 - Replace `apt-get` with `apk` for package installation
 - Change `libstdc++6` to `libstdc++`
-- Update `adduser` syntax for wolfi (BusyBox)
-- Keep build stage unchanged (golang:1.25-bookworm)
+- Update user creation: `adduser -D -h /home/msgvault -u 1000 -s /bin/sh msgvault`
+- Keep build stage unchanged (`golang:1.25-bookworm`)
 
-**Testing:** Build image, verify `msgvault serve` starts and `/health`
-responds.
+**Verification:** After building, run `docker run --rm msgvault ldd /usr/local/bin/msgvault`
+to confirm all shared libraries resolve. Verify `msgvault serve` starts
+and `/health` responds.
+
+**Testing:** Build image on CI. Verify health endpoint.
 
 ## 8. IMAP: support password via environment variable (#197)
 
