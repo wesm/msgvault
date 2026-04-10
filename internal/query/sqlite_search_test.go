@@ -133,6 +133,35 @@ func TestSearch_WithFTS(t *testing.T) {
 	}
 }
 
+// TestSearch_WithFTS_SpecialChars verifies that FTS5 special characters in
+// search terms don't cause syntax errors. Without quoting, these characters
+// are interpreted as FTS5 operators (- = NOT, : = column filter, () = grouping).
+func TestSearch_WithFTS_SpecialChars(t *testing.T) {
+	env := newTestEnv(t)
+	env.EnableFTS()
+
+	tests := []struct {
+		name string
+		term string
+	}{
+		{"colon", "Re:"},
+		{"hyphen", "foo-bar"},
+		{"parens", "(test)"},
+		{"mixed_special", "re:hello-world"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q := &search.Query{TextTerms: []string{tc.term}}
+			_, err := env.Engine.Search(env.Ctx, q, 100, 0)
+			if err != nil {
+				t.Errorf("FTS5 search for %q should not error: %v",
+					tc.term, err)
+			}
+		})
+	}
+}
+
 func TestHasFTSTable(t *testing.T) {
 	env := newTestEnv(t)
 
