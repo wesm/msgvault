@@ -50,28 +50,17 @@ Extension checks exist at 7 locations:
 switch treats any non-.zip file as mbox. Remove the extension switch
 entirely — if it's a regular file and not a zip, attempt mbox import.
 
-**Change for zip entries (locations 3-6):** Do NOT blindly process all
-zip entries (READMEs, metadata files would break the import). Use a
-two-tier filter:
-
-1. Always accept entries with `.mbox` or `.mbx` extension (existing).
-2. For extensionless entries, use `mbox.Validate()` (reads first few KB
-   looking for `From ` separators) to confirm content before extracting.
-3. Skip entries with any other extension (`.txt`, `.json`, `.md`, etc.).
-
-Extract an `isMboxCandidate(name string) bool` helper for the extension
-check (returns true for `.mbox`, `.mbx`, or no extension). The content
-sniff via `mbox.Validate()` applies only during extraction, not during
-cache key computation (location 3) where we don't want to read content.
-For cache keying, use extension-only filtering (accept `.mbox`, `.mbx`,
-and extensionless).
-
-**Change for cache discovery (location 7):** Use `isMboxCandidate()` —
-accept files with known mbox extensions or no extension.
+**Change for zip entries (locations 3-7):** No change. Keep existing
+`.mbox`/`.mbx` extension filtering inside zip archives. The original
+issue is about bare files from Dovecot-style systems, not files inside
+zips. Extensionless files inside zips are more likely READMEs or
+metadata, and accepting them would create cache validation
+inconsistencies (cache key, expected files, extraction, and discovery
+would all need matching content-sniffing logic).
 
 **Testing:** Existing tests plus:
 - Bare file with no extension
-- Zip containing extensionless mbox alongside a README.txt
+- Bare file with non-standard extension (e.g. `.mail`)
 
 ## 3. import-mbox: support multiple --label flags (#189)
 
@@ -145,42 +134,40 @@ shell.
 
 **Files:**
 - `internal/api/handlers.go` — `handleSearch()`
-- `internal/api/server.go` — `Server` struct (has `engine query.Engine`)
-- `internal/query/sqlite.go` — `SQLiteEngine.Search()`
+- `internal/store/api.go` — `SearchMessages()`
 - `internal/search/parser.go` — `Parse()`
 
-**Current behavior:** `handleSearch()` calls `s.store.SearchMessages(rawQuery, offset, pageSize)`
-which does raw FTS5/LIKE search with hardcoded `deleted_from_source_at IS NULL`.
-The CLI path uses `search.Parse()` → `query.SQLiteEngine.Search()` which
-supports `from:`, `to:`, `label:`, `subject:`, `has:attachment`,
-`before:`, `after:` operators via `buildSearchQueryParts()`.
+**Current behavior:** `handleSearch()` calls
+`s.store.SearchMessages(rawQuery, offset, pageSize)` which passes the
+raw string to FTS5 MATCH (or LIKE fallback). This works for plain text
+but fails on structured operators like `from:`, `label:`, etc.
 
-**Change:** Switch `handleSearch()` to use `s.engine` (the `Server`
-struct already has an `engine` field) with the existing
-`SearchFast`/`SearchFastCount` methods:
+**Change:** Stay in the store layer (no engine involvement). Extend the
+existing search path:
 
-1. Parse query with `search.Parse(queryStr)`
-2. Set `q.HideDeleted = true` to preserve current API behavior
-3. Call `s.engine.SearchFastCount(ctx, q, filter)` for total
-4. Call `s.engine.SearchFast(ctx, q, filter, pageSize, offset)` for rows
-5. Convert `[]query.MessageSummary` to API response format
+1. In `handleSearch()`, parse the query with `search.Parse(queryStr)`.
+2. Add `store.SearchMessagesQuery(*search.Query, offset, limit)` that
+   builds SQL from the parsed query:
+   - Text terms → FTS5 MATCH (existing behavior)
+   - `from:` → EXISTS subquery on `message_recipients`/`participants`
+   - `to:`/`cc:`/`bcc:` → same pattern with recipient_type filter
+   - `label:` → EXISTS subquery on `message_labels`/`labels`
+   - `subject:` → LIKE on `m.subject`
+   - `has:attachment` → `m.has_attachments = 1`
+   - `before:`/`after:` → `m.sent_at` range conditions
+   - `deleted_from_source_at IS NULL` hardcoded (preserves current)
+3. COUNT query mirrors the same WHERE clause for total.
+4. Existing `batchPopulate()` call for recipients/labels unchanged.
 
-No new interface methods needed — `SearchFastCount` already exists on
-`query.Engine` and is implemented by `SQLiteEngine`, `DuckDBEngine`,
-and `MockEngine`.
+This preserves the full API contract: FTS5 body search, exact total
+count, and batch-populated recipients. No engine interface changes, no
+new mocks, no DuckDB metadata-only regression.
 
-**Recipients:** `toMessageSummaryFromQuery()` hardcodes `To: []string{}`
-because `query.MessageSummary` does not include recipients. The current
-store-based path batch-populates To/Cc/Bcc via `store.BatchLoadRecipients`.
-To preserve this, after getting search results from the engine, call
-`s.store.BatchLoadRecipients(messageIDs)` and merge into the response.
-
-**Fallback:** If `s.engine` is nil (server started without query engine),
-fall back to existing `s.store.SearchMessages()` for basic FTS-only
-search.
+If the parsed query has no operators (text terms only), delegate to
+existing `SearchMessages()` unchanged for zero behavioral difference.
 
 **Testing:** Test API endpoint with `from:user@example.com`,
-`label:SENT`, and plain text queries.
+`label:SENT`, plain text, and combined queries.
 
 ## 7. Dockerfile: fix GLIBC issue (#173)
 
