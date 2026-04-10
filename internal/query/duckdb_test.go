@@ -2391,6 +2391,89 @@ func TestDuckDBEngine_GetTotalStats_GroupByDefault(t *testing.T) {
 	}
 }
 
+// TestBuildStatsSearchConditions_PlaceholderArgCount is a regression test for
+// the mismatch between the number of "?" placeholders emitted and the number
+// of args appended when a stats search mixes text terms with non-text
+// operators (e.g. "hello from:bob@example.com"). Previously,
+// buildStatsSearchConditions called buildAggregateSearchConditions and sliced
+// off the text-term prefix using a hand-tracked arg count — any drift between
+// the count and the actual emit rate would cause aggregate stats queries to
+// fail with unmatched placeholders. The helper now delegates directly to
+// buildNonTextSearchConditions so there is nothing to slice; this test locks
+// the invariant in place by counting "?" placeholders.
+func TestBuildStatsSearchConditions_PlaceholderArgCount(t *testing.T) {
+	engine := &DuckDBEngine{}
+
+	cases := []struct {
+		name    string
+		query   string
+		groupBy ViewType
+	}{
+		{"text only (default)", "hello", ViewSenders},
+		{"text only (recipients)", "hello", ViewRecipients},
+		{"text only (labels)", "hello", ViewLabels},
+		{"text + from (default)", "hello from:bob@example.com", ViewSenders},
+		{"text + from (recipients)", "hello from:bob@example.com", ViewRecipients},
+		{"text + from (labels)", "hello from:bob@example.com", ViewLabels},
+		{"text + from + to", "hello from:a@b.com to:c@d.com", ViewSenders},
+		{"text + subject + label", "hello subject:report label:work", ViewSenders},
+		{"multi-text + from", "hello world from:bob@example.com", ViewSenders},
+		{"non-text only", "from:bob@example.com", ViewSenders},
+		{"empty query", "", ViewSenders},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			conditions, args := engine.buildStatsSearchConditions(tc.query, tc.groupBy)
+			where := strings.Join(conditions, " AND ")
+			placeholders := strings.Count(where, "?")
+			if placeholders != len(args) {
+				t.Errorf("placeholder/arg mismatch for query %q (groupBy=%v): %d placeholders vs %d args\nconditions: %s\nargs: %v",
+					tc.query, tc.groupBy, placeholders, len(args), where, args)
+			}
+		})
+	}
+}
+
+// TestBuildAggregateSearchConditions_PlaceholderArgCount locks the same
+// invariant on buildAggregateSearchConditions: the number of "?" placeholders
+// in the emitted WHERE conditions must match the number of args, for any
+// combination of text terms, non-text filters, and keyColumns.
+func TestBuildAggregateSearchConditions_PlaceholderArgCount(t *testing.T) {
+	engine := &DuckDBEngine{}
+
+	cases := []struct {
+		name       string
+		query      string
+		keyColumns []string
+	}{
+		{"text only, no keyColumns", "hello", nil},
+		{"text only, one keyColumn", "hello", []string{"p.email_address"}},
+		{"text only, label keyColumn", "hello", []string{"lbl.name"}},
+		{"text + from", "hello from:bob@example.com", nil},
+		{"text + from + to + subject", "hello from:a@b.com to:c@d.com subject:report", nil},
+		{"text + label (label view)", "hello label:work", []string{"lbl.name"}},
+		{"text + label (non-label view)", "hello label:work", nil},
+		{"multi-text + from + keyColumns", "foo bar from:x@y.com", []string{"p.email_address", "p.display_name"}},
+		{"has:attachment", "has:attachment", nil},
+		{"date filter", "after:2024-01-01 before:2024-12-31", nil},
+		{"size filter", "larger:1000 smaller:5000", nil},
+		{"empty query", "", nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			conditions, args := engine.buildAggregateSearchConditions(tc.query, tc.keyColumns...)
+			where := strings.Join(conditions, " AND ")
+			placeholders := strings.Count(where, "?")
+			if placeholders != len(args) {
+				t.Errorf("placeholder/arg mismatch for query %q (keyColumns=%v): %d placeholders vs %d args\nconditions: %s\nargs: %v",
+					tc.query, tc.keyColumns, placeholders, len(args), where, args)
+			}
+		})
+	}
+}
+
 // =============================================================================
 // Aggregate and SubAggregate Table-Driven Tests
 // These tests cover the refactored aggregation helpers and time granularity logic.

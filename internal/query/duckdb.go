@@ -461,6 +461,24 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyCol
 		conditions = append(conditions, "("+strings.Join(parts, " OR ")+")")
 	}
 
+	// Append non-text filters (from:, to:, subject:, label:, has:, dates, sizes).
+	nonTextConds, nonTextArgs := e.buildNonTextSearchConditions(q, keyColumns...)
+	conditions = append(conditions, nonTextConds...)
+	args = append(args, nonTextArgs...)
+
+	return conditions, args
+}
+
+// buildNonTextSearchConditions builds WHERE conditions for the non-text
+// portion of a parsed search query (from:, to:, subject:, label:, has:,
+// date/size filters). Extracted from buildAggregateSearchConditions so
+// callers that handle text terms themselves (e.g. buildStatsSearchConditions)
+// can append non-text filters without having to compute how many args
+// the text-term portion produced.
+func (e *DuckDBEngine) buildNonTextSearchConditions(q *search.Query, keyColumns ...string) ([]string, []interface{}) {
+	var conditions []string
+	var args []interface{}
+
 	// from: filter - match sender email
 	for _, from := range q.FromAddrs {
 		fromPattern := "%" + escapeILIKE(from) + "%"
@@ -611,26 +629,13 @@ func (e *DuckDBEngine) buildStatsSearchConditions(searchQuery string, groupBy Vi
 	}
 
 	// Non-text filters (from:, to:, subject:, label:, etc.) are the same
-	// regardless of view — delegate to the standard builder with no key columns.
-	nonTextConds, nonTextArgs := e.buildAggregateSearchConditions(searchQuery)
-	// Remove text-term conditions from the standard builder output (they are
-	// the first len(q.TextTerms) entries). We already handled text terms above.
-	if len(q.TextTerms) > 0 && len(nonTextConds) > len(q.TextTerms) {
-		conditions = append(conditions, nonTextConds[len(q.TextTerms):]...)
-		args = append(args, nonTextArgs[countArgsForTextTerms(len(q.TextTerms)):]...)
-	} else if len(q.TextTerms) == 0 {
-		conditions = append(conditions, nonTextConds...)
-		args = append(args, nonTextArgs...)
-	}
+	// regardless of view — delegate to the non-text helper directly so we
+	// don't have to track how many args the text-term portion emits.
+	nonTextConds, nonTextArgs := e.buildNonTextSearchConditions(q)
+	conditions = append(conditions, nonTextConds...)
+	args = append(args, nonTextArgs...)
 
 	return conditions, args
-}
-
-// countArgsForTextTerms returns the number of args used by N text terms in
-// buildAggregateSearchConditions with no keyColumns (4 args per term:
-// subject + snippet + 2 sender).
-func countArgsForTextTerms(n int) int {
-	return n * 4
 }
 
 // keyColumns are passed through to buildAggregateSearchConditions to control
