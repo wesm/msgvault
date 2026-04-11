@@ -83,13 +83,47 @@ type Options struct {
 // Result holds the constructed handler plus the resolved log file
 // path (empty when file logging is disabled) and any teardown
 // closures the caller should run at shutdown.
+//
+// FileHandler is the JSON-to-disk handler in isolation (nil when
+// file logging is disabled). TUI-style commands that take over the
+// terminal swap their slog.Default() to this handler so slog writes
+// don't corrupt the alternate-screen rendering.
 type Result struct {
-	Handler  slog.Handler
-	Level    slog.Level
-	RunID    string
-	FilePath string
-	closers  []func()
+	Handler     slog.Handler
+	FileHandler slog.Handler
+	Level       slog.Level
+	RunID       string
+	FilePath    string
+	closers     []func()
 }
+
+// FileOnlyLogger returns a logger that only writes to the daily
+// log file and skips stderr entirely. Returns a discard logger
+// when file logging is disabled. The returned logger already
+// carries the process-wide run_id attribute so TUI-emitted
+// records correlate with the rest of the run in the log file.
+func (r *Result) FileOnlyLogger() *slog.Logger {
+	if r.FileHandler == nil {
+		// No file handler; give the caller a discard logger so
+		// their slog.Default() swap keeps the TUI quiet.
+		return slog.New(discardHandler{})
+	}
+	return slog.New(
+		r.FileHandler.WithAttrs(
+			[]slog.Attr{slog.String("run_id", r.RunID)},
+		),
+	)
+}
+
+// discardHandler silently drops every record. Used as the
+// fall-through default when file logging is disabled AND the
+// caller wants to suppress stderr too.
+type discardHandler struct{}
+
+func (discardHandler) Enabled(context.Context, slog.Level) bool  { return false }
+func (discardHandler) Handle(context.Context, slog.Record) error { return nil }
+func (d discardHandler) WithAttrs([]slog.Attr) slog.Handler      { return d }
+func (d discardHandler) WithGroup(string) slog.Handler           { return d }
 
 // Close releases file handles held by the handler. Safe to call
 // multiple times.
@@ -154,6 +188,7 @@ func BuildHandler(opts Options) (*Result, error) {
 				Level: level,
 			})
 			handlers = append(handlers, fileH)
+			res.FileHandler = fileH
 			res.FilePath = path
 			res.closers = append(res.closers, func() {
 				_ = f.Close()

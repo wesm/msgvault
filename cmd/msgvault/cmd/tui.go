@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,6 +157,18 @@ Remote Mode:
 			TextEngine: textEngine,
 		})
 		p := tea.NewProgram(model, tea.WithAltScreen())
+
+		// Swap the slog default to a file-only logger for the
+		// duration of the TUI. Bubble Tea owns the terminal in
+		// alt-screen mode; any stderr write from slog corrupts
+		// the render. The daily log file still receives
+		// everything, so 'msgvault logs -f' in another pane
+		// continues to work for diagnostics.
+		prevLogger := slog.Default()
+		if logResult != nil {
+			slog.SetDefault(logResult.FileOnlyLogger())
+		}
+		defer slog.SetDefault(prevLogger)
 
 		if _, err := p.Run(); err != nil {
 			return fmt.Errorf("run tui: %w", err)
