@@ -103,6 +103,18 @@ type LogConfig struct {
 	// Disabled turns off file logging entirely. The CLI will
 	// continue writing to stderr.
 	Disabled bool `toml:"disabled"`
+
+	// SQLSlowMs is the threshold above which any individual SQL
+	// query is logged at WARN regardless of the main level.
+	// Zero means "use the built-in default" (100 ms). Set to a
+	// very large value to effectively disable slow logging.
+	SQLSlowMs int64 `toml:"sql_slow_ms"`
+
+	// SQLTrace, when true, logs every SQL query at INFO level
+	// with statement text, arg count, duration, and error. This
+	// is voluminous — leave off in normal use and flip it on
+	// (via config or --log-sql) only when debugging.
+	SQLTrace bool `toml:"sql_trace"`
 }
 
 // DataConfig holds data storage configuration.

@@ -21,14 +21,16 @@ import (
 )
 
 var (
-	cfgFile   string
-	homeDir   string
-	verbose   bool
-	useLocal  bool // Force local database even when remote is configured
-	logFile   string
-	logLevel  string
-	noLogFile bool
-	cfg       *config.Config
+	cfgFile    string
+	homeDir    string
+	verbose    bool
+	useLocal   bool // Force local database even when remote is configured
+	logFile    string
+	logLevel   string
+	noLogFile  bool
+	logSQL     bool
+	logSQLSlow int64
+	cfg        *config.Config
 	// logger is always non-nil so code paths outside the normal
 	// PersistentPreRunE flow (tests, library embeds) don't have
 	// to nil-check before calling logger.Info. PersistentPreRunE
@@ -103,6 +105,19 @@ in a single binary.`,
 		logger = slog.New(logResult.Handler)
 		currentRun = logResult.RunID
 		slog.SetDefault(logger)
+
+		// Configure the store's SQL logging adapter now that
+		// slog.Default is set. Flag overrides config; a zero
+		// SlowMs falls back to the built-in default (100 ms).
+		sqlTrace := logSQL || cfg.Log.SQLTrace
+		slowMs := logSQLSlow
+		if slowMs == 0 {
+			slowMs = cfg.Log.SQLSlowMs
+		}
+		store.ConfigureSQLLogging(store.SQLLogOptions{
+			SlowMs:    slowMs,
+			FullTrace: sqlTrace,
+		})
 
 		// Startup header: one structured line per run that
 		// captures everything you'd want to correlate later.
@@ -431,4 +446,9 @@ func init() {
 		"log level: debug, info, warn, error (default: info)")
 	rootCmd.PersistentFlags().BoolVar(&noLogFile, "no-log-file", false,
 		"disable the log file for this run (stderr output stays on)")
+	rootCmd.PersistentFlags().BoolVar(&logSQL, "log-sql", false,
+		"log every SQL query at info level (verbose; for debugging)")
+	rootCmd.PersistentFlags().Int64Var(&logSQLSlow, "log-sql-slow-ms", 0,
+		"threshold in ms above which a SQL query is logged as slow "+
+			"(default 100; 0 uses the default)")
 }
