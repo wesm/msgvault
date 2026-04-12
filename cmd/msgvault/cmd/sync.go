@@ -16,6 +16,7 @@ import (
 	"github.com/wesm/msgvault/internal/oauth"
 	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/sync"
+	"golang.org/x/oauth2"
 )
 
 var syncIncrementalCmd = &cobra.Command{
@@ -128,18 +129,22 @@ Examples:
 						fmt.Printf("Skipping %s (OAuth not configured)\n", src.Identifier)
 						continue
 					}
-					mgr, mgrErr := getOAuthMgr(sourceOAuthApp(src))
-					if mgrErr != nil {
-						syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", src.Identifier, mgrErr))
-						continue
-					}
+					appName := sourceOAuthApp(src)
 					if !src.SyncCursor.Valid || src.SyncCursor.String == "" {
 						fmt.Printf("Skipping %s (no history ID - run 'sync-full' first)\n", src.Identifier)
 						continue
 					}
-					if !mgr.HasToken(src.Identifier) {
-						fmt.Printf("Skipping %s (no OAuth token - run 'add-account' first)\n", src.Identifier)
-						continue
+					// Service accounts are always ready
+					if saKey := cfg.OAuth.ServiceAccountKeyFor(appName); saKey == "" {
+						mgr, mgrErr := getOAuthMgr(appName)
+						if mgrErr != nil {
+							syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", src.Identifier, mgrErr))
+							continue
+						}
+						if !mgr.HasToken(src.Identifier) {
+							fmt.Printf("Skipping %s (no OAuth token - run 'add-account' first)\n", src.Identifier)
+							continue
+						}
 					}
 					gmailTargets = append(gmailTargets, syncTarget{source: src, email: src.Identifier})
 				case "imap":
@@ -214,17 +219,31 @@ func runIncrementalSync(ctx context.Context, s *store.Store, getOAuthMgr func(st
 		return fmt.Errorf("no history ID - run 'sync-full' first")
 	}
 
-	oauthMgr, err := getOAuthMgr(sourceOAuthApp(source))
-	if err != nil {
-		return err
-	}
-
 	email := source.Identifier
-	interactive := isatty.IsTerminal(os.Stdin.Fd()) ||
-		isatty.IsCygwinTerminal(os.Stdin.Fd())
-	tokenSource, err := getTokenSourceWithReauth(ctx, oauthMgr, email, interactive)
-	if err != nil {
-		return err
+	appName := sourceOAuthApp(source)
+	var tokenSource oauth2.TokenSource
+	var tsErr error
+
+	if saKeyPath := cfg.OAuth.ServiceAccountKeyFor(appName); saKeyPath != "" {
+		saMgr, saErr := oauth.NewServiceAccountManager(saKeyPath, oauth.Scopes)
+		if saErr != nil {
+			return fmt.Errorf("service account: %w", saErr)
+		}
+		tokenSource, tsErr = saMgr.TokenSource(ctx, email)
+		if tsErr != nil {
+			return tsErr
+		}
+	} else {
+		oauthMgr, oaErr := getOAuthMgr(appName)
+		if oaErr != nil {
+			return oaErr
+		}
+		interactive := isatty.IsTerminal(os.Stdin.Fd()) ||
+			isatty.IsCygwinTerminal(os.Stdin.Fd())
+		tokenSource, tsErr = getTokenSourceWithReauth(ctx, oauthMgr, email, interactive)
+		if tsErr != nil {
+			return tsErr
+		}
 	}
 
 	// Create Gmail client

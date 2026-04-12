@@ -21,6 +21,7 @@ import (
 	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/sync"
+	"golang.org/x/oauth2"
 )
 
 var serveCmd = &cobra.Command{
@@ -342,19 +343,34 @@ func runScheduledSync(ctx context.Context, email string, s *store.Store, getOAut
 		appName = sourceOAuthApp(src)
 	}
 
-	oauthMgr, err := getOAuthMgr(appName)
-	if err != nil {
-		return fmt.Errorf("resolve OAuth credentials for %s: %w", email, err)
-	}
+	var tokenSource oauth2.TokenSource
+	var tsErr error
 
-	// Get token source — intentionally not using getTokenSourceWithReauth here
-	// because serve runs as a daemon and cannot open a browser for OAuth.
-	tokenSource, err := oauthMgr.TokenSource(ctx, email)
-	if err != nil {
-		if oauthMgr.HasToken(email) {
-			return fmt.Errorf("get token source: %w (token may be expired; run 'sync %s' or 'verify %s' from an interactive terminal to re-authorize)", err, email, email)
+	// Check for service account configuration
+	if saKeyPath := cfg.OAuth.ServiceAccountKeyFor(appName); saKeyPath != "" {
+		saMgr, saErr := oauth.NewServiceAccountManager(saKeyPath, oauth.Scopes)
+		if saErr != nil {
+			return fmt.Errorf("service account for %s: %w", email, saErr)
 		}
-		return fmt.Errorf("get token source: %w (run 'add-account %s' first)", err, email)
+		tokenSource, tsErr = saMgr.TokenSource(ctx, email)
+		if tsErr != nil {
+			return fmt.Errorf("service account token for %s: %w", email, tsErr)
+		}
+	} else {
+		oauthMgr, oaErr := getOAuthMgr(appName)
+		if oaErr != nil {
+			return fmt.Errorf("resolve OAuth credentials for %s: %w", email, oaErr)
+		}
+
+		// Get token source — intentionally not using getTokenSourceWithReauth here
+		// because serve runs as a daemon and cannot open a browser for OAuth.
+		tokenSource, tsErr = oauthMgr.TokenSource(ctx, email)
+		if tsErr != nil {
+			if oauthMgr.HasToken(email) {
+				return fmt.Errorf("get token source: %w (token may be expired; run 'sync %s' or 'verify %s' from an interactive terminal to re-authorize)", tsErr, email, email)
+			}
+			return fmt.Errorf("get token source: %w (run 'add-account %s' first)", tsErr, email)
+		}
 	}
 
 	// Create Gmail client

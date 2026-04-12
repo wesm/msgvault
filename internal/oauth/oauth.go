@@ -702,6 +702,44 @@ func TokenFilePath(tokensDir, email string) string {
 	return filepath.Join(tokensDir, safe+".json")
 }
 
+// ValidateTokenEmail calls the Gmail profile API to confirm that the token
+// source can access the given email account. Used by service account flows
+// where no Manager is available.
+func ValidateTokenEmail(ctx context.Context, ts oauth2.TokenSource, email string) error {
+	valCtx, cancel := context.WithTimeout(ctx, resolveTimeout)
+	defer cancel()
+
+	client := oauth2.NewClient(valCtx, ts)
+	req, err := http.NewRequestWithContext(valCtx, "GET", defaultProfileURL, nil)
+	if err != nil {
+		return fmt.Errorf("create profile request: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("verify access to %s: %w", email, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Gmail API returned HTTP %d for %s: %s", resp.StatusCode, email, string(body))
+	}
+
+	var profile struct {
+		EmailAddress string `json:"emailAddress"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
+		return fmt.Errorf("parse profile for %s: %w", email, err)
+	}
+
+	if !sameGoogleAccount(email, profile.EmailAddress) {
+		return &TokenMismatchError{Expected: email, Actual: profile.EmailAddress}
+	}
+
+	return nil
+}
+
 // DeleteToken removes the token file for the given email.
 func (m *Manager) DeleteToken(email string) error {
 	path := m.tokenPath(email)
