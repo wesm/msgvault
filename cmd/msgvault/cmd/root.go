@@ -36,7 +36,7 @@ var (
 	// to nil-check before calling logger.Info. PersistentPreRunE
 	// replaces this with a properly configured multi-handler at
 	// CLI startup.
-	logger     = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger    = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	logResult *logging.Result // non-nil after PersistentPreRunE runs
 )
 
@@ -122,10 +122,12 @@ in a single binary.`,
 
 		// Startup header: one structured line per run that
 		// captures everything you'd want to correlate later.
-		// This is what makes `grep <run_id>` actually useful.
+		// Positional args may contain email addresses, search
+		// queries, or other PII — log only the count at info
+		// level and the full (sanitized) values at debug.
 		logger.Info("msgvault startup",
 			"command", cmd.CommandPath(),
-			"args", sanitizeArgs(args),
+			"argc", len(args),
 			"version", Version,
 			"go_version", runtime.Version(),
 			"os", runtime.GOOS,
@@ -135,17 +137,15 @@ in a single binary.`,
 			"log_file", logResult.FilePath,
 			"level", logResult.Level.String(),
 		)
+		logger.Debug("msgvault startup args",
+			"args", sanitizeArgs(args),
+		)
 		return nil
 	},
-	PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
-		// Close the log file so Windows tests (and Docker
-		// containers) can clean up temp directories immediately.
-		if logResult != nil {
-			logResult.Close()
-			logResult = nil
-		}
-		return nil
-	},
+	// Note: log file closing is handled by ExecuteContext's deferred
+	// shutdown, which runs after the exit record is written. Do not
+	// close logResult in PersistentPostRunE — doing so drops the
+	// "msgvault exit" log line on successful runs.
 }
 
 // sanitizeArgs removes anything that might carry a secret before

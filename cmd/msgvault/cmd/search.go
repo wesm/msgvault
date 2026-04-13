@@ -146,20 +146,19 @@ func runLocalSearch(cmd *cobra.Command, queryStr string) error {
 		return err
 	}
 
-	// Log the search operation so it's auditable in the daily
-	// log file alongside every other command.
-	scopeKind := "all"
-	scopeValue := ""
-	if q.AccountID != nil {
-		scopeKind = "source"
-		scopeValue = searchAccount
-	}
+	// Log the search operation. Raw query text and account
+	// identifiers may contain PII — log coarse metadata at
+	// info and full values only at debug.
+	hasAccount := q.AccountID != nil
 	logger.Info("search start",
-		"query", queryStr,
-		"scope", scopeKind,
-		"account", scopeValue,
+		"query_len", len(queryStr),
+		"has_account", hasAccount,
 		"limit", searchLimit,
 		"offset", searchOffset,
+	)
+	logger.Debug("search start detail",
+		"query", queryStr,
+		"account", searchAccount,
 	)
 	started := time.Now()
 
@@ -169,16 +168,15 @@ func runLocalSearch(cmd *cobra.Command, queryStr string) error {
 	fmt.Fprintf(os.Stderr, "\r            \r")
 	if err != nil {
 		logger.Warn("search failed",
-			"query", queryStr,
+			"query_len", len(queryStr),
 			"duration_ms", time.Since(started).Milliseconds(),
 			"error", err.Error(),
 		)
 		return query.HintRepairEncoding(fmt.Errorf("search: %w", err))
 	}
 	logger.Info("search done",
-		"query", queryStr,
-		"scope", scopeKind,
-		"account", scopeValue,
+		"query_len", len(queryStr),
+		"has_account", hasAccount,
 		"results", len(results),
 		"duration_ms", time.Since(started).Milliseconds(),
 	)

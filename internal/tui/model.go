@@ -313,17 +313,12 @@ type accountsLoadedMsg struct {
 }
 
 // scopeLabelForLog returns a short, stable string describing the
-// current account scope so it can be attached to log records
-// without exposing internal ID values.
+// current account scope so it can be attached to log records.
+// Uses "filtered" rather than the account identifier to avoid
+// persisting email addresses in the log file.
 func (m Model) scopeLabelForLog() string {
-	switch {
-	case m.accountFilter != nil:
-		for _, acc := range m.accounts {
-			if acc.ID == *m.accountFilter {
-				return "source:" + acc.Identifier
-			}
-		}
-		return "source:unknown"
+	if m.accountFilter != nil {
+		return "filtered"
 	}
 	return "all"
 }
@@ -368,7 +363,7 @@ func (m Model) loadData() tea.Cmd {
 				slog.Warn("tui loadData failed",
 					"view", viewLabel,
 					"scope", scopeLabel,
-					"search", searchTerm,
+					"has_search", searchTerm != "",
 					"error", err.Error(),
 					"duration_ms", time.Since(start).Milliseconds(),
 				)
@@ -376,7 +371,7 @@ func (m Model) loadData() tea.Cmd {
 				slog.Info("tui loadData ok",
 					"view", viewLabel,
 					"scope", scopeLabel,
-					"search", searchTerm,
+					"has_search", searchTerm != "",
 					"rows", len(rows),
 					"duration_ms", time.Since(start).Milliseconds(),
 				)
@@ -548,7 +543,7 @@ func (m Model) loadSearchWithOffset(queryStr string, offset int, appendResults b
 			defer func() {
 				if err != nil {
 					slog.Warn("tui search failed",
-						"query", queryStr,
+						"query_len", len(queryStr),
 						"mode", modeLabel,
 						"scope", scopeLabel,
 						"offset", offset,
@@ -558,7 +553,7 @@ func (m Model) loadSearchWithOffset(queryStr string, offset int, appendResults b
 					return
 				}
 				slog.Info("tui search ok",
-					"query", queryStr,
+					"query_len", len(queryStr),
 					"mode", modeLabel,
 					"scope", scopeLabel,
 					"offset", offset,
@@ -693,7 +688,7 @@ func (m Model) loadMessagesWithOffset(offset int, appendMode bool) tea.Cmd {
 			if err != nil {
 				slog.Warn("tui loadMessages failed",
 					"scope", scopeLabel,
-					"search", searchTerm,
+					"has_search", searchTerm != "",
 					"offset", offset,
 					"append", appendMode,
 					"error", err.Error(),
@@ -702,7 +697,7 @@ func (m Model) loadMessagesWithOffset(offset int, appendMode bool) tea.Cmd {
 			} else {
 				slog.Info("tui loadMessages ok",
 					"scope", scopeLabel,
-					"search", searchTerm,
+					"has_search", searchTerm != "",
 					"offset", offset,
 					"append", appendMode,
 					"count", len(messages),
