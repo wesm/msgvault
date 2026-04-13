@@ -40,11 +40,21 @@ func (d *PostgreSQLDialect) Rebind(query string) string {
 // Now returns the PostgreSQL expression for the current timestamp.
 func (d *PostgreSQLDialect) Now() string { return "NOW()" }
 
-// InsertOrIgnore rewrites INSERT OR IGNORE INTO to INSERT INTO ... ON CONFLICT DO NOTHING.
-// For complete statements, appends ON CONFLICT DO NOTHING at the end.
-// For prefix-only strings (ending with "VALUES "), strips OR IGNORE only.
+// InsertOrIgnore rewrites INSERT OR IGNORE INTO to INSERT INTO and, if the
+// statement appears complete (ends with ")" after VALUES), appends
+// " ON CONFLICT DO NOTHING". Prefix-only strings (ending with "VALUES ")
+// do not get the suffix here — callers use InsertOrIgnoreSuffix() instead,
+// to be appended after the VALUES tuples are assembled.
 func (d *PostgreSQLDialect) InsertOrIgnore(sql string) string {
-	return strings.Replace(sql, "INSERT OR IGNORE INTO", "INSERT INTO", 1)
+	s := strings.Replace(sql, "INSERT OR IGNORE INTO", "INSERT INTO", 1)
+	// If the input is a complete statement (ends with ")" — i.e., VALUES tuples
+	// already closed), append the conflict clause. If it ends with "VALUES "
+	// (prefix form used by insertInChunks), leave the suffix to the caller.
+	trimmed := strings.TrimRight(s, " \t\n\r")
+	if strings.HasSuffix(trimmed, ")") {
+		return trimmed + " ON CONFLICT DO NOTHING"
+	}
+	return s
 }
 
 // InsertOrIgnoreSuffix returns the PostgreSQL suffix for conflict-ignoring batch inserts.

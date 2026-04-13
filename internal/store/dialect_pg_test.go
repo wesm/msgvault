@@ -60,23 +60,33 @@ func TestPostgreSQLDialect_Now(t *testing.T) {
 func TestPostgreSQLDialect_InsertOrIgnore(t *testing.T) {
 	d := &PostgreSQLDialect{}
 	tests := []struct {
+		name string
 		in   string
 		want string
 	}{
 		{
+			name: "complete statement gets ON CONFLICT DO NOTHING",
 			in:   "INSERT OR IGNORE INTO t (a) VALUES (?)",
-			want: "INSERT INTO t (a) VALUES (?)",
+			want: "INSERT INTO t (a) VALUES (?) ON CONFLICT DO NOTHING",
 		},
 		{
+			name: "multi-value complete statement",
+			in:   "INSERT OR IGNORE INTO t (a, b) VALUES (?, ?)",
+			want: "INSERT INTO t (a, b) VALUES (?, ?) ON CONFLICT DO NOTHING",
+		},
+		{
+			name: "prefix-only (ends with VALUES ) leaves suffix to caller",
 			in:   "INSERT OR IGNORE INTO message_labels (message_id, label_id) VALUES ",
 			want: "INSERT INTO message_labels (message_id, label_id) VALUES ",
 		},
 	}
 	for _, tc := range tests {
-		got := d.InsertOrIgnore(tc.in)
-		if got != tc.want {
-			t.Errorf("InsertOrIgnore(%q) = %q, want %q", tc.in, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			got := d.InsertOrIgnore(tc.in)
+			if got != tc.want {
+				t.Errorf("InsertOrIgnore(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 
