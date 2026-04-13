@@ -85,14 +85,15 @@ type Config struct {
 	configPath string // resolved path to the loaded config file
 }
 
-// LogConfig holds logging configuration. Defaults to writing one
-// file per day under ~/.msgvault/logs/ alongside the stderr output
-// that every command has always produced. Callers that want to
-// suppress file logging entirely can set Disabled or pass the
-// --no-log-file flag.
+// LogConfig holds logging configuration. File logging is opt-in:
+// set enabled = true or dir = "..." to write structured JSON logs
+// to disk. Without either, msgvault only writes to stderr (which
+// is the default behavior users already expect). The --log-file
+// CLI flag also enables file logging for a single run.
 type LogConfig struct {
 	// Dir is the directory where log files live. Empty means
-	// "<data dir>/logs", which is the recommended default.
+	// "<data dir>/logs". Setting this implicitly enables file
+	// logging.
 	Dir string `toml:"dir"`
 
 	// Level overrides the default logging level. Accepted values
@@ -100,9 +101,10 @@ type LogConfig struct {
 	// (or "debug" when --verbose is passed).
 	Level string `toml:"level"`
 
-	// Disabled turns off file logging entirely. The CLI will
-	// continue writing to stderr.
-	Disabled bool `toml:"disabled"`
+	// Enabled turns on persistent file logging. When false (the
+	// default), the CLI only writes to stderr. Set to true, or
+	// set dir, to opt in to durable on-disk logs.
+	Enabled bool `toml:"enabled"`
 
 	// SQLSlowMs is the threshold above which any individual SQL
 	// query is logged at WARN regardless of the main level.

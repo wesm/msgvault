@@ -4,9 +4,9 @@
 // Design goals (CLAUDE.md's "Safety ergonomics" principle, applied
 // to observability):
 //
-//  1. Every CLI run leaves a durable, structured trail on disk
-//     without the user having to redirect stderr themselves. The
-//     default log directory is <data dir>/logs and files are named
+//  1. When enabled (opt-in via config or CLI flag), every CLI run
+//     leaves a durable, structured trail on disk. The default log
+//     directory is <data dir>/logs and files are named
 //     msgvault-YYYY-MM-DD.log (UTC).
 //  2. On-disk logs are structured JSON so they're greppable with
 //     jq and mechanically parseable. Interactive stderr output

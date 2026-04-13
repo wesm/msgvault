@@ -84,7 +84,9 @@ in a single binary.`,
 			levelString = cfg.Log.Level
 		}
 		logsDir := cfg.LogsDir()
-		fileDisabled := noLogFile || cfg.Log.Disabled
+		// File logging is opt-in: requires [log].enabled,
+		// [log].dir, or --log-file. --no-log-file overrides.
+		fileDisabled := noLogFile || (logFile == "" && !cfg.Log.Enabled && cfg.Log.Dir == "")
 
 		// Close a previous log handler if tests re-enter
 		// PersistentPreRunE without going through ExecuteContext.
@@ -223,12 +225,15 @@ func Execute() error {
 // Installs a panic recovery and closes the log file handler on
 // return so every run ends cleanly in the log.
 func ExecuteContext(ctx context.Context) error {
-	defer recoverAndLogPanic()
+	// Defers run LIFO: close the log file first, then recover
+	// panics. This ensures the panic record is written while the
+	// file handle is still open.
 	defer func() {
 		if logResult != nil {
 			logResult.Close()
 		}
 	}()
+	defer recoverAndLogPanic()
 
 	err := rootCmd.ExecuteContext(ctx)
 

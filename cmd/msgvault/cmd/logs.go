@@ -138,16 +138,24 @@ func findLogFiles(dir string, all bool) ([]string, error) {
 
 // logFileSortKey returns a string that sorts log files chronologically:
 // rotated files (.log.1, .log.2) come before the active .log for the
-// same date, and higher rotation indices (older) sort earlier.
+// same date. Higher rotation indices are older (.log.5 predates .log.1),
+// so they sort first by inverting the suffix.
 func logFileSortKey(path string) string {
 	name := filepath.Base(path)
 	// msgvault-2026-04-11.log   -> date=2026-04-11 suffix=999 (active, last)
-	// msgvault-2026-04-11.log.1 -> date=2026-04-11 suffix=001
-	// msgvault-2026-04-11.log.2 -> date=2026-04-11 suffix=002
+	// msgvault-2026-04-11.log.5 -> date=2026-04-11 suffix=000 (oldest rotation)
+	// msgvault-2026-04-11.log.1 -> date=2026-04-11 suffix=004 (newest rotation)
 	if idx := strings.LastIndex(name, ".log."); idx >= 0 {
 		date := name[:idx+4] // through ".log"
-		num := name[idx+5:]
-		return date + fmt.Sprintf(".%03s", num)
+		num := 0
+		fmt.Sscanf(name[idx+5:], "%d", &num)
+		// Invert: higher rotation number = older = should sort first.
+		// 999 is reserved for the active file, so cap at 998.
+		inverted := 998 - num
+		if inverted < 0 {
+			inverted = 0
+		}
+		return fmt.Sprintf("%s.%03d", date, inverted)
 	}
 	// Active file (no rotation suffix) sorts after all rotations
 	// for the same date.
