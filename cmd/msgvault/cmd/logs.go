@@ -131,8 +131,28 @@ func findLogFiles(dir string, all bool) ([]string, error) {
 		}
 		files = append(files, filepath.Join(dir, n))
 	}
-	sort.Strings(files)
+	sort.Slice(files, func(i, j int) bool {
+		return logFileSortKey(files[i]) < logFileSortKey(files[j])
+	})
 	return files, nil
+}
+
+// logFileSortKey returns a string that sorts log files chronologically:
+// rotated files (.log.1, .log.2) come before the active .log for the
+// same date, and higher rotation indices (older) sort earlier.
+func logFileSortKey(path string) string {
+	name := filepath.Base(path)
+	// msgvault-2026-04-11.log   -> date=2026-04-11 suffix=999 (active, last)
+	// msgvault-2026-04-11.log.1 -> date=2026-04-11 suffix=001
+	// msgvault-2026-04-11.log.2 -> date=2026-04-11 suffix=002
+	if idx := strings.LastIndex(name, ".log."); idx >= 0 {
+		date := name[:idx+4] // through ".log"
+		num := name[idx+5:]
+		return date + fmt.Sprintf(".%03s", num)
+	}
+	// Active file (no rotation suffix) sorts after all rotations
+	// for the same date.
+	return name + ".999"
 }
 
 // logFilter represents the user's --run-id / --level / --grep
@@ -228,6 +248,7 @@ func followLogFile(
 	}
 
 	reader := bufio.NewReader(f)
+	var partial []byte
 	for {
 		select {
 		case <-ctx.Done():
@@ -236,12 +257,23 @@ func followLogFile(
 		}
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
-			var rec map[string]any
-			if json.Unmarshal(line, &rec) == nil &&
-				filter.matches(line, rec) {
-				fmt.Fprintln(out, formatLogRecord(rec))
+			if len(partial) > 0 {
+				line = append(partial, line...)
+				partial = nil
 			}
-			continue
+			// If the line doesn't end with a newline, it's a
+			// partial read — buffer it until more data arrives.
+			if line[len(line)-1] != '\n' {
+				partial = append(partial[:0], line...)
+				// fall through to the sleep
+			} else {
+				var rec map[string]any
+				if json.Unmarshal(line, &rec) == nil &&
+					filter.matches(line, rec) {
+					fmt.Fprintln(out, formatLogRecord(rec))
+				}
+				continue
+			}
 		}
 		if err != nil && err != io.EOF {
 			return err

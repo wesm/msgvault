@@ -46,6 +46,10 @@ type Options struct {
 	// written. Required unless FileDisabled is true.
 	LogsDir string
 
+	// FilePath, when non-empty, overrides the log file path
+	// entirely (bypassing the daily-name convention and LogsDir).
+	FilePath string
+
 	// FileDisabled turns off file logging entirely. Stderr
 	// output still happens. Use this for one-shot runs or for
 	// tests that want to avoid writing to disk.
@@ -177,11 +181,24 @@ func BuildHandler(opts Options) (*Result, error) {
 	handlers := []slog.Handler{stderrH}
 
 	// Best-effort file handler.
-	if !opts.FileDisabled && opts.LogsDir != "" {
-		path, f, err := openDailyLogFile(
-			opts.LogsDir, now(),
-			opts.MaxFileBytes, opts.KeepRotated,
-		)
+	if !opts.FileDisabled && (opts.LogsDir != "" || opts.FilePath != "") {
+		var path string
+		var f *os.File
+		var err error
+		if opts.FilePath != "" {
+			// Explicit path: use it directly, no rotation.
+			if mkErr := os.MkdirAll(filepath.Dir(opts.FilePath), 0o700); mkErr != nil {
+				err = fmt.Errorf("mkdir for log file: %w", mkErr)
+			} else {
+				path = opts.FilePath
+				f, err = os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+			}
+		} else {
+			path, f, err = openDailyLogFile(
+				opts.LogsDir, now(),
+				opts.MaxFileBytes, opts.KeepRotated,
+			)
+		}
 		switch {
 		case err == nil:
 			fileH := slog.NewJSONHandler(f, &slog.HandlerOptions{

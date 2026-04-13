@@ -85,16 +85,11 @@ in a single binary.`,
 			levelString = cfg.Log.Level
 		}
 		logsDir := cfg.LogsDir()
-		if logFile != "" {
-			// Treat --log-file as an override for the whole
-			// path, not just the directory, so power users
-			// can pipe today's run anywhere.
-			logsDir = filepath.Dir(logFile)
-		}
 		fileDisabled := noLogFile || cfg.Log.Disabled
 
 		logResult, err = logging.BuildHandler(logging.Options{
 			LogsDir:       logsDir,
+			FilePath:      logFile,
 			FileDisabled:  fileDisabled,
 			LevelOverride: levelOverride,
 			LevelString:   levelString,
