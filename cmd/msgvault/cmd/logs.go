@@ -148,7 +148,7 @@ func logFileSortKey(path string) string {
 	if idx := strings.LastIndex(name, ".log."); idx >= 0 {
 		date := name[:idx+4] // through ".log"
 		num := 0
-		fmt.Sscanf(name[idx+5:], "%d", &num)
+		_, _ = fmt.Sscanf(name[idx+5:], "%d", &num)
 		// Invert: higher rotation number = older = should sort first.
 		// 999 is reserved for the active file, so cap at 998.
 		inverted := 998 - num
