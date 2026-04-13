@@ -86,6 +86,13 @@ in a single binary.`,
 		logsDir := cfg.LogsDir()
 		fileDisabled := noLogFile || cfg.Log.Disabled
 
+		// Close a previous log handler if tests re-enter
+		// PersistentPreRunE without going through ExecuteContext.
+		if logResult != nil {
+			logResult.Close()
+			logResult = nil
+		}
+
 		logResult, err = logging.BuildHandler(logging.Options{
 			LogsDir:       logsDir,
 			FilePath:      logFile,
@@ -128,6 +135,15 @@ in a single binary.`,
 			"log_file", logResult.FilePath,
 			"level", logResult.Level.String(),
 		)
+		return nil
+	},
+	PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
+		// Close the log file so Windows tests (and Docker
+		// containers) can clean up temp directories immediately.
+		if logResult != nil {
+			logResult.Close()
+			logResult = nil
+		}
 		return nil
 	},
 }

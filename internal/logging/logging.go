@@ -187,7 +187,7 @@ func BuildHandler(opts Options) (*Result, error) {
 		var err error
 		if opts.FilePath != "" {
 			// Explicit path: use it directly, no rotation.
-			if mkErr := os.MkdirAll(filepath.Dir(opts.FilePath), 0o700); mkErr != nil {
+			if mkErr := os.MkdirAll(filepath.Dir(opts.FilePath), 0o755); mkErr != nil {
 				err = fmt.Errorf("mkdir for log file: %w", mkErr)
 			} else {
 				path = opts.FilePath
@@ -257,7 +257,7 @@ func newRunID() string {
 func openDailyLogFile(
 	dir string, now time.Time, maxBytes int64, keepRotated int,
 ) (string, *os.File, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", nil, fmt.Errorf("mkdir logs dir: %w", err)
 	}
 	name := fmt.Sprintf(
