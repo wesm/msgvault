@@ -71,6 +71,7 @@ type RemoteConfig struct {
 // Config represents the msgvault configuration.
 type Config struct {
 	Data      DataConfig        `toml:"data"`
+	Log       LogConfig         `toml:"log"`
 	OAuth     OAuthConfig       `toml:"oauth"`
 	Microsoft MicrosoftConfig   `toml:"microsoft"`
 	Sync      SyncConfig        `toml:"sync"`
@@ -82,6 +83,26 @@ type Config struct {
 	// Computed paths (not from config file)
 	HomeDir    string `toml:"-"`
 	configPath string // resolved path to the loaded config file
+}
+
+// LogConfig holds logging configuration. Defaults to writing one
+// file per day under ~/.msgvault/logs/ alongside the stderr output
+// that every command has always produced. Callers that want to
+// suppress file logging entirely can set Disabled or pass the
+// --no-log-file flag.
+type LogConfig struct {
+	// Dir is the directory where log files live. Empty means
+	// "<data dir>/logs", which is the recommended default.
+	Dir string `toml:"dir"`
+
+	// Level overrides the default logging level. Accepted values
+	// are "debug", "info", "warn", "error". Empty means "info"
+	// (or "debug" when --verbose is passed).
+	Level string `toml:"level"`
+
+	// Disabled turns off file logging entirely. The CLI will
+	// continue writing to stderr.
+	Disabled bool `toml:"disabled"`
 }
 
 // DataConfig holds data storage configuration.
@@ -292,6 +313,15 @@ func (c *Config) TokensDir() string {
 // AnalyticsDir returns the path to the Parquet analytics directory.
 func (c *Config) AnalyticsDir() string {
 	return filepath.Join(c.Data.DataDir, "analytics")
+}
+
+// LogsDir returns the path to the logs directory. Uses [log].dir
+// from config when set; otherwise falls back to <data_dir>/logs.
+func (c *Config) LogsDir() string {
+	if c.Log.Dir != "" {
+		return c.Log.Dir
+	}
+	return filepath.Join(c.Data.DataDir, "logs")
 }
 
 // EnsureHomeDir creates the msgvault home directory if it doesn't exist.

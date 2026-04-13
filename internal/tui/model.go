@@ -4,6 +4,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -389,8 +390,16 @@ func (m Model) loadStats() tea.Cmd {
 func (m Model) loadAccounts() tea.Cmd {
 	return safeCmdWithPanic(
 		func() tea.Msg {
-			accounts, err := m.engine.ListAccounts(context.Background())
-			return accountsLoadedMsg{accounts: accounts, err: err}
+			ctx := context.Background()
+			accounts, err := m.engine.ListAccounts(ctx)
+			if err != nil {
+				slog.Warn("tui loadAccounts: ListAccounts failed",
+					"error", err)
+				return accountsLoadedMsg{err: err}
+			}
+			slog.Info("tui loadAccounts ok",
+				"accounts", len(accounts))
+			return accountsLoadedMsg{accounts: accounts}
 		},
 		func(r any) tea.Msg {
 			return accountsLoadedMsg{err: fmt.Errorf("accounts panic: %v", r)}
