@@ -199,8 +199,8 @@ func BuildHandler(opts Options) (*Result, error) {
 				opts.MaxFileBytes, opts.KeepRotated,
 			)
 		}
-		switch {
-		case err == nil:
+		switch err {
+		case nil:
 			fileH := slog.NewJSONHandler(f, &slog.HandlerOptions{
 				Level: level,
 			})
@@ -211,7 +211,7 @@ func BuildHandler(opts Options) (*Result, error) {
 				_ = f.Close()
 			})
 		default:
-			fmt.Fprintf(stderr,
+			_, _ = fmt.Fprintf(stderr,
 				"warning: could not open msgvault log file in %s: %v "+
 					"(continuing with stderr-only logging)\n",
 				opts.LogsDir, err,

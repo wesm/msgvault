@@ -37,8 +37,7 @@ var (
 	// replaces this with a properly configured multi-handler at
 	// CLI startup.
 	logger     = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	logResult  *logging.Result // non-nil after PersistentPreRunE runs
-	currentRun string          // short ID attached to every log record
+	logResult *logging.Result // non-nil after PersistentPreRunE runs
 )
 
 var rootCmd = &cobra.Command{
@@ -98,7 +97,7 @@ in a single binary.`,
 			return fmt.Errorf("build logger: %w", err)
 		}
 		logger = slog.New(logResult.Handler)
-		currentRun = logResult.RunID
+		// logResult.RunID is available for any command that needs it.
 		slog.SetDefault(logger)
 
 		// Configure the store's SQL logging adapter now that

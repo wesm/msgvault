@@ -125,8 +125,7 @@ func findLogFiles(dir string, all bool) ([]string, error) {
 		}
 		n := e.Name()
 		if !strings.HasPrefix(n, "msgvault-") ||
-			!(strings.HasSuffix(n, ".log") ||
-				strings.Contains(n, ".log.")) {
+			(!strings.HasSuffix(n, ".log") && !strings.Contains(n, ".log.")) {
 			continue
 		}
 		files = append(files, filepath.Join(dir, n))
@@ -226,7 +225,7 @@ func printLogFiles(
 		}
 	}
 	for _, line := range ring {
-		fmt.Fprintln(out, line)
+		_, _ = fmt.Fprintln(out, line)
 	}
 	return nil
 }
@@ -270,7 +269,7 @@ func followLogFile(
 				var rec map[string]any
 				if json.Unmarshal(line, &rec) == nil &&
 					filter.matches(line, rec) {
-					fmt.Fprintln(out, formatLogRecord(rec))
+					_, _ = fmt.Fprintln(out, formatLogRecord(rec))
 				}
 				continue
 			}
@@ -319,7 +318,7 @@ func formatLogRecord(rec map[string]any) string {
 		}
 	}
 	if level != "" {
-		b.WriteString(fmt.Sprintf("%-5s", level))
+		fmt.Fprintf(&b, "%-5s", level)
 		b.WriteByte(' ')
 	}
 	if runID != "" {
@@ -336,7 +335,7 @@ func formatLogRecord(rec map[string]any) string {
 		b.WriteString(" ")
 		b.WriteString(k)
 		b.WriteString("=")
-		b.WriteString(fmt.Sprint(rec[k]))
+		fmt.Fprint(&b, rec[k])
 	}
 	return b.String()
 }
