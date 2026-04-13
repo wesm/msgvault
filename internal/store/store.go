@@ -16,7 +16,7 @@ import (
 	"github.com/mattn/go-sqlite3"
 )
 
-//go:embed schema.sql schema_sqlite.sql
+//go:embed schema.sql schema_sqlite.sql schema_pg.sql
 var schemaFS embed.FS
 
 // Store provides database operations for msgvault.
