@@ -21,15 +21,20 @@ import (
 )
 
 var (
-	cfgFile    string
-	homeDir    string
-	verbose    bool
-	useLocal   bool // Force local database even when remote is configured
-	logFile    string
-	logLevel   string
-	noLogFile  bool
-	cfg        *config.Config
-	logger     *slog.Logger
+	cfgFile   string
+	homeDir   string
+	verbose   bool
+	useLocal  bool // Force local database even when remote is configured
+	logFile   string
+	logLevel  string
+	noLogFile bool
+	cfg       *config.Config
+	// logger is always non-nil so code paths outside the normal
+	// PersistentPreRunE flow (tests, library embeds) don't have
+	// to nil-check before calling logger.Info. PersistentPreRunE
+	// replaces this with a properly configured multi-handler at
+	// CLI startup.
+	logger     = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	logResult  *logging.Result // non-nil after PersistentPreRunE runs
 	currentRun string          // short ID attached to every log record
 )

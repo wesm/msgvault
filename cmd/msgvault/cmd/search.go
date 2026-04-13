@@ -146,13 +146,42 @@ func runLocalSearch(cmd *cobra.Command, queryStr string) error {
 		return err
 	}
 
+	// Log the search operation so it's auditable in the daily
+	// log file alongside every other command.
+	scopeKind := "all"
+	scopeValue := ""
+	if q.AccountID != nil {
+		scopeKind = "source"
+		scopeValue = searchAccount
+	}
+	logger.Info("search start",
+		"query", queryStr,
+		"scope", scopeKind,
+		"account", scopeValue,
+		"limit", searchLimit,
+		"offset", searchOffset,
+	)
+	started := time.Now()
+
 	// Create query engine and execute search
 	engine := query.NewSQLiteEngine(s.DB())
 	results, err := engine.Search(cmd.Context(), q, searchLimit, searchOffset)
 	fmt.Fprintf(os.Stderr, "\r            \r")
 	if err != nil {
+		logger.Warn("search failed",
+			"query", queryStr,
+			"duration_ms", time.Since(started).Milliseconds(),
+			"error", err.Error(),
+		)
 		return query.HintRepairEncoding(fmt.Errorf("search: %w", err))
 	}
+	logger.Info("search done",
+		"query", queryStr,
+		"scope", scopeKind,
+		"account", scopeValue,
+		"results", len(results),
+		"duration_ms", time.Since(started).Milliseconds(),
+	)
 
 	if len(results) == 0 {
 		fmt.Println("No messages found.")

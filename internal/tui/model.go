@@ -312,6 +312,22 @@ type accountsLoadedMsg struct {
 	err      error
 }
 
+// scopeLabelForLog returns a short, stable string describing the
+// current account scope so it can be attached to log records
+// without exposing internal ID values.
+func (m Model) scopeLabelForLog() string {
+	switch {
+	case m.accountFilter != nil:
+		for _, acc := range m.accounts {
+			if acc.ID == *m.accountFilter {
+				return "source:" + acc.Identifier
+			}
+		}
+		return "source:unknown"
+	}
+	return "all"
+}
+
 // updateCheckMsg is sent when the background update check completes.
 type updateCheckMsg struct {
 	version    string // Latest version if available
@@ -321,6 +337,9 @@ type updateCheckMsg struct {
 // loadData fetches aggregate data based on current view settings.
 func (m Model) loadData() tea.Cmd {
 	requestID := m.aggregateRequestID
+	scopeLabel := m.scopeLabelForLog()
+	viewLabel := m.viewType.String()
+	searchTerm := m.searchQuery
 	return safeCmdWithPanic(
 		func() tea.Msg {
 			opts := query.AggregateOptions{
@@ -334,6 +353,7 @@ func (m Model) loadData() tea.Cmd {
 				SearchQuery:           m.searchQuery,
 			}
 
+			start := time.Now()
 			ctx := context.Background()
 			var rows []query.AggregateRow
 			var err error
@@ -343,6 +363,23 @@ func (m Model) loadData() tea.Cmd {
 				rows, err = m.engine.SubAggregate(ctx, m.drillFilter, m.viewType, opts)
 			} else {
 				rows, err = m.engine.Aggregate(ctx, m.viewType, opts)
+			}
+			if err != nil {
+				slog.Warn("tui loadData failed",
+					"view", viewLabel,
+					"scope", scopeLabel,
+					"search", searchTerm,
+					"error", err.Error(),
+					"duration_ms", time.Since(start).Milliseconds(),
+				)
+			} else {
+				slog.Info("tui loadData ok",
+					"view", viewLabel,
+					"scope", scopeLabel,
+					"search", searchTerm,
+					"rows", len(rows),
+					"duration_ms", time.Since(start).Milliseconds(),
+				)
 			}
 
 			// When search is active, compute distinct message stats separately.
@@ -492,15 +529,44 @@ func (m Model) loadSearch(queryStr string) tea.Cmd {
 // loadSearchWithOffset executes the search query with pagination.
 func (m Model) loadSearchWithOffset(queryStr string, offset int, appendResults bool) tea.Cmd {
 	requestID := m.searchRequestID
+	modeLabel := "fast"
+	if m.searchMode != searchModeFast {
+		modeLabel = "deep"
+	}
+	scopeLabel := m.scopeLabelForLog()
 	return safeCmdWithPanic(
 		func() tea.Msg {
 			ctx := context.Background()
 			q := search.Parse(queryStr)
 
+			start := time.Now()
 			var results []query.MessageSummary
 			var totalCount int64
 			var stats *query.TotalStats
 			var err error
+
+			defer func() {
+				if err != nil {
+					slog.Warn("tui search failed",
+						"query", queryStr,
+						"mode", modeLabel,
+						"scope", scopeLabel,
+						"offset", offset,
+						"error", err.Error(),
+						"duration_ms", time.Since(start).Milliseconds(),
+					)
+					return
+				}
+				slog.Info("tui search ok",
+					"query", queryStr,
+					"mode", modeLabel,
+					"scope", scopeLabel,
+					"offset", offset,
+					"results", len(results),
+					"total", totalCount,
+					"duration_ms", time.Since(start).Milliseconds(),
+				)
+			}()
 
 			if m.searchMode == searchModeFast {
 				// Fast search: single-scan with temp table materialization
@@ -614,13 +680,35 @@ func (m Model) loadMessages() tea.Cmd {
 // is true, the results are appended to the existing message list.
 func (m Model) loadMessagesWithOffset(offset int, appendMode bool) tea.Cmd {
 	requestID := m.loadRequestID
+	scopeLabel := m.scopeLabelForLog()
+	searchTerm := m.searchQuery
 	return safeCmdWithPanic(
 		func() tea.Msg {
 			filter := m.buildMessageFilter()
 			filter.Pagination.Limit = messageListPageSize
 			filter.Pagination.Offset = offset
 
+			start := time.Now()
 			messages, err := m.engine.ListMessages(context.Background(), filter)
+			if err != nil {
+				slog.Warn("tui loadMessages failed",
+					"scope", scopeLabel,
+					"search", searchTerm,
+					"offset", offset,
+					"append", appendMode,
+					"error", err.Error(),
+					"duration_ms", time.Since(start).Milliseconds(),
+				)
+			} else {
+				slog.Info("tui loadMessages ok",
+					"scope", scopeLabel,
+					"search", searchTerm,
+					"offset", offset,
+					"append", appendMode,
+					"count", len(messages),
+					"duration_ms", time.Since(start).Milliseconds(),
+				)
+			}
 			return messagesLoadedMsg{messages: messages, err: err, requestID: requestID, append: appendMode}
 		},
 		func(r any) tea.Msg {
