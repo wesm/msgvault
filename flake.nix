@@ -25,7 +25,7 @@
       packages = forAllSystems (pkgs: {
         default = (pkgs.buildGoModule.override { go = goPinned pkgs; }) {
           pname = "msgvault";
-          version = "0.12.1";
+          version = "0.13.0";
           src = ./.;
           vendorHash = "sha256-TfrbpW6x2g/dcE9VSAy3ktT3knalC0QQgI3q77RCqQc=";
           proxyVendor = true;
