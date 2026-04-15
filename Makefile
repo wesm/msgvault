@@ -12,7 +12,7 @@ LDFLAGS := -X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=$(VERSION) \
 
 LDFLAGS_RELEASE := $(LDFLAGS) -s -w
 
-.PHONY: build build-release install clean test test-v fmt lint lint-ci tidy shootout run-shootout install-hooks help
+.PHONY: build build-release install clean test test-v fmt lint lint-ci tidy shootout run-shootout install-hooks bench help
 
 # Build the binary (debug)
 build:
@@ -92,6 +92,10 @@ install-hooks:
 tidy:
 	go mod tidy
 
+# Run benchmarks (query engine smoke test)
+bench:
+	go test -tags fts5 -run=^$$ -bench=. -benchtime=1s -count=1 ./internal/query/
+
 # Build the MIME shootout tool
 shootout:
 	CGO_ENABLED=1 go build -o mimeshootout ./scripts/mimeshootout
@@ -117,5 +121,6 @@ help:
 	@echo "  install-hooks  - Install pre-commit hook via prek"
 	@echo "  clean          - Remove build artifacts"
 	@echo ""
+	@echo "  bench          - Run query engine benchmarks"
 	@echo "  shootout       - Build MIME shootout tool"
 	@echo "  run-shootout   - Run MIME shootout"
