@@ -164,6 +164,79 @@ func TestFetchMediaOldSchema(t *testing.T) {
 	}
 }
 
+func TestColumnCacheScopedPerDB(t *testing.T) {
+	// Verify that inspecting an old-schema DB then a new-schema DB
+	// (and vice versa) produces correct results without resetColumnCache.
+	resetColumnCache()
+
+	// DB 1: old schema, no group_type.
+	oldDB, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = oldDB.Close() }()
+	_, err = oldDB.Exec(`
+		CREATE TABLE jid (_id INTEGER PRIMARY KEY, user TEXT, server TEXT, raw_string TEXT);
+		CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER UNIQUE, hidden INTEGER, subject TEXT, sort_timestamp INTEGER);
+		INSERT INTO jid VALUES (1, '441234567890', 's.whatsapp.net', '441234567890@s.whatsapp.net');
+		INSERT INTO chat VALUES (1, 1, 0, NULL, 1000);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// DB 2: new schema, has group_type.
+	newDB, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = newDB.Close() }()
+	_, err = newDB.Exec(`
+		CREATE TABLE jid (_id INTEGER PRIMARY KEY, user TEXT, server TEXT, raw_string TEXT);
+		CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER UNIQUE, hidden INTEGER, subject TEXT, sort_timestamp INTEGER, group_type INTEGER);
+		INSERT INTO jid VALUES (1, '120363009999', 'g.us', '120363009999@g.us');
+		INSERT INTO chat VALUES (1, 1, 0, 'Test Group', 2000, 3);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Query old DB first — should NOT cache "no group_type" for new DB.
+	oldChats, err := fetchChats(oldDB)
+	if err != nil {
+		t.Fatalf("old DB: %v", err)
+	}
+	if oldChats[0].GroupType != 0 {
+		t.Errorf("old DB: GroupType = %d, want 0", oldChats[0].GroupType)
+	}
+
+	// Query new DB — must see group_type despite old DB being queried first.
+	newChats, err := fetchChats(newDB)
+	if err != nil {
+		t.Fatalf("new DB: %v", err)
+	}
+	if newChats[0].GroupType != 3 {
+		t.Errorf("new DB: GroupType = %d, want 3", newChats[0].GroupType)
+	}
+
+	// Reverse: query new DB again then old DB again — still correct.
+	newChats2, err := fetchChats(newDB)
+	if err != nil {
+		t.Fatalf("new DB (2nd): %v", err)
+	}
+	if newChats2[0].GroupType != 3 {
+		t.Errorf("new DB (2nd): GroupType = %d, want 3", newChats2[0].GroupType)
+	}
+
+	oldChats2, err := fetchChats(oldDB)
+	if err != nil {
+		t.Fatalf("old DB (2nd): %v", err)
+	}
+	if oldChats2[0].GroupType != 0 {
+		t.Errorf("old DB (2nd): GroupType = %d, want 0", oldChats2[0].GroupType)
+	}
+}
+
 func TestFetchLidMap(t *testing.T) {
 	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {

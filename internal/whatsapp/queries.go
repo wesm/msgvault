@@ -8,17 +8,24 @@ import (
 )
 
 // hasColumn checks whether a table has a given column using PRAGMA table_info.
-// Results are cached per db+table to avoid repeated PRAGMA queries.
+// Results are cached per (db pointer, table) to avoid repeated PRAGMA queries
+// while correctly handling multiple databases with different schemas.
 var (
-	columnCache   = make(map[string]map[string]bool) // "table" → {"col": true}
+	columnCache   = make(map[columnCacheKey]map[string]bool)
 	columnCacheMu sync.Mutex
 )
+
+type columnCacheKey struct {
+	db    *sql.DB
+	table string
+}
 
 func hasColumn(db *sql.DB, table, column string) bool {
 	columnCacheMu.Lock()
 	defer columnCacheMu.Unlock()
 
-	cols, ok := columnCache[table]
+	key := columnCacheKey{db: db, table: table}
+	cols, ok := columnCache[key]
 	if !ok {
 		cols = make(map[string]bool)
 		rows, err := db.Query(
@@ -39,7 +46,7 @@ func hasColumn(db *sql.DB, table, column string) bool {
 				}
 			}
 		}
-		columnCache[table] = cols
+		columnCache[key] = cols
 	}
 	return cols[column]
 }
@@ -48,7 +55,7 @@ func hasColumn(db *sql.DB, table, column string) bool {
 func resetColumnCache() {
 	columnCacheMu.Lock()
 	defer columnCacheMu.Unlock()
-	columnCache = make(map[string]map[string]bool)
+	columnCache = make(map[columnCacheKey]map[string]bool)
 }
 
 // fetchChats returns all non-hidden chats from the WhatsApp database.
