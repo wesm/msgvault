@@ -146,13 +146,40 @@ func runLocalSearch(cmd *cobra.Command, queryStr string) error {
 		return err
 	}
 
+	// Log the search operation. Raw query text and account
+	// identifiers may contain PII — log coarse metadata at
+	// info and full values only at debug.
+	hasAccount := q.AccountID != nil
+	logger.Info("search start",
+		"query_len", len(queryStr),
+		"has_account", hasAccount,
+		"limit", searchLimit,
+		"offset", searchOffset,
+	)
+	logger.Debug("search start detail",
+		"query", queryStr,
+		"account", searchAccount,
+	)
+	started := time.Now()
+
 	// Create query engine and execute search
 	engine := query.NewSQLiteEngine(s.DB())
 	results, err := engine.Search(cmd.Context(), q, searchLimit, searchOffset)
 	fmt.Fprintf(os.Stderr, "\r            \r")
 	if err != nil {
+		logger.Warn("search failed",
+			"query_len", len(queryStr),
+			"duration_ms", time.Since(started).Milliseconds(),
+			"error", err.Error(),
+		)
 		return query.HintRepairEncoding(fmt.Errorf("search: %w", err))
 	}
+	logger.Info("search done",
+		"query_len", len(queryStr),
+		"has_account", hasAccount,
+		"results", len(results),
+		"duration_ms", time.Since(started).Milliseconds(),
+	)
 
 	if len(results) == 0 {
 		fmt.Println("No messages found.")

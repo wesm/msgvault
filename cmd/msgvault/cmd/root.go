@@ -7,22 +7,37 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
+	"strings"
 	"sync"
 
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/config"
+	"github.com/wesm/msgvault/internal/logging"
 	"github.com/wesm/msgvault/internal/oauth"
 	"github.com/wesm/msgvault/internal/store"
 	"golang.org/x/oauth2"
 )
 
 var (
-	cfgFile  string
-	homeDir  string
-	verbose  bool
-	useLocal bool // Force local database even when remote is configured
-	cfg      *config.Config
-	logger   *slog.Logger
+	cfgFile    string
+	homeDir    string
+	verbose    bool
+	useLocal   bool // Force local database even when remote is configured
+	logFile    string
+	logLevel   string
+	noLogFile  bool
+	logSQL     bool
+	logSQLSlow int64
+	cfg        *config.Config
+	// logger is always non-nil so code paths outside the normal
+	// PersistentPreRunE flow (tests, library embeds) don't have
+	// to nil-check before calling logger.Info. PersistentPreRunE
+	// replaces this with a properly configured multi-handler at
+	// CLI startup.
+	logger    = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logResult *logging.Result // non-nil after PersistentPreRunE runs
 )
 
 var rootCmd = &cobra.Command{
@@ -34,35 +49,169 @@ email data locally with full-text search capabilities.
 This is the Go implementation providing sync, search, and TUI functionality
 in a single binary.`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Skip config loading for commands that don't need it
-		if cmd.Name() == "version" || cmd.Name() == "update" || cmd.Name() == "quickstart" || cmd.Name() == "completion" || cmd.Name() == cobra.ShellCompRequestCmd || cmd.Name() == cobra.ShellCompNoDescRequestCmd {
+		// Skip config loading (and therefore logging setup) for
+		// commands that must run without touching disk or config.
+		if cmd.Name() == "version" || cmd.Name() == "update" ||
+			cmd.Name() == "quickstart" || cmd.Name() == "completion" ||
+			cmd.Name() == cobra.ShellCompRequestCmd ||
+			cmd.Name() == cobra.ShellCompNoDescRequestCmd {
 			return nil
 		}
 
-		// Set up logging
-		level := slog.LevelInfo
-		if verbose {
-			level = slog.LevelDebug
-		}
-		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-			Level: level,
-		}))
-
-		// Load config (--home is passed through so it influences
-		// where config.toml is loaded from, like MSGVAULT_HOME).
+		// Load config first; logging options live under [log].
 		var err error
 		cfg, err = config.Load(cfgFile, homeDir)
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
 		}
-
-		// Ensure home directory exists on first use
 		if err := cfg.EnsureHomeDir(); err != nil {
-			return fmt.Errorf("create data directory %s: %w", cfg.HomeDir, err)
+			return fmt.Errorf(
+				"create data directory %s: %w",
+				cfg.HomeDir, err,
+			)
 		}
 
+		// Resolve logging options. CLI flags override config;
+		// --verbose forces debug level regardless of other
+		// settings.
+		var levelOverride *slog.Level
+		if verbose {
+			lv := slog.LevelDebug
+			levelOverride = &lv
+		}
+		levelString := logLevel
+		if levelString == "" {
+			levelString = cfg.Log.Level
+		}
+		logsDir := cfg.LogsDir()
+		// File logging is opt-in: requires [log].enabled,
+		// [log].dir, or --log-file. --no-log-file overrides.
+		fileDisabled := noLogFile || (logFile == "" && !cfg.Log.Enabled && cfg.Log.Dir == "")
+
+		// Close a previous log handler if tests re-enter
+		// PersistentPreRunE without going through ExecuteContext.
+		if logResult != nil {
+			logResult.Close()
+			logResult = nil
+		}
+
+		logResult, err = logging.BuildHandler(logging.Options{
+			LogsDir:       logsDir,
+			FilePath:      logFile,
+			FileDisabled:  fileDisabled,
+			LevelOverride: levelOverride,
+			LevelString:   levelString,
+		})
+		if err != nil {
+			return fmt.Errorf("build logger: %w", err)
+		}
+		logger = slog.New(logResult.Handler)
+		// logResult.RunID is available for any command that needs it.
+		slog.SetDefault(logger)
+
+		// Configure the store's SQL logging adapter now that
+		// slog.Default is set. Flag overrides config; a zero
+		// SlowMs falls back to the built-in default (100 ms).
+		sqlTrace := logSQL || cfg.Log.SQLTrace
+		slowMs := logSQLSlow
+		if slowMs == 0 {
+			slowMs = cfg.Log.SQLSlowMs
+		}
+		store.ConfigureSQLLogging(store.SQLLogOptions{
+			SlowMs:    slowMs,
+			FullTrace: sqlTrace,
+		})
+
+		// Startup header: one structured line per run that
+		// captures everything you'd want to correlate later.
+		// Positional args may contain email addresses, search
+		// queries, or other PII — log only the count at info
+		// level and the full (sanitized) values at debug.
+		logger.Info("msgvault startup",
+			"command", cmd.CommandPath(),
+			"argc", len(args),
+			"version", Version,
+			"go_version", runtime.Version(),
+			"os", runtime.GOOS,
+			"arch", runtime.GOARCH,
+			"config_path", cfg.ConfigFilePath(),
+			"data_dir", cfg.Data.DataDir,
+			"log_file", logResult.FilePath,
+			"level", logResult.Level.String(),
+		)
+		logger.Debug("msgvault startup args",
+			"args", sanitizeArgs(args),
+		)
 		return nil
 	},
+	// Note: log file closing is handled by ExecuteContext's deferred
+	// shutdown, which runs after the exit record is written. Do not
+	// close logResult in PersistentPostRunE — doing so drops the
+	// "msgvault exit" log line on successful runs.
+}
+
+// sanitizeArgs removes anything that might carry a secret before
+// the argv hits the log file. Values for flags known to contain
+// credentials (--password, --token, --client-secret, ...) are
+// replaced with "<redacted>". Unknown flags pass through so the
+// log still captures the user's intent.
+func sanitizeArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	redactNext := false
+	sensitive := map[string]bool{
+		"--password":       true,
+		"--token":          true,
+		"--client-secret":  true,
+		"--access-token":   true,
+		"--refresh-token":  true,
+		"--client-secrets": true,
+	}
+	for _, a := range args {
+		if redactNext {
+			out = append(out, "<redacted>")
+			redactNext = false
+			continue
+		}
+		if eq := strings.IndexByte(a, '='); eq != -1 {
+			key := a[:eq]
+			if sensitive[key] {
+				out = append(out, key+"=<redacted>")
+				continue
+			}
+		}
+		if sensitive[a] {
+			out = append(out, a)
+			redactNext = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// recoverAndLogPanic catches a panic and records it as a single
+// structured log line with a stack trace before re-raising the
+// process exit. Called in a deferred statement at the top of
+// Execute/ExecuteContext so crashes always leave a trail on disk.
+func recoverAndLogPanic() {
+	r := recover()
+	if r == nil {
+		return
+	}
+	if logger != nil {
+		logger.Error("msgvault panic",
+			"panic", fmt.Sprint(r),
+			"stack", string(debug.Stack()),
+		)
+	} else {
+		fmt.Fprintf(os.Stderr,
+			"msgvault panic: %v\n%s\n", r, debug.Stack(),
+		)
+	}
+	if logResult != nil {
+		logResult.Close()
+	}
+	os.Exit(2)
 }
 
 // Execute runs the root command with a background context.
@@ -73,8 +222,33 @@ func Execute() error {
 
 // ExecuteContext runs the root command with the given context,
 // enabling graceful shutdown when the context is cancelled.
+// Installs a panic recovery and closes the log file handler on
+// return so every run ends cleanly in the log.
 func ExecuteContext(ctx context.Context) error {
-	return rootCmd.ExecuteContext(ctx)
+	// Defers run LIFO: close the log file first, then recover
+	// panics. This ensures the panic record is written while the
+	// file handle is still open.
+	defer func() {
+		if logResult != nil {
+			logResult.Close()
+		}
+	}()
+	defer recoverAndLogPanic()
+
+	err := rootCmd.ExecuteContext(ctx)
+
+	// Record the exit outcome so users can see the per-run
+	// result in the log without parsing error messages.
+	if logger != nil {
+		if err != nil {
+			logger.Info("msgvault exit",
+				"outcome", "error", "error", err.Error(),
+			)
+		} else {
+			logger.Info("msgvault exit", "outcome", "ok")
+		}
+	}
+	return err
 }
 
 // oauthSetupHint returns help text for OAuth configuration issues,
@@ -279,6 +453,17 @@ func sourceOAuthApp(src *store.Source) string {
 func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ~/.msgvault/config.toml)")
 	rootCmd.PersistentFlags().StringVar(&homeDir, "home", "", "home directory (overrides MSGVAULT_HOME)")
-	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
+	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output (implies --log-level=debug)")
 	rootCmd.PersistentFlags().BoolVar(&useLocal, "local", false, "force local database (override remote config)")
+	rootCmd.PersistentFlags().StringVar(&logFile, "log-file", "",
+		"override log file path (default: <data dir>/logs/msgvault-YYYY-MM-DD.log)")
+	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "",
+		"log level: debug, info, warn, error (default: info)")
+	rootCmd.PersistentFlags().BoolVar(&noLogFile, "no-log-file", false,
+		"disable the log file for this run (stderr output stays on)")
+	rootCmd.PersistentFlags().BoolVar(&logSQL, "log-sql", false,
+		"log every SQL query at info level (verbose; for debugging)")
+	rootCmd.PersistentFlags().Int64Var(&logSQLSlow, "log-sql-slow-ms", 0,
+		"threshold in ms above which a SQL query is logged as slow "+
+			"(default 100; 0 uses the default)")
 }

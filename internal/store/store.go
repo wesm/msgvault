@@ -6,9 +6,11 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mattn/go-sqlite3"
 )
@@ -17,8 +19,14 @@ import (
 var schemaFS embed.FS
 
 // Store provides database operations for msgvault.
+//
+// The db field wraps a *sql.DB with a thin logging adapter that
+// emits slog records for every Query / Exec / QueryRow call.
+// Because loggedDB embeds *sql.DB and overrides the instrumented
+// methods, existing store code that does s.db.Query(...) compiles
+// unchanged and automatically routes through the logger.
 type Store struct {
-	db            *sql.DB
+	db            *loggedDB
 	dbPath        string
 	readOnly      bool // Opened via OpenReadOnly; skips WAL checkpoint on close
 	fts5Available bool // Whether FTS5 is available for full-text search
@@ -82,7 +90,7 @@ func Open(dbPath string) (*Store, error) {
 	}
 
 	return &Store{
-		db:     db,
+		db:     newLoggedDB(db),
 		dbPath: dbPath,
 	}, nil
 }
@@ -117,7 +125,7 @@ func OpenReadOnly(dbPath string) (*Store, error) {
 	db.SetMaxOpenConns(4)
 
 	s := &Store{
-		db:       db,
+		db:       newLoggedDB(db),
 		dbPath:   dbPath,
 		readOnly: true,
 	}
@@ -166,30 +174,73 @@ func (s *Store) CheckpointWAL() error {
 	return nil
 }
 
-// DB returns the underlying database connection for advanced queries.
+// DB returns the underlying *sql.DB for consumers that need to
+// pass the raw handle elsewhere (e.g. the DuckDB engine's
+// sqlite_scan wrapper). The wrapper's structured-logging
+// behaviour is bypassed for those consumers — they're operating
+// at a different abstraction layer.
 func (s *Store) DB() *sql.DB {
-	return s.db
+	return s.db.DB
 }
 
-// withTx executes fn within a database transaction. If fn returns an error,
-// the transaction is rolled back; otherwise it is committed.
+// withTx executes fn within a database transaction. If fn returns
+// an error, the transaction is rolled back; otherwise it is
+// committed. This is the single entry point for transactional
+// work in the store, so it is also where transaction lifecycle
+// events are logged (begin / commit / rollback + total duration).
+// Queries issued by fn go through *sql.Tx directly and are not
+// individually logged — the transaction timing usually gives you
+// enough signal, and itemizing them would require wrapping tx
+// throughout the codebase.
 func (s *Store) withTx(fn func(tx *sql.Tx) error) error {
+	start := time.Now()
+	slog.Debug("sql tx begin")
 	tx, err := s.db.Begin()
 	if err != nil {
+		slog.Warn("sql tx begin failed", "error", err.Error())
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	if err := fn(tx); err != nil {
-		_ = tx.Rollback()
+		if rbErr := tx.Rollback(); rbErr != nil {
+			slog.Warn("sql tx rollback failed",
+				"error", rbErr.Error(),
+				"fn_error", err.Error(),
+				"duration_ms", time.Since(start).Milliseconds())
+		} else {
+			slog.Info("sql tx rollback",
+				"reason", err.Error(),
+				"duration_ms", time.Since(start).Milliseconds())
+		}
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		slog.Warn("sql tx commit failed",
+			"error", err.Error(),
+			"duration_ms", time.Since(start).Milliseconds())
+		return err
+	}
+	ms := time.Since(start).Milliseconds()
+	if slowMs := sqlLogSlowMs.Load(); slowMs > 0 && ms >= slowMs {
+		slog.Warn("sql tx slow", "duration_ms", ms)
+	} else {
+		slog.Debug("sql tx commit", "duration_ms", ms)
+	}
+	return nil
 }
 
 // queryInChunks executes a parameterized IN-query in chunks to stay within
 // SQLite's parameter limit. queryTemplate must contain a single %s placeholder
 // for the comma-separated "?" list. The prefix args are prepended before each
 // chunk's args (e.g., a source_id filter).
-func queryInChunks[T any](db *sql.DB, ids []T, prefixArgs []interface{}, queryTemplate string, fn func(*sql.Rows) error) error {
+// chunkQuerier abstracts the subset of *sql.DB that queryInChunks
+// and execInChunks actually use, so the helpers accept either a
+// raw *sql.DB (tests) or the logging wrapper (production path).
+type chunkQuerier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func queryInChunks[T any](db chunkQuerier, ids []T, prefixArgs []interface{}, queryTemplate string, fn func(*sql.Rows) error) error {
 	const chunkSize = 500
 	for i := 0; i < len(ids); i += chunkSize {
 		end := i + chunkSize
@@ -258,7 +309,7 @@ func insertInChunks(tx *sql.Tx, totalRows int, valuesPerRow int, queryPrefix str
 // to stay within SQLite's parameter limit. queryTemplate must contain a single %s
 // placeholder for the comma-separated "?" list. The prefix args are prepended before
 // each chunk's args (e.g., a message_id filter).
-func execInChunks[T any](db *sql.DB, ids []T, prefixArgs []interface{}, queryTemplate string) error {
+func execInChunks[T any](db chunkQuerier, ids []T, prefixArgs []interface{}, queryTemplate string) error {
 	const chunkSize = 500
 	for i := 0; i < len(ids); i += chunkSize {
 		end := i + chunkSize

@@ -71,6 +71,7 @@ type RemoteConfig struct {
 // Config represents the msgvault configuration.
 type Config struct {
 	Data      DataConfig        `toml:"data"`
+	Log       LogConfig         `toml:"log"`
 	OAuth     OAuthConfig       `toml:"oauth"`
 	Microsoft MicrosoftConfig   `toml:"microsoft"`
 	Sync      SyncConfig        `toml:"sync"`
@@ -82,6 +83,40 @@ type Config struct {
 	// Computed paths (not from config file)
 	HomeDir    string `toml:"-"`
 	configPath string // resolved path to the loaded config file
+}
+
+// LogConfig holds logging configuration. File logging is opt-in:
+// set enabled = true or dir = "..." to write structured JSON logs
+// to disk. Without either, msgvault only writes to stderr (which
+// is the default behavior users already expect). The --log-file
+// CLI flag also enables file logging for a single run.
+type LogConfig struct {
+	// Dir is the directory where log files live. Empty means
+	// "<data dir>/logs". Setting this implicitly enables file
+	// logging.
+	Dir string `toml:"dir"`
+
+	// Level overrides the default logging level. Accepted values
+	// are "debug", "info", "warn", "error". Empty means "info"
+	// (or "debug" when --verbose is passed).
+	Level string `toml:"level"`
+
+	// Enabled turns on persistent file logging. When false (the
+	// default), the CLI only writes to stderr. Set to true, or
+	// set dir, to opt in to durable on-disk logs.
+	Enabled bool `toml:"enabled"`
+
+	// SQLSlowMs is the threshold above which any individual SQL
+	// query is logged at WARN regardless of the main level.
+	// Zero means "use the built-in default" (100 ms). Set to a
+	// very large value to effectively disable slow logging.
+	SQLSlowMs int64 `toml:"sql_slow_ms"`
+
+	// SQLTrace, when true, logs every SQL query at INFO level
+	// with statement text, arg count, duration, and error. This
+	// is voluminous — leave off in normal use and flip it on
+	// (via config or --log-sql) only when debugging.
+	SQLTrace bool `toml:"sql_trace"`
 }
 
 // DataConfig holds data storage configuration.
@@ -251,6 +286,7 @@ func Load(path, homeDir string) (*Config, error) {
 
 	// Expand ~ in paths
 	cfg.Data.DataDir = expandPath(cfg.Data.DataDir)
+	cfg.Log.Dir = expandPath(cfg.Log.Dir)
 	cfg.OAuth.ClientSecrets = expandPath(cfg.OAuth.ClientSecrets)
 	for name, app := range cfg.OAuth.Apps {
 		app.ClientSecrets = expandPath(app.ClientSecrets)
@@ -261,6 +297,7 @@ func Load(path, homeDir string) (*Config, error) {
 	// directory so behavior doesn't depend on the working directory.
 	if explicit {
 		cfg.Data.DataDir = resolveRelative(cfg.Data.DataDir, cfg.HomeDir)
+		cfg.Log.Dir = resolveRelative(cfg.Log.Dir, cfg.HomeDir)
 		cfg.OAuth.ClientSecrets = resolveRelative(cfg.OAuth.ClientSecrets, cfg.HomeDir)
 		for name, app := range cfg.OAuth.Apps {
 			app.ClientSecrets = resolveRelative(app.ClientSecrets, cfg.HomeDir)
@@ -292,6 +329,15 @@ func (c *Config) TokensDir() string {
 // AnalyticsDir returns the path to the Parquet analytics directory.
 func (c *Config) AnalyticsDir() string {
 	return filepath.Join(c.Data.DataDir, "analytics")
+}
+
+// LogsDir returns the path to the logs directory. Uses [log].dir
+// from config when set; otherwise falls back to <data_dir>/logs.
+func (c *Config) LogsDir() string {
+	if c.Log.Dir != "" {
+		return c.Log.Dir
+	}
+	return filepath.Join(c.Data.DataDir, "logs")
 }
 
 // EnsureHomeDir creates the msgvault home directory if it doesn't exist.
