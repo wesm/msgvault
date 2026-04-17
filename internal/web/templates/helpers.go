@@ -86,6 +86,38 @@ func formatMessageDate(t time.Time) string {
 	return t.Format("Jan 02, 2006")
 }
 
+// formatSyncTime formats a sync timestamp as a relative time string (e.g., "3h ago", "2d ago").
+func formatSyncTime(t *time.Time) string {
+	if t == nil {
+		return "never"
+	}
+	d := time.Since(*t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		m := int(d.Minutes())
+		if m == 1 {
+			return "1m ago"
+		}
+		return fmt.Sprintf("%dm ago", m)
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		if h == 1 {
+			return "1h ago"
+		}
+		return fmt.Sprintf("%dh ago", h)
+	case d < 30*24*time.Hour:
+		days := int(d.Hours() / 24)
+		if days == 1 {
+			return "1d ago"
+		}
+		return fmt.Sprintf("%dd ago", days)
+	default:
+		return t.Format("Jan 02, 2006")
+	}
+}
+
 // Regexes for HTML-to-text conversion.
 var (
 	// styleRe and scriptRe strip <style>...</style> and <script>...</script> blocks

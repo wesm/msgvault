@@ -349,13 +349,14 @@ func (s *Store) SearchMessages(query string, offset, limit int) ([]store.APIMess
 
 // AccountInfo represents an account in list responses.
 type AccountInfo struct {
-	ID          int64  `json:"id"`
-	Email       string `json:"email"`
-	DisplayName string `json:"display_name,omitempty"`
-	LastSyncAt  string `json:"last_sync_at,omitempty"`
-	NextSyncAt  string `json:"next_sync_at,omitempty"`
-	Schedule    string `json:"schedule,omitempty"`
-	Enabled     bool   `json:"enabled"`
+	ID                 int64  `json:"id"`
+	Email              string `json:"email"`
+	DisplayName        string `json:"display_name,omitempty"`
+	LastSyncAt         string `json:"last_sync_at,omitempty"`
+	LastSyncWithDataAt string `json:"last_sync_with_data_at,omitempty"`
+	NextSyncAt         string `json:"next_sync_at,omitempty"`
+	Schedule           string `json:"schedule,omitempty"`
+	Enabled            bool   `json:"enabled"`
 }
 
 // accountsResponse matches the API accounts list response.

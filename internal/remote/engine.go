@@ -652,11 +652,17 @@ func (e *Engine) ListAccounts(ctx context.Context) ([]query.AccountInfo, error) 
 
 	result := make([]query.AccountInfo, len(accounts))
 	for i, acc := range accounts {
-		result[i] = query.AccountInfo{
+		info := query.AccountInfo{
 			ID:          acc.ID,
 			Identifier:  acc.Email,
 			DisplayName: acc.DisplayName,
 		}
+		if acc.LastSyncWithDataAt != "" {
+			if t, err := time.Parse(time.RFC3339, acc.LastSyncWithDataAt); err == nil {
+				info.LastSyncWithData = &t
+			}
+		}
+		result[i] = info
 	}
 	return result, nil
 }

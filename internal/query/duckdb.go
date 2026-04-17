@@ -1203,9 +1203,12 @@ func (e *DuckDBEngine) ListAccounts(ctx context.Context) ([]AccountInfo, error) 
 	}
 
 	rows, err := e.db.QueryContext(ctx, `
-		SELECT id, source_type, identifier, COALESCE(display_name, '')
-		FROM sqlite_db.sources
-		ORDER BY identifier
+		SELECT s.id, s.source_type, s.identifier, COALESCE(s.display_name, ''),
+		       (SELECT MAX(sr.completed_at) FROM sqlite_db.sync_runs sr
+		        WHERE sr.source_id = s.id AND sr.status = 'completed'
+		          AND (sr.messages_added > 0 OR sr.messages_updated > 0))
+		FROM sqlite_db.sources s
+		ORDER BY s.identifier
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("list accounts: %w", err)
@@ -1215,8 +1218,12 @@ func (e *DuckDBEngine) ListAccounts(ctx context.Context) ([]AccountInfo, error) 
 	var accounts []AccountInfo
 	for rows.Next() {
 		var acc AccountInfo
-		if err := rows.Scan(&acc.ID, &acc.SourceType, &acc.Identifier, &acc.DisplayName); err != nil {
+		var lastSync sql.NullTime
+		if err := rows.Scan(&acc.ID, &acc.SourceType, &acc.Identifier, &acc.DisplayName, &lastSync); err != nil {
 			return nil, fmt.Errorf("scan account: %w", err)
+		}
+		if lastSync.Valid {
+			acc.LastSyncWithData = &lastSync.Time
 		}
 		accounts = append(accounts, acc)
 	}

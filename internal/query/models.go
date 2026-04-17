@@ -324,10 +324,11 @@ func DefaultAggregateOptions() AggregateOptions {
 
 // AccountInfo represents a source account.
 type AccountInfo struct {
-	ID          int64
-	SourceType  string
-	Identifier  string // email address
-	DisplayName string
+	ID               int64
+	SourceType       string
+	Identifier       string // email address
+	DisplayName      string
+	LastSyncWithData *time.Time // last completed sync that added or updated messages
 }
 
 // StatsOptions configures a stats query.

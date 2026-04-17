@@ -49,11 +49,11 @@ type AccountStatus = scheduler.AccountStatus
 
 // Server represents the HTTP API server.
 type Server struct {
-	cfg       *config.Config
-	store     MessageStore
-	engine    query.Engine // Query engine for aggregates, TUI, and web UI support
-	scheduler SyncScheduler
-	logger    *slog.Logger
+	cfg         *config.Config
+	store       MessageStore
+	engine      query.Engine // Query engine for aggregates, TUI, and web UI support
+	scheduler   SyncScheduler
+	logger      *slog.Logger
 	router      chi.Router
 	server      *http.Server
 	rateLimiter *RateLimiter

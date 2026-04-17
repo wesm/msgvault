@@ -33,6 +33,7 @@ templ Dashboard(data DashboardData) {
 						<li class="account-item">
 							<span class="account-email">{ acct.Identifier }</span>
 							<span class="account-meta">{ acct.SourceType }</span>
+							<span class="account-sync">last sync w/ data: { formatSyncTime(acct.LastSyncWithData) }</span>
 						</li>
 					}
 				</ul>

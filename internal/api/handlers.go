@@ -44,13 +44,14 @@ type APIAttachment = store.APIAttachment
 
 // AccountInfo represents an account in list responses.
 type AccountInfo struct {
-	ID          int64  `json:"id"`
-	Email       string `json:"email"`
-	DisplayName string `json:"display_name,omitempty"`
-	LastSyncAt  string `json:"last_sync_at,omitempty"`
-	NextSyncAt  string `json:"next_sync_at,omitempty"`
-	Schedule    string `json:"schedule,omitempty"`
-	Enabled     bool   `json:"enabled"`
+	ID                 int64  `json:"id"`
+	Email              string `json:"email"`
+	DisplayName        string `json:"display_name,omitempty"`
+	LastSyncAt         string `json:"last_sync_at,omitempty"`
+	LastSyncWithDataAt string `json:"last_sync_with_data_at,omitempty"`
+	NextSyncAt         string `json:"next_sync_at,omitempty"`
+	Schedule           string `json:"schedule,omitempty"`
+	Enabled            bool   `json:"enabled"`
 }
 
 // SchedulerStatusResponse represents scheduler status.
@@ -316,12 +317,19 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	copy(cfgAccounts, s.cfg.Accounts)
 	s.cfgMu.RUnlock()
 
-	// Build source ID lookup from the engine (database sources table).
-	sourceIDs := make(map[string]int64)
+	// Build source lookup from the engine (database sources table).
+	type sourceInfo struct {
+		ID               int64
+		LastSyncWithData *time.Time
+	}
+	sourceLookup := make(map[string]sourceInfo)
 	if s.engine != nil {
 		if engineAccounts, err := s.engine.ListAccounts(r.Context()); err == nil {
 			for _, ea := range engineAccounts {
-				sourceIDs[ea.Identifier] = ea.ID
+				sourceLookup[ea.Identifier] = sourceInfo{
+					ID:               ea.ID,
+					LastSyncWithData: ea.LastSyncWithData,
+				}
 			}
 		}
 	}
@@ -330,11 +338,15 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 
 	// Get schedule info from config
 	for _, acc := range cfgAccounts {
+		src := sourceLookup[acc.Email]
 		info := AccountInfo{
-			ID:       sourceIDs[acc.Email],
+			ID:       src.ID,
 			Email:    acc.Email,
 			Schedule: acc.Schedule,
 			Enabled:  acc.Enabled,
+		}
+		if src.LastSyncWithData != nil {
+			info.LastSyncWithDataAt = src.LastSyncWithData.UTC().Format(time.RFC3339)
 		}
 
 		// Add scheduler status

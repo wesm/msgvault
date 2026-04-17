@@ -210,6 +210,13 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
   color: var(--fg-muted);
 }
 
+.account-sync {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-left: auto;
+  padding-left: 12px;
+}
+
 /* Tables */
 .data-table {
   width: 100%;
