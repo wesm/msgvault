@@ -76,6 +76,82 @@ func unitVec(dim, axis int) []float32 {
 	return v
 }
 
+// openFusedMainDB creates a main DB with the minimum schema FusedSearch
+// needs: messages columns, messages_fts virtual table, and message_labels.
+// It populates 3 non-deleted messages with searchable FTS content and
+// returns the DB plus its temp file path (needed for ATTACH).
+func openFusedMainDB(t *testing.T) (*sql.DB, string) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.db")
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatalf("open main: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	schema := `
+CREATE TABLE messages (
+    id INTEGER PRIMARY KEY,
+    source_id INTEGER,
+    sender_id INTEGER,
+    has_attachments INTEGER DEFAULT 0,
+    sent_at INTEGER,
+    deleted_from_source_at DATETIME
+);
+CREATE VIRTUAL TABLE messages_fts USING fts5(subject, body, content='', contentless_delete=1);
+CREATE TABLE message_labels (
+    message_id INTEGER NOT NULL,
+    label_id INTEGER NOT NULL,
+    PRIMARY KEY (message_id, label_id)
+);`
+	if _, err := db.Exec(schema); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+
+	rows := []struct {
+		id      int64
+		subject string
+		body    string
+	}{
+		{1, "lunch plans", "want to grab lunch tomorrow"},
+		{2, "meeting notes", "quarterly meeting agenda"},
+		{3, "travel itinerary", "flight confirmation"},
+	}
+	for _, r := range rows {
+		if _, err := db.Exec(`INSERT INTO messages (id) VALUES (?)`, r.id); err != nil {
+			t.Fatalf("insert msg: %v", err)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO messages_fts (rowid, subject, body) VALUES (?, ?, ?)`,
+			r.id, r.subject, r.body); err != nil {
+			t.Fatalf("insert fts: %v", err)
+		}
+	}
+	return db, path
+}
+
+// newFusedBackendForTest opens a backend pointing at a main DB seeded
+// with FTS content and the minimum schema FusedSearch needs.
+func newFusedBackendForTest(t *testing.T) (*Backend, context.Context, func()) {
+	t.Helper()
+	ctx := context.Background()
+	main, mainPath := openFusedMainDB(t)
+	vecPath := filepath.Join(t.TempDir(), "vectors.db")
+	b, err := Open(ctx, Options{
+		Path:      vecPath,
+		MainPath:  mainPath,
+		Dimension: 768,
+		MainDB:    main,
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	cleanup := func() { _ = b.Close() }
+	t.Cleanup(cleanup)
+	return b, ctx, cleanup
+}
+
 // seedAndEmbed inserts any missing message rows into the main DB,
 // creates a fresh generation sized to the first vector, and upserts all
 // supplied vectors as chunks. Returns the generation ID.

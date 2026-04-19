@@ -20,17 +20,19 @@ var _ vector.Backend = (*Backend)(nil)
 // Options configures how Open establishes a Backend.
 type Options struct {
 	Path      string
+	MainPath  string  // filesystem path to msgvault.db; required for FusedSearch
 	Dimension int     // default dimension for EnsureVectorTable at open
 	MainDB    *sql.DB // handle to the main msgvault.db
 }
 
-// Backend implements vector.Backend (and, once FusedSearch lands, also
-// vector.FusingBackend) against a SQLite database with the sqlite-vec
-// extension.
+// Backend implements vector.Backend and vector.FusingBackend against a
+// SQLite database with the sqlite-vec extension.
 type Backend struct {
-	db     *sql.DB // handle to vectors.db
-	mainDB *sql.DB // handle to msgvault.db
-	dim    int
+	db       *sql.DB // handle to vectors.db
+	mainDB   *sql.DB // handle to msgvault.db
+	path     string  // filesystem path to vectors.db
+	mainPath string  // filesystem path to msgvault.db (for ATTACH)
+	dim      int
 }
 
 // Open opens vectors.db, runs migrations, and retains the main database
@@ -45,13 +47,22 @@ func Open(ctx context.Context, opts Options) (*Backend, error) {
 	}
 	if err := Migrate(ctx, db, opts.Dimension); err != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, fmt.Errorf("migrate vectors.db: %w", err)
 	}
-	return &Backend{db: db, mainDB: opts.MainDB, dim: opts.Dimension}, nil
+	return &Backend{
+		db:       db,
+		mainDB:   opts.MainDB,
+		path:     opts.Path,
+		mainPath: opts.MainPath,
+		dim:      opts.Dimension,
+	}, nil
 }
 
 // Close releases the vectors.db handle.
 func (b *Backend) Close() error { return b.db.Close() }
+
+// Path returns the filesystem path of vectors.db.
+func (b *Backend) Path() string { return b.path }
 
 // CreateGeneration allocates a new building generation and seeds
 // pending_embeddings in the same transaction (§5.1 of the spec).
