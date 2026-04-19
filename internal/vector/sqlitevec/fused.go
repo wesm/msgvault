@@ -188,6 +188,10 @@ func (b *Backend) openFusedConn(ctx context.Context) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open main for fused: %w", err)
 	}
+	// SQLite ATTACH is per-connection; pin the pool to 1 so every
+	// subsequent query reuses the attached connection.
+	conn.SetMaxOpenConns(1)
+	conn.SetMaxIdleConns(1)
 	if _, err := conn.ExecContext(ctx, `ATTACH DATABASE ? AS vec`, b.path); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("attach vectors.db: %w", err)
