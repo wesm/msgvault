@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/wesm/msgvault/internal/vector"
@@ -203,9 +204,86 @@ func (b *Backend) generationByState(ctx context.Context, state vector.Generation
 	return g, nil
 }
 
-// Upsert is a stub; implemented in T6.
+// Upsert writes chunks to the given generation. Transactional. Dimension
+// is verified per-chunk against the generation's recorded dimension.
 func (b *Backend) Upsert(ctx context.Context, gen vector.GenerationID, chunks []vector.Chunk) error {
-	return fmt.Errorf("Upsert: not implemented")
+	if len(chunks) == 0 {
+		return nil
+	}
+
+	var dim int
+	if err := b.db.QueryRowContext(ctx,
+		`SELECT dimension FROM index_generations WHERE id = ?`, int64(gen)).Scan(&dim); err != nil {
+		return fmt.Errorf("lookup generation %d: %w", gen, err)
+	}
+	for _, c := range chunks {
+		if len(c.Vector) != dim {
+			return fmt.Errorf("%w: chunk for msg %d has %d dims, gen has %d",
+				vector.ErrDimensionMismatch, c.MessageID, len(c.Vector), dim)
+		}
+	}
+
+	tx, err := b.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now().Unix()
+	vecTable := VectorTableName(dim)
+
+	embedStmt, err := tx.PrepareContext(ctx, `INSERT OR REPLACE INTO embeddings
+		(generation_id, message_id, embedded_at, source_char_len, truncated)
+		VALUES (?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = embedStmt.Close() }()
+
+	vecStmt, err := tx.PrepareContext(ctx, fmt.Sprintf(
+		`INSERT OR REPLACE INTO %s (generation_id, message_id, embedding) VALUES (?, ?, ?)`, vecTable))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = vecStmt.Close() }()
+
+	pendingStmt, err := tx.PrepareContext(ctx,
+		`DELETE FROM pending_embeddings WHERE generation_id = ? AND message_id = ?`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = pendingStmt.Close() }()
+
+	for _, c := range chunks {
+		truncFlag := 0
+		if c.Truncated {
+			truncFlag = 1
+		}
+		if _, err := embedStmt.ExecContext(ctx, int64(gen), c.MessageID, now, c.SourceCharLen, truncFlag); err != nil {
+			return fmt.Errorf("insert embedding: %w", err)
+		}
+		if _, err := vecStmt.ExecContext(ctx, int64(gen), c.MessageID, float32SliceBlob(c.Vector)); err != nil {
+			return fmt.Errorf("insert vector: %w", err)
+		}
+		if _, err := pendingStmt.ExecContext(ctx, int64(gen), c.MessageID); err != nil {
+			return fmt.Errorf("clear pending: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// float32SliceBlob converts a float32 slice to the little-endian byte
+// representation that sqlite-vec expects.
+func float32SliceBlob(v []float32) []byte {
+	buf := make([]byte, 4*len(v))
+	for i, f := range v {
+		bits := math.Float32bits(f)
+		buf[4*i] = byte(bits)
+		buf[4*i+1] = byte(bits >> 8)
+		buf[4*i+2] = byte(bits >> 16)
+		buf[4*i+3] = byte(bits >> 24)
+	}
+	return buf
 }
 
 // Search is a stub; implemented in T7.

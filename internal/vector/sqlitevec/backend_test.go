@@ -4,6 +4,7 @@ package sqlitevec
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -95,5 +96,52 @@ func TestBackend_CreateGeneration_SkipsDeletedMessages(t *testing.T) {
 		`SELECT COUNT(*) FROM pending_embeddings WHERE generation_id = ?`, gid).Scan(&n)
 	if n != 0 {
 		t.Errorf("pending count for deleted message = %d, want 0", n)
+	}
+}
+
+func TestBackend_Upsert_InsertsAndClearsPending(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+	gid, _ := b.CreateGeneration(ctx, "m", 768)
+
+	vec := make([]float32, 768)
+	for i := range vec {
+		vec[i] = 0.1
+	}
+	chunks := []vector.Chunk{{MessageID: 1, Vector: vec, SourceCharLen: 42}}
+	if err := b.Upsert(ctx, gid, chunks); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	// embeddings row exists
+	var n int
+	_ = b.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM embeddings WHERE generation_id = ? AND message_id = 1`, gid).Scan(&n)
+	if n != 1 {
+		t.Errorf("embeddings count = %d, want 1", n)
+	}
+
+	// vectors_vec_d768 row exists
+	_ = b.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM vectors_vec_d768 WHERE generation_id = ? AND message_id = 1`, gid).Scan(&n)
+	if n != 1 {
+		t.Errorf("vectors_vec_d768 count = %d, want 1", n)
+	}
+
+	// pending row gone
+	_ = b.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pending_embeddings WHERE generation_id = ? AND message_id = 1`, gid).Scan(&n)
+	if n != 0 {
+		t.Errorf("pending count = %d, want 0 after upsert", n)
+	}
+}
+
+func TestBackend_Upsert_DimensionMismatch(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+	gid, _ := b.CreateGeneration(ctx, "m", 768)
+
+	short := make([]float32, 64) // wrong dim
+	err := b.Upsert(ctx, gid, []vector.Chunk{{MessageID: 1, Vector: short}})
+	if !errors.Is(err, vector.ErrDimensionMismatch) {
+		t.Errorf("err = %v, want ErrDimensionMismatch", err)
 	}
 }
