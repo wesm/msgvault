@@ -12,6 +12,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/wesm/msgvault/internal/fileutil"
+	"github.com/wesm/msgvault/internal/vector"
 )
 
 // ChatConfig holds chat/LLM configuration.
@@ -78,6 +79,7 @@ type Config struct {
 	Chat      ChatConfig        `toml:"chat"`
 	Server    ServerConfig      `toml:"server"`
 	Remote    RemoteConfig      `toml:"remote"`
+	Vector    vector.Config     `toml:"vector"`
 	Accounts  []AccountSchedule `toml:"accounts"`
 
 	// Computed paths (not from config file)
@@ -304,6 +306,8 @@ func Load(path, homeDir string) (*Config, error) {
 			cfg.OAuth.Apps[name] = app
 		}
 	}
+
+	cfg.Vector.ApplyDefaults()
 
 	return cfg, nil
 }
