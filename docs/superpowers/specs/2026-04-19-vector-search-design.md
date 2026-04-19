@@ -222,7 +222,7 @@ WITH
             SELECT 1 FROM message_labels ml
             WHERE ml.message_id = m.id
               AND ml.label_id IN (SELECT value FROM json_each(:label_ids))))
-      AND m.deleted_at IS NULL
+      AND m.deleted_from_source_at IS NULL
   ),
 
   -- BM25 over the filtered set. MATCH is pushed through the join.
@@ -271,7 +271,7 @@ Notes:
 - **Filter pushdown is mandatory.** The previous draft of this spec applied filters after fusion, which silently starved recall on narrow filters (the global top-k signal candidates often contained zero filtered rows).
 - **Pre-filter kNN via `message_id IN (SELECT id FROM filtered)`** is the sqlite-vec pattern for constrained ANN. For very narrow filtered sets this degenerates to brute force, which is cheap at those sizes anyway.
 - **Subject boost** is applied as a post-fusion adjustment in application code (not the SQL), so it can depend on tokenized subject matching without further complicating the CTE.
-- **`deleted_at IS NULL`** excludes soft-deleted messages from search, matching existing `internal/query` behavior.
+- **`deleted_from_source_at IS NULL`** excludes messages deleted from their upstream source (Gmail, etc.) from search, matching existing `internal/query` behavior (see `internal/query/sqlite.go` and `internal/search/parser.go` `HideDeleted`).
 - **Backends that do not live in SQLite** (lance, remote) perform two independent filtered queries and fuse in Go via `rrf.Fuse`.
 
 ## 6. Embedding Pipeline
@@ -357,17 +357,19 @@ The scheduler runs the worker whenever the cron fires, and also after each succe
 
 ```
 msgvault embed [flags]
-  --account EMAIL         # limit the build to messages from this account (repeatable)
+  --account EMAIL         # incremental only: prioritize draining this account's queue (repeatable)
   --limit N               # cap this run at N messages (for testing; partial runs resume automatically)
-  --full-rebuild          # create a new generation and rebuild from scratch
+  --full-rebuild          # create a new generation and rebuild from scratch across ALL accounts
   --progress              # live progress bar (default when stderr is a tty)
   --yes                   # skip confirmation prompts
 ```
 
 Run modes:
 
-- **Default (incremental).** Fills in missing embeddings for the currently active generation by consuming the `pending_embeddings` queue. Used by the daemon and for manual catch-up.
+- **Default (incremental).** Fills in missing embeddings for the currently active generation by consuming the `pending_embeddings` queue. Used by the daemon and for manual catch-up. Accepts `--account` as a prioritization/narrowing filter on the queue — it does not change what has already been enqueued, only which rows this run drains.
 - **`--full-rebuild`.** Starts a new generation using the currently-configured model+dimension. Builds into shadow tables in parallel with the active generation. When complete, atomically flips `state = 'active'` on the new generation and `'retired'` on the old. Old generation rows are purged after a brief grace period (configurable, default immediate). Prompts for confirmation unless `--yes` is passed.
+
+**`--full-rebuild` is always corpus-wide.** A generation must cover every non-deleted message in the archive because it atomically replaces the active index. Combining `--full-rebuild` with `--account` is therefore rejected with an explicit CLI error (`--account cannot be combined with --full-rebuild; generations are corpus-wide`). If a user wants to re-embed one account's messages after a preprocessing change short of a full rebuild, they can do that via an out-of-band `Delete` + re-enqueue in the active generation — exposed as `msgvault embed --reembed-account EMAIL` in a future revision, not MVP.
 
 There is **no `--model` or `--endpoint` override flag**. Model rotation goes through config: the user updates `[vector.embeddings] model` / `dimension` in `config.toml`, then runs `msgvault embed --full-rebuild` to materialize a generation under the new model. Attempting `--full-rebuild` against config that disagrees with the existing active generation is expected and valid; attempting incremental embedding or search with such config is rejected (§6.7).
 
@@ -755,7 +757,7 @@ This feature is strictly additive on every public surface:
 | `msgvault search` CLI | Gmail syntax, `--limit/--offset/--json/--account` | Adds `--mode`, `--explain` flags; `--mode=fts` (default) is byte-identical to today |
 | `/api/v1/search` HTTP | Current response shape | Adds optional `mode` and `explain` query params; default behavior unchanged |
 | `/api/v1/search/fast`, `/deep`, `/messages/*`, `/stats`, `/aggregates*` | TUI support endpoints | Unchanged |
-| `/api/v1/stats` response | Existing fields | Adds optional `embeddings_total`, `embeddings_pending`, `active_generation` fields (clients that don't read them are unaffected) |
+| `/api/v1/stats` response | Existing fields | Adds one optional `vector_search` sub-object (see §11.6) — present only when vector search is configured. Existing top-level fields and their shapes are unchanged. |
 | MCP tools (8 existing) | As-is | `search_messages` gains optional `mode` + `explain` args; `get_stats` gains the same optional fields as above |
 | MCP tools (new) | — | `find_similar_messages(message_id, limit?, filters?)` |
 | `config.toml` | Existing tables | New `[vector]`, `[vector.embeddings]`, `[vector.preprocess]`, `[vector.search]`, `[vector.embed.schedule]` tables |
@@ -767,7 +769,30 @@ Old binaries are unaffected by the feature — `msgvault.db` is unchanged, and `
 ### 11.5 Observability
 
 - Structured log entries at start/end of each embedding batch with duration, count, truncation count.
-- `/api/v1/stats` response gains optional fields: `embeddings_total`, `embeddings_pending`, `embeddings_model`.
+- `/api/v1/stats` response gains one optional `vector_search` sub-object, present only when `[vector]` is configured:
+
+  ```json
+  "vector_search": {
+    "enabled": true,
+    "active_generation": {
+      "id": 3,
+      "model": "nomic-embed-text-v1.5",
+      "dimension": 768,
+      "activated_at": "2026-04-12T09:14:00Z",
+      "message_count": 2048121
+    },
+    "building_generation": {
+      "id": 4,
+      "model": "mxbai-embed-large-v1",
+      "dimension": 1024,
+      "started_at": "2026-04-18T22:10:00Z",
+      "progress": { "done": 812400, "total": 2048121 }
+    },
+    "pending_embeddings_total": 147
+  }
+  ```
+
+  `active_generation` is `null` iff no generation has been activated yet (first-ever build). `building_generation` is `null` when no rebuild is in progress. `pending_embeddings_total` sums pending rows across all non-retired generations. The MCP `get_stats` tool returns the same sub-object.
 - The existing per-run logger (see `09d18df Add structured file logging with per-run correlation`) is reused for embedding runs.
 
 ## 12. Testing Strategy
