@@ -1,0 +1,130 @@
+package embed
+
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
+
+func TestPreprocess(t *testing.T) {
+	tests := []struct {
+		name      string
+		subject   string
+		body      string
+		maxChars  int
+		cfg       PreprocessConfig
+		want      string // "" means skip exact match (use lenLE/wantValid)
+		lenLE     int    // 0 = no check; N = require len(out) <= N
+		wantValid bool   // require utf8.ValidString(out)
+		wantTrunc bool
+	}{
+		{
+			name:      "PlainBody",
+			subject:   "Hello",
+			body:      "Hi there,\n\nLet's chat tomorrow.",
+			maxChars:  1000,
+			cfg:       PreprocessConfig{StripQuotes: true, StripSignatures: true},
+			want:      "Subject: Hello\n\nHi there,\n\nLet's chat tomorrow.",
+			wantTrunc: false,
+		},
+		{
+			name:      "StripsQuotedPreamble",
+			subject:   "Re: plan",
+			body:      "My reply.\n\nOn 2026-01-01, alice wrote:\n> previous message\n> more quote",
+			maxChars:  1000,
+			cfg:       PreprocessConfig{StripQuotes: true, StripSignatures: true},
+			want:      "Subject: Re: plan\n\nMy reply.",
+			wantTrunc: false,
+		},
+		{
+			name:      "StripsStandaloneQuoteLines",
+			subject:   "",
+			body:      "> nested quote 1\n> nested quote 2\nActual content.",
+			maxChars:  1000,
+			cfg:       PreprocessConfig{StripQuotes: true, StripSignatures: false},
+			want:      "Actual content.",
+			wantTrunc: false,
+		},
+		{
+			name:      "StripsSignature",
+			subject:   "Hi",
+			body:      "Body here.\n-- \nBob\nPhone: ...",
+			maxChars:  1000,
+			cfg:       PreprocessConfig{StripQuotes: true, StripSignatures: true},
+			want:      "Subject: Hi\n\nBody here.",
+			wantTrunc: false,
+		},
+		{
+			name:      "SignatureWithoutTrailingSpace",
+			subject:   "Hi",
+			body:      "Body.\n--\nBob",
+			maxChars:  1000,
+			cfg:       PreprocessConfig{StripQuotes: false, StripSignatures: true},
+			want:      "Subject: Hi\n\nBody.",
+			wantTrunc: false,
+		},
+		{
+			name:      "Truncates",
+			subject:   "S",
+			body:      strings.Repeat("x", 2000),
+			maxChars:  100,
+			cfg:       PreprocessConfig{},
+			lenLE:     100,
+			wantTrunc: true,
+		},
+		{
+			name:      "TruncateAtRuneBoundary",
+			subject:   "",
+			body:      strings.Repeat("\u2603", 50),
+			maxChars:  10,
+			cfg:       PreprocessConfig{},
+			lenLE:     10,
+			wantValid: true,
+			wantTrunc: true,
+		},
+		{
+			name:      "EmptySubjectAndBody",
+			subject:   "",
+			body:      "",
+			maxChars:  1000,
+			cfg:       PreprocessConfig{},
+			want:      "",
+			wantTrunc: false,
+		},
+		{
+			name:      "NoConfigPreservesEverything",
+			subject:   "Hi",
+			body:      "Hello\n> not stripped\n-- \nsig kept",
+			maxChars:  1000,
+			cfg:       PreprocessConfig{StripQuotes: false, StripSignatures: false},
+			want:      "Subject: Hi\n\nHello\n> not stripped\n-- \nsig kept",
+			wantTrunc: false,
+		},
+		{
+			name:      "MaxCharsZeroIsUnlimited",
+			subject:   "S",
+			body:      strings.Repeat("x", 100),
+			maxChars:  0,
+			cfg:       PreprocessConfig{},
+			want:      "Subject: S\n\n" + strings.Repeat("x", 100),
+			wantTrunc: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, tr := Preprocess(tt.subject, tt.body, tt.maxChars, tt.cfg)
+			if tt.want != "" && out != tt.want {
+				t.Errorf("got %q\nwant %q", out, tt.want)
+			}
+			if tt.lenLE > 0 && len(out) > tt.lenLE {
+				t.Errorf("len(out)=%d > %d", len(out), tt.lenLE)
+			}
+			if tt.wantValid && !utf8.ValidString(out) {
+				t.Error("out is not valid UTF-8")
+			}
+			if tr != tt.wantTrunc {
+				t.Errorf("truncated=%v, want %v", tr, tt.wantTrunc)
+			}
+		})
+	}
+}
