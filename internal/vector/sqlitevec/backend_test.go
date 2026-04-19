@@ -296,3 +296,26 @@ func TestBackend_Upsert_ReplacesExisting(t *testing.T) {
 		t.Errorf("vectors_vec_d768 count = %d, want 1", n)
 	}
 }
+
+func TestBackend_Search_ReturnsRankedHits(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+	gid := seedAndEmbed(t, b, map[int64][]float32{
+		10: unitVec(768, 0),
+		11: unitVec(768, 1),
+		12: unitVec(768, 2),
+	})
+
+	hits, err := b.Search(ctx, gid, unitVec(768, 1), 2, vector.Filter{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("got %d hits, want 2", len(hits))
+	}
+	if hits[0].MessageID != 11 {
+		t.Errorf("top hit = %d, want 11", hits[0].MessageID)
+	}
+	if hits[0].Rank != 1 {
+		t.Errorf("top rank = %d, want 1", hits[0].Rank)
+	}
+}

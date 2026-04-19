@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/wesm/msgvault/internal/vector"
@@ -306,9 +307,166 @@ func float32SliceBlob(v []float32) []byte {
 	return buf
 }
 
-// Search is a stub; implemented in T7.
+// Search runs an ANN query against the given generation and returns the
+// top-k hits (optionally intersected with a structured filter). Hits are
+// ordered by ascending distance and assigned 1-based ranks.
 func (b *Backend) Search(ctx context.Context, gen vector.GenerationID, queryVec []float32, k int, filter vector.Filter) ([]vector.Hit, error) {
-	return nil, fmt.Errorf("Search: not implemented")
+	if len(queryVec) == 0 {
+		return nil, fmt.Errorf("search: empty query vector")
+	}
+
+	var dim int
+	err := b.db.QueryRowContext(ctx,
+		`SELECT dimension FROM index_generations WHERE id = ?`, int64(gen)).Scan(&dim)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: %d", vector.ErrUnknownGeneration, gen)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup generation %d: %w", gen, err)
+	}
+	if len(queryVec) != dim {
+		return nil, fmt.Errorf("%w: query has %d dims, gen has %d",
+			vector.ErrDimensionMismatch, len(queryVec), dim)
+	}
+	vecTable := VectorTableName(dim)
+
+	idClause, filterArgs, err := b.resolveFilter(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	q := fmt.Sprintf(`
+		SELECT message_id, distance
+		  FROM %s
+		 WHERE generation_id = ?
+		   AND embedding MATCH ?
+		   AND k = ?
+		   %s
+		 ORDER BY distance ASC
+	`, vecTable, idClause)
+
+	allArgs := make([]any, 0, 3+len(filterArgs))
+	allArgs = append(allArgs, int64(gen), float32SliceBlob(queryVec), k)
+	allArgs = append(allArgs, filterArgs...)
+
+	rows, err := b.db.QueryContext(ctx, q, allArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("ann query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var hits []vector.Hit
+	for i := 1; rows.Next(); i++ {
+		var id int64
+		var dist float64
+		if err := rows.Scan(&id, &dist); err != nil {
+			return nil, fmt.Errorf("scan hit: %w", err)
+		}
+		hits = append(hits, vector.Hit{
+			MessageID: id,
+			Score:     1.0 - dist, // cosine distance → cosine similarity
+			Rank:      i,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate hits: %w", err)
+	}
+	return hits, nil
+}
+
+// resolveFilter returns a SQL fragment of the form
+// "AND message_id IN (<id list>)" and the matching args slice, or
+// ("", nil, nil) when the filter is empty. When the filter matches no
+// messages, it returns a clause that forces an empty result set.
+func (b *Backend) resolveFilter(ctx context.Context, filter vector.Filter) (string, []any, error) {
+	if filter.IsEmpty() {
+		return "", nil, nil
+	}
+	ids, err := b.filteredMessageIDs(ctx, filter)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(ids) == 0 {
+		return "AND message_id IN (SELECT NULL WHERE 0)", nil, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	return fmt.Sprintf("AND message_id IN (%s)", strings.Join(placeholders, ",")), args, nil
+}
+
+// filteredMessageIDs runs the filter against the main DB and returns
+// matching message IDs. See spec §5.3.
+func (b *Backend) filteredMessageIDs(ctx context.Context, f vector.Filter) ([]int64, error) {
+	clauses := []string{"m.deleted_from_source_at IS NULL"}
+	var args []any
+
+	if len(f.SourceIDs) > 0 {
+		clauses = append(clauses, inClause("m.source_id", f.SourceIDs))
+		for _, id := range f.SourceIDs {
+			args = append(args, id)
+		}
+	}
+	if len(f.SenderIDs) > 0 {
+		clauses = append(clauses, inClause("m.sender_id", f.SenderIDs))
+		for _, id := range f.SenderIDs {
+			args = append(args, id)
+		}
+	}
+	if f.HasAttachment != nil {
+		clauses = append(clauses, "m.has_attachments = ?")
+		args = append(args, *f.HasAttachment)
+	}
+	if f.After != nil {
+		clauses = append(clauses, "m.sent_at >= ?")
+		args = append(args, *f.After)
+	}
+	if f.Before != nil {
+		clauses = append(clauses, "m.sent_at < ?")
+		args = append(args, *f.Before)
+	}
+	if len(f.LabelIDs) > 0 {
+		clauses = append(clauses, fmt.Sprintf(
+			`EXISTS (SELECT 1 FROM message_labels ml WHERE ml.message_id = m.id AND %s)`,
+			inClause("ml.label_id", f.LabelIDs)))
+		for _, id := range f.LabelIDs {
+			args = append(args, id)
+		}
+	}
+
+	query := `SELECT m.id FROM messages m WHERE ` + strings.Join(clauses, " AND ")
+
+	rows, err := b.mainDB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("filter query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan filter id: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate filter ids: %w", err)
+	}
+	return out, nil
+}
+
+// inClause returns "col IN (?,?,?)" for len(ids) placeholders. Caller
+// must append the ids to the args slice in the same order.
+func inClause(col string, ids []int64) string {
+	placeholders := make([]string, len(ids))
+	for i := range ids {
+		placeholders[i] = "?"
+	}
+	return fmt.Sprintf("%s IN (%s)", col, strings.Join(placeholders, ","))
 }
 
 // Delete is a stub; implemented in T8.

@@ -51,6 +51,13 @@ type Filter struct {
 	After, Before *time.Time
 }
 
+// IsEmpty reports whether the filter has no restrictions. A zero-value
+// Filter is empty and backends should skip filter resolution entirely.
+func (f Filter) IsEmpty() bool {
+	return len(f.SourceIDs) == 0 && len(f.SenderIDs) == 0 && len(f.LabelIDs) == 0 &&
+		f.HasAttachment == nil && f.After == nil && f.Before == nil
+}
+
 // Hit is one search result.
 type Hit struct {
 	MessageID int64
