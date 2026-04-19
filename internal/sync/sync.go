@@ -22,6 +22,12 @@ import (
 // ErrHistoryExpired indicates that the Gmail history ID is too old and a full sync is required.
 var ErrHistoryExpired = errors.New("history expired - run full sync")
 
+// EmbedEnqueuer is optionally supplied to a Syncer; nil means vector
+// search is disabled. Set via SetEmbedEnqueuer.
+type EmbedEnqueuer interface {
+	EnqueueMessages(ctx context.Context, messageIDs []int64) error
+}
+
 // Options configures sync behavior.
 type Options struct {
 	// SourceType is the type of source being synced ("gmail" or "imap").
@@ -57,11 +63,12 @@ func DefaultOptions() *Options {
 
 // Syncer performs Gmail synchronization.
 type Syncer struct {
-	client   gmail.API
-	store    *store.Store
-	logger   *slog.Logger
-	progress gmail.SyncProgress
-	opts     *Options
+	client        gmail.API
+	store         *store.Store
+	logger        *slog.Logger
+	progress      gmail.SyncProgress
+	opts          *Options
+	embedEnqueuer EmbedEnqueuer
 }
 
 // New creates a new Syncer.
@@ -89,6 +96,12 @@ func (s *Syncer) WithLogger(logger *slog.Logger) *Syncer {
 func (s *Syncer) WithProgress(p gmail.SyncProgress) *Syncer {
 	s.progress = p
 	return s
+}
+
+// SetEmbedEnqueuer wires up the optional vector-search enqueuer. Safe
+// to call with nil to disable.
+func (s *Syncer) SetEmbedEnqueuer(e EmbedEnqueuer) {
+	s.embedEnqueuer = e
 }
 
 // syncState holds the state for a sync operation.
@@ -185,6 +198,7 @@ func (s *Syncer) processBatch(ctx context.Context, sourceID int64, listResp *gma
 			return nil, fmt.Errorf("fetch messages: %w", err)
 		}
 
+		var insertedIDs []int64
 		for i, raw := range rawMessages {
 			if raw == nil {
 				s.logger.Warn("failed to fetch message (nil response)", "id", newIDs[i])
@@ -209,7 +223,8 @@ func (s *Syncer) processBatch(ctx context.Context, sourceID int64, listResp *gma
 			}
 
 			threadID := threadIDs[newIDs[i]]
-			if err := s.ingestMessage(ctx, sourceID, raw, threadID, labelMap); err != nil {
+			insertedID, err := s.ingestMessage(ctx, sourceID, raw, threadID, labelMap)
+			if err != nil {
 				if errors.Is(err, errDuplicateRFC822) {
 					result.skipped++
 					continue
@@ -219,8 +234,19 @@ func (s *Syncer) processBatch(ctx context.Context, sourceID int64, listResp *gma
 				continue
 			}
 
+			if insertedID > 0 {
+				insertedIDs = append(insertedIDs, insertedID)
+			}
 			result.added++
 			summary.BytesDownloaded += int64(len(raw.Raw))
+		}
+
+		// Hook vector-search enqueue after the batch-insert point.
+		// Non-fatal on failure: missed IDs get picked up by full-rebuild.
+		if s.embedEnqueuer != nil && len(insertedIDs) > 0 {
+			if err := s.embedEnqueuer.EnqueueMessages(ctx, insertedIDs); err != nil {
+				s.logger.Warn("vector enqueue failed", "ids", len(insertedIDs), "error", err)
+			}
 		}
 	}
 
@@ -570,8 +596,9 @@ func (s *Syncer) parseToModel(sourceID int64, raw *gmail.RawMessage, threadID st
 	}, nil
 }
 
-// persistMessage stores a parsed message and all related data.
-func (s *Syncer) persistMessage(data *messageData, labelMap map[string]int64) error {
+// persistMessage stores a parsed message and all related data. Returns
+// the internal message ID for hooks (e.g. vector-search enqueue).
+func (s *Syncer) persistMessage(data *messageData, labelMap map[string]int64) (int64, error) {
 	// Map Gmail label IDs to internal IDs
 	var labelIDs []int64
 	for _, gmailLabelID := range data.gmailLabelIDs {
@@ -606,7 +633,7 @@ func (s *Syncer) persistMessage(data *messageData, labelMap map[string]int64) er
 		LabelIDs:   labelIDs,
 	})
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	// Store attachments (best-effort, file I/O outside transaction)
@@ -650,7 +677,7 @@ func (s *Syncer) persistMessage(data *messageData, labelMap map[string]int64) er
 		}
 	}
 
-	return nil
+	return messageID, nil
 }
 
 // errDuplicateRFC822 signals that a message was skipped because
@@ -659,11 +686,13 @@ func (s *Syncer) persistMessage(data *messageData, labelMap map[string]int64) er
 // composite IDs change when messages move between mailboxes.
 var errDuplicateRFC822 = errors.New("duplicate RFC822 Message-ID")
 
-// ingestMessage parses and stores a single message.
-func (s *Syncer) ingestMessage(ctx context.Context, sourceID int64, raw *gmail.RawMessage, threadID string, labelMap map[string]int64) error {
+// ingestMessage parses and stores a single message, returning the
+// internal message ID on success. Returns (0, errDuplicateRFC822) for
+// IMAP deduplication skips.
+func (s *Syncer) ingestMessage(ctx context.Context, sourceID int64, raw *gmail.RawMessage, threadID string, labelMap map[string]int64) (int64, error) {
 	data, err := s.parseToModel(sourceID, raw, threadID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	// For IMAP sources, check if a message with the same RFC822
@@ -678,7 +707,7 @@ func (s *Syncer) ingestMessage(ctx context.Context, sourceID int64, raw *gmail.R
 		existingID, err := s.store.GetMessageIDByRFC822ID(
 			sourceID, data.message.RFC822MessageID.String)
 		if err != nil {
-			return fmt.Errorf("check rfc822 dedup: %w", err)
+			return 0, fmt.Errorf("check rfc822 dedup: %w", err)
 		}
 		if existingID > 0 {
 			var labelIDs []int64
@@ -692,9 +721,9 @@ func (s *Syncer) ingestMessage(ctx context.Context, sourceID int64, raw *gmail.R
 				data.message.SourceMessageID,
 				labelIDs,
 			); err != nil {
-				return fmt.Errorf("update dedup message: %w", err)
+				return 0, fmt.Errorf("update dedup message: %w", err)
 			}
-			return errDuplicateRFC822
+			return 0, errDuplicateRFC822
 		}
 	}
 

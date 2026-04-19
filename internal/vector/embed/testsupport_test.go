@@ -147,6 +147,50 @@ CREATE TABLE message_bodies (
 	}
 }
 
+// openVectorsDBForEnqueue opens a vectors.db with the schema applied but
+// NO generations. Useful for Enqueuer tests that insert their own generations.
+func openVectorsDBForEnqueue(t *testing.T) *sql.DB {
+	t.Helper()
+	ctx := context.Background()
+	if err := sqlitevec.RegisterExtension(); err != nil {
+		t.Fatalf("RegisterExtension: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "vectors.db")
+	db, err := sql.Open(sqlitevec.DriverName(), path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := sqlitevec.Migrate(ctx, db, 768); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	return db
+}
+
+// insertGenerationStatic inserts an index_generations row with the given
+// state. id is used verbatim (not auto-increment).
+func insertGenerationStatic(t *testing.T, db *sql.DB, id int64, state string) {
+	t.Helper()
+	if _, err := db.Exec(
+		`INSERT INTO index_generations (id, model, dimension, fingerprint, started_at, state)
+         VALUES (?, 'm', 768, 'm:768', 0, ?)`, id, state); err != nil {
+		t.Fatalf("insert generation %d: %v", id, err)
+	}
+}
+
+// assertPending asserts the number of pending rows for gen.
+func assertPending(t *testing.T, db *sql.DB, gen int64, want int) {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pending_embeddings WHERE generation_id = ?`, gen).Scan(&n); err != nil {
+		t.Fatalf("count pending (gen=%d): %v", gen, err)
+	}
+	if n != want {
+		t.Errorf("pending for gen %d = %d, want %d", gen, n, want)
+	}
+}
+
 // fakeEmbeddingClient returns a deterministic vector per input; tests
 // may force failures with FailNext(n).
 type fakeEmbeddingClient struct {
