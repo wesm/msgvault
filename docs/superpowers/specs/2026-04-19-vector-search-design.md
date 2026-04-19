@@ -234,10 +234,13 @@ WITH
   ),
 
   -- BM25 over the filtered set. MATCH is pushed through the join.
+  -- NOTE: SQLite's bm25() function cannot be used inside subqueries/joins,
+  -- so we read fts.rank (the FTS5 built-in column that aliases to the
+  -- default bm25 score). Lower rank = better match.
   bm25 AS (
     SELECT fts.rowid AS message_id,
-           bm25(messages_fts) AS bm25_raw,
-           ROW_NUMBER() OVER (ORDER BY bm25(messages_fts)) AS rnk
+           fts.rank AS bm25_raw,
+           ROW_NUMBER() OVER (ORDER BY fts.rank) AS rnk
     FROM messages_fts fts
     JOIN filtered f ON f.id = fts.rowid
     WHERE messages_fts MATCH :fts_query
