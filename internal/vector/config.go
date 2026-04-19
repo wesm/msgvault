@@ -77,8 +77,9 @@ func (c *Config) Validate() error {
 	if c.Embeddings.Endpoint == "" {
 		return fmt.Errorf("vector.embeddings.endpoint: required")
 	}
-	if _, err := url.Parse(c.Embeddings.Endpoint); err != nil {
-		return fmt.Errorf("vector.embeddings.endpoint: invalid URL: %w", err)
+	u, err := url.Parse(c.Embeddings.Endpoint)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("vector.embeddings.endpoint: must be an absolute URL with scheme and host (got %q)", c.Embeddings.Endpoint)
 	}
 	if c.Embeddings.Dimension <= 0 {
 		return fmt.Errorf("vector.embeddings.dimension: must be positive, got %d", c.Embeddings.Dimension)

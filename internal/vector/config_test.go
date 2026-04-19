@@ -1,6 +1,7 @@
 package vector
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -67,6 +68,7 @@ func TestConfig_Validate(t *testing.T) {
 		{"OK", func(c *Config) {}, ""},
 		{"MissingEndpoint", func(c *Config) { c.Embeddings.Endpoint = "" }, "endpoint"},
 		{"InvalidEndpoint", func(c *Config) { c.Embeddings.Endpoint = "::not a url" }, "endpoint"},
+		{"MissingScheme", func(c *Config) { c.Embeddings.Endpoint = "mac-studio:8080/v1" }, "endpoint"},
 		{"ZeroDim", func(c *Config) { c.Embeddings.Dimension = 0 }, "dimension"},
 		{"NegativeDim", func(c *Config) { c.Embeddings.Dimension = -1 }, "dimension"},
 		{"UnknownBackend", func(c *Config) { c.Backend = "mystery" }, "backend"},
@@ -86,7 +88,7 @@ func TestConfig_Validate(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
 			}
-			if !contains(err.Error(), tt.wantErr) {
+			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("error %q missing %q", err.Error(), tt.wantErr)
 			}
 		})
@@ -114,13 +116,4 @@ func validConfig() Config {
 			MaxPageSizeHybrid: 50,
 		},
 	}
-}
-
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
 }

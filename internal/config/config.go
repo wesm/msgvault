@@ -210,7 +210,7 @@ func DefaultHome() string {
 // NewDefaultConfig returns a configuration with default values.
 func NewDefaultConfig() *Config {
 	homeDir := DefaultHome()
-	return &Config{
+	cfg := &Config{
 		HomeDir: homeDir,
 		Data: DataConfig{
 			DataDir: homeDir,
@@ -229,6 +229,8 @@ func NewDefaultConfig() *Config {
 		},
 		Accounts: []AccountSchedule{},
 	}
+	cfg.Vector.ApplyDefaults()
+	return cfg
 }
 
 // Load reads the configuration from the specified file.
@@ -306,8 +308,6 @@ func Load(path, homeDir string) (*Config, error) {
 			cfg.OAuth.Apps[name] = app
 		}
 	}
-
-	cfg.Vector.ApplyDefaults()
 
 	return cfg, nil
 }
