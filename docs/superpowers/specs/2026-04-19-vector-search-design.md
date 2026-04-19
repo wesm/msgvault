@@ -340,19 +340,42 @@ This is the invariant that keeps queries and corpus vectors aligned.
    - `/api/v1/search?mode=vector|hybrid` and MCP equivalents return `index_stale` (or `index_building` / `vector_not_enabled` as appropriate).
    - `fts` mode and the existing TUI search paths continue to work normally.
    - The background embedding worker (if scheduled) does not touch the old generation; it sits idle until a `--full-rebuild` is initiated.
-5. If a generation is in `state = 'building'`, search returns `index_building` for vector/hybrid.
+5. If a generation is in `state = 'building'` **and** no active generation exists (first-ever build), search returns `index_building` for vector/hybrid. A rebuild with an existing active generation is transparent to search (see "Rebuild swap" and "Guarantee" below).
 
 **Explicit re-embed required to change models.** There is no auto-invalidation behavior that silently drops old embeddings. The user must run `msgvault embed --full-rebuild`, which is explicit and observable.
 
-**Sync-side interaction.** When the sync pipeline writes a new message, it inserts a row into `pending_embeddings` for the *active* generation only. If no generation is active, new messages are queued for whatever generation is currently building; if nothing is building, they accumulate in the main-DB `needs_embedding` flag and get picked up on the next `--full-rebuild`.
+**Sync-side interaction — dual-enqueue during rebuilds.** When the sync pipeline writes a new message, it inserts a row into `pending_embeddings` for *every non-retired generation*:
+
+- If only `state = 'active'` exists: one row, to the active generation. Normal steady state.
+- If both `'active'` and `'building'` exist: two rows, one per generation. The building generation therefore stays current with ingest while it backfills, so the swap does not drop messages that arrived during the rebuild.
+- If only `'building'` exists (first-ever rebuild, no prior active): one row, to the building generation.
+- If nothing is non-retired: no rows; messages accumulate only via the main-DB `needs_embedding` flag and get picked up on the next `--full-rebuild`.
+
+Dual-enqueue costs one extra embedding API call per new message during rebuild. New-message rate is negligible compared to the 2M-message backfill, so this is acceptable. Optimizing this (single call, write to both generations) is possible only when the two generations share model+dimension; deferred to a future pass.
+
+**Rebuild swap.** When the building generation's `pending_embeddings` queue for that generation is empty *and* the embedding worker has no in-flight batches for it, the builder runs one final drain pass (re-enqueueing any messages that were created in the last few seconds, just to be safe) and then atomically:
+
+```sql
+BEGIN;
+UPDATE index_generations SET state = 'retired', completed_at = :now WHERE state = 'active';
+UPDATE index_generations SET state = 'active', activated_at = :now, completed_at = :now WHERE state = 'building';
+COMMIT;
+-- Then, outside the transaction: purge retired rows (or delay per §14.4 grace-period option).
+```
+
+**Rebuild abort.** If `msgvault embed --full-rebuild` is cancelled or crashes, the builder marks `state = 'building'` → `'retired'`, purges its rows, and leaves the active generation untouched. A subsequent `--full-rebuild` starts clean.
+
+**Guarantee.** At all times, at most one generation is `'active'` and at most one is `'building'`. Vector/hybrid search runs against the active generation. `index_building` (§9.2) is returned only when there is no active generation — i.e. a first-ever rebuild that has not yet completed. A rebuild in progress while an active generation exists is invisible to search.
 
 ## 7. Search Pipeline
 
 ### 7.1 Modes
 
-- **`fts`** — existing behavior (FTS5-only). Included in the new API surface for uniformity but routes to the same backend as `/api/v1/search/deep`.
+- **`fts`** — existing behavior (FTS5-only). Default on every public surface for backwards compatibility.
 - **`vector`** — pure ANN query over the active-generation vectors (`vectors_vec_dN`), ordered by cosine distance.
-- **`hybrid`** — RRF fusion of BM25 and vector results. Default.
+- **`hybrid`** — RRF fusion of BM25 and vector results. Opt-in per request.
+
+**Default mode is `fts` everywhere.** The CLI, HTTP, and MCP surfaces do not honor a config-level default override in MVP: every client that wants `hybrid` or `vector` specifies it explicitly per call. This keeps existing clients (TUI, already-deployed scripts) untouched and avoids drift between "what the server thinks is the default" and "what the client sees". If a persistent personal preference is desired later, a shell alias for `msgvault search` is a better home for it than a server-side config.
 
 ### 7.2 RRF fusion
 
@@ -373,19 +396,30 @@ Supported at the SQL level (applied *before* RRF in the fused CTE):
 
 Filters are applied to both signals symmetrically to avoid lopsided candidate pools.
 
-### 7.4 Response shape
+### 7.4 Response shape and pagination
 
-Lean default; `?explain=1` opts into score details.
+**Pagination rules (one explicit rule per mode):**
 
-**Mode-dependent result counting:**
-- `fts` — response includes `"total": <exact match count>` (BM25 has a precise count; preserves the contract of the existing endpoint).
-- `vector` and `hybrid` — response uses `"returned": <count in this response>` and `"has_more": <bool>`. No `total`. There is no meaningful exact total for ANN without either a similarity threshold (not provided in MVP) or a full scan. `has_more` is true iff the candidate pool (`k_per_signal`) exceeded `limit + offset`.
+- `mode=fts` — `page` + `page_size` parameters work exactly as today (`internal/api/handlers.go`, `internal/remote/store.go`). No change to the existing endpoint contract. Response includes `total` (exact, from BM25).
+- `mode=vector` and `mode=hybrid` — **no pagination in MVP.** Only `page_size` is honored, capped at `max_page_size_hybrid` (default 50, hard max 100). Explicitly **`page > 1` is rejected with HTTP 400 `pagination_unsupported`**. Response includes neither `total` nor `has_more`; it reports `returned` (count of results in the payload) and — if the candidate pool was saturated — a boolean `pool_saturated` that tells the client the pool filled up and they should refine their query rather than ask for more.
 
+Rationale for the stricter vector/hybrid rule: the algorithm pulls a fixed-size candidate pool (`k_per_signal`) from each signal. Deep paging into ANN results is rarely meaningful; if a client wants more results, refining the query is a better answer than paging. Keeping the contract tight in MVP avoids implicit "paginate by re-querying with a bigger pool" hacks that surface inconsistent results as the pool grows.
+
+CLI mapping:
+- `--limit N` maps to `page_size=N` in all modes (via the existing CLI contract).
+- `--offset` is supported for `fts` only (maps to `page = offset/page_size + 1`, as today).
+- Passing `--offset > 0` with `--mode=vector|hybrid` errors at the CLI before any HTTP round-trip.
+
+**Response bodies:**
+
+For `mode=fts` — unchanged from today. Existing clients see identical output.
+
+For `mode=vector` / `mode=hybrid`:
 ```json
 {
   "query": "...", "mode": "hybrid", "took_ms": 82,
   "returned": 20,
-  "has_more": true,
+  "pool_saturated": false,
   "generation": { "id": 3, "model": "nomic-embed-text-v1.5", "dimension": 768 },
   "results": [{
     "message_id": 12345,
@@ -415,9 +449,15 @@ The `generation` object documents which index answered the query; useful for deb
 ```go
 package vector
 
+// GenerationID is the opaque identity of an index generation. Every write
+// and read goes to exactly one generation. Callers resolve the target
+// generation before calling the backend: the embedding worker writes to
+// the generation it is filling; the search engine reads from the active
+// generation.
+type GenerationID int64
+
 type Chunk struct {
     MessageID      int64
-    Model          string
     Vector         []float32
     SourceCharLen  int
     Truncated      bool
@@ -438,17 +478,37 @@ type Hit struct {
 }
 
 type Backend interface {
-    // Upsert writes chunks. Must be transactional: either all chunks land or none do.
-    Upsert(ctx context.Context, chunks []Chunk) error
+    // CreateGeneration allocates a new generation for model+dimension and
+    // returns its ID. The backend creates dimension-specific storage as
+    // needed (e.g. a new vectors_vec_dN virtual table). Idempotent:
+    // returns an existing building generation for the same params if one
+    // is open.
+    CreateGeneration(ctx context.Context, model string, dimension int) (GenerationID, error)
 
-    // Search returns top-k message hits for the query vector, after applying filter.
-    Search(ctx context.Context, queryVec []float32, k int, filter Filter) ([]Hit, error)
+    // ActivateGeneration atomically swaps the currently-active generation
+    // with the given generation. Previously-active generation is marked
+    // retired in the same transaction. Purges retired rows unless the
+    // caller passes a grace period (§14.4).
+    ActivateGeneration(ctx context.Context, gen GenerationID) error
 
-    // Delete removes embeddings for the given messages.
-    Delete(ctx context.Context, messageIDs []int64) error
+    // RetireGeneration marks a generation retired (aborted rebuild or
+    // post-swap cleanup) and deletes its rows.
+    RetireGeneration(ctx context.Context, gen GenerationID) error
 
-    // Stats returns counts and storage size.
-    Stats(ctx context.Context) (Stats, error)
+    // Upsert writes chunks to the given generation. Transactional.
+    Upsert(ctx context.Context, gen GenerationID, chunks []Chunk) error
+
+    // Search returns top-k message hits for the query vector within the
+    // given generation, after applying filter.
+    Search(ctx context.Context, gen GenerationID, queryVec []float32, k int, filter Filter) ([]Hit, error)
+
+    // Delete removes embeddings for the given messages within the given
+    // generation. Used to requeue on failure, not for user-facing deletes.
+    Delete(ctx context.Context, gen GenerationID, messageIDs []int64) error
+
+    // Stats returns counts and storage size for the given generation.
+    // Pass 0 to get totals across all generations.
+    Stats(ctx context.Context, gen GenerationID) (Stats, error)
 }
 
 // FusingBackend is an optional capability implemented by backends that can
@@ -463,9 +523,9 @@ type FusingBackend interface {
 type FusedRequest struct {
     FTSQuery        string         // tokenized FTS5 MATCH expression
     QueryVec        []float32      // query embedding
-    Generation      int64          // active index generation id
+    Generation      GenerationID   // active index generation
     KPerSignal      int            // candidate pool size per signal
-    Limit, Offset   int            // final pagination
+    Limit           int            // page_size for this request; no Offset (vector/hybrid is single-page in MVP)
     RRFK            int            // reciprocal-rank-fusion k
     Filter          Filter
 }
@@ -518,24 +578,25 @@ The existing remote-mode path (`IsRemoteMode()` in `search.go`) is extended the 
 
 ### 9.2 HTTP — extends existing `/api/v1/search`
 
-The existing `/api/v1/search?q=...` endpoint already accepts Gmail-style queries. We extend it with a `mode` parameter; we do not add a new endpoint.
+The existing `/api/v1/search?q=...` endpoint already accepts Gmail-style queries and `page` / `page_size` pagination (see `internal/api/handlers.go` and `internal/remote/store.go`). We extend it with `mode` and `explain`; we do not add a new endpoint or new pagination parameters.
 
 ```
-GET /api/v1/search?q=...&mode=fts|vector|hybrid&limit=20[&explain=1]
+GET /api/v1/search?q=...&mode=fts|vector|hybrid&page=1&page_size=20[&explain=1]
 ```
 
 - `mode` defaults to `fts` — existing response shape, existing semantics, no change for current clients including the TUI.
-- `mode=vector` and `mode=hybrid` are the new behaviors, guarded by the active-generation check in §6.7.
+- `page` / `page_size` apply fully to `mode=fts` (unchanged). For `mode=vector|hybrid`, only `page=1` is permitted; any other value returns HTTP 400 with `pagination_unsupported`. `page_size` is capped at `max_page_size_hybrid` (default 50).
 - `/api/v1/search/fast` and `/api/v1/search/deep` (used by the TUI) are unchanged.
 - `/api/v1/stats` is extended with optional fields (see §11.5); existing clients are unaffected.
 
 New error codes:
 | Code | HTTP | Description |
 |------|------|-------------|
+| `pagination_unsupported` | 400 | `page > 1` requested with `mode=vector` or `mode=hybrid` — refine the query instead |
 | `embedding_endpoint_unavailable` | 503 | Could not reach the configured embedding endpoint at query time |
 | `vector_not_enabled` | 503 | `mode=vector` or `hybrid` requested but `[vector]` is not configured |
 | `index_stale` | 503 | Configured model/dimension does not match active index generation — a rebuild is required |
-| `index_building` | 503 | A rebuild is in progress and no active generation exists yet |
+| `index_building` | 503 | First-ever rebuild is in progress and no active generation exists yet. Not returned while an active generation exists (rebuilds are transparent to search) |
 | `dimension_mismatch` | 500 | Query embedding dimension disagrees with the active index (should be caught earlier; indicates a bug) |
 
 ### 9.3 MCP server — extends existing `msgvault mcp`
@@ -578,10 +639,11 @@ strip_quotes = true
 strip_signatures = true
 
 [vector.search]
-default_mode = "hybrid"
 rrf_k = 60
 k_per_signal = 100
 subject_boost = 2.0
+max_page_size_hybrid = 50       # per-request cap for mode=vector|hybrid
+# Note: no default_mode. Every request specifies mode explicitly; default is fts everywhere.
 
 [vector.embed.schedule]
 cron = "*/5 * * * *"                         # "" disables scheduled embedding
@@ -702,7 +764,12 @@ Resolved by review (previously open, now decided):
 - **CLI extension vs. new command.** Extends existing `msgvault search` with `--mode` and `--explain` (§9.1). Gmail-style syntax is preserved.
 - **Staleness tracking.** `index_generations` table with `fingerprint = model:dimension`; search refuses on mismatch (§6.7).
 - **MCP tool surface.** All 8 existing tools preserved; `search_messages` gains `mode`/`explain`; new `find_similar_messages` added (§9.3).
-- **Response totals for ANN.** Drop `total` for `vector`/`hybrid`; use `returned` + `has_more`. Keep `total` for `fts` (§7.4).
+- **Response totals for ANN.** Drop `total` for `vector`/`hybrid`; use `returned` + optional `pool_saturated`. Keep `total` for `fts` (§7.4).
+- **Pagination for ANN.** No deep paging in MVP: `mode=vector|hybrid` accepts only `page=1` and caps `page_size` at `max_page_size_hybrid` (§7.4, §9.2).
+- **Default mode at the public API.** Always `fts` on CLI, HTTP, and MCP. No config-level `default_mode`; clients opt into `hybrid`/`vector` explicitly per call (§7.1).
+- **Freshness during rebuild.** Dual-enqueue: sync writes `pending_embeddings` rows for every non-retired generation, so the building generation stays current with ingest and the swap doesn't drop messages (§6.7).
+- **`index_building` error scope.** Only returned on the first-ever rebuild when no active generation exists. Rebuilds with an active generation are transparent to search (§6.7, §9.2).
+- **Backend contract carries generation.** `Upsert`, `Search`, `Delete`, `Stats` all take an explicit `GenerationID` so two same-dim generations can coexist during rebuild without ambiguity (§8.1).
 
 ---
 
@@ -714,17 +781,21 @@ See §5.3 for the fused CTE. For the non-fusing case (lance or remote backend), 
 req := vector.FusedRequest{
     FTSQuery: ftsMatch, QueryVec: queryVec,
     Generation: activeGen.ID, KPerSignal: kPerSignal,
-    Limit: limit, Offset: offset, RRFK: rrfK,
+    Limit: pageSize, RRFK: rrfK,          // no Offset: vector/hybrid is single-page
     Filter: filter,
 }
 if fb, ok := backend.(vector.FusingBackend); ok {
-    return fb.FusedSearch(ctx, req)  // single-query path for sqlite-vec
+    return fb.FusedSearch(ctx, req)       // single-query path for sqlite-vec
 }
-// Fallback for non-fusing backends (lance, remote): two filtered queries + Go-side RRF.
-vecHits, _ := backend.Search(ctx, queryVec, kPerSignal, filter)
+// Fallback for non-fusing backends (lance, remote):
+// two filtered queries against the active generation + Go-side RRF.
+vecHits, _ := backend.Search(ctx, activeGen.ID, queryVec, kPerSignal, filter)
 ftsHits, _ := sqliteFTS.Search(ctx, ftsMatch, kPerSignal, filter)
 fused := rrf.Fuse(vecHits, ftsHits, rrfK, subjectBoost, subjectTokens)
-return fused[offset : offset+limit]
+if len(fused) > pageSize {
+    fused = fused[:pageSize]
+}
+return fused
 ```
 
 ## Appendix B: Example workflow
