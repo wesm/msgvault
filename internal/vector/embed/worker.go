@@ -19,16 +19,18 @@ type EmbeddingClient interface {
 
 // WorkerDeps bundles the collaborators a Worker needs. Backend, VectorsDB,
 // MainDB, and Client are required; the remaining fields have sensible
-// defaults when zero.
+// defaults when zero: BatchSize defaults to 32, StaleThreshold defaults to
+// 10 minutes, Log defaults to slog.Default().
 type WorkerDeps struct {
-	Backend       vector.Backend
-	VectorsDB     *sql.DB
-	MainDB        *sql.DB
-	Client        EmbeddingClient
-	Preprocess    PreprocessConfig
-	MaxInputChars int
-	BatchSize     int
-	Log           *slog.Logger
+	Backend        vector.Backend
+	VectorsDB      *sql.DB
+	MainDB         *sql.DB
+	Client         EmbeddingClient
+	Preprocess     PreprocessConfig
+	MaxInputChars  int
+	BatchSize      int
+	StaleThreshold time.Duration // default 10 minutes
+	Log            *slog.Logger
 }
 
 // Worker drives one building generation from claimed pending rows to
@@ -40,14 +42,17 @@ type Worker struct {
 	q    *Queue
 }
 
-// NewWorker constructs a Worker, applying defaults for BatchSize (32) and
-// Log (slog.Default()).
+// NewWorker constructs a Worker, applying defaults for BatchSize (32),
+// StaleThreshold (10 minutes), and Log (slog.Default()).
 func NewWorker(d WorkerDeps) *Worker {
 	if d.Log == nil {
 		d.Log = slog.Default()
 	}
 	if d.BatchSize == 0 {
 		d.BatchSize = 32
+	}
+	if d.StaleThreshold == 0 {
+		d.StaleThreshold = 10 * time.Minute
 	}
 	return &Worker{deps: d, q: NewQueue(d.VectorsDB)}
 }
@@ -64,6 +69,17 @@ type msgText struct {
 	Text  string
 	Chars int
 	Trunc bool
+}
+
+// ReclaimStale releases claims older than StaleThreshold so crashed
+// workers don't leave rows stuck. Call at startup before RunOnce.
+// Returns the number of rows reclaimed.
+func (w *Worker) ReclaimStale(ctx context.Context) (int, error) {
+	n, err := w.q.ReclaimStale(ctx, w.deps.StaleThreshold)
+	if err != nil {
+		return 0, fmt.Errorf("reclaim stale: %w", err)
+	}
+	return n, nil
 }
 
 // RunOnce drains the queue for the given generation until empty,
