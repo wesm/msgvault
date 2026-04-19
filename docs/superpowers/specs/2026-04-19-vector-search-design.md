@@ -112,77 +112,147 @@ A partial index keeps the flag cheap even at 2M rows: only rows pending embeddin
 Attached to the main SQLite connection as `vec` when vector search is enabled:
 
 ```sql
--- Model registry: which models have been used, for auditability and rotation
-CREATE TABLE models (
-    name       TEXT PRIMARY KEY,
-    dimension  INTEGER NOT NULL,
-    endpoint   TEXT NOT NULL,
-    first_seen INTEGER NOT NULL,
-    last_used  INTEGER NOT NULL
+-- Index generations: each is a complete corpus re-embedding with a specific
+-- model + dimension. Exactly one can be active at a time; at most one more
+-- may be in progress (being built). Search always filters by the active
+-- generation; writes target the building generation.
+CREATE TABLE index_generations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    model           TEXT NOT NULL,
+    dimension       INTEGER NOT NULL,
+    fingerprint     TEXT NOT NULL,   -- "<model>:<dim>"; compared to config at search time
+    started_at      INTEGER NOT NULL,
+    completed_at    INTEGER,         -- NULL while building
+    activated_at    INTEGER,         -- NULL until it becomes the active generation
+    state           TEXT NOT NULL,   -- "building" | "ready" | "active" | "retired"
+    message_count   INTEGER NOT NULL DEFAULT 0
 );
+CREATE UNIQUE INDEX idx_active_generation ON index_generations(state) WHERE state = 'active';
+CREATE UNIQUE INDEX idx_building_generation ON index_generations(state) WHERE state = 'building';
 
--- Per-message embedding metadata (the source of truth for what's indexed)
+-- Per-message embedding metadata, scoped to a generation.
 CREATE TABLE embeddings (
-    message_id       INTEGER PRIMARY KEY,
-    model            TEXT NOT NULL REFERENCES models(name),
+    generation_id    INTEGER NOT NULL REFERENCES index_generations(id) ON DELETE CASCADE,
+    message_id       INTEGER NOT NULL,
     embedded_at      INTEGER NOT NULL,
-    source_char_len  INTEGER NOT NULL,  -- chars fed to the embedder after preprocessing
-    truncated        INTEGER NOT NULL DEFAULT 0  -- 1 if input exceeded model context
+    source_char_len  INTEGER NOT NULL,
+    truncated        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (generation_id, message_id)
 );
-CREATE INDEX idx_embeddings_model ON embeddings(model);
+CREATE INDEX idx_embeddings_msg ON embeddings(message_id);
 
--- sqlite-vec virtual table; one row per message for the active model
--- Dimension is fixed per-table; on model dimension change we rebuild
-CREATE VIRTUAL TABLE vectors_vec USING vec0(
-    message_id INTEGER PRIMARY KEY,
-    embedding  FLOAT[768]  -- templated from config at DB creation time
+-- One sqlite-vec virtual table per dimension, partitioned by generation_id.
+-- Partition keys let us hold multiple generations at once without cross-
+-- contamination during rebuilds. Table name is versioned by dimension so
+-- generations with different dims can coexist during transition.
+CREATE VIRTUAL TABLE vectors_vec_d768 USING vec0(
+    generation_id INTEGER PARTITION KEY,
+    message_id    INTEGER PRIMARY KEY,
+    embedding     FLOAT[768]
 );
+-- A vectors_vec_d1024, etc. is created on demand when a generation requests it.
 
 -- Embedding job history, mirrors sync_runs pattern
 CREATE TABLE embed_runs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    generation_id INTEGER NOT NULL REFERENCES index_generations(id),
     started_at   INTEGER NOT NULL,
     ended_at     INTEGER,
-    model        TEXT NOT NULL,
     claimed      INTEGER NOT NULL DEFAULT 0,
     succeeded    INTEGER NOT NULL DEFAULT 0,
     failed       INTEGER NOT NULL DEFAULT 0,
     truncated    INTEGER NOT NULL DEFAULT 0,
     error        TEXT
 );
+
+-- needs_embedding tracking is scoped per generation: a row means "this
+-- message is pending in this generation's build". The main-DB column is
+-- retained for backwards compatibility and quick filtering in the worker,
+-- but the authoritative queue lives here.
+CREATE TABLE pending_embeddings (
+    generation_id INTEGER NOT NULL REFERENCES index_generations(id) ON DELETE CASCADE,
+    message_id    INTEGER NOT NULL,
+    PRIMARY KEY (generation_id, message_id)
+);
+```
+
+Notes on design:
+- **One active generation at a time.** Search resolves the active generation on every request and refuses to run vector/hybrid mode if the configured fingerprint does not match the active generation's fingerprint (see §6.7).
+- **`vec0` partition keys** are the supported sqlite-vec pattern for multi-tenant / generational vectors; searches pass `WHERE generation_id = ?` as a cheap pre-filter.
+- **Dimension-specific virtual tables** (`vectors_vec_d768`, `vectors_vec_d1024`, ...) avoid the single-dim-per-table constraint. Created on demand by the generation builder; dropped when no generations reference them.
+- **`vectors.db` is fully derived.** It can be deleted any time; a subsequent `msgvault embed --full-rebuild` restores it from the system of record.
+
+### 5.3 ATTACH pattern and fused query
+
+When vector search is enabled, the main SQLite connection runs `ATTACH DATABASE '<vectors.db>' AS vec` on open. Hybrid queries fuse BM25 and ANN results in a single statement.
+
+**Filters are pushed into both signal branches** so that a narrow filter (e.g. `label:Taxes` on 0.5% of the corpus) doesn't starve either signal's candidate pool. The pattern is: resolve the filtered message-ID set first, then constrain both signal CTEs to it.
+
+```sql
+WITH
+  -- Resolve all filters once into a filtered candidate set.
+  -- Uses EXISTS for many-to-many joins (labels, recipients), per CLAUDE.md SQL guidance.
+  filtered AS (
+    SELECT m.id
+    FROM messages m
+    WHERE (:account_ids IS NULL OR m.source_id IN :account_ids)
+      AND (:from IS NULL OR m.from_email = :from)
+      AND (:has_attachment IS NULL OR m.has_attachments = :has_attachment)
+      AND (:after  IS NULL OR m.sent_at >= :after)
+      AND (:before IS NULL OR m.sent_at <  :before)
+      AND (:label IS NULL OR EXISTS (
+            SELECT 1 FROM message_labels ml
+            JOIN labels l ON l.id = ml.label_id
+            WHERE ml.message_id = m.id AND l.name = :label))
+  ),
+
+  -- BM25 over the filtered set. MATCH is pushed through the join.
+  bm25 AS (
+    SELECT fts.rowid AS message_id,
+           bm25(messages_fts) AS bm25_raw,
+           ROW_NUMBER() OVER (ORDER BY bm25(messages_fts)) AS rnk
+    FROM messages_fts fts
+    JOIN filtered f ON f.id = fts.rowid
+    WHERE messages_fts MATCH :fts_query
+    LIMIT :k_per_signal
+  ),
+
+  -- ANN over the filtered set in the active generation.
+  -- vec0 partition keys + rowid restriction give us filtered kNN.
+  vec AS (
+    SELECT v.message_id,
+           v.distance AS vec_dist,
+           ROW_NUMBER() OVER (ORDER BY v.distance) AS rnk
+    FROM vec.vectors_vec_d768 v
+    WHERE v.generation_id = :active_gen
+      AND v.message_id IN (SELECT id FROM filtered)
+      AND v.embedding MATCH :query_vec
+      AND k = :k_per_signal
+  ),
+
+  fused AS (
+    SELECT COALESCE(b.message_id, v.message_id) AS message_id,
+           COALESCE(1.0 / (:rrf_k + b.rnk), 0.0) +
+           COALESCE(1.0 / (:rrf_k + v.rnk), 0.0) AS rrf_score,
+           b.bm25_raw AS bm25_score,
+           CASE WHEN v.vec_dist IS NULL THEN NULL ELSE 1.0 - v.vec_dist END AS vector_score
+    FROM bm25 b
+    FULL OUTER JOIN vec v USING (message_id)
+  )
+
+SELECT m.id, m.subject, m.snippet, m.sent_at,
+       f.rrf_score, f.bm25_score, f.vector_score
+FROM fused f
+JOIN messages m ON m.id = f.message_id
+ORDER BY f.rrf_score DESC
+LIMIT :limit;
 ```
 
 Notes:
-- `vectors_vec` dimension is templated at table creation and cannot be altered. Model rotation that changes dimension requires dropping and recreating `vectors_vec` and re-embedding everything. This is by design; the `embed --full-rebuild` command handles it.
-- Model rotation at the *same* dimension (e.g. fine-tune swap) only requires re-embedding (new rows replace old), not schema changes.
-- `vectors.db` can be deleted at any time with no data loss in the system of record — it's a derived cache. The `needs_embedding` flag on `messages` ensures a full rebuild is straightforward.
-
-### 5.3 ATTACH pattern
-
-When vector search is enabled, the main SQLite connection runs `ATTACH DATABASE '<vectors.db>' AS vec` on open. Hybrid queries can then fuse BM25 and ANN results in a single statement:
-
-```sql
-WITH bm25 AS (
-    SELECT rowid AS message_id, -bm25(messages_fts) AS score, ROW_NUMBER() OVER (ORDER BY bm25(messages_fts)) AS rank
-    FROM messages_fts WHERE messages_fts MATCH ? LIMIT 100
-),
-vec AS (
-    SELECT v.message_id, 1.0 - v.distance AS score, ROW_NUMBER() OVER (ORDER BY v.distance) AS rank
-    FROM vec.vectors_vec v WHERE v.embedding MATCH ? AND k = 100
-),
-fused AS (
-    SELECT COALESCE(b.message_id, v.message_id) AS message_id,
-           COALESCE(1.0 / (60 + b.rank), 0) + COALESCE(1.0 / (60 + v.rank), 0) AS rrf_score,
-           b.score AS bm25_score, v.score AS vector_score
-    FROM bm25 b FULL OUTER JOIN vec v USING (message_id)
-)
-SELECT m.id, m.subject, m.snippet, m.sent_at, f.rrf_score, f.bm25_score, f.vector_score
-FROM fused f JOIN messages m ON m.id = f.message_id
-WHERE <additional filters: account, date, label EXISTS, has_attachment>
-ORDER BY f.rrf_score DESC LIMIT ?;
-```
-
-For backends that do not live in SQLite (lance, remote), the same fusion is done in Go after two independent queries.
+- **Filter pushdown is mandatory.** The previous draft of this spec applied filters after fusion, which silently starved recall on narrow filters (the global top-k signal candidates often contained zero filtered rows).
+- **Pre-filter kNN via `message_id IN (SELECT id FROM filtered)`** is the sqlite-vec pattern for constrained ANN. For very narrow filtered sets this degenerates to brute force, which is cheap at those sizes anyway.
+- **Subject boost** is applied as a post-fusion adjustment in application code (not the SQL), so it can depend on tokenized subject matching without further complicating the CTE.
+- **Backends that do not live in SQLite** (lance, remote) perform two independent filtered queries and fuse in Go via `rrf.Fuse`.
 
 ## 6. Embedding Pipeline
 
@@ -209,15 +279,16 @@ A small OpenAI-compatible client supporting:
 
 ### 6.3 Batch processing (`internal/vector/embed/batch.go`)
 
-The worker repeatedly:
-1. Claims up to `batch_size` message IDs from `messages WHERE needs_embedding = 1 ORDER BY id LIMIT N`.
-2. For each, loads `body_text` + subject and runs pre-processing.
-3. Calls the embedding endpoint with all inputs in one batch.
-4. Inside a transaction: inserts `vectors_vec` rows, inserts `embeddings` rows, sets `needs_embedding = 0` on the source messages.
-5. Records batch result in `embed_runs`.
-6. On error: leaves `needs_embedding = 1`, logs the error, records failure in `embed_runs`. Retries on next run.
+The worker operates on a single generation at a time — either the active one (incremental fill) or the building one (full rebuild). It repeatedly:
 
-Crash safety: because the flag is only cleared after commit, an interrupted batch is simply retried. No idempotency issues.
+1. Claims up to `batch_size` message IDs from `pending_embeddings` for the target generation (`DELETE ... RETURNING message_id` pattern inside a transaction so the claim is idempotent).
+2. For each, loads `body_text` + subject from the main DB and runs pre-processing.
+3. Calls the embedding endpoint with all inputs in one batch.
+4. Inside a transaction on `vectors.db`: inserts `vectors_vec_dN` rows (partitioned by `generation_id`) and inserts `embeddings` rows. If the claim succeeds but the embedding call fails, the rows are re-inserted into `pending_embeddings` before transaction rollback.
+5. Clears the main-DB `needs_embedding` flag for those messages only once the *active* generation has an embedding for them (not the building one).
+6. Records batch result in `embed_runs`.
+
+Crash safety: the claim-and-delete is one transaction, the insert is another; a crash between them leaves the messages re-queued on restart (the worker detects gaps by re-inserting into `pending_embeddings` from `needs_embedding = 1 MINUS existing embeddings for the generation` at startup).
 
 ### 6.4 Daemon integration
 
@@ -234,28 +305,53 @@ The scheduler runs the worker whenever the cron fires, and also after each succe
 
 ```
 msgvault embed [flags]
-  --account EMAIL         # limit to one account (repeatable)
-  --limit N               # max messages to embed this run
-  --full-rebuild          # drop vectors.db and re-embed everything
-  --model NAME            # override the configured model (one-shot)
-  --endpoint URL          # override the configured endpoint (one-shot)
+  --account EMAIL         # limit the build to messages from this account (repeatable)
+  --limit N               # cap this run at N messages (for testing; partial runs resume automatically)
+  --full-rebuild          # create a new generation and rebuild from scratch
   --progress              # live progress bar (default when stderr is a tty)
+  --yes                   # skip confirmation prompts
 ```
 
-`--full-rebuild` prompts for confirmation unless `--yes` is passed. It recreates `vectors.db`, sets `needs_embedding = 1` on all messages, and runs the worker to completion.
+Run modes:
+
+- **Default (incremental).** Fills in missing embeddings for the currently active generation by consuming the `pending_embeddings` queue. Used by the daemon and for manual catch-up.
+- **`--full-rebuild`.** Starts a new generation using the currently-configured model+dimension. Builds into shadow tables in parallel with the active generation. When complete, atomically flips `state = 'active'` on the new generation and `'retired'` on the old. Old generation rows are purged after a brief grace period (configurable, default immediate). Prompts for confirmation unless `--yes` is passed.
+
+There is **no `--model` or `--endpoint` override flag**. Model rotation goes through config: the user updates `[vector.embeddings] model` / `dimension` in `config.toml`, then runs `msgvault embed --full-rebuild` to materialize a generation under the new model. Attempting `--full-rebuild` against config that disagrees with the existing active generation is expected and valid; attempting incremental embedding or search with such config is rejected (§6.7).
 
 ### 6.6 Error surfaces
 
-- Endpoint unreachable → retry with backoff, ultimately leave flag set, log at error level, record in `embed_runs`. Sync is not affected.
-- Endpoint returns unexpected dimension → hard-fail the run, surface the error to `embed_runs.error` and the CLI output. Schema stays consistent.
+- Endpoint unreachable → retry with backoff, ultimately leave rows in `pending_embeddings`, log at error level, record in `embed_runs`. Sync is not affected. Search continues to work against the prior active generation.
+- Endpoint returns unexpected dimension → hard-fail the run, surface the error to `embed_runs.error` and the CLI output. The building generation is marked `retired` rather than activated; the prior active generation remains in service.
 - Model not found → 404 from endpoint → hard-fail with a clear message pointing at the config key.
+
+### 6.7 Model change / index staleness semantics
+
+This is the invariant that keeps queries and corpus vectors aligned.
+
+**Fingerprint:** `<model_name>:<dimension>`. Stored on every `index_generations` row and verified at query time against the running configuration.
+
+**On msgvault startup (or config reload):**
+1. Read `[vector.embeddings] model` and `dimension` from config.
+2. Look up the active generation from `index_generations WHERE state = 'active'`.
+3. If configured fingerprint matches active generation → vector/hybrid search is enabled.
+4. If they differ, or no generation is active:
+   - Log a clear warning at startup.
+   - `/api/v1/search?mode=vector|hybrid` and MCP equivalents return `index_stale` (or `index_building` / `vector_not_enabled` as appropriate).
+   - `fts` mode and the existing TUI search paths continue to work normally.
+   - The background embedding worker (if scheduled) does not touch the old generation; it sits idle until a `--full-rebuild` is initiated.
+5. If a generation is in `state = 'building'`, search returns `index_building` for vector/hybrid.
+
+**Explicit re-embed required to change models.** There is no auto-invalidation behavior that silently drops old embeddings. The user must run `msgvault embed --full-rebuild`, which is explicit and observable.
+
+**Sync-side interaction.** When the sync pipeline writes a new message, it inserts a row into `pending_embeddings` for the *active* generation only. If no generation is active, new messages are queued for whatever generation is currently building; if nothing is building, they accumulate in the main-DB `needs_embedding` flag and get picked up on the next `--full-rebuild`.
 
 ## 7. Search Pipeline
 
 ### 7.1 Modes
 
 - **`fts`** — existing behavior (FTS5-only). Included in the new API surface for uniformity but routes to the same backend as `/api/v1/search/deep`.
-- **`vector`** — pure ANN query over `vectors_vec`, ordered by cosine distance.
+- **`vector`** — pure ANN query over the active-generation vectors (`vectors_vec_dN`), ordered by cosine distance.
 - **`hybrid`** — RRF fusion of BM25 and vector results. Default.
 
 ### 7.2 RRF fusion
@@ -281,10 +377,16 @@ Filters are applied to both signals symmetrically to avoid lopsided candidate po
 
 Lean default; `?explain=1` opts into score details.
 
+**Mode-dependent result counting:**
+- `fts` — response includes `"total": <exact match count>` (BM25 has a precise count; preserves the contract of the existing endpoint).
+- `vector` and `hybrid` — response uses `"returned": <count in this response>` and `"has_more": <bool>`. No `total`. There is no meaningful exact total for ANN without either a similarity threshold (not provided in MVP) or a full scan. `has_more` is true iff the candidate pool (`k_per_signal`) exceeded `limit + offset`.
+
 ```json
 {
   "query": "...", "mode": "hybrid", "took_ms": 82,
-  "total": 47,
+  "returned": 20,
+  "has_more": true,
+  "generation": { "id": 3, "model": "nomic-embed-text-v1.5", "dimension": 768 },
   "results": [{
     "message_id": 12345,
     "subject": "...",
@@ -303,6 +405,8 @@ With `explain=1`, each result gains:
 ```json
 "score": { "rrf": 0.0234, "bm25": 12.3, "vector": 0.87, "subject_boosted": true }
 ```
+
+The `generation` object documents which index answered the query; useful for debugging and for clients that cache results across model rotations.
 
 ## 8. Backend Abstraction
 
@@ -353,14 +457,23 @@ type Backend interface {
 // lance/remote backends do not.
 type FusingBackend interface {
     Backend
-    FusedSearch(ctx context.Context, fts string, queryVec []float32,
-        k int, filter Filter, rrfK int, subjectBoost float64) ([]FusedHit, error)
+    FusedSearch(ctx context.Context, req FusedRequest) ([]FusedHit, error)
+}
+
+type FusedRequest struct {
+    FTSQuery        string         // tokenized FTS5 MATCH expression
+    QueryVec        []float32      // query embedding
+    Generation      int64          // active index generation id
+    KPerSignal      int            // candidate pool size per signal
+    Limit, Offset   int            // final pagination
+    RRFK            int            // reciprocal-rank-fusion k
+    Filter          Filter
 }
 
 type FusedHit struct {
     MessageID               int64
     RRFScore                float64
-    BM25Score, VectorScore  float64  // zero if the message didn't appear in that signal
+    BM25Score, VectorScore  float64  // NaN if the message did not appear in that signal
     SubjectBoosted          bool
 }
 ```
@@ -380,52 +493,65 @@ type FusedHit struct {
 
 ## 9. API Surface
 
-### 9.1 CLI
+### 9.1 CLI — extends existing `msgvault search`
 
+The existing `msgvault search` command already supports Gmail-style query syntax (`from:`, `to:`, `subject:`, `label:`, `has:attachment`, `before:`, `after:`, `older_than:`, `newer_than:`, `larger:`, `smaller:`) and the `--limit / --offset / --json / --account` flags (see `cmd/msgvault/cmd/search.go`). **We extend it, not replace it:**
+
+New flags:
 ```
-msgvault search "query" [flags]
-  --mode=hybrid|vector|fts   # default: hybrid
-  --account EMAIL            # repeatable
-  --from EMAIL
-  --label LABEL              # repeatable
-  --has-attachment
-  --after DATE --before DATE
-  --limit N                  # default 20
-  --json                     # machine-readable output
-  --explain                  # include per-signal scores
+--mode=fts|vector|hybrid      # default: fts (current behavior, unchanged)
+--explain                     # include per-signal scores in output
 ```
 
-Human-readable output: subject, sender, date, snippet, and a small score bar. JSON output matches the HTTP response.
+Semantics of `--mode` when the Gmail-syntax query is parsed via `internal/search`:
+- Free-text terms → used as the FTS query *and* as the text embedded for the vector query (subject/body agnostic; the user's raw intent goes through).
+- Operators (`from:`, `label:`, `after:`, etc.) → structured filters applied equally to both signals in hybrid mode.
+- In `vector` mode, operators still apply as filters; free text becomes the query vector.
+- In `fts` mode, behavior is bit-for-bit identical to today.
 
-### 9.2 HTTP (`/api/v1/search/...`)
+Guardrails:
+- `--mode=hybrid|vector` fails clearly if `[vector]` is not configured, or if the active generation's fingerprint disagrees with the configured model (see §6.7).
+- No `--model` override on `search`; querying with a different model than the active index is a footgun (silent cross-model comparison) and is disallowed. Model rotation goes through `msgvault embed` only.
+- `--explain` adds a score column to the table output and populates a `score` sub-object in `--json` mode.
 
-Additive to the existing routes. Auth, rate limiting, and error format all follow `docs/api.md` conventions.
+The existing remote-mode path (`IsRemoteMode()` in `search.go`) is extended the same way: `--mode` is forwarded as a query parameter to the remote server.
+
+### 9.2 HTTP — extends existing `/api/v1/search`
+
+The existing `/api/v1/search?q=...` endpoint already accepts Gmail-style queries. We extend it with a `mode` parameter; we do not add a new endpoint.
 
 ```
-GET /api/v1/search/hybrid?q=...&mode=hybrid&account=x@y.com&label=inbox&limit=20[&explain=1]
-GET /api/v1/search/vector?q=...&limit=20
+GET /api/v1/search?q=...&mode=fts|vector|hybrid&limit=20[&explain=1]
 ```
 
-The existing `/api/v1/search`, `/api/v1/search/fast`, `/api/v1/search/deep` endpoints used by the TUI are unchanged. A follow-up may unify them but that is not in scope here.
+- `mode` defaults to `fts` — existing response shape, existing semantics, no change for current clients including the TUI.
+- `mode=vector` and `mode=hybrid` are the new behaviors, guarded by the active-generation check in §6.7.
+- `/api/v1/search/fast` and `/api/v1/search/deep` (used by the TUI) are unchanged.
+- `/api/v1/stats` is extended with optional fields (see §11.5); existing clients are unaffected.
 
 New error codes:
 | Code | HTTP | Description |
 |------|------|-------------|
-| `embedding_endpoint_unavailable` | 503 | Could not reach the configured embedding endpoint |
-| `no_embeddings` | 503 | Vector search requested but `vectors.db` is empty or disabled |
-| `dimension_mismatch` | 500 | Query vector dimension does not match index |
+| `embedding_endpoint_unavailable` | 503 | Could not reach the configured embedding endpoint at query time |
+| `vector_not_enabled` | 503 | `mode=vector` or `hybrid` requested but `[vector]` is not configured |
+| `index_stale` | 503 | Configured model/dimension does not match active index generation — a rebuild is required |
+| `index_building` | 503 | A rebuild is in progress and no active generation exists yet |
+| `dimension_mismatch` | 500 | Query embedding dimension disagrees with the active index (should be caught earlier; indicates a bug) |
 
-### 9.3 MCP server (`msgvault mcp`)
+### 9.3 MCP server — extends existing `msgvault mcp`
 
-- Transport: stdio (standard for Claude Desktop, editor integrations). HTTP transport is future work when the web frontend needs it.
-- Uses the official Go MCP SDK (`github.com/modelcontextprotocol/go-sdk`).
-- Tools exposed in MVP:
-  - `search_emails(query, mode?, filters?, limit?)` — returns the same payload shape as the HTTP API.
-  - `get_message(message_id)` — returns subject, sender/recipients, body (plain text), label list, attachment metadata.
-  - `list_recent(account?, limit?)` — wraps the existing `/messages/filter` by date.
-  - `get_attachment_metadata(message_id)` — names, sizes, content-types; no binary download yet.
-- Authentication: the MCP client is trusted (same machine, stdio transport). No token required.
-- Server reuses the same `search.Engine` and `store.Store` as the HTTP API.
+An MCP server already exists at `internal/mcp/server.go`, exposing:
+`search_messages`, `get_message`, `get_attachment`, `export_attachment`, `list_messages`, `get_stats`, `aggregate`, `stage_deletion`. It runs over stdio via `github.com/mark3labs/mcp-go`. **All existing tool names, arguments, and behaviors are preserved.** The only changes:
+
+1. `search_messages` gains an optional `mode` argument (enum: `fts` | `vector` | `hybrid`; default `fts`). Existing callers are unaffected. When `mode != fts`, the tool validates against the active index generation and surfaces the same errors as the HTTP API.
+
+2. `search_messages` gains an optional `explain` boolean; when true, each result object includes a `score` sub-object.
+
+3. A new tool `find_similar_messages(message_id, limit?, filters?)` returns messages closest to the embedding of a given message in the active generation. This is a capability unique to vector search and doesn't map onto the existing Gmail-syntax model, so it warrants its own tool rather than overloading `search_messages`.
+
+4. `get_stats` response is extended with the same optional embedding fields as `/api/v1/stats` (§11.5).
+
+No tools are renamed or removed. The MCP server version advertised in `server.NewMCPServer(...)` stays at `1.0.0` because the changes are backwards-compatible extensions. Add capability negotiation later if that becomes insufficient.
 
 ## 10. Configuration
 
@@ -492,13 +618,37 @@ Before merging:
 ### 11.4 Migration / rollout
 
 Enabling the feature on an existing install:
-1. Add `[vector]` table to config.toml pointing at the homelab endpoint.
-2. Restart `msgvault serve` (or run the binary once) to run the migrations: adds `needs_embedding` column, creates `vectors.db`.
-3. Run `msgvault embed --progress` to backfill. The daemon will handle all future syncs automatically.
+1. Add `[vector]` section to `config.toml` pointing at the homelab endpoint, specifying `model` and `dimension`.
+2. Restart `msgvault serve` (or run the binary once) to run the migrations: adds `needs_embedding` column to `messages`, creates `vectors.db` with empty schema.
+3. Run `msgvault embed --full-rebuild --progress`. This creates the first `index_generations` row, fills `pending_embeddings`, drains it via the embedding endpoint, and activates the new generation on completion. On a 2M-message corpus this is the long step (hours to days depending on endpoint throughput).
+4. From that point on, the daemon keeps the active generation current as sync ingests new messages.
+
+Changing models later (e.g. from `nomic-embed-text-v1.5` 768-dim to `mxbai-embed-large` 1024-dim):
+1. Update `[vector.embeddings]` in `config.toml`.
+2. On the next startup, vector search returns `index_stale` until the user runs `msgvault embed --full-rebuild`. FTS search is unaffected.
+3. The rebuild runs alongside the existing active generation; users can keep searching on the old generation throughout. Atomic swap happens on completion.
 
 Disabling:
-1. Remove `[vector]` from config.toml.
-2. Optionally `trash ~/.msgvault/vectors.db`. The `needs_embedding` column in `msgvault.db` is harmless when unused; no migration needed to remove it.
+1. Remove `[vector]` from `config.toml`.
+2. Optionally `trash ~/.msgvault/vectors.db`. The `needs_embedding` column in `msgvault.db` is harmless when unused; no down-migration needed.
+
+### 11.5 Compatibility and versioning
+
+This feature is strictly additive on every public surface:
+
+| Surface | Existing | Change |
+|---|---|---|
+| `msgvault search` CLI | Gmail syntax, `--limit/--offset/--json/--account` | Adds `--mode`, `--explain` flags; `--mode=fts` (default) is byte-identical to today |
+| `/api/v1/search` HTTP | Current response shape | Adds optional `mode` and `explain` query params; default behavior unchanged |
+| `/api/v1/search/fast`, `/deep`, `/messages/*`, `/stats`, `/aggregates*` | TUI support endpoints | Unchanged |
+| `/api/v1/stats` response | Existing fields | Adds optional `embeddings_total`, `embeddings_pending`, `active_generation` fields (clients that don't read them are unaffected) |
+| MCP tools (8 existing) | As-is | `search_messages` gains optional `mode` + `explain` args; `get_stats` gains the same optional fields as above |
+| MCP tools (new) | — | `find_similar_messages(message_id, limit?, filters?)` |
+| `config.toml` | Existing tables | New `[vector]`, `[vector.embeddings]`, `[vector.preprocess]`, `[vector.search]`, `[vector.embed.schedule]` tables |
+| `msgvault.db` schema | Existing tables | Adds `needs_embedding` column + partial index on `messages` |
+| Binary build | Existing `-tags fts5` | Adds one more build tag for sqlite-vec (final name TBD during implementation; see §14.5) |
+
+Binary versions that predate this feature still work against a database that has the `needs_embedding` column (SQLite ignores unknown columns for the old code paths' purposes). Binary versions that include this feature work against databases that have never enabled vector search (no `vectors.db`, no generations, vector endpoints return `vector_not_enabled`).
 
 ### 11.5 Observability
 
@@ -543,11 +693,16 @@ Each of these is explicitly out of scope for this design:
 Items the user should sanity-check during review:
 
 1. **Config key namespace.** Is `[vector]` the right top-level key? Alternatives: `[search.vector]`, `[semantic]`. `[vector]` is shortest and unambiguous.
-2. **Default `rrf_k` of 60.** Widely cited but not sacred. Pin at 60 for MVP; revisit after real-query tuning.
+2. **Default `rrf_k` of 60.** Widely cited but not sacred. Pin at 60 for MVP; revisit after real-query tuning on the user's corpus.
 3. **Subject boost default.** `2.0` is a guess; `--explain` output during hardening will inform the real value.
-4. **`msgvault mcp` vs. reusing `serve`.** Current plan: separate command for stdio. An alternative is `serve --mcp-stdio` on top of the daemon. Separate command is cleaner for the typical MCP-client launch pattern.
-5. **sqlite-vec extension build story.** Plan: vendored extension or compile-time registration. Needs a build flag analogous to `-tags fts5`. Final choice is implementation detail, but worth confirming the flag name convention (`-tags vec`? `-tags sqlite_vec`?).
-6. **Model file management.** Out of msgvault's scope — the user manages this on their inference server. Confirm that's correct.
+4. **Grace period on old generation rows after rebuild.** MVP default is "immediate purge on swap" to reclaim disk. An alternative is a short grace window (e.g. 10 minutes) to let in-flight queries complete cleanly. Worth a call during implementation — not a spec-level decision.
+5. **sqlite-vec extension build story.** Needs a build tag analogous to `-tags fts5`. Final flag name (`-tags vec`? `-tags sqlite_vec`?) is an implementation detail.
+
+Resolved by review (previously open, now decided):
+- **CLI extension vs. new command.** Extends existing `msgvault search` with `--mode` and `--explain` (§9.1). Gmail-style syntax is preserved.
+- **Staleness tracking.** `index_generations` table with `fingerprint = model:dimension`; search refuses on mismatch (§6.7).
+- **MCP tool surface.** All 8 existing tools preserved; `search_messages` gains `mode`/`explain`; new `find_similar_messages` added (§9.3).
+- **Response totals for ANN.** Drop `total` for `vector`/`hybrid`; use `returned` + `has_more`. Keep `total` for `fts` (§7.4).
 
 ---
 
@@ -556,19 +711,26 @@ Items the user should sanity-check during review:
 See §5.3 for the fused CTE. For the non-fusing case (lance or remote backend), the Go side does:
 
 ```go
-if fb, ok := backend.(vector.FusingBackend); ok {
-    return fb.FusedSearch(ctx, q, queryVec, k, filter, rrfK, subjectBoost)
+req := vector.FusedRequest{
+    FTSQuery: ftsMatch, QueryVec: queryVec,
+    Generation: activeGen.ID, KPerSignal: kPerSignal,
+    Limit: limit, Offset: offset, RRFK: rrfK,
+    Filter: filter,
 }
-vecHits, _ := backend.Search(ctx, queryVec, 100, filter)
-ftsHits, _ := sqliteFTS.Search(ctx, q, 100, filter)
+if fb, ok := backend.(vector.FusingBackend); ok {
+    return fb.FusedSearch(ctx, req)  // single-query path for sqlite-vec
+}
+// Fallback for non-fusing backends (lance, remote): two filtered queries + Go-side RRF.
+vecHits, _ := backend.Search(ctx, queryVec, kPerSignal, filter)
+ftsHits, _ := sqliteFTS.Search(ctx, ftsMatch, kPerSignal, filter)
 fused := rrf.Fuse(vecHits, ftsHits, rrfK, subjectBoost, subjectTokens)
-return fused[:limit]
+return fused[offset : offset+limit]
 ```
 
 ## Appendix B: Example workflow
 
 ```bash
-# One-time setup
+# One-time setup: append [vector] config
 cat >> ~/.msgvault/config.toml <<EOF
 [vector]
 enabled = true
@@ -580,15 +742,23 @@ model = "nomic-embed-text-v1.5"
 dimension = 768
 EOF
 
-# Backfill 2M messages (run on the same host as the inference server for LAN-local traffic)
-msgvault embed --progress
+# Create the first generation and backfill ~2M messages
+# (run on the same host as the inference server for LAN-local traffic)
+msgvault embed --full-rebuild --progress
 
 # From then on, incremental embedding happens automatically as syncs add messages
 msgvault serve
 
-# Query
+# Query: extends the existing `msgvault search` — Gmail syntax still works
 msgvault search "onboarding plan for the data platform team" --mode hybrid --limit 10
-msgvault search "from Alice about the billing incident" --from alice@example.com --after 2024-01-01
+msgvault search "from:alice@example.com billing incident after:2024-01-01" --mode hybrid
+
+# HTTP: extends the existing /api/v1/search with a mode parameter
 curl -H "Authorization: Bearer $KEY" \
-  "http://localhost:8080/api/v1/search/hybrid?q=billing+incident&explain=1"
+  "http://localhost:8080/api/v1/search?q=billing+incident&mode=hybrid&explain=1"
+
+# Switching models later (same dim or different):
+# 1. Edit [vector.embeddings] in config.toml (new model, new dimension if needed)
+# 2. Rebuild into a fresh generation; old one stays active until swap
+msgvault embed --full-rebuild --yes
 ```
