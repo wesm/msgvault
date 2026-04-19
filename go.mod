@@ -4,6 +4,7 @@ go 1.25.9
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/huh v1.0.0
