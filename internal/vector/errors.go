@@ -27,4 +27,8 @@ var (
 
 	// ErrPaginationUnsupported is returned for page>1 in vector/hybrid modes.
 	ErrPaginationUnsupported = errors.New("pagination not supported for this mode")
+
+	// ErrUnknownGeneration is returned when a caller references a
+	// generation ID that does not exist in index_generations.
+	ErrUnknownGeneration = errors.New("unknown generation")
 )

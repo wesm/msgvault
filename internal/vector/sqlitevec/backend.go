@@ -206,14 +206,21 @@ func (b *Backend) generationByState(ctx context.Context, state vector.Generation
 
 // Upsert writes chunks to the given generation. Transactional. Dimension
 // is verified per-chunk against the generation's recorded dimension.
+// Returns an error wrapping vector.ErrUnknownGeneration if gen does not
+// exist, and an error wrapping vector.ErrDimensionMismatch if any chunk's
+// vector length does not match the generation's recorded dimension.
 func (b *Backend) Upsert(ctx context.Context, gen vector.GenerationID, chunks []vector.Chunk) error {
 	if len(chunks) == 0 {
 		return nil
 	}
 
 	var dim int
-	if err := b.db.QueryRowContext(ctx,
-		`SELECT dimension FROM index_generations WHERE id = ?`, int64(gen)).Scan(&dim); err != nil {
+	err := b.db.QueryRowContext(ctx,
+		`SELECT dimension FROM index_generations WHERE id = ?`, int64(gen)).Scan(&dim)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: %d", vector.ErrUnknownGeneration, gen)
+	}
+	if err != nil {
 		return fmt.Errorf("lookup generation %d: %w", gen, err)
 	}
 	for _, c := range chunks {
@@ -225,7 +232,7 @@ func (b *Backend) Upsert(ctx context.Context, gen vector.GenerationID, chunks []
 
 	tx, err := b.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("begin upsert tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -236,21 +243,29 @@ func (b *Backend) Upsert(ctx context.Context, gen vector.GenerationID, chunks []
 		(generation_id, message_id, embedded_at, source_char_len, truncated)
 		VALUES (?, ?, ?, ?, ?)`)
 	if err != nil {
-		return err
+		return fmt.Errorf("prepare embeddings insert: %w", err)
 	}
 	defer func() { _ = embedStmt.Close() }()
 
-	vecStmt, err := tx.PrepareContext(ctx, fmt.Sprintf(
-		`INSERT OR REPLACE INTO %s (generation_id, message_id, embedding) VALUES (?, ?, ?)`, vecTable))
+	// vecTable name comes from VectorTableName(dim) where dim is sourced from index_generations; safe to interpolate.
+	vecDeleteStmt, err := tx.PrepareContext(ctx, fmt.Sprintf(
+		`DELETE FROM %s WHERE generation_id = ? AND message_id = ?`, vecTable))
 	if err != nil {
-		return err
+		return fmt.Errorf("prepare vec delete: %w", err)
+	}
+	defer func() { _ = vecDeleteStmt.Close() }()
+
+	vecStmt, err := tx.PrepareContext(ctx, fmt.Sprintf(
+		`INSERT INTO %s (generation_id, message_id, embedding) VALUES (?, ?, ?)`, vecTable))
+	if err != nil {
+		return fmt.Errorf("prepare vec insert: %w", err)
 	}
 	defer func() { _ = vecStmt.Close() }()
 
 	pendingStmt, err := tx.PrepareContext(ctx,
 		`DELETE FROM pending_embeddings WHERE generation_id = ? AND message_id = ?`)
 	if err != nil {
-		return err
+		return fmt.Errorf("prepare pending delete: %w", err)
 	}
 	defer func() { _ = pendingStmt.Close() }()
 
@@ -261,6 +276,11 @@ func (b *Backend) Upsert(ctx context.Context, gen vector.GenerationID, chunks []
 		}
 		if _, err := embedStmt.ExecContext(ctx, int64(gen), c.MessageID, now, c.SourceCharLen, truncFlag); err != nil {
 			return fmt.Errorf("insert embedding: %w", err)
+		}
+		// vec0 virtual tables do not support INSERT OR REPLACE for updates,
+		// so delete any existing row first, then insert.
+		if _, err := vecDeleteStmt.ExecContext(ctx, int64(gen), c.MessageID); err != nil {
+			return fmt.Errorf("delete existing vector: %w", err)
 		}
 		if _, err := vecStmt.ExecContext(ctx, int64(gen), c.MessageID, float32SliceBlob(c.Vector)); err != nil {
 			return fmt.Errorf("insert vector: %w", err)
