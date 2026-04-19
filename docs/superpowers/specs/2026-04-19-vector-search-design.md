@@ -85,27 +85,29 @@ internal/
       explain.go          # score breakdown for ?explain=1
 
 cmd/msgvault/cmd/
-  search.go               # `msgvault search` CLI
-  embed.go                # `msgvault embed` CLI (backfill + rebuild)
-  mcp.go                  # `msgvault mcp` stdio MCP server
+  search.go               # existing — extended with --mode and --explain flags
+  embed.go                # new — `msgvault embed` CLI (backfill + rebuild)
+  # mcp already exists at internal/mcp/; command wiring stays in cmd root
+
+internal/mcp/
+  server.go               # existing — search_messages tool gains mode/explain args,
+                          #   plus a new find_similar_messages tool and extended
+                          #   get_stats fields (§9.3)
 
 internal/api/
-  handlers_search.go      # adds /api/v1/search/hybrid, /vector to existing routes
+  handlers.go             # existing — the /api/v1/search handler gains a mode
+                          #   query parameter; /api/v1/stats gains optional embedding
+                          #   fields. No new route files; no /hybrid or /vector
+                          #   endpoints.
 ```
 
 ## 5. Data Model
 
 ### 5.1 Changes to main database (`~/.msgvault/msgvault.db`)
 
-Add a single column and index:
+None required. The authoritative pending queue is `vec.pending_embeddings` (§5.2), which is populated per generation. At `CreateGeneration` time, the builder seeds the queue with `SELECT id FROM messages`, so there is no need for a flag column on `messages` itself. Sync calls into the vector package to enqueue new messages for every non-retired generation; see §6.7.
 
-```sql
-ALTER TABLE messages ADD COLUMN needs_embedding INTEGER NOT NULL DEFAULT 1;
-CREATE INDEX idx_messages_needs_embedding ON messages(needs_embedding, id)
-  WHERE needs_embedding = 1;
-```
-
-A partial index keeps the flag cheap even at 2M rows: only rows pending embedding are in the index. The column is set to 1 by sync-time inserts (new messages, re-parsed messages) and cleared to 0 after a successful embedding.
+(Earlier drafts of this spec introduced a `needs_embedding` flag on `messages`. Dropped: it duplicated state, complicated crash recovery, and required an invariant linking flag state to queue contents that broke under dual-enqueue during rebuilds.)
 
 ### 5.2 New database (`~/.msgvault/vectors.db`)
 
@@ -165,15 +167,25 @@ CREATE TABLE embed_runs (
     error        TEXT
 );
 
--- needs_embedding tracking is scoped per generation: a row means "this
--- message is pending in this generation's build". The main-DB column is
--- retained for backwards compatibility and quick filtering in the worker,
--- but the authoritative queue lives here.
+-- Authoritative work queue: one row per (generation, message) pending
+-- embedding. claimed_at is NULL when the row is available to any worker;
+-- a timestamp means a worker has taken it but not yet committed the
+-- resulting embedding. On crash, a recovery pass on startup releases
+-- stale claims back to the pool (claimed_at older than stale_threshold).
 CREATE TABLE pending_embeddings (
     generation_id INTEGER NOT NULL REFERENCES index_generations(id) ON DELETE CASCADE,
     message_id    INTEGER NOT NULL,
+    enqueued_at   INTEGER NOT NULL,
+    claimed_at    INTEGER,
+    claim_token   TEXT,
     PRIMARY KEY (generation_id, message_id)
 );
+CREATE INDEX idx_pending_available
+  ON pending_embeddings(generation_id, message_id)
+  WHERE claimed_at IS NULL;
+CREATE INDEX idx_pending_claims
+  ON pending_embeddings(claimed_at)
+  WHERE claimed_at IS NOT NULL;
 ```
 
 Notes on design:
@@ -188,22 +200,29 @@ When vector search is enabled, the main SQLite connection runs `ATTACH DATABASE 
 
 **Filters are pushed into both signal branches** so that a narrow filter (e.g. `label:Taxes` on 0.5% of the corpus) doesn't starve either signal's candidate pool. The pattern is: resolve the filtered message-ID set first, then constrain both signal CTEs to it.
 
+**Filter values are resolved to IDs at the Go layer, not in SQL.** `--account you@gmail.com` becomes a `source_id` list looked up via `sources.identifier`; `from:alice@example.com` becomes a `participant_id` list looked up via `participants.email_address`; `label:INBOX` becomes a `label_id` list via `labels.name`. The SQL below then takes only pre-resolved ID lists, matching how `internal/query` already works today.
+
+Concrete SQL against the real schema (`messages`, `message_labels`, `participants`, `sources`):
+
 ```sql
 WITH
   -- Resolve all filters once into a filtered candidate set.
-  -- Uses EXISTS for many-to-many joins (labels, recipients), per CLAUDE.md SQL guidance.
+  -- List parameters (:source_ids, :sender_ids, :label_ids) are JSON arrays;
+  -- SQLite's json_each unpacks them cheaply when non-empty, or the filter
+  -- is skipped when the parameter is NULL.
   filtered AS (
     SELECT m.id
     FROM messages m
-    WHERE (:account_ids IS NULL OR m.source_id IN :account_ids)
-      AND (:from IS NULL OR m.from_email = :from)
+    WHERE (:source_ids IS NULL OR m.source_id IN (SELECT value FROM json_each(:source_ids)))
+      AND (:sender_ids IS NULL OR m.sender_id IN (SELECT value FROM json_each(:sender_ids)))
       AND (:has_attachment IS NULL OR m.has_attachments = :has_attachment)
       AND (:after  IS NULL OR m.sent_at >= :after)
       AND (:before IS NULL OR m.sent_at <  :before)
-      AND (:label IS NULL OR EXISTS (
+      AND (:label_ids IS NULL OR EXISTS (
             SELECT 1 FROM message_labels ml
-            JOIN labels l ON l.id = ml.label_id
-            WHERE ml.message_id = m.id AND l.name = :label))
+            WHERE ml.message_id = m.id
+              AND ml.label_id IN (SELECT value FROM json_each(:label_ids))))
+      AND m.deleted_at IS NULL
   ),
 
   -- BM25 over the filtered set. MATCH is pushed through the join.
@@ -252,6 +271,7 @@ Notes:
 - **Filter pushdown is mandatory.** The previous draft of this spec applied filters after fusion, which silently starved recall on narrow filters (the global top-k signal candidates often contained zero filtered rows).
 - **Pre-filter kNN via `message_id IN (SELECT id FROM filtered)`** is the sqlite-vec pattern for constrained ANN. For very narrow filtered sets this degenerates to brute force, which is cheap at those sizes anyway.
 - **Subject boost** is applied as a post-fusion adjustment in application code (not the SQL), so it can depend on tokenized subject matching without further complicating the CTE.
+- **`deleted_at IS NULL`** excludes soft-deleted messages from search, matching existing `internal/query` behavior.
 - **Backends that do not live in SQLite** (lance, remote) perform two independent filtered queries and fuse in Go via `rrf.Fuse`.
 
 ## 6. Embedding Pipeline
@@ -279,16 +299,48 @@ A small OpenAI-compatible client supporting:
 
 ### 6.3 Batch processing (`internal/vector/embed/batch.go`)
 
-The worker operates on a single generation at a time — either the active one (incremental fill) or the building one (full rebuild). It repeatedly:
+The worker operates on a single generation at a time — either the active one (incremental fill) or the building one (full rebuild). It uses a mark-then-complete pattern so that a crash between the HTTP call and the commit cannot silently lose work.
 
-1. Claims up to `batch_size` message IDs from `pending_embeddings` for the target generation (`DELETE ... RETURNING message_id` pattern inside a transaction so the claim is idempotent).
-2. For each, loads `body_text` + subject from the main DB and runs pre-processing.
-3. Calls the embedding endpoint with all inputs in one batch.
-4. Inside a transaction on `vectors.db`: inserts `vectors_vec_dN` rows (partitioned by `generation_id`) and inserts `embeddings` rows. If the claim succeeds but the embedding call fails, the rows are re-inserted into `pending_embeddings` before transaction rollback.
-5. Clears the main-DB `needs_embedding` flag for those messages only once the *active* generation has an embedding for them (not the building one).
-6. Records batch result in `embed_runs`.
+1. **Claim** up to `batch_size` message IDs atomically:
+   ```sql
+   UPDATE pending_embeddings
+      SET claimed_at = :now, claim_token = :worker_token
+    WHERE (generation_id, message_id) IN (
+          SELECT generation_id, message_id FROM pending_embeddings
+           WHERE generation_id = :g AND claimed_at IS NULL
+           ORDER BY message_id
+           LIMIT :batch_size)
+    RETURNING message_id;
+   ```
+   Rows stay in `pending_embeddings`; only `claimed_at` flips. Commit.
+2. **Load** `body_text` + `subject` from the main DB for each claimed ID; run preprocessing.
+3. **Embed** via HTTP. This step is outside any DB transaction — can take seconds.
+4. **Complete** in a single transaction on `vectors.db`:
+   ```sql
+   INSERT INTO embeddings (generation_id, message_id, embedded_at, source_char_len, truncated) VALUES ...;
+   INSERT INTO vectors_vec_dN (generation_id, message_id, embedding) VALUES ...;
+   DELETE FROM pending_embeddings
+     WHERE generation_id = :g AND message_id IN :ids AND claim_token = :worker_token;
+   ```
+   Commit.
+5. **Release on failure.** If step 3 or 4 errors, release the claims so another pass picks them up:
+   ```sql
+   UPDATE pending_embeddings SET claimed_at = NULL, claim_token = NULL
+     WHERE generation_id = :g AND message_id IN :ids AND claim_token = :worker_token;
+   ```
+6. Record the batch result in `embed_runs`.
 
-Crash safety: the claim-and-delete is one transaction, the insert is another; a crash between them leaves the messages re-queued on restart (the worker detects gaps by re-inserting into `pending_embeddings` from `needs_embedding = 1 MINUS existing embeddings for the generation` at startup).
+**Crash recovery at startup** — a single reclaim pass on every msgvault startup, before the worker runs:
+```sql
+UPDATE pending_embeddings
+   SET claimed_at = NULL, claim_token = NULL
+ WHERE claimed_at IS NOT NULL AND claimed_at < :now - :stale_threshold;
+```
+`stale_threshold` is conservative (default 10 minutes — much longer than any reasonable embed batch). Any claim older than that is assumed to belong to a crashed worker and is returned to the pool.
+
+**Why claim-mark-not-delete.** The previous draft of this spec used `DELETE ... RETURNING` to claim rows and relied on a recovery scan of `needs_embedding = 1 MINUS existing embeddings` to reclaim on crash. That scan was unsafe under dual-enqueue: if the *active* worker had already completed a message while the *building* worker was mid-batch, the message's `needs_embedding` flag was clear but no building-generation embedding existed, so the scan would not requeue it. The mark-then-complete pattern removes that invariant entirely — the only source of truth for "is this pending" is `pending_embeddings.claimed_at IS NULL`, per generation.
+
+**Duplicate-safety.** Step 4's INSERTs use `ON CONFLICT (generation_id, message_id) DO NOTHING` (or equivalent). In the narrow window where two workers both finish step 4 for the same message (impossible under single-process operation, but belt + suspenders for future multi-worker), the second wins silently and the DELETE is still correct.
 
 ### 6.4 Daemon integration
 
@@ -299,7 +351,7 @@ Crash safety: the claim-and-delete is one transaction, the insert is another; a 
 cron = "*/5 * * * *"   # every 5 minutes, or set to "" to disable
 ```
 
-The scheduler runs the worker whenever the cron fires, and also after each successful sync completion (since sync likely created new `needs_embedding = 1` rows). The job is a no-op if nothing is pending.
+The scheduler runs the worker whenever the cron fires, and also after each successful sync completion (since sync likely enqueued new rows in `pending_embeddings`). The job is a no-op if nothing is pending.
 
 ### 6.5 CLI (`msgvault embed`)
 
@@ -349,7 +401,7 @@ This is the invariant that keeps queries and corpus vectors aligned.
 - If only `state = 'active'` exists: one row, to the active generation. Normal steady state.
 - If both `'active'` and `'building'` exist: two rows, one per generation. The building generation therefore stays current with ingest while it backfills, so the swap does not drop messages that arrived during the rebuild.
 - If only `'building'` exists (first-ever rebuild, no prior active): one row, to the building generation.
-- If nothing is non-retired: no rows; messages accumulate only via the main-DB `needs_embedding` flag and get picked up on the next `--full-rebuild`.
+- If nothing is non-retired: no rows enqueued; new messages are simply part of the `messages` table and are picked up automatically the next time `--full-rebuild` seeds a generation's initial queue from `SELECT id FROM messages`.
 
 Dual-enqueue costs one extra embedding API call per new message during rebuild. New-message rate is negligible compared to the 2M-message backfill, so this is acceptable. Optimizing this (single call, write to both generations) is possible only when the two generations share model+dimension; deferred to a future pass.
 
@@ -681,7 +733,7 @@ Before merging:
 
 Enabling the feature on an existing install:
 1. Add `[vector]` section to `config.toml` pointing at the homelab endpoint, specifying `model` and `dimension`.
-2. Restart `msgvault serve` (or run the binary once) to run the migrations: adds `needs_embedding` column to `messages`, creates `vectors.db` with empty schema.
+2. Restart `msgvault serve` (or run the binary once) to create `vectors.db` with the schema from §5.2. No changes to the main `msgvault.db`.
 3. Run `msgvault embed --full-rebuild --progress`. This creates the first `index_generations` row, fills `pending_embeddings`, drains it via the embedding endpoint, and activates the new generation on completion. On a 2M-message corpus this is the long step (hours to days depending on endpoint throughput).
 4. From that point on, the daemon keeps the active generation current as sync ingests new messages.
 
@@ -692,7 +744,7 @@ Changing models later (e.g. from `nomic-embed-text-v1.5` 768-dim to `mxbai-embed
 
 Disabling:
 1. Remove `[vector]` from `config.toml`.
-2. Optionally `trash ~/.msgvault/vectors.db`. The `needs_embedding` column in `msgvault.db` is harmless when unused; no down-migration needed.
+2. Optionally `trash ~/.msgvault/vectors.db`. The main `msgvault.db` is unchanged by this feature, so nothing to roll back there.
 
 ### 11.5 Compatibility and versioning
 
@@ -707,10 +759,10 @@ This feature is strictly additive on every public surface:
 | MCP tools (8 existing) | As-is | `search_messages` gains optional `mode` + `explain` args; `get_stats` gains the same optional fields as above |
 | MCP tools (new) | — | `find_similar_messages(message_id, limit?, filters?)` |
 | `config.toml` | Existing tables | New `[vector]`, `[vector.embeddings]`, `[vector.preprocess]`, `[vector.search]`, `[vector.embed.schedule]` tables |
-| `msgvault.db` schema | Existing tables | Adds `needs_embedding` column + partial index on `messages` |
+| `msgvault.db` schema | Existing tables | No changes. All new state lives in `vectors.db` |
 | Binary build | Existing `-tags fts5` | Adds one more build tag for sqlite-vec (final name TBD during implementation; see §14.5) |
 
-Binary versions that predate this feature still work against a database that has the `needs_embedding` column (SQLite ignores unknown columns for the old code paths' purposes). Binary versions that include this feature work against databases that have never enabled vector search (no `vectors.db`, no generations, vector endpoints return `vector_not_enabled`).
+Old binaries are unaffected by the feature — `msgvault.db` is unchanged, and `vectors.db` is a separate file that old binaries simply don't open. New binaries work against databases that have never enabled vector search: with no `[vector]` config and no `vectors.db`, `mode=vector|hybrid` requests return `vector_not_enabled`, and every other surface behaves exactly as before.
 
 ### 11.5 Observability
 
