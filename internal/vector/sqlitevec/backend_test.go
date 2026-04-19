@@ -356,3 +356,98 @@ func TestBackend_Search_DimensionMismatch(t *testing.T) {
 		t.Errorf("err = %v, want ErrDimensionMismatch", err)
 	}
 }
+
+func TestBackend_Delete_RemovesFromAllTables(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+	gid := seedAndEmbed(t, b, map[int64][]float32{1: unitVec(768, 0)})
+
+	if err := b.Delete(ctx, gid, []int64{1}); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	var n int
+	if err := b.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM embeddings WHERE message_id = 1`).Scan(&n); err != nil {
+		t.Fatalf("count embeddings: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("embeddings remaining: %d", n)
+	}
+	if err := b.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM vectors_vec_d768 WHERE message_id = 1`).Scan(&n); err != nil {
+		t.Fatalf("count vectors: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("vectors remaining: %d", n)
+	}
+}
+
+func TestBackend_Delete_EmptyIDsIsNoop(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	if err := b.Delete(ctx, gid, nil); err != nil {
+		t.Errorf("Delete(nil): %v", err)
+	}
+	if err := b.Delete(ctx, gid, []int64{}); err != nil {
+		t.Errorf("Delete(empty): %v", err)
+	}
+}
+
+func TestBackend_Delete_UnknownGeneration(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+	err := b.Delete(ctx, vector.GenerationID(9999), []int64{1})
+	if !errors.Is(err, vector.ErrUnknownGeneration) {
+		t.Errorf("err = %v, want ErrUnknownGeneration", err)
+	}
+}
+
+func TestBackend_Stats_CountsCorrectly(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+	gid := seedAndEmbed(t, b, map[int64][]float32{1: unitVec(768, 0)})
+
+	s, err := b.Stats(ctx, gid)
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if s.EmbeddingCount != 1 {
+		t.Errorf("EmbeddingCount=%d want 1", s.EmbeddingCount)
+	}
+	if s.PendingCount != 0 {
+		t.Errorf("PendingCount=%d want 0", s.PendingCount)
+	}
+}
+
+func TestBackend_Stats_PendingCountAfterCreate(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	// CreateGeneration seeds 1 pending row for the one pre-seeded message.
+	s, err := b.Stats(ctx, gid)
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if s.EmbeddingCount != 0 {
+		t.Errorf("EmbeddingCount=%d want 0", s.EmbeddingCount)
+	}
+	if s.PendingCount != 1 {
+		t.Errorf("PendingCount=%d want 1", s.PendingCount)
+	}
+}
+
+func TestBackend_Stats_AggregateAcrossGenerations(t *testing.T) {
+	// When gen == 0, Stats returns counts across ALL generations.
+	b, ctx := newBackendForTest(t)
+	_ = seedAndEmbed(t, b, map[int64][]float32{1: unitVec(768, 0)})
+
+	s, err := b.Stats(ctx, vector.GenerationID(0))
+	if err != nil {
+		t.Fatalf("Stats(0): %v", err)
+	}
+	if s.EmbeddingCount != 1 {
+		t.Errorf("aggregate EmbeddingCount=%d want 1", s.EmbeddingCount)
+	}
+}

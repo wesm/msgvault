@@ -469,12 +469,77 @@ func inClause(col string, ids []int64) string {
 	return fmt.Sprintf("%s IN (%s)", col, strings.Join(placeholders, ","))
 }
 
-// Delete is a stub; implemented in T8.
+// Delete removes the given messages from the specified generation in
+// one transaction. Empty messageIDs is a no-op. Returns an error
+// wrapping vector.ErrUnknownGeneration if gen does not exist.
 func (b *Backend) Delete(ctx context.Context, gen vector.GenerationID, messageIDs []int64) error {
-	return fmt.Errorf("Delete: not implemented")
+	if len(messageIDs) == 0 {
+		return nil
+	}
+
+	var dim int
+	err := b.db.QueryRowContext(ctx,
+		`SELECT dimension FROM index_generations WHERE id = ?`, int64(gen)).Scan(&dim)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: %d", vector.ErrUnknownGeneration, gen)
+	}
+	if err != nil {
+		return fmt.Errorf("lookup generation %d: %w", gen, err)
+	}
+
+	tx, err := b.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	embedStmt, err := tx.PrepareContext(ctx,
+		`DELETE FROM embeddings WHERE generation_id = ? AND message_id = ?`)
+	if err != nil {
+		return fmt.Errorf("prepare embeddings delete: %w", err)
+	}
+	defer func() { _ = embedStmt.Close() }()
+
+	// vecTable name derives from VectorTableName(dim) where dim is sourced from index_generations; safe to interpolate.
+	vecStmt, err := tx.PrepareContext(ctx, fmt.Sprintf(
+		`DELETE FROM %s WHERE generation_id = ? AND message_id = ?`, VectorTableName(dim)))
+	if err != nil {
+		return fmt.Errorf("prepare vec delete: %w", err)
+	}
+	defer func() { _ = vecStmt.Close() }()
+
+	for _, id := range messageIDs {
+		if _, err := embedStmt.ExecContext(ctx, int64(gen), id); err != nil {
+			return fmt.Errorf("delete embedding: %w", err)
+		}
+		if _, err := vecStmt.ExecContext(ctx, int64(gen), id); err != nil {
+			return fmt.Errorf("delete vector: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete tx: %w", err)
+	}
+	return nil
 }
 
-// Stats is a stub; implemented in T8.
+// Stats returns counts for the given generation. When gen == 0, counts
+// are aggregated across all generations. StorageBytes is left zero
+// here; it is derived from the vectors.db file size by the caller.
 func (b *Backend) Stats(ctx context.Context, gen vector.GenerationID) (vector.Stats, error) {
-	return vector.Stats{}, fmt.Errorf("Stats: not implemented")
+	var s vector.Stats
+	where := "WHERE generation_id = ?"
+	args := []any{int64(gen)}
+	if gen == 0 {
+		where, args = "", nil
+	}
+
+	if err := b.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM embeddings `+where, args...).Scan(&s.EmbeddingCount); err != nil {
+		return s, fmt.Errorf("count embeddings: %w", err)
+	}
+	if err := b.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pending_embeddings `+where, args...).Scan(&s.PendingCount); err != nil {
+		return s, fmt.Errorf("count pending: %w", err)
+	}
+	return s, nil
 }
