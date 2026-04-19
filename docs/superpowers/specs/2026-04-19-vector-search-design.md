@@ -105,7 +105,15 @@ internal/api/
 
 ### 5.1 Changes to main database (`~/.msgvault/msgvault.db`)
 
-None required. The authoritative pending queue is `vec.pending_embeddings` (§5.2), which is populated per generation. At `CreateGeneration` time, the builder seeds the queue with `SELECT id FROM messages`, so there is no need for a flag column on `messages` itself. Sync calls into the vector package to enqueue new messages for every non-retired generation; see §6.7.
+None required. The authoritative pending queue is `vec.pending_embeddings` (§5.2), which is populated per generation. At `CreateGeneration` time, the builder seeds the queue with
+
+```sql
+SELECT id FROM messages WHERE deleted_from_source_at IS NULL
+```
+
+— the same deletion predicate that search uses (§5.3, `internal/query/sqlite.go`, `internal/search/parser.go`). Sync calls into the vector package to enqueue new messages for every non-retired generation; see §6.7.
+
+Messages whose `deleted_from_source_at` is set *after* they were enqueued or embedded are not actively purged from `vectors.db` in MVP. Search excludes them via the deletion predicate on `messages`, so they are invisible anyway; the storage cost of carrying a few stale vectors is negligible and the next `--full-rebuild` drops them naturally (because the new generation re-seeds from `messages` with the predicate applied). Active purging on delete can be added later if needed; it is not a correctness issue, only a storage-hygiene one.
 
 (Earlier drafts of this spec introduced a `needs_embedding` flag on `messages`. Dropped: it duplicated state, complicated crash recovery, and required an invariant linking flag state to queue contents that broke under dual-enqueue during rebuilds.)
 
@@ -369,7 +377,7 @@ Run modes:
 - **Default (incremental).** Fills in missing embeddings for the currently active generation by consuming the `pending_embeddings` queue. Used by the daemon and for manual catch-up. Accepts `--account` as a prioritization/narrowing filter on the queue — it does not change what has already been enqueued, only which rows this run drains.
 - **`--full-rebuild`.** Starts a new generation using the currently-configured model+dimension. Builds into shadow tables in parallel with the active generation. When complete, atomically flips `state = 'active'` on the new generation and `'retired'` on the old. Old generation rows are purged after a brief grace period (configurable, default immediate). Prompts for confirmation unless `--yes` is passed.
 
-**`--full-rebuild` is always corpus-wide.** A generation must cover every non-deleted message in the archive because it atomically replaces the active index. Combining `--full-rebuild` with `--account` is therefore rejected with an explicit CLI error (`--account cannot be combined with --full-rebuild; generations are corpus-wide`). If a user wants to re-embed one account's messages after a preprocessing change short of a full rebuild, they can do that via an out-of-band `Delete` + re-enqueue in the active generation — exposed as `msgvault embed --reembed-account EMAIL` in a future revision, not MVP.
+**`--full-rebuild` is always corpus-wide.** A generation must cover every message returned by the search deletion predicate — i.e. `SELECT id FROM messages WHERE deleted_from_source_at IS NULL` — because it atomically replaces the active index, and anything missing becomes a silent gap at query time. Combining `--full-rebuild` with `--account` is therefore rejected with an explicit CLI error (`--account cannot be combined with --full-rebuild; generations are corpus-wide`). If a user wants to re-embed one account's messages after a preprocessing change short of a full rebuild, they can do that via an out-of-band `Delete` + re-enqueue in the active generation — exposed as `msgvault embed --reembed-account EMAIL` in a future revision, not MVP.
 
 There is **no `--model` or `--endpoint` override flag**. Model rotation goes through config: the user updates `[vector.embeddings] model` / `dimension` in `config.toml`, then runs `msgvault embed --full-rebuild` to materialize a generation under the new model. Attempting `--full-rebuild` against config that disagrees with the existing active generation is expected and valid; attempting incremental embedding or search with such config is rejected (§6.7).
 
@@ -398,12 +406,12 @@ This is the invariant that keeps queries and corpus vectors aligned.
 
 **Explicit re-embed required to change models.** There is no auto-invalidation behavior that silently drops old embeddings. The user must run `msgvault embed --full-rebuild`, which is explicit and observable.
 
-**Sync-side interaction — dual-enqueue during rebuilds.** When the sync pipeline writes a new message, it inserts a row into `pending_embeddings` for *every non-retired generation*:
+**Sync-side interaction — dual-enqueue during rebuilds.** When the sync pipeline writes a new message *and* that message satisfies the deletion predicate (`deleted_from_source_at IS NULL`), it inserts a row into `pending_embeddings` for *every non-retired generation*. Messages imported with `deleted_from_source_at` already set (e.g. some Apple Mail .emlx imports) are not enqueued, matching search behavior. The predicate is checked once at enqueue time; if it flips later, see the "stale vectors" note in §5.1.
 
 - If only `state = 'active'` exists: one row, to the active generation. Normal steady state.
 - If both `'active'` and `'building'` exist: two rows, one per generation. The building generation therefore stays current with ingest while it backfills, so the swap does not drop messages that arrived during the rebuild.
 - If only `'building'` exists (first-ever rebuild, no prior active): one row, to the building generation.
-- If nothing is non-retired: no rows enqueued; new messages are simply part of the `messages` table and are picked up automatically the next time `--full-rebuild` seeds a generation's initial queue from `SELECT id FROM messages`.
+- If nothing is non-retired: no rows enqueued; new messages are simply part of the `messages` table and are picked up automatically the next time `--full-rebuild` seeds a generation's initial queue from `SELECT id FROM messages WHERE deleted_from_source_at IS NULL`.
 
 Dual-enqueue costs one extra embedding API call per new message during rebuild. New-message rate is negligible compared to the 2M-message backfill, so this is acceptable. Optimizing this (single call, write to both generations) is possible only when the two generations share model+dimension; deferred to a future pass.
 
