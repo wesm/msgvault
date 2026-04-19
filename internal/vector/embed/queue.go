@@ -1,5 +1,3 @@
-//go:build sqlite_vec
-
 package embed
 
 import (
