@@ -87,14 +87,17 @@ func seedAndEmbed(t *testing.T, b *Backend, vecs map[int64][]float32) vector.Gen
 	ctx := context.Background()
 
 	ids := make([]int64, 0, len(vecs))
-	var dim int
-	for id, v := range vecs {
+	for id := range vecs {
 		ids = append(ids, id)
-		if dim == 0 {
-			dim = len(v)
-		}
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	expectedDim := len(vecs[ids[0]])
+	for _, id := range ids {
+		if v := vecs[id]; len(v) != expectedDim {
+			t.Fatalf("seedAndEmbed: vector for msg %d has %d dims, want %d", id, len(v), expectedDim)
+		}
+	}
 
 	for _, id := range ids {
 		if _, err := b.mainDB.ExecContext(ctx,
@@ -103,7 +106,7 @@ func seedAndEmbed(t *testing.T, b *Backend, vecs map[int64][]float32) vector.Gen
 		}
 	}
 
-	gid, err := b.CreateGeneration(ctx, "m", dim)
+	gid, err := b.CreateGeneration(ctx, "m", expectedDim)
 	if err != nil {
 		t.Fatalf("CreateGeneration: %v", err)
 	}

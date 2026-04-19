@@ -364,7 +364,7 @@ func (b *Backend) Search(ctx context.Context, gen vector.GenerationID, queryVec 
 		}
 		hits = append(hits, vector.Hit{
 			MessageID: id,
-			Score:     1.0 - dist, // cosine distance → cosine similarity
+			Score:     1.0 - dist, // native distance → monotonic score (higher is better)
 			Rank:      i,
 		})
 	}

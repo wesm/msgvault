@@ -319,3 +319,40 @@ func TestBackend_Search_ReturnsRankedHits(t *testing.T) {
 		t.Errorf("top rank = %d, want 1", hits[0].Rank)
 	}
 }
+
+func TestBackend_Search_EmptyQueryVector(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	_, err = b.Search(ctx, gid, nil, 5, vector.Filter{})
+	if err == nil {
+		t.Fatal("Search with nil queryVec should error")
+	}
+	_, err = b.Search(ctx, gid, []float32{}, 5, vector.Filter{})
+	if err == nil {
+		t.Fatal("Search with empty queryVec should error")
+	}
+}
+
+func TestBackend_Search_UnknownGeneration(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+	vec := unitVec(768, 0)
+	_, err := b.Search(ctx, vector.GenerationID(9999), vec, 5, vector.Filter{})
+	if !errors.Is(err, vector.ErrUnknownGeneration) {
+		t.Errorf("err = %v, want ErrUnknownGeneration", err)
+	}
+}
+
+func TestBackend_Search_DimensionMismatch(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	_, err = b.Search(ctx, gid, unitVec(64, 0), 5, vector.Filter{})
+	if !errors.Is(err, vector.ErrDimensionMismatch) {
+		t.Errorf("err = %v, want ErrDimensionMismatch", err)
+	}
+}
