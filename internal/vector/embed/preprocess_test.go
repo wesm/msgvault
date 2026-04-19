@@ -13,9 +13,10 @@ func TestPreprocess(t *testing.T) {
 		body      string
 		maxChars  int
 		cfg       PreprocessConfig
-		want      string // "" means skip exact match (use lenLE/wantValid)
-		lenLE     int    // 0 = no check; N = require len(out) <= N
-		wantValid bool   // require utf8.ValidString(out)
+		checkWant bool // if true, assert out == want (even when want is "")
+		want      string
+		lenLE     int  // 0 = no check; N = require len(out) <= N
+		wantValid bool // require utf8.ValidString(out)
 		wantTrunc bool
 	}{
 		{
@@ -24,6 +25,7 @@ func TestPreprocess(t *testing.T) {
 			body:      "Hi there,\n\nLet's chat tomorrow.",
 			maxChars:  1000,
 			cfg:       PreprocessConfig{StripQuotes: true, StripSignatures: true},
+			checkWant: true,
 			want:      "Subject: Hello\n\nHi there,\n\nLet's chat tomorrow.",
 			wantTrunc: false,
 		},
@@ -33,6 +35,7 @@ func TestPreprocess(t *testing.T) {
 			body:      "My reply.\n\nOn 2026-01-01, alice wrote:\n> previous message\n> more quote",
 			maxChars:  1000,
 			cfg:       PreprocessConfig{StripQuotes: true, StripSignatures: true},
+			checkWant: true,
 			want:      "Subject: Re: plan\n\nMy reply.",
 			wantTrunc: false,
 		},
@@ -42,6 +45,7 @@ func TestPreprocess(t *testing.T) {
 			body:      "> nested quote 1\n> nested quote 2\nActual content.",
 			maxChars:  1000,
 			cfg:       PreprocessConfig{StripQuotes: true, StripSignatures: false},
+			checkWant: true,
 			want:      "Actual content.",
 			wantTrunc: false,
 		},
@@ -51,6 +55,7 @@ func TestPreprocess(t *testing.T) {
 			body:      "Body here.\n-- \nBob\nPhone: ...",
 			maxChars:  1000,
 			cfg:       PreprocessConfig{StripQuotes: true, StripSignatures: true},
+			checkWant: true,
 			want:      "Subject: Hi\n\nBody here.",
 			wantTrunc: false,
 		},
@@ -60,6 +65,7 @@ func TestPreprocess(t *testing.T) {
 			body:      "Body.\n--\nBob",
 			maxChars:  1000,
 			cfg:       PreprocessConfig{StripQuotes: false, StripSignatures: true},
+			checkWant: true,
 			want:      "Subject: Hi\n\nBody.",
 			wantTrunc: false,
 		},
@@ -88,6 +94,7 @@ func TestPreprocess(t *testing.T) {
 			body:      "",
 			maxChars:  1000,
 			cfg:       PreprocessConfig{},
+			checkWant: true,
 			want:      "",
 			wantTrunc: false,
 		},
@@ -97,6 +104,7 @@ func TestPreprocess(t *testing.T) {
 			body:      "Hello\n> not stripped\n-- \nsig kept",
 			maxChars:  1000,
 			cfg:       PreprocessConfig{StripQuotes: false, StripSignatures: false},
+			checkWant: true,
 			want:      "Subject: Hi\n\nHello\n> not stripped\n-- \nsig kept",
 			wantTrunc: false,
 		},
@@ -106,6 +114,7 @@ func TestPreprocess(t *testing.T) {
 			body:      strings.Repeat("x", 100),
 			maxChars:  0,
 			cfg:       PreprocessConfig{},
+			checkWant: true,
 			want:      "Subject: S\n\n" + strings.Repeat("x", 100),
 			wantTrunc: false,
 		},
@@ -113,7 +122,7 @@ func TestPreprocess(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			out, tr := Preprocess(tt.subject, tt.body, tt.maxChars, tt.cfg)
-			if tt.want != "" && out != tt.want {
+			if tt.checkWant && out != tt.want {
 				t.Errorf("got %q\nwant %q", out, tt.want)
 			}
 			if tt.lenLE > 0 && len(out) > tt.lenLE {
