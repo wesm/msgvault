@@ -60,12 +60,15 @@ func (b *Backend) FusedSearch(ctx context.Context, req vector.FusedRequest) ([]v
 	if req.Filter.HasAttachment != nil {
 		hasAttachment = sql.NullBool{Valid: true, Bool: *req.Filter.HasAttachment}
 	}
-	var after, before sql.NullTime
+	// Format date bounds with the canonical SQLite datetime layout used
+	// elsewhere in the repo so boundary comparisons on the text sent_at
+	// column agree with the existing SQLite query paths.
+	var after, before sql.NullString
 	if req.Filter.After != nil {
-		after = sql.NullTime{Valid: true, Time: *req.Filter.After}
+		after = sql.NullString{Valid: true, String: req.Filter.After.Format(sqliteDatetimeFormat)}
 	}
 	if req.Filter.Before != nil {
-		before = sql.NullTime{Valid: true, Time: *req.Filter.Before}
+		before = sql.NullString{Valid: true, String: req.Filter.Before.Format(sqliteDatetimeFormat)}
 	}
 
 	vecTable := "vec." + VectorTableName(dim)
@@ -80,7 +83,12 @@ WITH
       FROM messages m
      WHERE m.deleted_from_source_at IS NULL
        AND (:source_ids IS NULL OR m.source_id IN (SELECT value FROM json_each(:source_ids)))
-       AND (:sender_ids IS NULL OR m.sender_id IN (SELECT value FROM json_each(:sender_ids)))
+       AND (:sender_ids IS NULL OR m.sender_id IN (SELECT value FROM json_each(:sender_ids))
+            OR EXISTS (
+                 SELECT 1 FROM message_recipients mr
+                  WHERE mr.message_id = m.id
+                    AND mr.recipient_type = 'from'
+                    AND mr.participant_id IN (SELECT value FROM json_each(:sender_ids))))
        AND (:has_attachment IS NULL OR m.has_attachments = :has_attachment)
        AND (:after IS NULL OR m.sent_at >= :after)
        AND (:before IS NULL OR m.sent_at < :before)

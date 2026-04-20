@@ -443,6 +443,125 @@ func TestBackend_Search_DimensionMismatch(t *testing.T) {
 	}
 }
 
+// TestBackend_Search_FilterIDsExceedSQLiteParamCap exercises the
+// json_each path in resolveFilter with a filter that resolves to more
+// messages than SQLite's ~999 practical bound-parameter cap. The old
+// implementation expanded the id set into one `IN (?,?,...)` list per
+// id and failed with `too many SQL variables` once it crossed the cap.
+func TestBackend_Search_FilterIDsExceedSQLiteParamCap(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+
+	const total = 1200 // well past SQLite's 999-variable ceiling
+	// The helper seeds 3 FTS rows; insert `total` more messages with
+	// sender_id so a single sender filter matches all of them.
+	if _, err := b.mainDB.ExecContext(ctx,
+		`DELETE FROM messages; DELETE FROM messages_fts`); err != nil {
+		t.Fatalf("reset main: %v", err)
+	}
+	insertMsg, err := b.mainDB.PrepareContext(ctx,
+		`INSERT INTO messages (id, sender_id) VALUES (?, 42)`)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	defer func() { _ = insertMsg.Close() }()
+	vecs := make(map[int64][]float32, total)
+	for i := int64(1); i <= total; i++ {
+		if _, err := insertMsg.ExecContext(ctx, i); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+		vecs[i] = unitVec(768, 0)
+	}
+
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	// Upsert a few chunks so Search has something to rank. We don't
+	// need all `total` embedded — the filter is what we're stressing.
+	chunks := make([]vector.Chunk, 0, 5)
+	for i := int64(1); i <= 5; i++ {
+		chunks = append(chunks, vector.Chunk{MessageID: i, Vector: vecs[i]})
+	}
+	if err := b.Upsert(ctx, gid, chunks); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	hits, err := b.Search(ctx, gid, unitVec(768, 0), 3, vector.Filter{SenderIDs: []int64{42}})
+	if err != nil {
+		t.Fatalf("Search with broad filter (%d ids) failed: %v", total, err)
+	}
+	if len(hits) == 0 {
+		t.Errorf("expected at least one hit after filter, got 0")
+	}
+}
+
+// TestBackend_Search_SenderFallback_ToMessageRecipients confirms that a
+// sender filter matches messages whose only record of the sender is an
+// entry in message_recipients with recipient_type='from' — i.e. legacy
+// rows where messages.sender_id is NULL.
+func TestBackend_Search_SenderFallback_ToMessageRecipients(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+
+	// Reset the fused helper's seed data so we control the rows.
+	if _, err := b.mainDB.ExecContext(ctx,
+		`DELETE FROM messages; DELETE FROM messages_fts; DELETE FROM message_recipients`); err != nil {
+		t.Fatalf("reset main: %v", err)
+	}
+
+	// msg 1: sender_id set directly.
+	if _, err := b.mainDB.ExecContext(ctx,
+		`INSERT INTO messages (id, sender_id) VALUES (1, 100)`); err != nil {
+		t.Fatalf("insert msg 1: %v", err)
+	}
+	// msg 2: sender_id NULL, but a recipient_type='from' row points at
+	// the same participant id.
+	if _, err := b.mainDB.ExecContext(ctx,
+		`INSERT INTO messages (id) VALUES (2)`); err != nil {
+		t.Fatalf("insert msg 2: %v", err)
+	}
+	if _, err := b.mainDB.ExecContext(ctx,
+		`INSERT INTO message_recipients (message_id, recipient_type, participant_id)
+		 VALUES (2, 'from', 100)`); err != nil {
+		t.Fatalf("insert mr: %v", err)
+	}
+	// msg 3: different sender, should not match.
+	if _, err := b.mainDB.ExecContext(ctx,
+		`INSERT INTO messages (id, sender_id) VALUES (3, 999)`); err != nil {
+		t.Fatalf("insert msg 3: %v", err)
+	}
+
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	chunks := []vector.Chunk{
+		{MessageID: 1, Vector: unitVec(768, 0)},
+		{MessageID: 2, Vector: unitVec(768, 0)},
+		{MessageID: 3, Vector: unitVec(768, 0)},
+	}
+	if err := b.Upsert(ctx, gid, chunks); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	hits, err := b.Search(ctx, gid, unitVec(768, 0), 10, vector.Filter{SenderIDs: []int64{100}})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	got := make(map[int64]bool)
+	for _, h := range hits {
+		got[h.MessageID] = true
+	}
+	if !got[1] {
+		t.Errorf("hit missing: msg 1 (direct sender_id)")
+	}
+	if !got[2] {
+		t.Errorf("hit missing: msg 2 (sender_id NULL, recipient_type='from' fallback)")
+	}
+	if got[3] {
+		t.Errorf("unexpected hit: msg 3 (different sender, should be filtered out)")
+	}
+}
+
 func TestBackend_Delete_RemovesFromAllTables(t *testing.T) {
 	b, ctx := newBackendForTest(t)
 	gid := seedAndEmbed(t, b, map[int64][]float32{1: unitVec(768, 0)})

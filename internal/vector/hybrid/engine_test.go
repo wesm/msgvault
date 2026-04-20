@@ -71,6 +71,12 @@ CREATE TABLE message_labels (
     message_id INTEGER NOT NULL,
     label_id INTEGER NOT NULL,
     PRIMARY KEY (message_id, label_id)
+);
+CREATE TABLE message_recipients (
+    id INTEGER PRIMARY KEY,
+    message_id INTEGER NOT NULL,
+    recipient_type TEXT NOT NULL,
+    participant_id INTEGER NOT NULL
 );`
 	if _, err := mainDB.Exec(schema); err != nil {
 		t.Fatalf("schema: %v", err)

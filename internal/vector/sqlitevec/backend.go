@@ -5,6 +5,7 @@ package sqlitevec
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -13,6 +14,12 @@ import (
 
 	"github.com/wesm/msgvault/internal/vector"
 )
+
+// sqliteDatetimeFormat is the text DATETIME layout used everywhere
+// else in the repository (see internal/query/sqlite.go). Bind date
+// bounds with this format so boundary comparisons are consistent
+// with the existing query paths.
+const sqliteDatetimeFormat = "2006-01-02 15:04:05"
 
 // Compile-time check that *Backend satisfies the vector.Backend interface.
 var _ vector.Backend = (*Backend)(nil)
@@ -493,10 +500,14 @@ func (b *Backend) Search(ctx context.Context, gen vector.GenerationID, queryVec 
 	return hits, nil
 }
 
-// resolveFilter returns a SQL fragment of the form
-// "AND message_id IN (<id list>)" and the matching args slice, or
-// ("", nil, nil) when the filter is empty. When the filter matches no
-// messages, it returns a clause that forces an empty result set.
+// resolveFilter returns a SQL fragment constraining message_id to the
+// set of messages that pass the structured filter, along with the args
+// to bind. Returns ("", nil, nil) when the filter is empty.
+//
+// The fragment uses json_each over a single JSON-encoded id list, so
+// the bind-parameter count is O(1) no matter how many messages match
+// — this keeps broad filters (one account, one common label, wide
+// date range) under SQLite's ~999-parameter practical cap.
 func (b *Backend) resolveFilter(ctx context.Context, filter vector.Filter) (string, []any, error) {
 	if filter.IsEmpty() {
 		return "", nil, nil
@@ -508,13 +519,11 @@ func (b *Backend) resolveFilter(ctx context.Context, filter vector.Filter) (stri
 	if len(ids) == 0 {
 		return "AND message_id IN (SELECT NULL WHERE 0)", nil, nil
 	}
-	placeholders := make([]string, len(ids))
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args[i] = id
+	blob, err := json.Marshal(ids)
+	if err != nil {
+		return "", nil, fmt.Errorf("encode filter ids: %w", err)
 	}
-	return fmt.Sprintf("AND message_id IN (%s)", strings.Join(placeholders, ",")), args, nil
+	return "AND message_id IN (SELECT value FROM json_each(?))", []any{string(blob)}, nil
 }
 
 // filteredMessageIDs runs the filter against the main DB and returns
@@ -530,7 +539,23 @@ func (b *Backend) filteredMessageIDs(ctx context.Context, f vector.Filter) ([]in
 		}
 	}
 	if len(f.SenderIDs) > 0 {
-		clauses = append(clauses, inClause("m.sender_id", f.SenderIDs))
+		// Fall back to message_recipients 'from' rows for legacy
+		// messages where sender_id is NULL (see the existing filter
+		// in internal/query/sqlite.go which behaves the same).
+		inDirect := inClause("m.sender_id", f.SenderIDs)
+		inRecipient := inClause("mr.participant_id", f.SenderIDs)
+		clauses = append(clauses, fmt.Sprintf(
+			`(%s OR EXISTS (
+				SELECT 1 FROM message_recipients mr
+				 WHERE mr.message_id = m.id
+				   AND mr.recipient_type = 'from'
+				   AND %s
+			))`, inDirect, inRecipient))
+		// Two copies of the ids: one for the direct match, one for
+		// the message_recipients fallback.
+		for _, id := range f.SenderIDs {
+			args = append(args, id)
+		}
 		for _, id := range f.SenderIDs {
 			args = append(args, id)
 		}
@@ -541,11 +566,11 @@ func (b *Backend) filteredMessageIDs(ctx context.Context, f vector.Filter) ([]in
 	}
 	if f.After != nil {
 		clauses = append(clauses, "m.sent_at >= ?")
-		args = append(args, *f.After)
+		args = append(args, f.After.Format(sqliteDatetimeFormat))
 	}
 	if f.Before != nil {
 		clauses = append(clauses, "m.sent_at < ?")
-		args = append(args, *f.Before)
+		args = append(args, f.Before.Format(sqliteDatetimeFormat))
 	}
 	if len(f.LabelIDs) > 0 {
 		clauses = append(clauses, fmt.Sprintf(
