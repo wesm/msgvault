@@ -1,6 +1,8 @@
 # Identities, Collections, and Deduplication -- Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **START HERE:** Read the spec first: `docs/superpowers/specs/2026-04-20-deduplicate-command.md` (in this repo). Read `CLAUDE.md` for project conventions. Read the prior art table below -- each entry references code on a local git branch that should be ported, not written from scratch. Use `git show <branch>:<path>` to read those files.
 
 **Goal:** Implement the three concepts from the proposal (wesm/msgvault#278): identities tied to accounts, collections of accounts with a default "All" collection, and deduplication at account and collection level.
 
@@ -12,7 +14,7 @@
 
 **Tech Stack:** Go, SQLite, cobra CLI, Bubble Tea TUI, existing deletion staging (`internal/deletion/`)
 
-**Spec:** `docs/superpowers/specs/2026-04-20-deduplicate-command.md`
+**Spec:** `docs/superpowers/specs/2026-04-20-deduplicate-command.md` (in this repo, read it before starting)
 
 **Prior art on existing branches:**
 
