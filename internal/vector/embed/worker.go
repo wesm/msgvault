@@ -20,7 +20,8 @@ type EmbeddingClient interface {
 // WorkerDeps bundles the collaborators a Worker needs. Backend, VectorsDB,
 // MainDB, and Client are required; the remaining fields have sensible
 // defaults when zero: BatchSize defaults to 32, StaleThreshold defaults to
-// 10 minutes, Log defaults to slog.Default().
+// 10 minutes, MaxConsecutiveFailures defaults to 5, Log defaults to
+// slog.Default().
 type WorkerDeps struct {
 	Backend        vector.Backend
 	VectorsDB      *sql.DB
@@ -30,7 +31,12 @@ type WorkerDeps struct {
 	MaxInputChars  int
 	BatchSize      int
 	StaleThreshold time.Duration // default 10 minutes
-	Log            *slog.Logger
+	// MaxConsecutiveFailures caps the number of consecutive batch
+	// failures (embed error or upsert error) before RunOnce gives up
+	// and returns an error. A successful batch resets the counter.
+	// Default 5.
+	MaxConsecutiveFailures int
+	Log                    *slog.Logger
 }
 
 // Worker drives one building generation from claimed pending rows to
@@ -43,7 +49,8 @@ type Worker struct {
 }
 
 // NewWorker constructs a Worker, applying defaults for BatchSize (32),
-// StaleThreshold (10 minutes), and Log (slog.Default()).
+// StaleThreshold (10 minutes), MaxConsecutiveFailures (5), and Log
+// (slog.Default()).
 func NewWorker(d WorkerDeps) *Worker {
 	if d.Log == nil {
 		d.Log = slog.Default()
@@ -53,6 +60,9 @@ func NewWorker(d WorkerDeps) *Worker {
 	}
 	if d.StaleThreshold == 0 {
 		d.StaleThreshold = 10 * time.Minute
+	}
+	if d.MaxConsecutiveFailures == 0 {
+		d.MaxConsecutiveFailures = 5
 	}
 	return &Worker{deps: d, q: NewQueue(d.VectorsDB)}
 }
@@ -85,8 +95,15 @@ func (w *Worker) ReclaimStale(ctx context.Context) (int, error) {
 // RunOnce drains the queue for the given generation until empty,
 // releasing claimed rows on embed or upsert error so another worker can
 // retry them. Returns when pending is empty or ctx is cancelled.
+//
+// Returns an error when consecutive batch failures reach
+// MaxConsecutiveFailures, so a persistently misconfigured embedder
+// (bad credentials, unreachable endpoint) surfaces quickly instead of
+// looping forever. A successful batch resets the failure counter.
 func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResult, error) {
 	var res RunResult
+	consecutiveFailures := 0
+	var lastErr error
 	for {
 		if err := ctx.Err(); err != nil {
 			return res, fmt.Errorf("RunOnce: %w", err)
@@ -100,23 +117,55 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 		}
 		res.Claimed += len(ids)
 
-		chunks, truncated, err := w.embedBatch(ctx, ids)
+		eb, err := w.embedBatch(ctx, ids)
 		if err != nil {
 			res.Failed += len(ids)
 			if rerr := w.q.Release(ctx, gen, token, ids); rerr != nil {
 				w.deps.Log.Error("release after embed failure", "error", rerr)
 			}
 			w.deps.Log.Warn("embed batch failed", "gen", gen, "ids", len(ids), "error", err)
+			consecutiveFailures++
+			lastErr = err
+			if consecutiveFailures >= w.deps.MaxConsecutiveFailures {
+				return res, fmt.Errorf("embed worker aborting after %d consecutive failures: %w",
+					consecutiveFailures, lastErr)
+			}
 			continue
 		}
-		res.Truncated += truncated
+		res.Truncated += eb.truncated
 
-		if err := w.deps.Backend.Upsert(ctx, gen, chunks); err != nil {
-			res.Failed += len(ids)
-			if rerr := w.q.Release(ctx, gen, token, ids); rerr != nil {
+		// Drop queue rows for messages that disappeared between
+		// enqueue and claim (e.g. sync deleted them after the
+		// generation was seeded). Using Complete with our claim
+		// token makes this a token-aware delete: we only remove
+		// rows we still own.
+		if len(eb.missing) > 0 {
+			w.deps.Log.Warn("pending messages missing from main DB",
+				"gen", gen, "ids", eb.missing)
+			if cerr := w.q.Complete(ctx, gen, token, eb.missing); cerr != nil {
+				w.deps.Log.Error("complete missing failed", "error", cerr)
+			}
+		}
+
+		if len(eb.chunks) == 0 {
+			// Nothing fetched (all ids missing) — no failure, no
+			// success. Move on without touching the failure counter
+			// so we don't spuriously abort on a batch of orphans.
+			continue
+		}
+
+		if err := w.deps.Backend.Upsert(ctx, gen, eb.chunks); err != nil {
+			res.Failed += len(eb.embeddedIDs)
+			if rerr := w.q.Release(ctx, gen, token, eb.embeddedIDs); rerr != nil {
 				w.deps.Log.Error("release after upsert failure", "error", rerr)
 			}
-			w.deps.Log.Error("upsert failed", "gen", gen, "ids", len(ids), "error", err)
+			w.deps.Log.Error("upsert failed", "gen", gen, "ids", len(eb.embeddedIDs), "error", err)
+			consecutiveFailures++
+			lastErr = err
+			if consecutiveFailures >= w.deps.MaxConsecutiveFailures {
+				return res, fmt.Errorf("embed worker aborting after %d consecutive failures: %w",
+					consecutiveFailures, lastErr)
+			}
 			continue
 		}
 		// Complete acknowledges work via (gen, msg, claim_token) so a
@@ -124,16 +173,32 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 		// the queue row belonging to the newer worker. A row count
 		// mismatch just means the stale-completion case hit us — the
 		// newer worker's claim will still drive a later success.
-		if cerr := w.q.Complete(ctx, gen, token, ids); cerr != nil {
-			w.deps.Log.Error("complete failed", "error", cerr, "gen", gen, "ids", len(ids))
+		if cerr := w.q.Complete(ctx, gen, token, eb.embeddedIDs); cerr != nil {
+			w.deps.Log.Error("complete failed", "error", cerr, "gen", gen, "ids", len(eb.embeddedIDs))
 		}
-		res.Succeeded += len(ids)
+		res.Succeeded += len(eb.embeddedIDs)
+		consecutiveFailures = 0
 	}
 }
 
+// embedBatchResult carries the output of embedBatch. chunks and
+// embeddedIDs are aligned by position and correspond to messages that
+// were actually fetched and embedded. missing lists ids from the
+// input that had no row in the messages table and so were not sent
+// to the embedder.
+type embedBatchResult struct {
+	chunks      []vector.Chunk
+	embeddedIDs []int64
+	missing     []int64
+	truncated   int
+}
+
 // embedBatch fetches subject/body for ids, preprocesses each, calls the
-// embedding client, and assembles the resulting chunks.
-func (w *Worker) embedBatch(ctx context.Context, ids []int64) ([]vector.Chunk, int, error) {
+// embedding client, and assembles the resulting chunks. Messages that
+// vanished between enqueue and claim (e.g. the sync deleted them) are
+// reported in the returned result's missing slice rather than causing
+// a failure — the caller decides how to drain them from the queue.
+func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult, error) {
 	placeholders := make([]string, len(ids))
 	args := make([]any, len(ids))
 	for i, id := range ids {
@@ -148,43 +213,58 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) ([]vector.Chunk, i
 
 	rows, err := w.deps.MainDB.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, 0, fmt.Errorf("fetch bodies: %w", err)
+		return embedBatchResult{}, fmt.Errorf("fetch bodies: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
 	var msgs []msgText
 	var inputs []string
+	fetched := make(map[int64]struct{}, len(ids))
 	for rows.Next() {
 		var id int64
 		var subject, body string
 		if err := rows.Scan(&id, &subject, &body); err != nil {
-			return nil, 0, fmt.Errorf("scan message row: %w", err)
+			return embedBatchResult{}, fmt.Errorf("scan message row: %w", err)
 		}
 		txt, trunc := Preprocess(subject, body, w.deps.MaxInputChars, w.deps.Preprocess)
 		msgs = append(msgs, msgText{ID: id, Text: txt, Chars: len(txt), Trunc: trunc})
 		inputs = append(inputs, txt)
+		fetched[id] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("iterate message rows: %w", err)
+		return embedBatchResult{}, fmt.Errorf("iterate message rows: %w", err)
 	}
+
+	// Identify claimed ids that had no row in messages; we'll report
+	// them back so the caller can drop them from the queue.
+	var missing []int64
+	for _, id := range ids {
+		if _, ok := fetched[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+
 	if len(msgs) == 0 {
-		return nil, 0, fmt.Errorf("no messages found for ids %v", ids)
+		// All claimed ids are missing — return an empty result (no
+		// chunks, no error). Caller handles the drop.
+		return embedBatchResult{missing: missing}, nil
 	}
 
 	start := time.Now()
 	vecs, err := w.deps.Client.Embed(ctx, inputs)
 	if err != nil {
-		return nil, 0, fmt.Errorf("embed: %w", err)
+		return embedBatchResult{}, fmt.Errorf("embed: %w", err)
 	}
 	w.deps.Log.Debug("embed batch",
 		"count", len(vecs), "chars", totalChars(msgs), "duration_ms", time.Since(start).Milliseconds())
 
 	if len(vecs) != len(msgs) {
-		return nil, 0, fmt.Errorf("embedder returned %d vectors for %d inputs", len(vecs), len(msgs))
+		return embedBatchResult{}, fmt.Errorf("embedder returned %d vectors for %d inputs", len(vecs), len(msgs))
 	}
 
 	truncated := 0
 	chunks := make([]vector.Chunk, 0, len(vecs))
+	embeddedIDs := make([]int64, 0, len(vecs))
 	for i, m := range msgs {
 		if m.Trunc {
 			truncated++
@@ -195,8 +275,14 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) ([]vector.Chunk, i
 			SourceCharLen: m.Chars,
 			Truncated:     m.Trunc,
 		})
+		embeddedIDs = append(embeddedIDs, m.ID)
 	}
-	return chunks, truncated, nil
+	return embedBatchResult{
+		chunks:      chunks,
+		embeddedIDs: embeddedIDs,
+		missing:     missing,
+		truncated:   truncated,
+	}, nil
 }
 
 func totalChars(ms []msgText) int {

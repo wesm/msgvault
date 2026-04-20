@@ -173,4 +173,127 @@ func TestWorker_StaleThresholdDefault(t *testing.T) {
 	if w.deps.StaleThreshold != 10*time.Minute {
 		t.Errorf("default StaleThreshold=%v, want 10m", w.deps.StaleThreshold)
 	}
+	if w.deps.MaxConsecutiveFailures != 5 {
+		t.Errorf("default MaxConsecutiveFailures=%d, want 5", w.deps.MaxConsecutiveFailures)
+	}
+}
+
+// TestWorker_AbortsAfterConsecutiveFailures verifies that a
+// persistently failing embedder causes RunOnce to return an error
+// rather than loop forever releasing and re-claiming.
+func TestWorker_AbortsAfterConsecutiveFailures(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkerFixture(t, 3)
+	// Force every Embed call to fail — a huge failure budget ensures
+	// we hit the MaxConsecutiveFailures limit first.
+	f.FakeClient.FailNext(1 << 30)
+
+	w := NewWorker(WorkerDeps{
+		Backend:                f.Backend,
+		VectorsDB:              f.VectorsDB,
+		MainDB:                 f.MainDB,
+		Client:                 f.FakeClient,
+		BatchSize:              1,
+		MaxConsecutiveFailures: 3,
+	})
+
+	res, err := w.RunOnce(ctx, f.BuildingGen)
+	if err == nil {
+		t.Fatal("RunOnce: want error after consecutive failures, got nil")
+	}
+	if res.Failed < 3 {
+		t.Errorf("Failed=%d, want >= 3 (one per consecutive failure)", res.Failed)
+	}
+	// Any leftover claims should have been released; pending is non-empty.
+	var pending int
+	if err := f.VectorsDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pending_embeddings WHERE generation_id = ?`,
+		int64(f.BuildingGen)).Scan(&pending); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	if pending == 0 {
+		t.Errorf("pending rows after abort = 0, want non-zero (rows should have been released)")
+	}
+}
+
+// TestWorker_ConsecutiveFailureCounterResetsOnSuccess confirms that
+// intermittent failures below the limit do not abort — each success
+// resets the counter.
+func TestWorker_ConsecutiveFailureCounterResetsOnSuccess(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkerFixture(t, 4)
+	// Fail twice (below the limit of 3), then all subsequent succeed.
+	f.FakeClient.FailNext(2)
+
+	w := NewWorker(WorkerDeps{
+		Backend:                f.Backend,
+		VectorsDB:              f.VectorsDB,
+		MainDB:                 f.MainDB,
+		Client:                 f.FakeClient,
+		BatchSize:              1,
+		MaxConsecutiveFailures: 3,
+	})
+	res, err := w.RunOnce(ctx, f.BuildingGen)
+	if err != nil {
+		t.Fatalf("RunOnce: %v (2 failures, budget 3 — should not abort)", err)
+	}
+	if res.Succeeded != 4 {
+		t.Errorf("Succeeded=%d, want 4 (all 4 messages ultimately drain)", res.Succeeded)
+	}
+}
+
+// TestWorker_MissingMessagesDrainedFromQueue verifies that claimed
+// rows whose messages were deleted from the main DB are dropped from
+// the queue (via Complete) rather than silently re-looped forever.
+func TestWorker_MissingMessagesDrainedFromQueue(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkerFixture(t, 3)
+
+	// Simulate sync deleting messages 2 and 3 from the main DB
+	// AFTER CreateGeneration seeded the queue.
+	if _, err := f.MainDB.ExecContext(ctx,
+		`DELETE FROM messages WHERE id IN (2, 3)`); err != nil {
+		t.Fatalf("delete messages: %v", err)
+	}
+	if _, err := f.MainDB.ExecContext(ctx,
+		`DELETE FROM message_bodies WHERE message_id IN (2, 3)`); err != nil {
+		t.Fatalf("delete bodies: %v", err)
+	}
+
+	w := NewWorker(WorkerDeps{
+		Backend:   f.Backend,
+		VectorsDB: f.VectorsDB,
+		MainDB:    f.MainDB,
+		Client:    f.FakeClient,
+		BatchSize: 3,
+	})
+
+	res, err := w.RunOnce(ctx, f.BuildingGen)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	// Message 1 embedded; 2 and 3 dropped as missing.
+	if res.Succeeded != 1 {
+		t.Errorf("Succeeded=%d, want 1", res.Succeeded)
+	}
+	// Queue should be fully drained (no infinite loop on missing rows).
+	var pending int
+	if err := f.VectorsDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pending_embeddings WHERE generation_id = ?`,
+		int64(f.BuildingGen)).Scan(&pending); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	if pending != 0 {
+		t.Errorf("pending after drain = %d, want 0 (missing rows should be removed)", pending)
+	}
+	// Only one embedding row (for message 1).
+	var embedded int
+	if err := f.VectorsDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM embeddings WHERE generation_id = ?`,
+		int64(f.BuildingGen)).Scan(&embedded); err != nil {
+		t.Fatalf("count embeddings: %v", err)
+	}
+	if embedded != 1 {
+		t.Errorf("embeddings = %d, want 1", embedded)
+	}
 }
