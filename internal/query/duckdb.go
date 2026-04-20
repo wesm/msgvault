@@ -1396,6 +1396,17 @@ func (e *DuckDBEngine) fetchLabelsForMessages(ctx context.Context, messages []Me
 	return fetchLabelsForMessageList(ctx, e.db, "sqlite_db.", messages)
 }
 
+// GetMessageSummariesByIDs delegates to the SQLite engine — the
+// summary lookup is a small handful of indexed queries that gain
+// nothing from going through Parquet, and SQLite's plan keeps the
+// caller-supplied id order intact.
+func (e *DuckDBEngine) GetMessageSummariesByIDs(ctx context.Context, ids []int64) ([]MessageSummary, error) {
+	if e.sqliteEngine == nil {
+		return nil, fmt.Errorf("GetMessageSummariesByIDs requires SQLite: pass sqlitePath to NewDuckDBEngine")
+	}
+	return e.sqliteEngine.GetMessageSummariesByIDs(ctx, ids)
+}
+
 // GetMessage retrieves a full message from SQLite.
 // Uses direct SQLite connection when available for better BLOB handling.
 func (e *DuckDBEngine) GetMessage(ctx context.Context, id int64) (*MessageDetail, error) {

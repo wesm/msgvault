@@ -684,6 +684,153 @@ func TestFusedSearch_RecipientFiltersMatchNoneSentinel(t *testing.T) {
 	}
 }
 
+// TestFusedSearch_SubjectBoost regresses the gap where applySubjectBoost
+// was a no-op even though config + docs + request plumbing wired the
+// feature end-to-end. With subject_boost > 1.0 and a non-empty
+// SubjectTerms list, hits whose subject contains any of those terms
+// (case-insensitive substring) must have RRFScore multiplied and
+// SubjectBoosted=true; non-matching hits remain unchanged.
+//
+// Also asserts post-boost re-sort: a boosted hit must appear ABOVE a
+// previously-higher-scored unboosted hit so the response order
+// reflects the boost. Without re-sort, callers with limit=N could
+// drop boosted hits from the page even though they technically scored
+// higher.
+func TestFusedSearch_SubjectBoost(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+
+	// Reset so we control subjects precisely.
+	if _, err := b.mainDB.ExecContext(ctx,
+		`DELETE FROM messages; DELETE FROM messages_fts`); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	// Two messages:
+	//   1: subject WITHOUT the boost term — base RRF stays as-is
+	//   2: subject WITH the boost term  — RRF gets multiplied
+	for _, r := range []struct {
+		id      int64
+		subject string
+		body    string
+	}{
+		{1, "lunch plans", "want to grab lunch tomorrow"},
+		{2, "Quarterly Planning Offsite", "agenda for next week"},
+	} {
+		if _, err := b.mainDB.ExecContext(ctx,
+			`INSERT INTO messages (id, subject) VALUES (?, ?)`, r.id, r.subject); err != nil {
+			t.Fatalf("insert msg %d: %v", r.id, err)
+		}
+		if _, err := b.mainDB.ExecContext(ctx,
+			`INSERT INTO messages_fts (rowid, subject, body) VALUES (?, ?, ?)`,
+			r.id, r.subject, r.body); err != nil {
+			t.Fatalf("insert fts %d: %v", r.id, err)
+		}
+	}
+
+	// Seed the vectors so msg 1 ranks ABOVE msg 2 in pure ANN order
+	// (vec 1 is closer to the query than vec 2). Without the subject
+	// boost, msg 1 wins; with the boost on msg 2, msg 2 should jump
+	// to the top.
+	queryVec := unitVec(768, 0)
+	gid := seedAndEmbed(t, b, map[int64][]float32{
+		1: unitVec(768, 0),   // identical to query → distance ~0
+		2: unitVec(768, 137), // distant
+	})
+	if err := b.ActivateGeneration(ctx, gid); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+
+	t.Run("boost_lifts_subject_match_above_higher_ann", func(t *testing.T) {
+		req := vector.FusedRequest{
+			QueryVec:     queryVec,
+			Generation:   gid,
+			KPerSignal:   10,
+			Limit:        10,
+			RRFK:         60,
+			SubjectBoost: 5.0,
+			SubjectTerms: []string{"quarterly"},
+		}
+		hits, _, err := b.FusedSearch(ctx, req)
+		if err != nil {
+			t.Fatalf("FusedSearch: %v", err)
+		}
+		if len(hits) != 2 {
+			t.Fatalf("hits=%v, want 2", hits)
+		}
+		if hits[0].MessageID != 2 {
+			t.Errorf("top hit = %d, want 2 (boosted subject must outrank closer ANN)", hits[0].MessageID)
+		}
+		if !hits[0].SubjectBoosted {
+			t.Errorf("hits[0].SubjectBoosted=false, want true")
+		}
+		if hits[1].SubjectBoosted {
+			t.Errorf("hits[1].SubjectBoosted=true, want false (msg 1 subject does not match)")
+		}
+	})
+
+	t.Run("boost_disabled_when_factor_is_one", func(t *testing.T) {
+		req := vector.FusedRequest{
+			QueryVec:     queryVec,
+			Generation:   gid,
+			KPerSignal:   10,
+			Limit:        10,
+			RRFK:         60,
+			SubjectBoost: 1.0, // explicitly disabled
+			SubjectTerms: []string{"quarterly"},
+		}
+		hits, _, err := b.FusedSearch(ctx, req)
+		if err != nil {
+			t.Fatalf("FusedSearch: %v", err)
+		}
+		for _, h := range hits {
+			if h.SubjectBoosted {
+				t.Errorf("hit %d boosted with factor=1.0; want no boost applied", h.MessageID)
+			}
+		}
+	})
+
+	t.Run("boost_skipped_when_terms_empty", func(t *testing.T) {
+		req := vector.FusedRequest{
+			QueryVec:     queryVec,
+			Generation:   gid,
+			KPerSignal:   10,
+			Limit:        10,
+			RRFK:         60,
+			SubjectBoost: 5.0,
+			SubjectTerms: nil,
+		}
+		hits, _, err := b.FusedSearch(ctx, req)
+		if err != nil {
+			t.Fatalf("FusedSearch: %v", err)
+		}
+		for _, h := range hits {
+			if h.SubjectBoosted {
+				t.Errorf("hit %d boosted with no terms; want no boost applied", h.MessageID)
+			}
+		}
+	})
+
+	t.Run("term_match_is_case_insensitive_substring", func(t *testing.T) {
+		// Subject is "Quarterly Planning Offsite"; lowercased term
+		// "planning" is a substring.
+		req := vector.FusedRequest{
+			QueryVec:     queryVec,
+			Generation:   gid,
+			KPerSignal:   10,
+			Limit:        10,
+			RRFK:         60,
+			SubjectBoost: 5.0,
+			SubjectTerms: []string{"planning"},
+		}
+		hits, _, err := b.FusedSearch(ctx, req)
+		if err != nil {
+			t.Fatalf("FusedSearch: %v", err)
+		}
+		if len(hits) == 0 || hits[0].MessageID != 2 || !hits[0].SubjectBoosted {
+			t.Errorf("expected msg 2 boosted at top, got %+v", hits)
+		}
+	})
+}
+
 func TestFusedSearch_DimensionMismatch(t *testing.T) {
 	b, ctx, _ := newFusedBackendForTest(t)
 	gid := seedAndEmbed(t, b, map[int64][]float32{

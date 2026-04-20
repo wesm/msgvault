@@ -682,16 +682,19 @@ func (b *Backend) Search(ctx context.Context, gen vector.GenerationID, queryVec 
 
 // resolveFilter returns a SQL fragment constraining message_id to the
 // set of messages that pass the structured filter, along with the args
-// to bind. Returns ("", nil, nil) when the filter is empty.
+// to bind. Always emits at least the deletion-state filter — even an
+// empty Filter must exclude messages whose deleted_from_source_at is
+// set, since vectors.db retains embeddings for messages soft-deleted
+// from main DB until a backend.Delete call physically removes them.
+// Without this guard, mode=vector and find_similar_messages can
+// return hits for archive-deleted messages (the hybrid path's
+// FusedSearch already hardcodes the same check inside its CTE).
 //
 // The fragment uses json_each over a single JSON-encoded id list, so
 // the bind-parameter count is O(1) no matter how many messages match
 // — this keeps broad filters (one account, one common label, wide
 // date range) under SQLite's ~999-parameter practical cap.
 func (b *Backend) resolveFilter(ctx context.Context, filter vector.Filter) (string, []any, error) {
-	if filter.IsEmpty() {
-		return "", nil, nil
-	}
 	ids, err := b.filteredMessageIDs(ctx, filter)
 	if err != nil {
 		return "", nil, err

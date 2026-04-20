@@ -118,13 +118,14 @@ and/or `.dimension` in your config, then run:
 msgvault embed --full-rebuild --yes
 ```
 
-This builds a new generation with the new fingerprint. The previous
-active generation continues serving search traffic until the new one
-activates, at which point it takes over atomically. If a search
-request hits the server while the new generation is still building
-and the old one has been retired, the response is
-`index_building` — call again once `msgvault embed` reports it
-activated, or fall back to `mode=fts` in the meantime.
+This builds a new generation with the new fingerprint and activates
+it atomically when the build completes. While the rebuild is in
+flight, `mode=vector` and `mode=hybrid` return `index_stale` (the
+previously-active generation no longer matches the configured
+fingerprint, so the server refuses to serve potentially-mismatched
+results). Use `mode=fts` until the new generation activates — it does
+not depend on the vector index. Once `msgvault embed` reports the
+new generation activated, vector and hybrid modes resume.
 
 ## Troubleshooting
 

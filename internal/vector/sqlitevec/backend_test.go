@@ -1076,6 +1076,57 @@ func TestBackend_Search_SenderGroupsAreANDed_AtMessageLevel(t *testing.T) {
 	})
 }
 
+// TestBackend_Search_ExcludesDeletedFromSource regresses the bug
+// where Backend.Search with an empty filter bypassed the deletion
+// check and returned hits for messages whose deleted_from_source_at
+// is set. This affected mode=vector and find_similar_messages, both
+// of which call Backend.Search without a structured filter. The
+// hybrid path (FusedSearch) was unaffected because its CTE
+// hardcodes the same check, but the parity gap meant pure-vector
+// answers could include archive-deleted messages.
+func TestBackend_Search_ExcludesDeletedFromSource(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+
+	if _, err := b.mainDB.ExecContext(ctx,
+		`DELETE FROM messages; DELETE FROM messages_fts; DELETE FROM message_recipients`); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+
+	// Two messages: 1 live, 2 soft-deleted.
+	if _, err := b.mainDB.ExecContext(ctx,
+		`INSERT INTO messages (id, deleted_from_source_at) VALUES (1, NULL), (2, '2026-01-01 00:00:00')`); err != nil {
+		t.Fatalf("insert messages: %v", err)
+	}
+
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	chunks := []vector.Chunk{
+		{MessageID: 1, Vector: unitVec(768, 0)},
+		{MessageID: 2, Vector: unitVec(768, 0)},
+	}
+	if err := b.Upsert(ctx, gid, chunks); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	// Empty filter: must still exclude the soft-deleted message.
+	hits, err := b.Search(ctx, gid, unitVec(768, 0), 10, vector.Filter{})
+	if err != nil {
+		t.Fatalf("Search (empty filter): %v", err)
+	}
+	got := make(map[int64]bool, len(hits))
+	for _, h := range hits {
+		got[h.MessageID] = true
+	}
+	if !got[1] {
+		t.Errorf("hit missing: msg 1 (not deleted, must appear)")
+	}
+	if got[2] {
+		t.Errorf("hit present: msg 2 (deleted_from_source_at IS NOT NULL, must be excluded)")
+	}
+}
+
 func TestBackend_Delete_RemovesFromAllTables(t *testing.T) {
 	b, ctx := newBackendForTest(t)
 	gid := seedAndEmbed(t, b, map[int64][]float32{1: unitVec(768, 0)})

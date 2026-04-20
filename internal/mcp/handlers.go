@@ -313,19 +313,32 @@ func (h *handlers) searchMessagesHybrid(
 		return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 	}
 
+	// Bulk-hydrate hits in one round-trip instead of looping
+	// GetMessage per result (which fetches body, From, To, Cc, Bcc,
+	// labels, and attachments for each id and was the dominant search
+	// latency cost).
+	hitIDs := make([]int64, len(hits))
+	for i, h := range hits {
+		hitIDs[i] = h.MessageID
+	}
+	summaries, err := h.engine.GetMessageSummariesByIDs(ctx, hitIDs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"mcp: hydrate hybrid hits failed: ids=%d error=%v\n",
+			len(hitIDs), err)
+		summaries = nil
+	}
+	byID := make(map[int64]query.MessageSummary, len(summaries))
+	for _, s := range summaries {
+		byID[s.ID] = s
+	}
 	items := make([]hybridMessageItem, 0, len(hits))
 	for _, hit := range hits {
-		msg, err := h.engine.GetMessage(ctx, hit.MessageID)
-		if err != nil {
-			fmt.Fprintf(os.Stderr,
-				"mcp: hydrate hybrid hit failed: message_id=%d error=%v\n",
-				hit.MessageID, err)
+		msg, ok := byID[hit.MessageID]
+		if !ok {
 			continue
 		}
-		if msg == nil {
-			continue
-		}
-		item := hybridMessageItem{MessageSummary: messageDetailToSummary(msg)}
+		item := hybridMessageItem{MessageSummary: msg}
 		if explain {
 			sb := &hybridScoreBreakdown{
 				RRF:            hit.RRFScore,
@@ -358,32 +371,6 @@ func (h *handlers) searchMessagesHybrid(
 		},
 		Messages: items,
 	})
-}
-
-// messageDetailToSummary projects a MessageDetail onto the lighter
-// MessageSummary shape used by search list responses. The first From
-// address populates FromEmail/FromName; any further addresses are
-// dropped since email "From" is almost always singular.
-func messageDetailToSummary(d *query.MessageDetail) query.MessageSummary {
-	var fromEmail, fromName string
-	if len(d.From) > 0 {
-		fromEmail = d.From[0].Email
-		fromName = d.From[0].Name
-	}
-	return query.MessageSummary{
-		ID:              d.ID,
-		SourceMessageID: d.SourceMessageID,
-		ConversationID:  d.ConversationID,
-		Subject:         d.Subject,
-		Snippet:         d.Snippet,
-		FromEmail:       fromEmail,
-		FromName:        fromName,
-		SentAt:          d.SentAt,
-		SizeEstimate:    d.SizeEstimate,
-		HasAttachments:  d.HasAttachments,
-		AttachmentCount: len(d.Attachments),
-		Labels:          d.Labels,
-	}
 }
 
 // similarMessagesResponse is the full response body for
@@ -444,25 +431,35 @@ func (h *handlers) findSimilarMessages(ctx context.Context, req mcp.CallToolRequ
 		return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 	}
 
-	messages := make([]query.MessageSummary, 0, limit)
+	// Bulk-hydrate keeping rank order. Drop the seed first so the +1
+	// over-fetch is paid for in the size budget rather than the
+	// hydration round-trip.
+	wantIDs := make([]int64, 0, limit)
 	for _, hit := range hits {
 		if hit.MessageID == seedID {
 			continue
 		}
-		if len(messages) >= limit {
+		if len(wantIDs) >= limit {
 			break
 		}
-		msg, err := h.engine.GetMessage(ctx, hit.MessageID)
-		if err != nil {
-			fmt.Fprintf(os.Stderr,
-				"mcp: hydrate similar hit failed: message_id=%d error=%v\n",
-				hit.MessageID, err)
-			continue
+		wantIDs = append(wantIDs, hit.MessageID)
+	}
+	summaries, err := h.engine.GetMessageSummariesByIDs(ctx, wantIDs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"mcp: hydrate similar hits failed: ids=%d error=%v\n",
+			len(wantIDs), err)
+		summaries = nil
+	}
+	byID := make(map[int64]query.MessageSummary, len(summaries))
+	for _, s := range summaries {
+		byID[s.ID] = s
+	}
+	messages := make([]query.MessageSummary, 0, len(wantIDs))
+	for _, id := range wantIDs {
+		if msg, ok := byID[id]; ok {
+			messages = append(messages, msg)
 		}
-		if msg == nil {
-			continue
-		}
-		messages = append(messages, messageDetailToSummary(msg))
 	}
 
 	return jsonResult(similarMessagesResponse{

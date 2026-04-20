@@ -27,15 +27,16 @@ type MockEngine struct {
 	MessagesBySourceID map[string]*query.MessageDetail
 
 	// Optional overrides — set these to customise behavior per-test.
-	SearchFastFunc           func(context.Context, *search.Query, query.MessageFilter, int, int) ([]query.MessageSummary, error)
-	SearchFunc               func(context.Context, *search.Query, int, int) ([]query.MessageSummary, error)
-	GetMessageFunc           func(context.Context, int64) (*query.MessageDetail, error)
-	GetMessageBySourceIDFunc func(context.Context, string) (*query.MessageDetail, error)
-	GetTotalStatsFunc        func(context.Context, query.StatsOptions) (*query.TotalStats, error)
-	ListMessagesFunc         func(context.Context, query.MessageFilter) ([]query.MessageSummary, error)
-	SearchFastCountFunc      func(context.Context, *search.Query, query.MessageFilter) (int64, error)
-	GetGmailIDsByFilterFunc  func(context.Context, query.MessageFilter) ([]string, error)
-	SearchFastWithStatsFunc  func(context.Context, *search.Query, string, query.MessageFilter, query.ViewType, int, int) (*query.SearchFastResult, error)
+	SearchFastFunc               func(context.Context, *search.Query, query.MessageFilter, int, int) ([]query.MessageSummary, error)
+	SearchFunc                   func(context.Context, *search.Query, int, int) ([]query.MessageSummary, error)
+	GetMessageFunc               func(context.Context, int64) (*query.MessageDetail, error)
+	GetMessageBySourceIDFunc     func(context.Context, string) (*query.MessageDetail, error)
+	GetTotalStatsFunc            func(context.Context, query.StatsOptions) (*query.TotalStats, error)
+	ListMessagesFunc             func(context.Context, query.MessageFilter) ([]query.MessageSummary, error)
+	SearchFastCountFunc          func(context.Context, *search.Query, query.MessageFilter) (int64, error)
+	GetGmailIDsByFilterFunc      func(context.Context, query.MessageFilter) ([]string, error)
+	SearchFastWithStatsFunc      func(context.Context, *search.Query, string, query.MessageFilter, query.ViewType, int, int) (*query.SearchFastResult, error)
+	GetMessageSummariesByIDsFunc func(context.Context, []int64) ([]query.MessageSummary, error)
 }
 
 // Compile-time check.
@@ -53,6 +54,37 @@ func (m *MockEngine) ListMessages(ctx context.Context, filter query.MessageFilte
 		return m.ListMessagesFunc(ctx, filter)
 	}
 	return m.ListResults, nil
+}
+
+func (m *MockEngine) GetMessageSummariesByIDs(ctx context.Context, ids []int64) ([]query.MessageSummary, error) {
+	if m.GetMessageSummariesByIDsFunc != nil {
+		return m.GetMessageSummariesByIDsFunc(ctx, ids)
+	}
+	// Default: derive summaries from the Messages map (MessageDetail
+	// → MessageSummary), preserving caller-supplied order.
+	if m.Messages == nil {
+		return nil, nil
+	}
+	out := make([]query.MessageSummary, 0, len(ids))
+	for _, id := range ids {
+		md, ok := m.Messages[id]
+		if !ok || md == nil {
+			continue
+		}
+		out = append(out, query.MessageSummary{
+			ID:                   md.ID,
+			SourceMessageID:      md.SourceMessageID,
+			ConversationID:       md.ConversationID,
+			SourceConversationID: md.SourceConversationID,
+			Subject:              md.Subject,
+			Snippet:              md.Snippet,
+			SentAt:               md.SentAt,
+			SizeEstimate:         md.SizeEstimate,
+			HasAttachments:       md.HasAttachments,
+			Labels:               md.Labels,
+		})
+	}
+	return out, nil
 }
 
 func (m *MockEngine) GetMessage(ctx context.Context, id int64) (*query.MessageDetail, error) {

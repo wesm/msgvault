@@ -1630,6 +1630,65 @@ func TestHandleSearch_HybridResponseItemShape(t *testing.T) {
 	}
 }
 
+// TestHandleSearch_HybridUsesBulkHydration regresses the N+1 bug
+// where each hit triggered its own GetMessage call (which fetches
+// body, all four recipient sets, labels, and attachments per id —
+// roughly 7 queries per hit). Hybrid search must instead make a
+// single GetMessagesSummariesByIDs call carrying every hit's id.
+func TestHandleSearch_HybridUsesBulkHydration(t *testing.T) {
+	store := &mockStore{
+		messages: []APIMessage{
+			{ID: 1, Subject: "first", From: "a@x", Snippet: "..."},
+			{ID: 2, Subject: "second", From: "b@x", Snippet: "..."},
+			{ID: 3, Subject: "third", From: "c@x", Snippet: "..."},
+		},
+	}
+	backend := &fakeVectorBackend{
+		active: &vector.Generation{
+			ID: 1, Model: "fake", Dimension: 4,
+			Fingerprint: "fake:4", State: vector.GenerationActive,
+		},
+		searchHits: []vector.Hit{
+			{MessageID: 1, Score: 0.9, Rank: 1},
+			{MessageID: 2, Score: 0.8, Rank: 2},
+			{MessageID: 3, Score: 0.7, Rank: 3},
+		},
+	}
+	engine := hybrid.NewEngine(backend, nil, realEmbedder{dim: 4}, hybrid.Config{
+		ExpectedFingerprint: "fake:4", RRFK: 60, KPerSignal: 10,
+	})
+	srv := NewServerWithOptions(ServerOptions{
+		Config:       &config.Config{Server: config.ServerConfig{APIPort: 8080}},
+		Store:        store,
+		HybridEngine: engine,
+		Backend:      backend,
+		Logger:       testLogger(),
+	})
+
+	req := httptest.NewRequest("GET", "/api/v1/search?q=test&mode=vector", nil)
+	w := httptest.NewRecorder()
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if got := store.getMessageCalls.Load(); got != 0 {
+		t.Errorf("GetMessage call count = %d, want 0 (must use bulk hydration, not per-hit)", got)
+	}
+	if got := store.getSummariesByIDsCalls.Load(); got != 1 {
+		t.Errorf("GetMessagesSummariesByIDs call count = %d, want 1 (single bulk lookup)", got)
+	}
+	wantIDs := []int64{1, 2, 3}
+	if len(store.getSummariesByIDsLastIDs) != len(wantIDs) {
+		t.Fatalf("getSummariesByIDs last ids = %v, want %v", store.getSummariesByIDsLastIDs, wantIDs)
+	}
+	for i, want := range wantIDs {
+		if store.getSummariesByIDsLastIDs[i] != want {
+			t.Errorf("getSummariesByIDs last ids[%d] = %d, want %d", i, store.getSummariesByIDsLastIDs[i], want)
+		}
+	}
+}
+
 // TestHandleSearch_HybridPoolSaturatedAlwaysEmitted regression-guards
 // the wire-level contract that pool_saturated is always present on a
 // successful hybrid response (never omitted, never null). Without an

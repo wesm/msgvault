@@ -27,6 +27,7 @@ type MessageStore interface {
 	GetStats() (*StoreStats, error)
 	ListMessages(offset, limit int) ([]APIMessage, int64, error)
 	GetMessage(id int64) (*APIMessage, error)
+	GetMessagesSummariesByIDs(ids []int64) ([]APIMessage, error)
 	SearchMessages(query string, offset, limit int) ([]APIMessage, int64, error)
 	SearchMessagesQuery(q *search.Query, offset, limit int) ([]APIMessage, int64, error)
 }

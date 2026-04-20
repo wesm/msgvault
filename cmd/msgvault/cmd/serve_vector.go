@@ -84,6 +84,7 @@ func setupVectorFeatures(ctx context.Context, mainDB *sql.DB, mainPath string) (
 		Enqueuer:     enqueuer,
 		Worker:       worker,
 		Cfg:          cfg.Vector,
+		VectorsDB:    backend.DB(),
 		Close:        backend.Close,
 	}, nil
 }

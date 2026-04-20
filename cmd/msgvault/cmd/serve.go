@@ -162,9 +162,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Only when vector search is enabled and wired.
 	if vf != nil {
 		embedJob := &scheduler.EmbedJob{
-			Worker:  vf.Worker,
-			Backend: vf.Backend,
-			Log:     logger,
+			Worker:      vf.Worker,
+			Backend:     vf.Backend,
+			VectorsDB:   vf.VectorsDB,
+			Fingerprint: vf.Cfg.Embeddings.Fingerprint(),
+			Log:         logger,
 		}
 		schedule := cfg.Vector.Embed.Schedule.Cron
 		if err := sched.SetEmbedJob(
@@ -280,6 +282,10 @@ func (a *storeAPIAdapter) ListMessages(offset, limit int) ([]api.APIMessage, int
 
 func (a *storeAPIAdapter) GetMessage(id int64) (*api.APIMessage, error) {
 	return a.store.GetMessage(id)
+}
+
+func (a *storeAPIAdapter) GetMessagesSummariesByIDs(ids []int64) ([]api.APIMessage, error) {
+	return a.store.GetMessagesSummariesByIDs(ids)
 }
 
 func (a *storeAPIAdapter) SearchMessages(query string, offset, limit int) ([]api.APIMessage, int64, error) {

@@ -2,11 +2,14 @@ package scheduler
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	_ "github.com/mattn/go-sqlite3"
 
 	"github.com/wesm/msgvault/internal/config"
 	"github.com/wesm/msgvault/internal/vector"
@@ -455,14 +458,19 @@ func TestTriggerSyncAfterStop(t *testing.T) {
 
 // ---------- fakes for EmbedJob tests ----------
 
-// fakeBackend implements vector.Backend. Only ActiveGeneration and
-// BuildingGeneration are meaningfully populated; the rest panic to
-// catch accidental usage.
+// fakeBackend implements vector.Backend. Only ActiveGeneration,
+// BuildingGeneration, and ActivateGeneration are meaningfully
+// populated; the rest panic to catch accidental usage.
 type fakeBackend struct {
 	active    vector.Generation
 	activeErr error
 	building  *vector.Generation
 	buildErr  error
+	// activateErr is what ActivateGeneration returns. activateCalls
+	// records the gen IDs the EmbedJob asked to activate.
+	activateErr     error
+	mu              sync.Mutex
+	activateCallIDs []vector.GenerationID
 
 	activeCalls   atomic.Int32
 	buildingCalls atomic.Int32
@@ -482,7 +490,15 @@ func (f *fakeBackend) CreateGeneration(ctx context.Context, model string, dim in
 	panic("unexpected: CreateGeneration")
 }
 func (f *fakeBackend) ActivateGeneration(ctx context.Context, gen vector.GenerationID) error {
-	panic("unexpected: ActivateGeneration")
+	f.mu.Lock()
+	f.activateCallIDs = append(f.activateCallIDs, gen)
+	f.mu.Unlock()
+	return f.activateErr
+}
+func (f *fakeBackend) activations() []vector.GenerationID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]vector.GenerationID(nil), f.activateCallIDs...)
 }
 func (f *fakeBackend) RetireGeneration(ctx context.Context, gen vector.GenerationID) error {
 	panic("unexpected: RetireGeneration")
@@ -566,8 +582,11 @@ func TestEmbedJob_Run_ActiveGeneration(t *testing.T) {
 	if gen != 5 {
 		t.Errorf("RunOnce gen = %d, want 5", gen)
 	}
-	if backend.buildingCalls.Load() != 0 {
-		t.Errorf("BuildingGeneration should not be called when active exists")
+	// New precedence: BuildingGeneration is consulted first; with no
+	// building present we then fall through to active. Activation
+	// must NOT fire for the active gen.
+	if got := backend.activations(); len(got) != 0 {
+		t.Errorf("ActivateGeneration calls = %v, want none (target was active)", got)
 	}
 }
 
@@ -634,9 +653,124 @@ func TestEmbedJob_Run_ActiveGenerationError(t *testing.T) {
 	if run != 0 {
 		t.Errorf("RunOnce calls = %d, want 0 on active lookup error", run)
 	}
-	if backend.buildingCalls.Load() != 0 {
-		t.Errorf("BuildingGeneration should not be consulted on non-sentinel error")
+}
+
+// TestEmbedJob_Run_PrefersBuildingOverActive regresses the daemon
+// equivalent of the CLI's pickEmbedGeneration precedence bug. With
+// both an active generation AND a matching building generation
+// present (the typical "operator just kicked off --full-rebuild"
+// state), the daemon must drain the building so it can later
+// activate, NOT keep topping up the old active forever.
+func TestEmbedJob_Run_PrefersBuildingOverActive(t *testing.T) {
+	building := &vector.Generation{ID: 99, State: vector.GenerationBuilding, Fingerprint: "m:768"}
+	backend := &fakeBackend{
+		active:   vector.Generation{ID: 5, State: vector.GenerationActive, Fingerprint: "m:768"},
+		building: building,
 	}
+	// Pending count = 0 (no VectorsDB wired), so the activation gate
+	// will skip auto-activation; we're only asserting the target
+	// selection here.
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend, Fingerprint: "m:768"}
+
+	job.Run(context.Background())
+
+	_, _, gen := runner.calls()
+	if gen != 99 {
+		t.Errorf("RunOnce gen = %d, want building (%d) — active (%d) would strand the rebuild",
+			gen, building.ID, backend.active.ID)
+	}
+}
+
+// TestEmbedJob_Run_ActivatesBuildingWhenDrained verifies the
+// activation gate: after RunOnce on a building generation, if
+// pending_embeddings is empty for that gen, the daemon must call
+// ActivateGeneration so the new index actually starts serving.
+// Without this, a daemon-only deployment can never complete a
+// `--full-rebuild` started by the CLI.
+func TestEmbedJob_Run_ActivatesBuildingWhenDrained(t *testing.T) {
+	db := newPendingDB(t)
+	building := &vector.Generation{ID: 77, State: vector.GenerationBuilding, Fingerprint: "m:768"}
+	backend := &fakeBackend{
+		activeErr: vector.ErrNoActiveGeneration,
+		building:  building,
+	}
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend, VectorsDB: db, Fingerprint: "m:768"}
+
+	job.Run(context.Background())
+
+	got := backend.activations()
+	if len(got) != 1 || got[0] != 77 {
+		t.Errorf("activations = %v, want [77]", got)
+	}
+}
+
+// TestEmbedJob_Run_DoesNotActivateWhilePending guards the inverse
+// case: pending_embeddings still has rows, so the building must NOT
+// be activated yet (its index is incomplete).
+func TestEmbedJob_Run_DoesNotActivateWhilePending(t *testing.T) {
+	db := newPendingDB(t)
+	if _, err := db.Exec(`INSERT INTO pending_embeddings (generation_id, message_id) VALUES (77, 1)`); err != nil {
+		t.Fatalf("seed pending: %v", err)
+	}
+	building := &vector.Generation{ID: 77, State: vector.GenerationBuilding, Fingerprint: "m:768"}
+	backend := &fakeBackend{
+		activeErr: vector.ErrNoActiveGeneration,
+		building:  building,
+	}
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend, VectorsDB: db, Fingerprint: "m:768"}
+
+	job.Run(context.Background())
+
+	if got := backend.activations(); len(got) != 0 {
+		t.Errorf("activations = %v, want none (pending still > 0)", got)
+	}
+}
+
+// TestEmbedJob_Run_LeavesMismatchedBuildingForCLI guards against the
+// daemon silently topping up an unrelated rebuild. When a building
+// generation's fingerprint differs from the configured one, the
+// daemon must bail out so the operator can resolve via the CLI
+// (`msgvault embed --full-rebuild` or retire the stale build).
+func TestEmbedJob_Run_LeavesMismatchedBuildingForCLI(t *testing.T) {
+	building := &vector.Generation{ID: 33, State: vector.GenerationBuilding, Fingerprint: "old:512"}
+	backend := &fakeBackend{
+		active:   vector.Generation{ID: 5, State: vector.GenerationActive, Fingerprint: "new:768"},
+		building: building,
+	}
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend, Fingerprint: "new:768"}
+
+	job.Run(context.Background())
+
+	if _, run, _ := runner.calls(); run != 0 {
+		t.Errorf("RunOnce calls = %d, want 0 (mismatched build must be left alone)", run)
+	}
+	if got := backend.activations(); len(got) != 0 {
+		t.Errorf("activations = %v, want none", got)
+	}
+}
+
+// newPendingDB returns an in-memory SQLite handle with just the
+// pending_embeddings table the activation gate counts against.
+func newPendingDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`
+CREATE TABLE pending_embeddings (
+    generation_id INTEGER NOT NULL,
+    message_id    INTEGER NOT NULL,
+    PRIMARY KEY (generation_id, message_id)
+);`); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	return db
 }
 
 // slowRunner blocks RunOnce on `release` so tests can control when it

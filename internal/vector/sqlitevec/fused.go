@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 
 	"github.com/wesm/msgvault/internal/vector"
@@ -400,6 +401,91 @@ func labelGroupClauses(groups [][]int64) (string, []any, error) {
 	return sb.String(), args, nil
 }
 
-// applySubjectBoost is a stub. Subject boosting lives in Task 11.
-func (b *Backend) applySubjectBoost(_ context.Context, _ []vector.FusedHit, _ []string, _ float64) {
+// applySubjectBoost multiplies the RRF score of each hit whose
+// subject contains any of the supplied (already-lowercased) terms as
+// a case-insensitive substring, then re-sorts hits by RRF score so
+// the boosted entries float to the top. Sets SubjectBoosted=true on
+// the hits that received the multiplier so callers (the API explain
+// surface, MCP responses) can report it back to the user.
+//
+// Subjects are fetched in one batch query against the main DB; the
+// fused query intentionally does not include them so we keep the
+// CTE column shape stable. Failures in the subject lookup are
+// logged-and-ignored — the hits remain in their pre-boost order
+// rather than dropping the response.
+func (b *Backend) applySubjectBoost(ctx context.Context, hits []vector.FusedHit, subjectTerms []string, boost float64) {
+	if len(hits) == 0 || len(subjectTerms) == 0 || boost <= 1.0 {
+		return
+	}
+	ids := make([]int64, len(hits))
+	for i, h := range hits {
+		ids[i] = h.MessageID
+	}
+	subjects, err := b.batchGetSubjects(ctx, ids)
+	if err != nil {
+		// Don't fail the whole search on a subject-lookup hiccup; the
+		// caller will see unboosted scores and can retry.
+		return
+	}
+	for i := range hits {
+		subj := subjects[hits[i].MessageID]
+		if subj == "" {
+			continue
+		}
+		lower := strings.ToLower(subj)
+		for _, term := range subjectTerms {
+			if term == "" {
+				continue
+			}
+			if strings.Contains(lower, term) {
+				hits[i].RRFScore *= boost
+				hits[i].SubjectBoosted = true
+				break
+			}
+		}
+	}
+	// Re-sort by RRF DESC, message_id ASC so post-boost ordering
+	// matches the SQL CTE's tiebreak rule.
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].RRFScore != hits[j].RRFScore {
+			return hits[i].RRFScore > hits[j].RRFScore
+		}
+		return hits[i].MessageID < hits[j].MessageID
+	})
+}
+
+// batchGetSubjects loads m.subject for the given ids in a single
+// query, returning a map keyed by message_id. Missing or NULL
+// subjects are absent from the map (or stored as ""), which the
+// caller treats as "no subject to boost".
+func (b *Backend) batchGetSubjects(ctx context.Context, ids []int64) (map[int64]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	q := fmt.Sprintf(`SELECT id, COALESCE(subject, '') FROM messages WHERE id IN (%s)`,
+		strings.Join(placeholders, ","))
+	rows, err := b.mainDB.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("batch get subjects: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[int64]string, len(ids))
+	for rows.Next() {
+		var id int64
+		var subj string
+		if err := rows.Scan(&id, &subj); err != nil {
+			return nil, fmt.Errorf("scan subject: %w", err)
+		}
+		out[id] = subj
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate subjects: %w", err)
+	}
+	return out, nil
 }

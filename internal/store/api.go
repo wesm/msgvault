@@ -175,6 +175,75 @@ func (s *Store) GetMessage(id int64) (*APIMessage, error) {
 	return &m, nil
 }
 
+// GetMessagesSummariesByIDs returns summary-level (no body, no
+// attachments) APIMessage rows for the supplied IDs in the same order
+// as ids. Missing IDs are silently dropped — callers are expected to
+// have already filtered for live messages, and a missing row in the
+// summary set is just "ignore this hit". Recipients and labels are
+// batch-loaded with the same shape as SearchMessages, so the worst
+// case is 5 SQL round-trips regardless of len(ids). This is the
+// designated hydration path for vector/hybrid search hits, where
+// callers loop over many MessageIDs and never need body or
+// attachments — calling GetMessage in that loop costs ~7 queries per
+// hit (body + attachments + 3 recipients + labels + base) and
+// dominates p50 search latency past a handful of results.
+func (s *Store) GetMessagesSummariesByIDs(ids []int64) ([]APIMessage, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	q := fmt.Sprintf(`
+		SELECT
+			m.id,
+			COALESCE(m.conversation_id, 0) as conversation_id,
+			COALESCE(m.subject, '') as subject,
+			COALESCE(p.email_address, '') as from_email,
+			COALESCE(m.sent_at, m.received_at, m.internal_date) as sent_at,
+			COALESCE(m.snippet, '') as snippet,
+			m.has_attachments,
+			m.size_estimate
+		FROM messages m
+		LEFT JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
+		LEFT JOIN participants p ON p.id = mr.participant_id
+		WHERE m.id IN (%s) AND m.deleted_from_source_at IS NULL
+	`, strings.Join(placeholders, ","))
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("get message summaries: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	messages, foundIDs, err := scanMessageRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(messages) == 0 {
+		return nil, nil
+	}
+	if err := s.batchPopulate(messages, foundIDs); err != nil {
+		return nil, err
+	}
+
+	// Re-order to match the caller's id order so search rank is
+	// preserved end-to-end.
+	indexByID := make(map[int64]int, len(messages))
+	for i, m := range messages {
+		indexByID[m.ID] = i
+	}
+	ordered := make([]APIMessage, 0, len(ids))
+	for _, id := range ids {
+		if idx, ok := indexByID[id]; ok {
+			ordered = append(ordered, messages[idx])
+		}
+	}
+	return ordered, nil
+}
+
 // SearchMessages searches messages using FTS5, with batch-loaded recipients and labels.
 func (s *Store) SearchMessages(query string, offset, limit int) ([]APIMessage, int64, error) {
 	// First try FTS5 search

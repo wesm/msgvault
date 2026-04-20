@@ -460,18 +460,35 @@ func (s *Server) handleHybridSearch(
 		return
 	}
 
+	// Bulk-hydrate to avoid the per-hit GetMessage N+1: a single
+	// summary lookup pulls the base fields + recipients + labels for
+	// the whole hit set in 5 SQL round-trips, regardless of len(hits).
+	// Body and attachments are intentionally skipped — the search
+	// response only needs MessageSummary.
+	hitIDs := make([]int64, len(hits))
+	for i, h := range hits {
+		hitIDs[i] = h.MessageID
+	}
+	summaries, err := s.store.GetMessagesSummariesByIDs(hitIDs)
+	if err != nil {
+		s.logger.Warn("hydrate hybrid hits failed", "ids", len(hitIDs), "error", err)
+		summaries = nil
+	}
+	byID := make(map[int64]APIMessage, len(summaries))
+	for _, m := range summaries {
+		byID[m.ID] = m
+	}
 	items := make([]hybridSearchItem, 0, len(hits))
 	for _, h := range hits {
-		msg, err := s.store.GetMessage(h.MessageID)
-		if err != nil {
-			s.logger.Warn("hydrate hybrid hit failed",
-				"message_id", h.MessageID, "error", err)
+		msg, ok := byID[h.MessageID]
+		if !ok {
+			// Hit referred to a row that disappeared between Search
+			// and hydration (just-deleted, retired generation, etc.).
+			// Drop it silently — same effect as the old per-hit
+			// GetMessage returning nil.
 			continue
 		}
-		if msg == nil {
-			continue
-		}
-		item := hybridSearchItem{MessageSummary: toMessageSummary(*msg)}
+		item := hybridSearchItem{MessageSummary: toMessageSummary(msg)}
 		if explain {
 			sb := &scoreBreakdown{
 				RRF:            h.RRFScore,
