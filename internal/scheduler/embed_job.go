@@ -118,6 +118,17 @@ func (j *EmbedJob) Run(ctx context.Context) {
 	// failures that the worker later recovers from must not block
 	// activation, but a generation with pending rows must not
 	// auto-activate either (it would expose an incomplete index).
+	//
+	// This check + ActivateGeneration is intentionally non-atomic.
+	// If sync.EnqueueMessages commits a new pending row between the
+	// pendingCount read and the activation call, activation still
+	// succeeds and the new row stays bound to the (now-active)
+	// generation. The next worker tick picks it up via the active-
+	// generation top-up path, so the system reaches consistency on
+	// the next run rather than blocking activation forever on a
+	// moving target. This is by design — at steady state every
+	// active generation has incremental rows showing up between
+	// runs, so the activation gate must not require a snapshot.
 	if j.VectorsDB == nil {
 		log.Debug("embed: building drained but VectorsDB not wired; skipping auto-activation",
 			"gen", target)

@@ -837,6 +837,69 @@ func TestFusedSearch_SubjectBoost(t *testing.T) {
 	})
 }
 
+// TestFusedSearch_NullSubjectExcludedBySubjectFilter pins down the
+// intentional behavior in fused.go's filtered CTE: when a SubjectSubstrings
+// filter is supplied, messages with NULL subject are dropped even if the
+// body matches FTS. The same rule applies to the Search path in
+// backend.go's collectFilterClauses (`m.subject LIKE ?` returns NULL on
+// NULL subject, which SQLite treats as not-true). The test guards the
+// shared semantics so a future change has to update both paths together
+// instead of silently surfacing legacy NULL-subject imports for
+// subject-only queries.
+func TestFusedSearch_NullSubjectExcludedBySubjectFilter(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+
+	if _, err := b.mainDB.ExecContext(ctx,
+		`DELETE FROM messages; DELETE FROM messages_fts`); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	// Two messages with the same body. Msg 1 has NULL subject, msg 2
+	// has a subject containing "report".
+	if _, err := b.mainDB.ExecContext(ctx,
+		`INSERT INTO messages (id, subject) VALUES (1, NULL), (2, 'Quarterly report')`); err != nil {
+		t.Fatalf("insert msgs: %v", err)
+	}
+	for _, id := range []int64{1, 2} {
+		if _, err := b.mainDB.ExecContext(ctx,
+			`INSERT INTO messages_fts (rowid, subject, body) VALUES (?, ?, ?)`,
+			id, "", "the quarterly report ships next week"); err != nil {
+			t.Fatalf("insert fts %d: %v", id, err)
+		}
+	}
+
+	gid := seedAndEmbed(t, b, map[int64][]float32{
+		1: unitVec(768, 0),
+		2: unitVec(768, 1),
+	})
+	if err := b.ActivateGeneration(ctx, gid); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+
+	hits, _, err := b.FusedSearch(ctx, vector.FusedRequest{
+		QueryVec:   unitVec(768, 0),
+		Generation: gid,
+		FTSQuery:   "report",
+		Filter:     vector.Filter{SubjectSubstrings: []string{"report"}},
+		KPerSignal: 10, Limit: 10, RRFK: 60,
+	})
+	if err != nil {
+		t.Fatalf("FusedSearch: %v", err)
+	}
+	if len(hits) != 1 || hits[0].MessageID != 2 {
+		t.Fatalf("hits=%+v, want only msg 2 (NULL subject must be excluded by subject filter)", hits)
+	}
+
+	// And confirm the same for Backend.Search (the non-fused path).
+	searchHits, err := b.Search(ctx, gid, unitVec(768, 0), 10,
+		vector.Filter{SubjectSubstrings: []string{"report"}})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(searchHits) != 1 || searchHits[0].MessageID != 2 {
+		t.Fatalf("Search hits=%+v, want only msg 2", searchHits)
+	}
+}
+
 func TestFusedSearch_DimensionMismatch(t *testing.T) {
 	b, ctx, _ := newFusedBackendForTest(t)
 	gid := seedAndEmbed(t, b, map[int64][]float32{

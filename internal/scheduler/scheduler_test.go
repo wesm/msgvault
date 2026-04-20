@@ -819,6 +819,53 @@ func TestEmbedJob_Run_EnsureSeededErrorBailsOut(t *testing.T) {
 	}
 }
 
+// TestEmbedJob_Run_PostActivationEnqueueDrainsOnNextRun is the
+// eventual-consistency check that pairs with the comment in
+// embed_job.go's activation gate. It simulates the race the gate is
+// designed to tolerate: pendingCount reads 0, activation flips
+// state to active, then a new pending row appears (as if a sync
+// committed between the read and the activate). The next worker
+// run must pick the now-active generation as its target — proving
+// the post-activation top-up path runs and the system converges.
+func TestEmbedJob_Run_PostActivationEnqueueDrainsOnNextRun(t *testing.T) {
+	db := newPendingDB(t)
+	gen := vector.Generation{ID: 88, State: vector.GenerationBuilding, Fingerprint: "m:768"}
+	backend := &fakeBackend{
+		activeErr: vector.ErrNoActiveGeneration,
+		building:  &gen,
+	}
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend, VectorsDB: db, Fingerprint: "m:768"}
+
+	// Tick 1: building drained, activation flips to active.
+	job.Run(context.Background())
+	if got := backend.activations(); len(got) != 1 || got[0] != 88 {
+		t.Fatalf("tick 1 activations = %v, want [88]", got)
+	}
+
+	// Simulate the race: a sync.EnqueueMessages commit lands AFTER
+	// activation, adding a pending row bound to the (now-active)
+	// generation. The fakeBackend reflects the post-activation state.
+	if _, err := db.Exec(`INSERT INTO pending_embeddings (generation_id, message_id) VALUES (88, 1)`); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	backend.building = nil
+	backend.active = vector.Generation{ID: 88, State: vector.GenerationActive, Fingerprint: "m:768"}
+	backend.activeErr = nil
+
+	// Tick 2: the active path picks it up and drains.
+	job.Run(context.Background())
+	_, run, gen2 := runner.calls()
+	if run != 2 || gen2 != 88 {
+		t.Errorf("tick 2 RunOnce calls=%d gen=%d, want 2 / 88", run, gen2)
+	}
+	// Activation must NOT fire a second time (idempotency: active-mode
+	// runs never call ActivateGeneration).
+	if got := backend.activations(); len(got) != 1 {
+		t.Errorf("activations = %v, want only the first activation", got)
+	}
+}
+
 // newPendingDB returns an in-memory SQLite handle with just the
 // pending_embeddings table the activation gate counts against.
 func newPendingDB(t *testing.T) *sql.DB {
