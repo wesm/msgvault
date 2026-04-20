@@ -192,11 +192,14 @@ func assertPending(t *testing.T, db *sql.DB, gen int64, want int) {
 }
 
 // fakeEmbeddingClient returns a deterministic vector per input; tests
-// may force failures with FailNext(n).
+// may force failures with FailNext(n) or run a callback inside Embed
+// (after the queue claim, before Upsert/Complete) to perturb DB state
+// for race or failure testing.
 type fakeEmbeddingClient struct {
-	dim   int
-	failN int
-	calls int
+	dim       int
+	failN     int
+	calls     int
+	preReturn func() // optional callback fired right before Embed returns success
 }
 
 // FailNext forces the next n Embed calls to return an error.
@@ -215,6 +218,9 @@ func (c *fakeEmbeddingClient) Embed(_ context.Context, inputs []string) ([][]flo
 		// First component encodes input length mod dim — deterministic, non-zero.
 		v[0] = float32(len(inputs[i])%c.dim + 1)
 		out[i] = v
+	}
+	if c.preReturn != nil {
+		c.preReturn()
 	}
 	return out, nil
 }

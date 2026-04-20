@@ -90,6 +90,10 @@ func openFusedMainDB(t *testing.T) (*sql.DB, string) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
+	// sent_at is DATETIME (text in canonical "2006-01-02 15:04:05"
+	// format) to match the production messages schema. The fused query
+	// compares it as a string; using INTEGER here would let bugs in
+	// boundary semantics slip past the fused tests.
 	schema := `
 CREATE TABLE messages (
     id INTEGER PRIMARY KEY,
@@ -98,7 +102,7 @@ CREATE TABLE messages (
     sender_id INTEGER,
     has_attachments INTEGER DEFAULT 0,
     size_estimate INTEGER,
-    sent_at INTEGER,
+    sent_at DATETIME,
     deleted_from_source_at DATETIME
 );
 CREATE VIRTUAL TABLE messages_fts USING fts5(subject, body, content='', contentless_delete=1);

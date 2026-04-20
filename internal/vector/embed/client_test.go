@@ -367,39 +367,81 @@ func TestClient_Embed_RetriesTruncatedBody(t *testing.T) {
 	}
 }
 
-// TestClient_parseRetryAfter covers the three Retry-After formats
-// (seconds, HTTP-date, unparseable) and the cap that protects
-// against absurd server-supplied values.
+// TestClient_parseRetryAfter covers the Retry-After formats (seconds,
+// HTTP-date, unparseable) and the cap that protects against absurd
+// server-supplied values. The (Duration, bool) return distinguishes
+// "Retry-After: 0" (parsed = true, immediate retry) from "missing or
+// unparseable" (parsed = false, use default backoff).
 func TestClient_parseRetryAfter(t *testing.T) {
 	cases := []struct {
-		in   string
-		zero bool // expect zero (fall back to default backoff)
+		in      string
+		wantDur time.Duration
+		wantOk  bool
 	}{
-		{"", true},
-		{"   ", true},
-		{"abc", true},
-		{"-5", true},
-		{"0", false},
-		{"2", false},
+		{"", 0, false},
+		{"   ", 0, false},
+		{"abc", 0, false},
+		{"-5", 0, false},
+		{"0", 0, true}, // explicit immediate retry
+		{"2", 2 * time.Second, true},
 	}
 	for _, c := range cases {
-		got := parseRetryAfter(c.in)
-		if c.zero && got != 0 {
-			t.Errorf("parseRetryAfter(%q)=%v, want 0", c.in, got)
-		}
-		if !c.zero && got < 0 {
-			t.Errorf("parseRetryAfter(%q)=%v, want >= 0", c.in, got)
+		gotDur, gotOk := parseRetryAfter(c.in)
+		if gotDur != c.wantDur || gotOk != c.wantOk {
+			t.Errorf("parseRetryAfter(%q) = (%v, %v), want (%v, %v)",
+				c.in, gotDur, gotOk, c.wantDur, c.wantOk)
 		}
 	}
 	// Cap: 7200 seconds is capped to 1 hour.
-	if got := parseRetryAfter("7200"); got != time.Hour {
-		t.Errorf("parseRetryAfter(7200)=%v, want 1h cap", got)
+	if got, ok := parseRetryAfter("7200"); got != time.Hour || !ok {
+		t.Errorf("parseRetryAfter(7200) = (%v, %v), want (1h, true)", got, ok)
 	}
 	// HTTP-date: one second in the future is a non-zero positive
 	// duration well under the cap.
 	future := time.Now().Add(5 * time.Second).UTC().Format(http.TimeFormat)
-	if got := parseRetryAfter(future); got <= 0 || got > time.Hour {
-		t.Errorf("parseRetryAfter(%q)=%v, want (0, 1h]", future, got)
+	if got, ok := parseRetryAfter(future); !ok || got <= 0 || got > time.Hour {
+		t.Errorf("parseRetryAfter(%q) = (%v, %v), want (>0 and <=1h, true)", future, got, ok)
+	}
+}
+
+// TestClient_Embed_RetryAfterZero_RetriesImmediately regresses the
+// bug where Retry-After: 0 was indistinguishable from "no override"
+// and fell back to exponential backoff. With the (Duration, bool)
+// return, an explicit zero must take precedence and retry without
+// waiting. We assert by measuring elapsed time across two attempts:
+// the second attempt must start far sooner than the default
+// 200ms backoff for attempt #1.
+func TestClient_Embed_RetryAfterZero_RetriesImmediately(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		writeEmbeddings(t, w, [][]float32{{1, 0, 0, 0}})
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{Endpoint: srv.URL, Model: "m", Dimension: 4, MaxRetries: 3})
+	start := time.Now()
+	vecs, err := c.Embed(context.Background(), []string{"hello"})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if len(vecs) != 1 {
+		t.Fatalf("len(vecs)=%d, want 1", len(vecs))
+	}
+	// Default backoff for attempt #1 is 1<<1 * 100ms = 200ms.
+	// Retry-After: 0 should drop that to ~0. Allow generous slack
+	// (50ms) for HTTP roundtrips on slow CI.
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("elapsed=%v, want < 100ms (Retry-After: 0 should bypass exponential backoff)", elapsed)
+	}
+	if calls != 2 {
+		t.Errorf("calls=%d, want 2", calls)
 	}
 }
 

@@ -242,6 +242,100 @@ func TestWorker_ConsecutiveFailureCounterResetsOnSuccess(t *testing.T) {
 	}
 }
 
+// TestWorker_RuneCountUsedForSourceCharLen regresses the
+// byte-vs-rune mismatch: Preprocess truncates by runes, so the
+// SourceCharLen field on each Chunk must also be a rune count or
+// CJK/emoji inputs get inflated by 2-4x. We embed a short Japanese
+// subject (whose UTF-8 byte length is much larger than its rune
+// count) and assert the persisted source_char_len matches runes.
+func TestWorker_RuneCountUsedForSourceCharLen(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkerFixture(t, 0) // start empty so we control the message text
+
+	// "こんにちは世界" = 7 runes, 21 UTF-8 bytes. Preprocess prepends
+	// "Subject: " (9 ASCII bytes/runes) and "\n\n" (2). The full
+	// preprocessed string has 18 runes and 32 bytes — a 1.78x
+	// inflation if we record bytes by mistake.
+	const subject = "こんにちは世界"
+	if _, err := f.MainDB.ExecContext(ctx,
+		`INSERT INTO messages (id, subject) VALUES (1, ?)`, subject); err != nil {
+		t.Fatalf("insert message: %v", err)
+	}
+	if _, err := f.VectorsDB.ExecContext(ctx,
+		`INSERT INTO pending_embeddings (generation_id, message_id, enqueued_at) VALUES (?, 1, 0)`,
+		int64(f.BuildingGen)); err != nil {
+		t.Fatalf("seed pending: %v", err)
+	}
+
+	w := NewWorker(WorkerDeps{
+		Backend:   f.Backend,
+		VectorsDB: f.VectorsDB,
+		MainDB:    f.MainDB,
+		Client:    f.FakeClient,
+		BatchSize: 1,
+	})
+	res, err := w.RunOnce(ctx, f.BuildingGen)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if res.Succeeded != 1 {
+		t.Fatalf("Succeeded=%d, want 1", res.Succeeded)
+	}
+
+	const wantRunes = 18 // len("Subject: \n\n") + 7 runes for the kanji
+	var got int
+	if err := f.VectorsDB.QueryRowContext(ctx,
+		`SELECT source_char_len FROM embeddings WHERE generation_id = ? AND message_id = 1`,
+		int64(f.BuildingGen)).Scan(&got); err != nil {
+		t.Fatalf("read source_char_len: %v", err)
+	}
+	if got != wantRunes {
+		t.Errorf("source_char_len=%d, want %d (rune count, not byte length)", got, wantRunes)
+	}
+}
+
+// TestWorker_CompleteFailureCountsAsBatchFailure regresses the bug
+// where Queue.Complete failures were log-only: the embedded rows
+// stayed claimed, the next Claim returned empty, and RunOnce
+// reported a clean drain. After this fix Complete failure must count
+// toward MaxConsecutiveFailures so the loop short-circuits instead of
+// silently spinning until ReclaimStale rescues the rows minutes
+// later. We force Complete to fail by dropping pending_embeddings
+// from inside the embedding client's Embed callback (after Claim has
+// run, before Complete).
+func TestWorker_CompleteFailureCountsAsBatchFailure(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkerFixture(t, 3)
+
+	// Drop the queue table mid-batch so the next Complete call fails.
+	// Embed runs after Claim succeeded but before Upsert and Complete;
+	// dropping here lets Upsert succeed (different table) and Complete
+	// fail.
+	f.FakeClient.preReturn = func() {
+		_, _ = f.VectorsDB.ExecContext(ctx, `DROP TABLE pending_embeddings`)
+	}
+
+	w := NewWorker(WorkerDeps{
+		Backend:                f.Backend,
+		VectorsDB:              f.VectorsDB,
+		MainDB:                 f.MainDB,
+		Client:                 f.FakeClient,
+		BatchSize:              1,
+		MaxConsecutiveFailures: 2,
+	})
+
+	res, err := w.RunOnce(ctx, f.BuildingGen)
+	if err == nil {
+		t.Fatal("RunOnce: want error after Complete failures, got nil (regression: silent success)")
+	}
+	if res.Succeeded != 0 {
+		t.Errorf("Succeeded=%d, want 0 (Complete failed, work was not durably finished)", res.Succeeded)
+	}
+	if res.Failed == 0 {
+		t.Errorf("Failed=%d, want > 0 (Complete failure should count as a batch failure)", res.Failed)
+	}
+}
+
 // TestWorker_MissingMessagesDrainedFromQueue verifies that claimed
 // rows whose messages were deleted from the main DB are dropped from
 // the queue (via Complete) rather than silently re-looped forever.

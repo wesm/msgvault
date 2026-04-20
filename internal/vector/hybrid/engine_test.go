@@ -52,6 +52,7 @@ func newEngineFixture(t *testing.T) *engineFixture {
 	}
 	t.Cleanup(func() { _ = mainDB.Close() })
 
+	// sent_at is DATETIME (text) to match the production schema.
 	schema := `
 CREATE TABLE messages (
     id INTEGER PRIMARY KEY,
@@ -60,7 +61,7 @@ CREATE TABLE messages (
     sender_id INTEGER,
     has_attachments INTEGER DEFAULT 0,
     size_estimate INTEGER,
-    sent_at INTEGER,
+    sent_at DATETIME,
     deleted_from_source_at DATETIME
 );
 CREATE TABLE message_bodies (

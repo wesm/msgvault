@@ -267,6 +267,7 @@ func openFusedMainWithSchema(t *testing.T, path string) *sql.DB {
 		t.Fatalf("open main: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	// sent_at is DATETIME (text) to match the production schema.
 	schema := `
 CREATE TABLE messages (
     id INTEGER PRIMARY KEY,
@@ -275,7 +276,7 @@ CREATE TABLE messages (
     sender_id INTEGER,
     has_attachments INTEGER DEFAULT 0,
     size_estimate INTEGER,
-    sent_at INTEGER,
+    sent_at DATETIME,
     deleted_from_source_at DATETIME
 );
 CREATE VIRTUAL TABLE messages_fts USING fts5(subject, body, content='', contentless_delete=1);
@@ -366,6 +367,253 @@ func TestFusedSearch_PinnedPoolKeepsAttach(t *testing.T) {
 	// expect a "no such table: vec.embeddings" error.
 	if secondErr != nil && strings.Contains(secondErr.Error(), "no such table") {
 		t.Errorf("second query saw 'no such table' — pool is not pinned: %v", secondErr)
+	}
+}
+
+// TestFusedSearch_AfterBeforeBoundaries_TextDate covers the regression
+// where After/Before bounds were bound as integers but compared against
+// the production text DATETIME column. Boundary semantics: After is
+// inclusive (>=), Before is exclusive (<). We seed three messages with
+// distinct text sent_at values and assert the bounds carve out exactly
+// the expected subset.
+func TestFusedSearch_AfterBeforeBoundaries_TextDate(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "main.db")
+	main := openFusedMainWithSchema(t, mainPath)
+
+	// Three messages spaced one day apart, indexed in messages_fts so
+	// the BM25 branch has matches and the date filter is the
+	// discriminator.
+	type row struct {
+		id     int64
+		sentAt string
+	}
+	rows := []row{
+		{1, "2026-01-01 00:00:00"},
+		{2, "2026-01-15 12:00:00"},
+		{3, "2026-02-01 00:00:00"},
+	}
+	for _, r := range rows {
+		if _, err := main.ExecContext(ctx,
+			`INSERT INTO messages (id, sent_at) VALUES (?, ?)`,
+			r.id, r.sentAt); err != nil {
+			t.Fatalf("insert msg %d: %v", r.id, err)
+		}
+		if _, err := main.ExecContext(ctx,
+			`INSERT INTO messages_fts (rowid, subject, body) VALUES (?, ?, ?)`,
+			r.id, "", "topic"); err != nil {
+			t.Fatalf("insert fts %d: %v", r.id, err)
+		}
+	}
+
+	b, err := Open(ctx, Options{
+		Path:      filepath.Join(dir, "vectors.db"),
+		MainPath:  mainPath,
+		Dimension: 768,
+		MainDB:    main,
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	if err := b.ActivateGeneration(ctx, gid); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	mid := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name   string
+		filter vector.Filter
+		want   []int64
+	}{
+		{
+			name:   "after_inclusive_picks_boundary_and_later",
+			filter: vector.Filter{After: &mid},
+			want:   []int64{2, 3},
+		},
+		{
+			name:   "before_exclusive_drops_boundary",
+			filter: vector.Filter{Before: &end},
+			want:   []int64{1, 2},
+		},
+		{
+			name:   "after_and_before_carve_out_window",
+			filter: vector.Filter{After: &mid, Before: &end},
+			want:   []int64{2},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := vector.FusedRequest{
+				FTSQuery:   "topic",
+				Generation: gid,
+				Filter:     c.filter,
+				KPerSignal: 10,
+				Limit:      10,
+				RRFK:       60,
+			}
+			hits, _, err := b.FusedSearch(ctx, req)
+			if err != nil {
+				t.Fatalf("FusedSearch: %v", err)
+			}
+			got := make(map[int64]bool, len(hits))
+			for _, h := range hits {
+				got[h.MessageID] = true
+			}
+			for _, id := range c.want {
+				if !got[id] {
+					t.Errorf("missing expected id %d (got %v)", id, got)
+				}
+			}
+			if len(got) != len(c.want) {
+				t.Errorf("got %d hits, want %d (got=%v want=%v)", len(got), len(c.want), got, c.want)
+			}
+		})
+	}
+}
+
+// TestFusedSearch_SenderFallback_ToMessageRecipients confirms the
+// sender filter matches messages whose only record of the sender is a
+// message_recipients row with recipient_type='from' — i.e. legacy rows
+// where messages.sender_id is NULL. This mirrors the same fallback in
+// Backend.Search; without coverage on the fused path, a future
+// refactor of the CTE could quietly drop legacy rows from hybrid
+// search.
+func TestFusedSearch_SenderFallback_ToMessageRecipients(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "main.db")
+	main := openFusedMainWithSchema(t, mainPath)
+
+	// msg 1: direct sender_id=100. msg 2: sender_id NULL but a 'from'
+	// recipient row points at participant 100. msg 3: different sender.
+	if _, err := main.ExecContext(ctx,
+		`INSERT INTO messages (id, sender_id) VALUES (1, 100)`); err != nil {
+		t.Fatalf("insert msg 1: %v", err)
+	}
+	if _, err := main.ExecContext(ctx,
+		`INSERT INTO messages (id) VALUES (2)`); err != nil {
+		t.Fatalf("insert msg 2: %v", err)
+	}
+	if _, err := main.ExecContext(ctx,
+		`INSERT INTO message_recipients (message_id, recipient_type, participant_id)
+		 VALUES (2, 'from', 100)`); err != nil {
+		t.Fatalf("insert mr: %v", err)
+	}
+	if _, err := main.ExecContext(ctx,
+		`INSERT INTO messages (id, sender_id) VALUES (3, 999)`); err != nil {
+		t.Fatalf("insert msg 3: %v", err)
+	}
+	for _, id := range []int64{1, 2, 3} {
+		if _, err := main.ExecContext(ctx,
+			`INSERT INTO messages_fts (rowid, subject, body) VALUES (?, ?, ?)`,
+			id, "", "topic"); err != nil {
+			t.Fatalf("insert fts %d: %v", id, err)
+		}
+	}
+
+	b, err := Open(ctx, Options{
+		Path:      filepath.Join(dir, "vectors.db"),
+		MainPath:  mainPath,
+		Dimension: 768,
+		MainDB:    main,
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	if err := b.ActivateGeneration(ctx, gid); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	req := vector.FusedRequest{
+		FTSQuery:   "topic",
+		Generation: gid,
+		Filter:     vector.Filter{SenderIDs: []int64{100}},
+		KPerSignal: 10,
+		Limit:      10,
+		RRFK:       60,
+	}
+	hits, _, err := b.FusedSearch(ctx, req)
+	if err != nil {
+		t.Fatalf("FusedSearch: %v", err)
+	}
+	got := make(map[int64]bool, len(hits))
+	for _, h := range hits {
+		got[h.MessageID] = true
+	}
+	if !got[1] {
+		t.Errorf("missing msg 1 (direct sender_id=100)")
+	}
+	if !got[2] {
+		t.Errorf("missing msg 2 (sender_id NULL, recipient_type='from' fallback)")
+	}
+	if got[3] {
+		t.Errorf("unexpected msg 3 (different sender, should be filtered out)")
+	}
+}
+
+// TestFusedSearch_RecipientFiltersMatchNoneSentinel guards the
+// "operator present, resolved to zero IDs" semantics for to/cc/bcc.
+// BuildFilter substitutes a negative sentinel id when a recipient
+// token resolves to nothing; the fused query's IN clause must produce
+// zero hits, NOT degrade to an unfiltered search. Without this guard,
+// a typo'd to:nonexistent would broaden results instead of returning
+// none.
+func TestFusedSearch_RecipientFiltersMatchNoneSentinel(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+	gid := seedAndEmbed(t, b, map[int64][]float32{
+		1: unitVec(768, 0),
+		2: unitVec(768, 1),
+		3: unitVec(768, 2),
+	})
+	if err := b.ActivateGeneration(ctx, gid); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	const sentinel int64 = -1 // mirrors hybrid.noMatchSentinel
+	cases := []struct {
+		name   string
+		filter vector.Filter
+	}{
+		{"ToIDs_sentinel", vector.Filter{ToIDs: []int64{sentinel}}},
+		{"CcIDs_sentinel", vector.Filter{CcIDs: []int64{sentinel}}},
+		{"BccIDs_sentinel", vector.Filter{BccIDs: []int64{sentinel}}},
+		{"SenderIDs_sentinel", vector.Filter{SenderIDs: []int64{sentinel}}},
+		{"LabelIDs_sentinel", vector.Filter{LabelIDs: []int64{sentinel}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := vector.FusedRequest{
+				FTSQuery:   "meeting",
+				QueryVec:   unitVec(768, 1),
+				Generation: gid,
+				Filter:     c.filter,
+				KPerSignal: 10,
+				Limit:      10,
+				RRFK:       60,
+			}
+			hits, _, err := b.FusedSearch(ctx, req)
+			if err != nil {
+				t.Fatalf("FusedSearch: %v", err)
+			}
+			if len(hits) != 0 {
+				t.Errorf("got %d hits with sentinel filter, want 0 (operator present + no match must return nothing)", len(hits))
+			}
+		})
 	}
 }
 

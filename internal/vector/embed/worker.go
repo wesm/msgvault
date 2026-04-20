@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wesm/msgvault/internal/vector"
 )
@@ -139,11 +140,26 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 		// generation was seeded). Using Complete with our claim
 		// token makes this a token-aware delete: we only remove
 		// rows we still own.
+		//
+		// Complete failure here is critical: the rows stay claimed
+		// until ReclaimStale runs (10 min default), so the loop would
+		// busy-spin on Claim returning empty and falsely report
+		// success. Treat it as a batch failure that counts toward
+		// MaxConsecutiveFailures.
 		if len(eb.missing) > 0 {
 			w.deps.Log.Warn("pending messages missing from main DB",
 				"gen", gen, "ids", eb.missing)
 			if cerr := w.q.Complete(ctx, gen, token, eb.missing); cerr != nil {
-				w.deps.Log.Error("complete missing failed", "error", cerr)
+				res.Failed += len(eb.missing)
+				w.deps.Log.Error("complete missing failed", "error", cerr,
+					"gen", gen, "ids", len(eb.missing))
+				consecutiveFailures++
+				lastErr = cerr
+				if consecutiveFailures >= w.deps.MaxConsecutiveFailures {
+					return res, fmt.Errorf("embed worker aborting after %d consecutive failures: %w",
+						consecutiveFailures, lastErr)
+				}
+				continue
 			}
 		}
 
@@ -170,11 +186,22 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 		}
 		// Complete acknowledges work via (gen, msg, claim_token) so a
 		// stale worker whose claim was already reclaimed cannot wipe
-		// the queue row belonging to the newer worker. A row count
-		// mismatch just means the stale-completion case hit us — the
-		// newer worker's claim will still drive a later success.
+		// the queue row belonging to the newer worker. Failure here
+		// means the embedded rows stay claimed; ReclaimStale will
+		// rescue them eventually but the next RunOnce would falsely
+		// report a clean drain in the meantime — count the batch as
+		// failed so the failure cap can short-circuit the loop.
 		if cerr := w.q.Complete(ctx, gen, token, eb.embeddedIDs); cerr != nil {
-			w.deps.Log.Error("complete failed", "error", cerr, "gen", gen, "ids", len(eb.embeddedIDs))
+			res.Failed += len(eb.embeddedIDs)
+			w.deps.Log.Error("complete failed", "error", cerr,
+				"gen", gen, "ids", len(eb.embeddedIDs))
+			consecutiveFailures++
+			lastErr = cerr
+			if consecutiveFailures >= w.deps.MaxConsecutiveFailures {
+				return res, fmt.Errorf("embed worker aborting after %d consecutive failures: %w",
+					consecutiveFailures, lastErr)
+			}
+			continue
 		}
 		res.Succeeded += len(eb.embeddedIDs)
 		consecutiveFailures = 0
@@ -227,7 +254,12 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 			return embedBatchResult{}, fmt.Errorf("scan message row: %w", err)
 		}
 		txt, trunc := Preprocess(subject, body, w.deps.MaxInputChars, w.deps.Preprocess)
-		msgs = append(msgs, msgText{ID: id, Text: txt, Chars: len(txt), Trunc: trunc})
+		// Preprocess truncates by runes, so the recorded length must
+		// also be a rune count. Using len(txt) (bytes) inflates
+		// SourceCharLen by 2-4x for CJK / emoji / accented text and
+		// breaks any downstream "did we truncate?" / "how big was the
+		// input?" reasoning.
+		msgs = append(msgs, msgText{ID: id, Text: txt, Chars: utf8.RuneCountInString(txt), Trunc: trunc})
 		inputs = append(inputs, txt)
 		fetched[id] = struct{}{}
 	}
