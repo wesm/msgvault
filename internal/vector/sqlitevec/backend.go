@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	sqlite3 "github.com/mattn/go-sqlite3"
 	"github.com/wesm/msgvault/internal/vector"
 )
 
@@ -275,16 +276,17 @@ func (b *Backend) lookupBuilding(ctx context.Context) (vector.GenerationID, stri
 }
 
 // isUniqueConstraintErr reports whether err originates from SQLite's
-// UNIQUE constraint enforcement. We rely on the error's text rather
-// than the typed sqlite3.Error so this file doesn't need to import
-// the driver — the existing Backend code is otherwise driver-agnostic.
+// UNIQUE constraint enforcement, using the typed driver error code
+// rather than message text so locale or version changes in the
+// driver's error formatting don't silently break detection.
 func isUniqueConstraintErr(err error) bool {
-	if err == nil {
+	var sqliteErr sqlite3.Error
+	if !errors.As(err, &sqliteErr) {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "UNIQUE constraint failed") ||
-		strings.Contains(msg, "constraint failed: UNIQUE")
+	return sqliteErr.ExtendedCode == sqlite3.ErrConstraintUnique ||
+		sqliteErr.Code == sqlite3.ErrConstraint &&
+			sqliteErr.ExtendedCode == sqlite3.ErrConstraintPrimaryKey
 }
 
 // seedPending inserts one pending_embeddings row per non-deleted

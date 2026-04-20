@@ -144,11 +144,13 @@ type hybridSearchItem struct {
 	Score *scoreBreakdown `json:"score,omitempty"`
 }
 
-// scoreBreakdown exposes fused-score components for debugging. BM25 and
-// Vector are pointer-typed so that "not present in this signal" can be
-// distinguished from a legitimate score of 0.0 in the JSON output.
+// scoreBreakdown exposes fused-score components for debugging. BM25,
+// Vector, and RRF are pointer-typed so that "not present in this
+// signal" can be distinguished from a legitimate 0.0 score in JSON.
+// In particular, mode=vector reports vector with no rrf (RRF requires
+// two signals to fuse), and mode=fts reports bm25 with no rrf or vector.
 type scoreBreakdown struct {
-	RRF            float64  `json:"rrf"`
+	RRF            *float64 `json:"rrf,omitempty"`
 	BM25           *float64 `json:"bm25,omitempty"`
 	Vector         *float64 `json:"vector,omitempty"`
 	SubjectBoosted bool     `json:"subject_boosted,omitempty"`
@@ -490,9 +492,10 @@ func (s *Server) handleHybridSearch(
 		}
 		item := hybridSearchItem{MessageSummary: toMessageSummary(msg)}
 		if explain {
-			sb := &scoreBreakdown{
-				RRF:            h.RRFScore,
-				SubjectBoosted: h.SubjectBoosted,
+			sb := &scoreBreakdown{SubjectBoosted: h.SubjectBoosted}
+			if !math.IsNaN(h.RRFScore) {
+				v := h.RRFScore
+				sb.RRF = &v
 			}
 			if !math.IsNaN(h.BM25Score) {
 				v := h.BM25Score

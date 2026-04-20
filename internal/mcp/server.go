@@ -153,7 +153,11 @@ func searchMessagesTool(vectorAvailable bool) mcp.Tool {
 		),
 		withAccount(),
 		withLimit("20"),
-		withOffset(),
+		// offset is FTS-only here. Vector/hybrid responses don't page —
+		// callers should bump limit (capped by max_page_size_hybrid) instead.
+		mcp.WithNumber("offset",
+			mcp.Description("Number of results to skip for pagination (default 0). Only valid for mode=fts; mode=vector and mode=hybrid reject offset>0 with pagination_unsupported."),
+		),
 		mcp.WithString("mode",
 			mcp.Description("Search mode: fts (default, keyword only), vector (semantic only), or hybrid (BM25 + vector fused via RRF)"),
 			mcp.Enum("fts", "vector", "hybrid"),

@@ -20,10 +20,7 @@ import (
 // can unambiguously select the vector-enabled variant.
 const driverName = "sqlite3_vec"
 
-var (
-	registerOnce sync.Once
-	registerErr  error
-)
+var registerOnce sync.Once
 
 // RegisterExtension enables the sqlite-vec extension process-wide and
 // registers a "sqlite3_vec" driver variant of mattn/go-sqlite3.
@@ -41,6 +38,11 @@ var (
 //
 // It is safe to call multiple times; the underlying registrations must
 // only run once per process, which this function guarantees via sync.Once.
+//
+// Returns nil today: sqlite_vec.Auto has no error path and sql.Register
+// panics rather than returning on duplicate names. The error return is
+// preserved for forward compatibility — if either dependency grows a
+// fallible registration step, callers won't need to update.
 func RegisterExtension() error {
 	registerOnce.Do(func() {
 		sqlite_vec.Auto()
@@ -53,7 +55,7 @@ func RegisterExtension() error {
 			},
 		})
 	})
-	return registerErr
+	return nil
 }
 
 // DriverName returns the driver name to pass to sql.Open.

@@ -205,10 +205,11 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 }
 
 // hybridScoreBreakdown exposes fused-score components for debugging.
-// BM25 and Vector are pointer-typed so "not present in this signal" can
-// be distinguished from a legitimate score of 0.0 in the JSON output.
+// All score fields are pointer-typed so "not present in this signal"
+// can be distinguished from a legitimate 0.0 score. RRF is omitted in
+// mode=vector (only one signal, nothing to fuse).
 type hybridScoreBreakdown struct {
-	RRF            float64  `json:"rrf"`
+	RRF            *float64 `json:"rrf,omitempty"`
 	BM25           *float64 `json:"bm25,omitempty"`
 	Vector         *float64 `json:"vector,omitempty"`
 	SubjectBoosted bool     `json:"subject_boosted,omitempty"`
@@ -340,9 +341,10 @@ func (h *handlers) searchMessagesHybrid(
 		}
 		item := hybridMessageItem{MessageSummary: msg}
 		if explain {
-			sb := &hybridScoreBreakdown{
-				RRF:            hit.RRFScore,
-				SubjectBoosted: hit.SubjectBoosted,
+			sb := &hybridScoreBreakdown{SubjectBoosted: hit.SubjectBoosted}
+			if !math.IsNaN(hit.RRFScore) {
+				v := hit.RRFScore
+				sb.RRF = &v
 			}
 			if !math.IsNaN(hit.BM25Score) {
 				v := hit.BM25Score

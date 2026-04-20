@@ -159,10 +159,11 @@ func (e *Engine) Search(ctx context.Context, req SearchRequest) ([]vector.FusedH
 }
 
 // vectorHitsToFused wraps pure-vector hits in the FusedHit schema.
-// BM25Score is set to math.NaN() — the FusedHit contract treats NaN
-// as "message not present in this signal", so explain/rendering code
-// can skip the BM25 column for vector-only hits instead of displaying
-// a meaningless zero score.
+// BM25Score and RRFScore are both set to math.NaN(): "not present in
+// this signal." Pure vector mode never applies Reciprocal Rank Fusion
+// (there's only one signal to fuse), so reporting an RRF score would
+// be a lie. Renderers and explain output already treat NaN as "skip
+// this column," so the breakdown will show vector_score only.
 func vectorHitsToFused(hits []vector.Hit) []vector.FusedHit {
 	out := make([]vector.FusedHit, len(hits))
 	for i, h := range hits {
@@ -170,7 +171,7 @@ func vectorHitsToFused(hits []vector.Hit) []vector.FusedHit {
 			MessageID:   h.MessageID,
 			BM25Score:   math.NaN(),
 			VectorScore: h.Score,
-			RRFScore:    h.Score,
+			RRFScore:    math.NaN(),
 		}
 	}
 	return out

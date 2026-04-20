@@ -329,7 +329,9 @@ object exposing the fused-score components:
 
 `bm25` and `vector` are omitted when the message did not appear in
 that signal (i.e. BM25 missed it or ANN pool did not include it).
-`subject_boosted` is true when the subject-line boost was applied.
+`rrf` is omitted in `mode=vector` (only one signal — there is nothing
+to fuse). `subject_boosted` is true when the subject-line boost was
+applied.
 
 ---
 
