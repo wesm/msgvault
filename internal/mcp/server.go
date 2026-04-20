@@ -7,6 +7,8 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/vector"
+	"github.com/wesm/msgvault/internal/vector/hybrid"
 )
 
 // Tool name constants.
@@ -53,17 +55,51 @@ func withAccount() mcp.ToolOption {
 	)
 }
 
+// ServeOptions configures an MCP server. Only Engine is required; the
+// HybridEngine and VectorCfg fields enable the vector/hybrid modes on
+// the search_messages tool.
+type ServeOptions struct {
+	Engine         query.Engine
+	AttachmentsDir string
+	DataDir        string
+
+	// HybridEngine is optional. When nil, search_messages rejects
+	// mode=vector and mode=hybrid with a vector_not_enabled error.
+	HybridEngine *hybrid.Engine
+	VectorCfg    vector.Config
+}
+
 // Serve creates an MCP server with email archive tools and serves over stdio.
 // It blocks until stdin is closed or the context is cancelled.
 // dataDir is the base data directory (e.g., ~/.msgvault) used for deletions.
+//
+// Serve is a thin wrapper around ServeWithOptions that leaves the vector
+// fields empty; callers that want vector/hybrid search should use
+// ServeWithOptions directly.
 func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir string) error {
+	return ServeWithOptions(ctx, ServeOptions{
+		Engine:         engine,
+		AttachmentsDir: attachmentsDir,
+		DataDir:        dataDir,
+	})
+}
+
+// ServeWithOptions creates an MCP server from opts and serves over stdio.
+// It blocks until stdin is closed or the context is cancelled.
+func ServeWithOptions(ctx context.Context, opts ServeOptions) error {
 	s := server.NewMCPServer(
 		"msgvault",
 		"1.0.0",
 		server.WithToolCapabilities(false),
 	)
 
-	h := &handlers{engine: engine, attachmentsDir: attachmentsDir, dataDir: dataDir}
+	h := &handlers{
+		engine:         opts.Engine,
+		attachmentsDir: opts.AttachmentsDir,
+		dataDir:        opts.DataDir,
+		hybridEngine:   opts.HybridEngine,
+		vectorCfg:      opts.VectorCfg,
+	}
 
 	s.AddTool(searchMessagesTool(), h.searchMessages)
 	s.AddTool(getMessageTool(), h.getMessage)
@@ -80,7 +116,7 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir str
 
 func searchMessagesTool() mcp.Tool {
 	return mcp.NewTool(ToolSearchMessages,
-		mcp.WithDescription("Search emails using Gmail-like query syntax. Supports from:, to:, subject:, label:, has:attachment, before:, after:, and free text."),
+		mcp.WithDescription("Search emails using Gmail-like query syntax. Supports from:, to:, subject:, label:, has:attachment, before:, after:, and free text. When vector search is configured, set mode=vector for pure semantic search or mode=hybrid to fuse BM25 and vector ranking via RRF."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("query",
 			mcp.Required(),
@@ -89,6 +125,13 @@ func searchMessagesTool() mcp.Tool {
 		withAccount(),
 		withLimit("20"),
 		withOffset(),
+		mcp.WithString("mode",
+			mcp.Description("Search mode: fts (default, keyword only), vector (semantic only), or hybrid (BM25 + vector fused via RRF)"),
+			mcp.Enum("fts", "vector", "hybrid"),
+		),
+		mcp.WithBoolean("explain",
+			mcp.Description("Include per-signal scores in the response (for debugging or ranking inspection)"),
+		),
 	)
 }
 

@@ -124,6 +124,51 @@ func TestSearchFallbackToFTS(t *testing.T) {
 	}
 }
 
+func TestSearchMessages_HybridModeNotConfigured(t *testing.T) {
+	// Handlers constructed without a hybridEngine must reject
+	// mode=hybrid (and mode=vector) with a vector_not_enabled error.
+	h := newTestHandlers(&querytest.MockEngine{})
+
+	r := runToolExpectError(t, "search_messages", h.searchMessages, map[string]any{
+		"query": "meeting notes",
+		"mode":  "hybrid",
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "vector_not_enabled") {
+		t.Fatalf("expected 'vector_not_enabled' error, got: %s", txt)
+	}
+}
+
+func TestSearchMessages_HybridModePaginationUnsupported(t *testing.T) {
+	// offset>0 must be rejected before any hybrid-engine lookup. The
+	// pagination check runs first, so a missing hybridEngine does not
+	// mask the pagination_unsupported error.
+	h := newTestHandlers(&querytest.MockEngine{})
+
+	r := runToolExpectError(t, "search_messages", h.searchMessages, map[string]any{
+		"query":  "meeting notes",
+		"mode":   "vector",
+		"offset": float64(1),
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "pagination_unsupported") {
+		t.Fatalf("expected 'pagination_unsupported' error, got: %s", txt)
+	}
+}
+
+func TestSearchMessages_UnknownMode(t *testing.T) {
+	h := newTestHandlers(&querytest.MockEngine{})
+
+	r := runToolExpectError(t, "search_messages", h.searchMessages, map[string]any{
+		"query": "meeting notes",
+		"mode":  "bogus",
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "invalid mode") {
+		t.Fatalf("expected 'invalid mode' error, got: %s", txt)
+	}
+}
+
 func TestGetMessage(t *testing.T) {
 	eng := &querytest.MockEngine{
 		Messages: map[int64]*query.MessageDetail{

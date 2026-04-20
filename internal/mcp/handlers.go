@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -18,6 +19,8 @@ import (
 	"github.com/wesm/msgvault/internal/export"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/search"
+	"github.com/wesm/msgvault/internal/vector"
+	"github.com/wesm/msgvault/internal/vector/hybrid"
 )
 
 const maxLimit = 1000
@@ -26,6 +29,12 @@ type handlers struct {
 	engine         query.Engine
 	attachmentsDir string
 	dataDir        string
+
+	// Optional vector-search wiring. When hybridEngine is nil, the
+	// search_messages handler rejects mode=vector and mode=hybrid with
+	// a vector_not_enabled error.
+	hybridEngine *hybrid.Engine
+	vectorCfg    vector.Config
 }
 
 // getAccountID looks up a source ID by email address.
@@ -112,6 +121,27 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 		return mcp.NewToolResultError("query parameter is required"), nil
 	}
 
+	mode, _ := args["mode"].(string)
+	if mode == "" {
+		mode = "fts"
+	}
+	explain, _ := args["explain"].(bool)
+
+	if mode == "vector" || mode == "hybrid" {
+		if off := limitArg(args, "offset", 0); off > 0 {
+			return mcp.NewToolResultError(
+				"pagination_unsupported: mode=" + mode + " only supports offset=0",
+			), nil
+		}
+		return h.searchMessagesHybrid(ctx, args, queryStr, mode, explain)
+	}
+
+	if mode != "fts" {
+		return mcp.NewToolResultError(
+			fmt.Sprintf("invalid mode %q: must be fts, vector, or hybrid", mode),
+		), nil
+	}
+
 	limit := limitArg(args, "limit", 20)
 	offset := limitArg(args, "offset", 0)
 
@@ -142,6 +172,186 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 	}
 
 	return jsonResult(results)
+}
+
+// hybridScoreBreakdown exposes fused-score components for debugging.
+// BM25 and Vector are pointer-typed so "not present in this signal" can
+// be distinguished from a legitimate score of 0.0 in the JSON output.
+type hybridScoreBreakdown struct {
+	RRF            float64  `json:"rrf"`
+	BM25           *float64 `json:"bm25,omitempty"`
+	Vector         *float64 `json:"vector,omitempty"`
+	SubjectBoosted bool     `json:"subject_boosted,omitempty"`
+}
+
+// hybridMessageItem is a single hit in a vector/hybrid response. The
+// embedded MessageSummary carries the standard message fields; Score is
+// present only when explain=true was requested.
+type hybridMessageItem struct {
+	query.MessageSummary
+	Score *hybridScoreBreakdown `json:"score,omitempty"`
+}
+
+// hybridGenerationSummary describes the active vector-index generation
+// used to answer a hybrid/vector query.
+type hybridGenerationSummary struct {
+	ID          int64  `json:"id"`
+	Model       string `json:"model"`
+	Dimension   int    `json:"dimension"`
+	Fingerprint string `json:"fingerprint"`
+	State       string `json:"state"`
+}
+
+// hybridSearchResponse is the full response body for a mode=vector or
+// mode=hybrid request on the search_messages tool.
+type hybridSearchResponse struct {
+	Query         string                  `json:"query"`
+	Mode          string                  `json:"mode"`
+	Returned      int                     `json:"returned"`
+	PoolSaturated bool                    `json:"pool_saturated,omitempty"`
+	Generation    hybridGenerationSummary `json:"generation"`
+	Messages      []hybridMessageItem     `json:"messages"`
+}
+
+// searchMessagesHybrid runs vector or hybrid search via the configured
+// hybrid engine. Mirrors api/handlers.go handleHybridSearch: returns
+// descriptive errors when the engine is not configured or the index is
+// stale/building, otherwise returns RRF-ranked hits hydrated via
+// engine.GetMessage.
+func (h *handlers) searchMessagesHybrid(
+	ctx context.Context, args map[string]any,
+	queryStr, mode string, explain bool,
+) (*mcp.CallToolResult, error) {
+	if h.hybridEngine == nil {
+		return mcp.NewToolResultError(
+			"vector_not_enabled: vector search is not configured on this server",
+		), nil
+	}
+
+	// Resolve account filter to a source ID for the structured Filter.
+	account, _ := args["account"].(string)
+	sourceID, err := h.getAccountID(ctx, account)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	var filter vector.Filter
+	if sourceID != nil {
+		filter.SourceIDs = []int64{*sourceID}
+	}
+
+	limit := limitArg(args, "limit", 20)
+	if maxPage := h.vectorCfg.Search.MaxPageSizeHybrid; maxPage > 0 && limit > maxPage {
+		limit = maxPage
+	}
+
+	parsed := search.Parse(queryStr)
+	subjectTerms := make([]string, 0, len(parsed.TextTerms))
+	for _, t := range parsed.TextTerms {
+		subjectTerms = append(subjectTerms, strings.ToLower(t))
+	}
+	freeText := strings.Join(parsed.TextTerms, " ")
+
+	req := hybrid.SearchRequest{
+		Mode:         hybrid.Mode(mode),
+		FreeText:     freeText,
+		Filter:       filter,
+		Limit:        limit,
+		SubjectTerms: subjectTerms,
+		Explain:      explain,
+	}
+
+	hits, meta, err := h.hybridEngine.Search(ctx, req)
+	if err != nil {
+		switch {
+		case errors.Is(err, vector.ErrNotEnabled):
+			return mcp.NewToolResultError(
+				"vector_not_enabled: vector search is not configured",
+			), nil
+		case errors.Is(err, vector.ErrIndexStale):
+			return mcp.NewToolResultError(
+				"index_stale: the vector index does not match the configured model; " +
+					"run `msgvault embed --full-rebuild`",
+			), nil
+		case errors.Is(err, vector.ErrIndexBuilding):
+			return mcp.NewToolResultError(
+				"index_building: the initial vector index is still being built",
+			), nil
+		default:
+			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+		}
+	}
+
+	items := make([]hybridMessageItem, 0, len(hits))
+	for _, hit := range hits {
+		msg, err := h.engine.GetMessage(ctx, hit.MessageID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"mcp: hydrate hybrid hit failed: message_id=%d error=%v\n",
+				hit.MessageID, err)
+			continue
+		}
+		if msg == nil {
+			continue
+		}
+		item := hybridMessageItem{MessageSummary: messageDetailToSummary(msg)}
+		if explain {
+			sb := &hybridScoreBreakdown{
+				RRF:            hit.RRFScore,
+				SubjectBoosted: hit.SubjectBoosted,
+			}
+			if !math.IsNaN(hit.BM25Score) {
+				v := hit.BM25Score
+				sb.BM25 = &v
+			}
+			if !math.IsNaN(hit.VectorScore) {
+				v := hit.VectorScore
+				sb.Vector = &v
+			}
+			item.Score = sb
+		}
+		items = append(items, item)
+	}
+
+	return jsonResult(hybridSearchResponse{
+		Query:         queryStr,
+		Mode:          mode,
+		Returned:      len(items),
+		PoolSaturated: meta.PoolSaturated,
+		Generation: hybridGenerationSummary{
+			ID:          int64(meta.Generation.ID),
+			Model:       meta.Generation.Model,
+			Dimension:   meta.Generation.Dimension,
+			Fingerprint: meta.Generation.Fingerprint,
+			State:       string(meta.Generation.State),
+		},
+		Messages: items,
+	})
+}
+
+// messageDetailToSummary projects a full MessageDetail down to the
+// summary shape used in search result lists. The first From address
+// populates FromEmail/FromName; any further addresses are dropped since
+// email "From" is almost always singular.
+func messageDetailToSummary(d *query.MessageDetail) query.MessageSummary {
+	var fromEmail, fromName string
+	if len(d.From) > 0 {
+		fromEmail = d.From[0].Email
+		fromName = d.From[0].Name
+	}
+	return query.MessageSummary{
+		ID:              d.ID,
+		SourceMessageID: d.SourceMessageID,
+		ConversationID:  d.ConversationID,
+		Subject:         d.Subject,
+		Snippet:         d.Snippet,
+		FromEmail:       fromEmail,
+		FromName:        fromName,
+		SentAt:          d.SentAt,
+		SizeEstimate:    d.SizeEstimate,
+		HasAttachments:  d.HasAttachments,
+		AttachmentCount: len(d.Attachments),
+		Labels:          d.Labels,
+	}
 }
 
 func (h *handlers) getMessage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
