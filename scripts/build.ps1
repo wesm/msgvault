@@ -2,8 +2,11 @@
 # Usage: powershell -File scripts/build.ps1
 #
 # Builds msgvault.exe in the repo root with debug info and FTS5 +
-# sqlite-vec support. Requires Go and a C compiler (GCC via MSYS2/MinGW
-# or TDM-GCC).
+# sqlite-vec support. Requires Go, a C compiler (GCC via MSYS2/MinGW
+# or TDM-GCC), and sqlite3 development headers (e.g.
+# `pacman -S mingw-w64-x86_64-sqlite3` under MSYS2). The official
+# release binary for Windows is built without sqlite_vec, so this
+# script is primarily for users opting into vector search on Windows.
 
 $ErrorActionPreference = 'Stop'
 

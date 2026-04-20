@@ -24,6 +24,14 @@ messages for a given seed.
    via `make build` (or `go build -tags "fts5 sqlite_vec"` if you are
    invoking `go build` directly).
 
+   The official release binaries for Linux and macOS include
+   `sqlite_vec`. The official Windows release binary does **not** —
+   GitHub's Windows runner does not ship `sqlite3.h`, which
+   sqlite-vec's CGo bindings require at compile time. Windows users
+   who want vector search can build from source with MSYS2 and the
+   `mingw-w64-x86_64-sqlite3` package installed; see
+   `scripts/build.ps1`.
+
 ## Enable
 
 Add a `[vector]` block to `~/.msgvault/config.toml`:

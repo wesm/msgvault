@@ -30,7 +30,11 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update
-          apt-get install -y gcc g++ make git curl tar gzip file binutils
+          # libsqlite3-dev provides sqlite3.h, which sqlite-vec's CGo
+          # binding includes unconditionally with -DSQLITE_CORE. mattn's
+          # sqlite3 driver still links its own bundled amalgamation at
+          # runtime; the header is only needed at compile time.
+          apt-get install -y gcc g++ make git curl tar gzip file binutils libsqlite3-dev
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -153,6 +157,8 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Windows release binaries omit the sqlite_vec tag for the same
+      # reason as CI — see .github/workflows/ci.yml for context.
       - name: Build
         env:
           GOOS: windows
@@ -163,7 +169,7 @@ jobs:
 
           mkdir -p dist
           LDFLAGS="-s -w -X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=v${VERSION} -X github.com/wesm/msgvault/cmd/msgvault/cmd.Commit=$(printf '%s' "$GITHUB_SHA" | cut -c1-8) -X github.com/wesm/msgvault/cmd/msgvault/cmd.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          go build -tags "fts5 sqlite_vec" -trimpath -ldflags="$LDFLAGS" -o dist/msgvault.exe ./cmd/msgvault
+          go build -tags "fts5" -trimpath -ldflags="$LDFLAGS" -o dist/msgvault.exe ./cmd/msgvault
 
           # Smoke test
           echo "--- Smoke test ---"
