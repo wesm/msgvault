@@ -1496,6 +1496,68 @@ func (e realEmbedder) Embed(_ context.Context, inputs []string) ([][]float32, er
 	return out, nil
 }
 
+// blockingEmbedder waits for ctx cancellation, then returns ctx.Err().
+// Used to simulate a slow embedder that must be cancelled by the
+// request-scoped timeout to terminate.
+type blockingEmbedder struct{}
+
+func (blockingEmbedder) Embed(ctx context.Context, _ []string) ([][]float32, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestHandleSearch_HybridEmbeddingTimeoutFiresChi regresses the
+// concern that chi/v5's request Timeout middleware would preempt our
+// structured 503 embedding_timeout response. chi v5's Timeout is a
+// "gentle" cancellation: it wraps the request context with a deadline
+// and, in a deferred function, conditionally writes a 504 — but only
+// AFTER the inline handler returns. Because handlers run inline (not
+// in a separate goroutine via http.TimeoutHandler), our handler sees
+// ctx.DeadlineExceeded from the embed call, the engine wraps it as
+// vector.ErrEmbeddingTimeout, the handler writes 503 embedding_timeout
+// JSON, and chi's deferred WriteHeader(504) is a no-op against the
+// already-written response.
+//
+// The test sets a tight RequestTimeout so the chi middleware fires
+// during the embed call. If a future chi version switches to a
+// preemptive timeout (or http.TimeoutHandler is reintroduced), this
+// test will fail because the response would be a bare 504 instead of
+// the structured 503.
+func TestHandleSearch_HybridEmbeddingTimeoutFiresChi(t *testing.T) {
+	backend := &fakeVectorBackend{
+		active: &vector.Generation{
+			ID: 1, Model: "fake", Dimension: 4,
+			Fingerprint: "fake:4", State: vector.GenerationActive,
+		},
+	}
+	engine := hybrid.NewEngine(backend, nil, blockingEmbedder{}, hybrid.Config{
+		ExpectedFingerprint: "fake:4", RRFK: 60, KPerSignal: 10,
+	})
+	srv := NewServerWithOptions(ServerOptions{
+		Config:         &config.Config{Server: config.ServerConfig{APIPort: 8080}},
+		Store:          &mockStore{},
+		HybridEngine:   engine,
+		Backend:        backend,
+		Logger:         testLogger(),
+		RequestTimeout: 100 * time.Millisecond,
+	})
+
+	req := httptest.NewRequest("GET", "/api/v1/search?q=meeting&mode=hybrid", nil)
+	w := httptest.NewRecorder()
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", w.Code, w.Body.String())
+	}
+	var errResp ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if errResp.Error != "embedding_timeout" {
+		t.Errorf("error = %q, want 'embedding_timeout' (chi may have preempted with a bare 504)", errResp.Error)
+	}
+}
+
 // TestHandleSearch_HybridFilterOnlyReturnsBadRequest regression-guards
 // the spec contract that mode=vector|hybrid requires at least one
 // free-text term to embed. A query containing only operators (e.g.

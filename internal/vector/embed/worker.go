@@ -89,10 +89,20 @@ func NewWorker(d WorkerDeps) *Worker {
 // jitter and pre/post-call overhead. The floor preserves the
 // historical default for the common case (Timeout=30s × 3 retries =
 // 4 minutes derived; floor wins).
+//
+// maxRetries == 0 is normalized to 3 to mirror embed.NewClient's
+// default. Without this, callers that set EmbedTimeout but leave
+// EmbedMaxRetries at its zero value would derive a budget for a
+// single attempt, while the client would actually try up to four
+// times — and ReclaimStale could pull live claims out from under a
+// retrying embed call.
 func derivedStaleThreshold(timeout time.Duration, maxRetries int) time.Duration {
 	const floor = 10 * time.Minute
 	if timeout <= 0 {
 		return floor
+	}
+	if maxRetries == 0 {
+		maxRetries = 3
 	}
 	attempts := maxRetries + 1
 	if attempts < 1 {

@@ -975,6 +975,88 @@ func TestFusedSearch_SubjectBoostOverFetchesBeyondLimit(t *testing.T) {
 	}
 }
 
+// TestFusedSearch_SubjectBoostPromotesDeepRankHit regresses the
+// stronger correctness claim: with a high enough boost factor, a
+// boost-eligible hit ranked far past req.Limit (well beyond a small
+// fixed multiple) still surfaces. Achieved by fetching the entire
+// fused pool (capped naturally at 2 × KPerSignal) before re-ranking.
+func TestFusedSearch_SubjectBoostPromotesDeepRankHit(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+
+	if _, err := b.mainDB.ExecContext(ctx,
+		`DELETE FROM messages; DELETE FROM messages_fts`); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+
+	// Seed 30 messages all matching the FTS query "planning".
+	// Messages 1..29 have unrelated subjects; message 30 is the only
+	// one whose subject contains "quarterly". With Limit=3,
+	// KPerSignal=30, and a 100x boost, the boost-eligible hit at
+	// pre-boost rank ~30 must be promoted into the top-3.
+	const total = 30
+	const target int64 = 30
+	for i := int64(1); i <= total; i++ {
+		subj := fmt.Sprintf("update %d", i)
+		if i == target {
+			subj = "Quarterly review"
+		}
+		if _, err := b.mainDB.ExecContext(ctx,
+			`INSERT INTO messages (id, subject) VALUES (?, ?)`, i, subj); err != nil {
+			t.Fatalf("insert msg %d: %v", i, err)
+		}
+		if _, err := b.mainDB.ExecContext(ctx,
+			`INSERT INTO messages_fts (rowid, subject, body) VALUES (?, ?, ?)`,
+			i, subj, "planning notes"); err != nil {
+			t.Fatalf("insert fts %d: %v", i, err)
+		}
+	}
+
+	queryVec := unitVec(768, 0)
+	vecs := make(map[int64][]float32, total)
+	for i := int64(1); i <= total; i++ {
+		v := unitVec(768, 0)
+		// Smaller IDs are closer to the query; the boost-eligible msg 30
+		// sits at the worst rank, so a pre-boost top-3 strategy can never
+		// see it without fetching the full pool.
+		v[1] = float32(i) * 0.01
+		vecs[i] = v
+	}
+	gid := seedAndEmbed(t, b, vecs)
+	if err := b.ActivateGeneration(ctx, gid); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+
+	hits, _, err := b.FusedSearch(ctx, vector.FusedRequest{
+		QueryVec:     queryVec,
+		Generation:   gid,
+		FTSQuery:     "planning OR review",
+		KPerSignal:   total,
+		Limit:        3,
+		RRFK:         60,
+		SubjectBoost: 100.0,
+		SubjectTerms: []string{"quarterly"},
+	})
+	if err != nil {
+		t.Fatalf("FusedSearch: %v", err)
+	}
+	if len(hits) != 3 {
+		t.Fatalf("len(hits)=%d, want 3", len(hits))
+	}
+	var found bool
+	for _, h := range hits {
+		if h.MessageID == target {
+			found = true
+			if !h.SubjectBoosted {
+				t.Errorf("msg %d SubjectBoosted=false, want true", target)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("hits=%+v, want msg %d (deep-rank boost-eligible) in top page", hits, target)
+	}
+}
+
 // TestFusedSearch_NullSubjectExcludedBySubjectFilter pins down the
 // intentional behavior in fused.go's filtered CTE: when a SubjectSubstrings
 // filter is supplied, messages with NULL subject are dropped even if the

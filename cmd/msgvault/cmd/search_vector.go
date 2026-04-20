@@ -259,8 +259,8 @@ func outputHybridResultsTable(results []hybridResultRow, meta hybrid.ResultMeta,
 			subject += " *"
 		}
 		if explain {
-			_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%.4f\t%s\t%s\n",
-				r.MessageID, date, from, subject, r.RRFScore,
+			_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				r.MessageID, date, from, subject, formatOptionalScore(r.RRFScore),
 				formatOptionalScore(r.BM25Score), formatOptionalScore(r.VectorScore))
 		} else {
 			_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\n",
@@ -281,8 +281,13 @@ func outputHybridResultsJSON(results []hybridResultRow, meta hybrid.ResultMeta, 
 			"subject":    r.Subject,
 			"from_email": r.FromEmail,
 			"sent_at":    r.SentAt.Format(time.RFC3339),
-			"rrf_score":  r.RRFScore,
 			"boosted":    r.SubjectBoosted,
+		}
+		// rrf_score is omitted when NaN (the convention pure vector
+		// mode uses to mark "no fusion happened"). encoding/json
+		// rejects NaN, so emitting it would also fail the encode.
+		if !math.IsNaN(r.RRFScore) {
+			row["rrf_score"] = r.RRFScore
 		}
 		if explain {
 			if !math.IsNaN(r.BM25Score) {

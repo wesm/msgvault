@@ -49,18 +49,19 @@ type AccountStatus = scheduler.AccountStatus
 
 // Server represents the HTTP API server.
 type Server struct {
-	cfg          *config.Config
-	store        MessageStore
-	engine       query.Engine // Query engine for aggregates and TUI support
-	hybridEngine *hybrid.Engine
-	vectorCfg    vector.Config
-	backend      vector.Backend
-	scheduler    SyncScheduler
-	logger       *slog.Logger
-	router       chi.Router
-	server       *http.Server
-	rateLimiter  *RateLimiter
-	cfgMu        sync.RWMutex // protects cfg.Accounts
+	cfg            *config.Config
+	store          MessageStore
+	engine         query.Engine // Query engine for aggregates and TUI support
+	hybridEngine   *hybrid.Engine
+	vectorCfg      vector.Config
+	backend        vector.Backend
+	scheduler      SyncScheduler
+	logger         *slog.Logger
+	requestTimeout time.Duration
+	router         chi.Router
+	server         *http.Server
+	rateLimiter    *RateLimiter
+	cfgMu          sync.RWMutex // protects cfg.Accounts
 }
 
 // ServerOptions configures the API server.
@@ -73,6 +74,10 @@ type ServerOptions struct {
 	Backend      vector.Backend
 	Scheduler    SyncScheduler
 	Logger       *slog.Logger
+	// RequestTimeout caps each request via chi's gentle Timeout
+	// middleware. Zero defaults to 60s. Tests use a much shorter value
+	// to exercise the chi-timeout-fires path.
+	RequestTimeout time.Duration
 }
 
 // NewServer creates a new API server.
@@ -87,15 +92,20 @@ func NewServer(cfg *config.Config, store MessageStore, sched SyncScheduler, logg
 
 // NewServerWithOptions creates a new API server with full options including query engine.
 func NewServerWithOptions(opts ServerOptions) *Server {
+	timeout := opts.RequestTimeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
 	s := &Server{
-		cfg:          opts.Config,
-		store:        opts.Store,
-		engine:       opts.Engine,
-		hybridEngine: opts.HybridEngine,
-		vectorCfg:    opts.VectorCfg,
-		backend:      opts.Backend,
-		scheduler:    opts.Scheduler,
-		logger:       opts.Logger,
+		cfg:            opts.Config,
+		store:          opts.Store,
+		engine:         opts.Engine,
+		hybridEngine:   opts.HybridEngine,
+		vectorCfg:      opts.VectorCfg,
+		backend:        opts.Backend,
+		scheduler:      opts.Scheduler,
+		logger:         opts.Logger,
+		requestTimeout: timeout,
 	}
 	s.router = s.setupRouter()
 	return s
@@ -109,7 +119,15 @@ func (s *Server) setupRouter() chi.Router {
 	r.Use(chimw.RequestID)
 	r.Use(s.loggerMiddleware)
 	r.Use(chimw.Recoverer)
-	r.Use(chimw.Timeout(60 * time.Second))
+	// chi/v5's Timeout is "gentle": it wraps the request context with a
+	// deadline and, after next.ServeHTTP returns, conditionally writes
+	// a 504. Because handlers are inline, our structured 503 (e.g.
+	// embedding_timeout) is written first; chi's deferred WriteHeader
+	// is then a no-op against the already-written response.
+	// TestHandleSearch_HybridEmbeddingTimeoutFiresChi locks this
+	// contract — if a future chi version switches to a preemptive
+	// timeout (http.TimeoutHandler-style), that test will fail.
+	r.Use(chimw.Timeout(s.requestTimeout))
 
 	// CORS middleware (config-driven; disabled when no origins configured)
 	corsConfig := CORSConfig{
