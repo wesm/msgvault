@@ -22,10 +22,21 @@ messages for a given seed.
    target already passes `-tags "fts5 sqlite_vec"`. If you see errors
    mentioning "binary was built without -tags sqlite_vec", rebuild
    via `make build` (or `go build -tags "fts5 sqlite_vec"` if you are
-   invoking `go build` directly). On Windows, the sqlite-vec CGo
-   binding needs `sqlite3.h` at compile time — install it via MSYS2
-   (`pacman -S mingw-w64-x86_64-sqlite3`) and export
-   `CGO_CFLAGS=-IC:/msys64/mingw64/include` before `go build`.
+   invoking `go build` directly).
+
+   **Windows source builds.** The sqlite-vec CGo binding needs
+   `sqlite3.h` at compile time, and the MinGW 15 toolchain needs two
+   extra flags to link arrow-go/v18's helpers. The easiest path is
+   `powershell -File scripts/build.ps1` — it wires everything up
+   automatically. To invoke `go build` yourself from PowerShell:
+
+   ```powershell
+   C:\msys64\usr\bin\pacman.exe -S --noconfirm --needed mingw-w64-x86_64-sqlite3
+   $env:CGO_ENABLED = "1"
+   $env:CGO_CFLAGS = "-IC:/msys64/mingw64/include -fgnu89-inline"
+   $env:CGO_LDFLAGS = "-Wl,--allow-multiple-definition"
+   go build -tags "fts5 sqlite_vec" -o msgvault.exe ./cmd/msgvault
+   ```
 
 ## Enable
 

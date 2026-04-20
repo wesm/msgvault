@@ -1231,6 +1231,124 @@ func TestBackend_Search_OverFetchesToHonorKWhenTopHitsDeleted(t *testing.T) {
 	}
 }
 
+// TestBackend_Search_IterativelyExpandsWhenDeletionsExceedOverfetch
+// locks in the fallback path: when soft-deleted messages occupy more
+// than deletedOverfetchFactor * k of the top ANN hits, a single 2×
+// over-fetch isn't enough. Search must keep doubling fetch until it
+// collects k live hits or exhausts the generation.
+func TestBackend_Search_IterativelyExpandsWhenDeletionsExceedOverfetch(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+
+	if _, err := b.mainDB.ExecContext(ctx,
+		`DELETE FROM messages; DELETE FROM messages_fts; DELETE FROM message_recipients`); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+
+	// Seed 6 deleted messages at distance 0 plus 5 live messages at
+	// graded distances. With k=3, the opening 2× over-fetch of 6
+	// returns only deleted rows (0 live). The iterative path must
+	// double fetch to 12 and surface live hits {7,8,9}.
+	if _, err := b.mainDB.ExecContext(ctx, `
+		INSERT INTO messages (id, deleted_from_source_at) VALUES
+		    (1, '2026-01-01'), (2, '2026-01-01'), (3, '2026-01-01'),
+		    (4, '2026-01-01'), (5, '2026-01-01'), (6, '2026-01-01'),
+		    (7, NULL), (8, NULL), (9, NULL), (10, NULL), (11, NULL)`); err != nil {
+		t.Fatalf("insert messages: %v", err)
+	}
+
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+
+	gradedVec := func(offset float32) []float32 {
+		v := unitVec(768, 0)
+		v[1] = offset
+		return v
+	}
+	chunks := []vector.Chunk{
+		{MessageID: 1, Vector: unitVec(768, 0)},
+		{MessageID: 2, Vector: unitVec(768, 0)},
+		{MessageID: 3, Vector: unitVec(768, 0)},
+		{MessageID: 4, Vector: unitVec(768, 0)},
+		{MessageID: 5, Vector: unitVec(768, 0)},
+		{MessageID: 6, Vector: unitVec(768, 0)},
+		{MessageID: 7, Vector: gradedVec(0.01)},
+		{MessageID: 8, Vector: gradedVec(0.02)},
+		{MessageID: 9, Vector: gradedVec(0.03)},
+		{MessageID: 10, Vector: gradedVec(0.04)},
+		{MessageID: 11, Vector: gradedVec(0.05)},
+	}
+	if err := b.Upsert(ctx, gid, chunks); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	hits, err := b.Search(ctx, gid, unitVec(768, 0), 3, vector.Filter{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(hits) != 3 {
+		t.Fatalf("len(hits) = %d, want 3 (iterative expansion must cover >k deletions)", len(hits))
+	}
+	wantIDs := map[int64]bool{7: true, 8: true, 9: true}
+	for _, h := range hits {
+		if !wantIDs[h.MessageID] {
+			t.Errorf("unexpected hit id=%d (want any of {7,8,9})", h.MessageID)
+		}
+	}
+	for i, h := range hits {
+		if h.Rank != i+1 {
+			t.Errorf("hit[%d].Rank = %d, want %d", i, h.Rank, i+1)
+		}
+	}
+}
+
+// TestBackend_Search_ExhaustedCorpusReturnsWhatsAvailable guards the
+// termination case: if k exceeds the number of live vectors even
+// after expanding to the whole generation, Search returns the
+// remainder without looping forever.
+func TestBackend_Search_ExhaustedCorpusReturnsWhatsAvailable(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+
+	if _, err := b.mainDB.ExecContext(ctx,
+		`DELETE FROM messages; DELETE FROM messages_fts; DELETE FROM message_recipients`); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+
+	// Seed 3 deleted and 2 live messages. Request k=4: even the full
+	// corpus sweep only produces 2 live hits, so Search must return 2
+	// rather than loop.
+	if _, err := b.mainDB.ExecContext(ctx, `
+		INSERT INTO messages (id, deleted_from_source_at) VALUES
+		    (1, '2026-01-01'), (2, '2026-01-01'), (3, '2026-01-01'),
+		    (4, NULL), (5, NULL)`); err != nil {
+		t.Fatalf("insert messages: %v", err)
+	}
+
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	chunks := []vector.Chunk{
+		{MessageID: 1, Vector: unitVec(768, 0)},
+		{MessageID: 2, Vector: unitVec(768, 0)},
+		{MessageID: 3, Vector: unitVec(768, 0)},
+		{MessageID: 4, Vector: unitVec(768, 1)},
+		{MessageID: 5, Vector: unitVec(768, 2)},
+	}
+	if err := b.Upsert(ctx, gid, chunks); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	hits, err := b.Search(ctx, gid, unitVec(768, 0), 4, vector.Filter{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("len(hits) = %d, want 2 (only 2 live messages exist)", len(hits))
+	}
+}
+
 func TestBackend_Delete_RemovesFromAllTables(t *testing.T) {
 	b, ctx := newBackendForTest(t)
 	gid := seedAndEmbed(t, b, map[int64][]float32{1: unitVec(768, 0)})

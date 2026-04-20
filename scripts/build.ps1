@@ -23,17 +23,33 @@ $ldflags = @(
 ) -join ' '
 
 $env:CGO_ENABLED = 1
-if (-not $env:CGO_CFLAGS -and (Test-Path "C:\msys64\mingw64\include\sqlite3.h")) {
-    # -fgnu89-inline works around arrow-go/v18 cdata helpers relying on
-    # GNU-style inline; --allow-multiple-definition then lets ld pick
-    # the first of the duplicate externals that the flag emits in
-    # every translation unit. Without both, MinGW 15+ either fails to
-    # resolve ArrowArrayIsReleased (C99 inline) or rejects duplicates.
-    $env:CGO_CFLAGS = "-IC:/msys64/mingw64/include -fgnu89-inline"
-    if (-not $env:CGO_LDFLAGS) {
-        $env:CGO_LDFLAGS = "-Wl,--allow-multiple-definition"
+
+# sqlite_vec on Windows + MinGW needs a specific set of C/linker flags,
+# each of which must be present no matter what the user already exported
+# in CGO_CFLAGS/CGO_LDFLAGS:
+#   - -IC:/msys64/mingw64/include points to the MSYS2-provided sqlite3.h.
+#   - -fgnu89-inline makes arrow-go/v18's plain `inline` helpers emit an
+#     external definition; otherwise MinGW 15 leaves ArrowArrayIsReleased
+#     and friends undefined at link time.
+#   - -Wl,--allow-multiple-definition then tells ld to keep the first of
+#     the duplicate externals the previous flag produces in every TU.
+# Append each flag only when missing, so users who already set their own
+# CGO_CFLAGS/CGO_LDFLAGS (e.g. a custom SQLite include path) don't get
+# them silently overwritten.
+function Add-CgoFlag([string]$var, [string]$flag) {
+    $existing = [Environment]::GetEnvironmentVariable($var, 'Process')
+    if (-not $existing) {
+        [Environment]::SetEnvironmentVariable($var, $flag, 'Process')
+    } elseif ($existing -notmatch [regex]::Escape($flag)) {
+        [Environment]::SetEnvironmentVariable($var, "$existing $flag", 'Process')
     }
 }
+
+if (Test-Path "C:\msys64\mingw64\include\sqlite3.h") {
+    Add-CgoFlag "CGO_CFLAGS" "-IC:/msys64/mingw64/include"
+}
+Add-CgoFlag "CGO_CFLAGS" "-fgnu89-inline"
+Add-CgoFlag "CGO_LDFLAGS" "-Wl,--allow-multiple-definition"
 
 Write-Host "Building msgvault $version ($commit)..."
 & go build -tags "fts5 sqlite_vec" -ldflags "$ldflags" -o msgvault.exe ./cmd/msgvault

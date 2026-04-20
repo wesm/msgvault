@@ -642,17 +642,22 @@ func (b *Backend) Search(ctx context.Context, gen vector.GenerationID, queryVec 
 	// just to satisfy the deletion predicate, which is an O(total live
 	// messages) cost on every pure-vector search or find_similar call.
 	//
-	// Over-fetch before the deletion post-filter so soft-deleted rows
-	// landing in the top-k cannot shrink the returned set below what
-	// the caller asked for. sqlite-vec doesn't support paging, so one
-	// oversized query is the only shot we get; a 2× factor absorbs
-	// typical archive-deletion rates without the cost of scanning the
-	// whole corpus. If *every* top-fetch hit is deleted we still
-	// underfill (expected — the caller can widen k to compensate).
+	// Soft-deleted rows that land in the top-k would shrink the
+	// returned set below what the caller asked for. sqlite-vec doesn't
+	// page, so we start with a 2× over-fetch and keep doubling up to
+	// the generation's total embedded count when deletions turn out
+	// to cluster more densely than the initial pass covered. The loop
+	// always terminates: each iteration either satisfies k or grows
+	// fetch toward the fixed ceiling.
 	if filter.IsEmpty() {
-		fetch := k * deletedOverfetchFactor
-		if fetch < k {
-			fetch = k // guard against overflow or degenerate small k
+		var embeddedCount int
+		if err := b.db.QueryRowContext(ctx,
+			`SELECT message_count FROM index_generations WHERE id = ?`,
+			int64(gen)).Scan(&embeddedCount); err != nil {
+			return nil, fmt.Errorf("lookup message count: %w", err)
+		}
+		if embeddedCount == 0 {
+			return nil, nil
 		}
 		q := fmt.Sprintf(`
 			SELECT message_id, distance
@@ -662,24 +667,36 @@ func (b *Backend) Search(ctx context.Context, gen vector.GenerationID, queryVec 
 			   AND k = ?
 			 ORDER BY distance ASC
 		`, vecTable)
-		hits, err := b.scanHits(ctx, q, int64(gen), float32SliceBlob(queryVec), fetch)
-		if err != nil {
-			return nil, err
+		fetch := k * deletedOverfetchFactor
+		if fetch < k {
+			fetch = k // guard against overflow or degenerate small k
 		}
-		filtered, err := b.dropDeletedFromSource(ctx, hits)
-		if err != nil {
-			return nil, err
+		for {
+			if fetch > embeddedCount {
+				fetch = embeddedCount
+			}
+			hits, err := b.scanHits(ctx, q, int64(gen), float32SliceBlob(queryVec), fetch)
+			if err != nil {
+				return nil, err
+			}
+			filtered, err := b.dropDeletedFromSource(ctx, hits)
+			if err != nil {
+				return nil, err
+			}
+			if len(filtered) >= k || fetch >= embeddedCount {
+				if len(filtered) > k {
+					filtered = filtered[:k]
+				}
+				// Re-rank so callers see 1,2,3… rather than the sparse
+				// ranks sqlite-vec assigned (deleted rows were at
+				// intermediate positions).
+				for i := range filtered {
+					filtered[i].Rank = i + 1
+				}
+				return filtered, nil
+			}
+			fetch *= 2
 		}
-		if len(filtered) > k {
-			filtered = filtered[:k]
-		}
-		// Re-rank by Rank so callers still see 1,2,3… rather than the
-		// gapped rank field sqlite-vec assigned (the deleted rows were
-		// at intermediate ranks).
-		for i := range filtered {
-			filtered[i].Rank = i + 1
-		}
-		return filtered, nil
 	}
 
 	idClause, filterArgs, err := b.resolveFilter(ctx, filter)
@@ -759,12 +776,14 @@ func (b *Backend) resolveFilter(ctx context.Context, filter vector.Filter) (stri
 	return "AND message_id IN (SELECT value FROM json_each(?))", []any{string(blob)}, nil
 }
 
-// deletedOverfetchFactor is the multiplier applied to k on the empty-
-// filter fast path to absorb soft-deleted rows that would otherwise
-// shrink the returned set below the caller's requested count. 2× is a
-// conservative balance: larger factors waste work when deletions are
-// rare (the common case), smaller factors underfill when they're
-// clustered near the query vector.
+// deletedOverfetchFactor is the starting multiplier applied to k on
+// the empty-filter fast path to absorb soft-deleted rows that would
+// otherwise shrink the returned set below the caller's requested
+// count. When deletions cluster more densely than this first pass
+// covers, Search keeps doubling fetch up to the generation's embedded
+// count. 2× is a good opening bid: most archives have sparse deletions
+// so the first pass succeeds, and the doubling fallback caps the worst
+// case at O(embedded count) rather than leaving the caller short.
 const deletedOverfetchFactor = 2
 
 // dropDeletedFromSource takes ANN hits and returns the subset whose
