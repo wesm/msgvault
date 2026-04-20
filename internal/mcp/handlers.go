@@ -264,10 +264,6 @@ func (h *handlers) searchMessagesHybrid(
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	var filter vector.Filter
-	if sourceID != nil {
-		filter.SourceIDs = []int64{*sourceID}
-	}
 
 	limit := limitArg(args, "limit", 20)
 	if maxPage := h.vectorCfg.Search.MaxPageSizeHybrid; maxPage > 0 && limit > maxPage {
@@ -280,6 +276,14 @@ func (h *handlers) searchMessagesHybrid(
 		subjectTerms = append(subjectTerms, strings.ToLower(t))
 	}
 	freeText := strings.Join(parsed.TextTerms, " ")
+
+	filter, err := h.hybridEngine.BuildFilter(ctx, parsed)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("filter resolution failed: %v", err)), nil
+	}
+	if sourceID != nil {
+		filter.SourceIDs = []int64{*sourceID}
+	}
 
 	req := hybrid.SearchRequest{
 		Mode:         hybrid.Mode(mode),

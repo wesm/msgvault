@@ -408,9 +408,17 @@ func (s *Server) handleHybridSearch(
 		subjectTerms = append(subjectTerms, strings.ToLower(t))
 	}
 
+	filter, err := s.hybridEngine.BuildFilter(ctx, parsed)
+	if err != nil {
+		s.logger.Error("build hybrid filter failed", "query", q, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "filter resolution failed")
+		return
+	}
+
 	req := hybrid.SearchRequest{
 		Mode:         hybrid.Mode(mode),
 		FreeText:     strings.Join(parsed.TextTerms, " "),
+		Filter:       filter,
 		Limit:        pageSize,
 		SubjectTerms: subjectTerms,
 		Explain:      explain,

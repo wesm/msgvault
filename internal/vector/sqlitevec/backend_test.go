@@ -495,6 +495,128 @@ func TestBackend_Search_FilterIDsExceedSQLiteParamCap(t *testing.T) {
 	}
 }
 
+// TestBackend_Search_NewFilterFields exercises the filter fields added
+// to match the existing SQLite search surface: to/cc/bcc recipients,
+// larger/smaller size bounds, and subject substring match.
+func TestBackend_Search_NewFilterFields(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+
+	// Reset and seed 4 messages with distinct recipient / size / subject
+	// profiles so each assertion is unambiguous.
+	if _, err := b.mainDB.ExecContext(ctx,
+		`DELETE FROM messages; DELETE FROM messages_fts; DELETE FROM message_recipients`); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+
+	rows := []struct {
+		id      int64
+		size    int64
+		subject string
+		to, cc  int64
+	}{
+		{1, 100_000, "quarterly planning", 10, 0},
+		{2, 5_000_000, "quarterly review", 20, 10},
+		{3, 100_000, "lunch", 20, 0},
+		{4, 20_000_000, "quarterly deep dive", 30, 0},
+	}
+	for _, r := range rows {
+		if _, err := b.mainDB.ExecContext(ctx,
+			`INSERT INTO messages (id, subject, size_estimate) VALUES (?, ?, ?)`,
+			r.id, r.subject, r.size); err != nil {
+			t.Fatalf("insert msg %d: %v", r.id, err)
+		}
+		if r.to != 0 {
+			if _, err := b.mainDB.ExecContext(ctx,
+				`INSERT INTO message_recipients (message_id, recipient_type, participant_id)
+				 VALUES (?, 'to', ?)`, r.id, r.to); err != nil {
+				t.Fatalf("insert to: %v", err)
+			}
+		}
+		if r.cc != 0 {
+			if _, err := b.mainDB.ExecContext(ctx,
+				`INSERT INTO message_recipients (message_id, recipient_type, participant_id)
+				 VALUES (?, 'cc', ?)`, r.id, r.cc); err != nil {
+				t.Fatalf("insert cc: %v", err)
+			}
+		}
+	}
+
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	chunks := make([]vector.Chunk, 0, len(rows))
+	for _, r := range rows {
+		chunks = append(chunks, vector.Chunk{MessageID: r.id, Vector: unitVec(768, 0)})
+	}
+	if err := b.Upsert(ctx, gid, chunks); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	matched := func(t *testing.T, f vector.Filter) map[int64]bool {
+		t.Helper()
+		hits, err := b.Search(ctx, gid, unitVec(768, 0), 10, f)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		got := make(map[int64]bool, len(hits))
+		for _, h := range hits {
+			got[h.MessageID] = true
+		}
+		return got
+	}
+
+	t.Run("ToIDs", func(t *testing.T) {
+		got := matched(t, vector.Filter{ToIDs: []int64{20}})
+		if !got[2] || !got[3] || got[1] || got[4] {
+			t.Errorf("ToIDs=[20]: got %v, want {2,3}", got)
+		}
+	})
+	t.Run("CcIDs", func(t *testing.T) {
+		got := matched(t, vector.Filter{CcIDs: []int64{10}})
+		if !got[2] || got[1] || got[3] || got[4] {
+			t.Errorf("CcIDs=[10]: got %v, want {2}", got)
+		}
+	})
+	t.Run("LargerThan", func(t *testing.T) {
+		size := int64(1_000_000)
+		got := matched(t, vector.Filter{LargerThan: &size})
+		if !got[2] || !got[4] || got[1] || got[3] {
+			t.Errorf("LargerThan=1MB: got %v, want {2,4}", got)
+		}
+	})
+	t.Run("SmallerThan", func(t *testing.T) {
+		size := int64(1_000_000)
+		got := matched(t, vector.Filter{SmallerThan: &size})
+		if !got[1] || !got[3] || got[2] || got[4] {
+			t.Errorf("SmallerThan=1MB: got %v, want {1,3}", got)
+		}
+	})
+	t.Run("SubjectSubstring", func(t *testing.T) {
+		got := matched(t, vector.Filter{SubjectSubstrings: []string{"quarterly"}})
+		if !got[1] || !got[2] || !got[4] || got[3] {
+			t.Errorf("subject=quarterly: got %v, want {1,2,4}", got)
+		}
+	})
+	t.Run("MultipleSubjectsANDed", func(t *testing.T) {
+		got := matched(t, vector.Filter{SubjectSubstrings: []string{"quarterly", "deep"}})
+		if !got[4] || got[1] || got[2] || got[3] {
+			t.Errorf("subject=[quarterly, deep]: got %v, want {4}", got)
+		}
+	})
+	t.Run("CombinedFilter", func(t *testing.T) {
+		size := int64(1_000_000)
+		got := matched(t, vector.Filter{
+			ToIDs:             []int64{20},
+			LargerThan:        &size,
+			SubjectSubstrings: []string{"quarterly"},
+		})
+		if !got[2] || got[1] || got[3] || got[4] {
+			t.Errorf("combined to=20 + >1MB + quarterly: got %v, want {2}", got)
+		}
+	})
+}
+
 // TestBackend_Search_SenderFallback_ToMessageRecipients confirms that a
 // sender filter matches messages whose only record of the sender is an
 // entry in message_recipients with recipient_type='from' — i.e. legacy

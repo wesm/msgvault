@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/vector"
 )
 
@@ -70,6 +71,14 @@ type Engine struct {
 // configuration into an Engine.
 func NewEngine(backend vector.Backend, mainDB *sql.DB, client EmbeddingClient, cfg Config) *Engine {
 	return &Engine{backend: backend, mainDB: mainDB, client: client, cfg: cfg}
+}
+
+// BuildFilter resolves a parsed Gmail-syntax query into a vector.Filter
+// against the engine's main DB. Convenience wrapper around the
+// package-level BuildFilter so callers that already hold an *Engine
+// don't need to plumb a *sql.DB separately.
+func (e *Engine) BuildFilter(ctx context.Context, q *search.Query) (vector.Filter, error) {
+	return BuildFilter(ctx, e.mainDB, q)
 }
 
 // Search runs hybrid or vector mode. Returns ErrIndexStale if the active
