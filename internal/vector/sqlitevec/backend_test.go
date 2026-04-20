@@ -1148,6 +1148,89 @@ func TestBackend_Search_ExcludesDeletedFromSource(t *testing.T) {
 	}
 }
 
+// TestBackend_Search_OverFetchesToHonorKWhenTopHitsDeleted regresses
+// the case where soft-deleted messages occupy slots in the top-k of
+// the raw ANN result. Post-filtering deletions after fetching exactly
+// k hits shrank the returned slice below k even when plenty more live
+// neighbors existed just below the cutoff. The fast path must
+// over-fetch enough to still return k live hits in this situation.
+func TestBackend_Search_OverFetchesToHonorKWhenTopHitsDeleted(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+
+	if _, err := b.mainDB.ExecContext(ctx,
+		`DELETE FROM messages; DELETE FROM messages_fts; DELETE FROM message_recipients`); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+
+	// Seed 8 messages: 1–3 are soft-deleted and embedded at the exact
+	// query vector (distance 0), 4–8 are live and embedded at
+	// successively more distant perturbations. With k=5 and the old
+	// "fetch k, post-filter" strategy, sqlite-vec's top-5 would be
+	// {1,2,3,4,5}; dropping the deleted rows left only {4,5}. The
+	// over-fetch fix should now return 5 live hits.
+	if _, err := b.mainDB.ExecContext(ctx, `
+		INSERT INTO messages (id, deleted_from_source_at) VALUES
+		    (1, '2026-01-01'), (2, '2026-01-01'), (3, '2026-01-01'),
+		    (4, NULL), (5, NULL), (6, NULL), (7, NULL), (8, NULL)`); err != nil {
+		t.Fatalf("insert messages: %v", err)
+	}
+
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+
+	// Distance grows with the live-message id so ANN order is
+	// 1,2,3 (deleted, distance 0), then 4,5,6,7,8.
+	gradedVec := func(offset float32) []float32 {
+		v := unitVec(768, 0)
+		v[1] = offset
+		return v
+	}
+	chunks := []vector.Chunk{
+		{MessageID: 1, Vector: unitVec(768, 0)},
+		{MessageID: 2, Vector: unitVec(768, 0)},
+		{MessageID: 3, Vector: unitVec(768, 0)},
+		{MessageID: 4, Vector: gradedVec(0.01)},
+		{MessageID: 5, Vector: gradedVec(0.02)},
+		{MessageID: 6, Vector: gradedVec(0.03)},
+		{MessageID: 7, Vector: gradedVec(0.04)},
+		{MessageID: 8, Vector: gradedVec(0.05)},
+	}
+	if err := b.Upsert(ctx, gid, chunks); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	hits, err := b.Search(ctx, gid, unitVec(768, 0), 5, vector.Filter{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(hits) != 5 {
+		t.Fatalf("len(hits) = %d, want 5 (over-fetch must absorb deletions)", len(hits))
+	}
+	got := make(map[int64]bool, len(hits))
+	for _, h := range hits {
+		got[h.MessageID] = true
+	}
+	for _, deleted := range []int64{1, 2, 3} {
+		if got[deleted] {
+			t.Errorf("hits contain deleted msg %d", deleted)
+		}
+	}
+	for _, live := range []int64{4, 5, 6, 7, 8} {
+		if !got[live] {
+			t.Errorf("hits missing live msg %d (want top-5 live set {4,5,6,7,8}, got %v)", live, got)
+		}
+	}
+	// Ranks must be 1..5 in hit order (not the sparse ranks the
+	// raw ANN query assigned).
+	for i, h := range hits {
+		if h.Rank != i+1 {
+			t.Errorf("hit[%d].Rank = %d, want %d (post-filter must re-number)", i, h.Rank, i+1)
+		}
+	}
+}
+
 func TestBackend_Delete_RemovesFromAllTables(t *testing.T) {
 	b, ctx := newBackendForTest(t)
 	gid := seedAndEmbed(t, b, map[int64][]float32{1: unitVec(768, 0)})

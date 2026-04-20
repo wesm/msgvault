@@ -641,7 +641,19 @@ func (b *Backend) Search(ctx context.Context, gen vector.GenerationID, queryVec 
 	// set. This avoids fetching every live message ID from main.db
 	// just to satisfy the deletion predicate, which is an O(total live
 	// messages) cost on every pure-vector search or find_similar call.
+	//
+	// Over-fetch before the deletion post-filter so soft-deleted rows
+	// landing in the top-k cannot shrink the returned set below what
+	// the caller asked for. sqlite-vec doesn't support paging, so one
+	// oversized query is the only shot we get; a 2× factor absorbs
+	// typical archive-deletion rates without the cost of scanning the
+	// whole corpus. If *every* top-fetch hit is deleted we still
+	// underfill (expected — the caller can widen k to compensate).
 	if filter.IsEmpty() {
+		fetch := k * deletedOverfetchFactor
+		if fetch < k {
+			fetch = k // guard against overflow or degenerate small k
+		}
 		q := fmt.Sprintf(`
 			SELECT message_id, distance
 			  FROM %s
@@ -650,11 +662,24 @@ func (b *Backend) Search(ctx context.Context, gen vector.GenerationID, queryVec 
 			   AND k = ?
 			 ORDER BY distance ASC
 		`, vecTable)
-		hits, err := b.scanHits(ctx, q, int64(gen), float32SliceBlob(queryVec), k)
+		hits, err := b.scanHits(ctx, q, int64(gen), float32SliceBlob(queryVec), fetch)
 		if err != nil {
 			return nil, err
 		}
-		return b.dropDeletedFromSource(ctx, hits)
+		filtered, err := b.dropDeletedFromSource(ctx, hits)
+		if err != nil {
+			return nil, err
+		}
+		if len(filtered) > k {
+			filtered = filtered[:k]
+		}
+		// Re-rank by Rank so callers still see 1,2,3… rather than the
+		// gapped rank field sqlite-vec assigned (the deleted rows were
+		// at intermediate ranks).
+		for i := range filtered {
+			filtered[i].Rank = i + 1
+		}
+		return filtered, nil
 	}
 
 	idClause, filterArgs, err := b.resolveFilter(ctx, filter)
@@ -733,6 +758,14 @@ func (b *Backend) resolveFilter(ctx context.Context, filter vector.Filter) (stri
 	}
 	return "AND message_id IN (SELECT value FROM json_each(?))", []any{string(blob)}, nil
 }
+
+// deletedOverfetchFactor is the multiplier applied to k on the empty-
+// filter fast path to absorb soft-deleted rows that would otherwise
+// shrink the returned set below the caller's requested count. 2× is a
+// conservative balance: larger factors waste work when deletions are
+// rare (the common case), smaller factors underfill when they're
+// clustered near the query vector.
+const deletedOverfetchFactor = 2
 
 // dropDeletedFromSource takes ANN hits and returns the subset whose
 // message rows are still live (deleted_from_source_at IS NULL) in
