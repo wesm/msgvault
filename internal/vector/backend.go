@@ -49,22 +49,29 @@ type Chunk struct {
 // Semantics match the existing SQLite search path (internal/store/api.go,
 // internal/query/sqlite.go):
 //
-//   - *IDs slices are OR-matched within a field (any id counts) and
-//     AND-combined across fields.
-//   - SenderIDs falls back to message_recipients rows with
-//     recipient_type='from' for legacy rows where sender_id is NULL.
+//   - SenderIDs is single-valued: the message's sender_id (or its
+//     `from` recipient row, for legacy rows where sender_id is NULL)
+//     must appear in this set. Repeated `from:` tokens collapse to
+//     the participants matching ALL substrings (intersection at the
+//     participant lookup), since each message has one sender.
+//   - To/Cc/Bcc/LabelGroups are multi-valued AND-of-OR groups: each
+//     inner slice is one search-token resolution (substring → matching
+//     IDs), and the message must have at least one matching recipient
+//     OR label in EVERY group. A query like `to:alice to:bob` becomes
+//     two ToGroups; the message must have a `to` recipient matching
+//     "alice" AND a `to` recipient matching "bob".
 //   - SubjectSubstrings each add one `m.subject LIKE ? ESCAPE '\'`
 //     condition, ANDed together (all substrings must match).
 //   - After/Before are half-open against m.sent_at:
 //     `>= After` and `< Before`.
 //   - LargerThan/SmallerThan compare against m.size_estimate.
 type Filter struct {
-	SourceIDs         []int64 // from [server/sources].identifier; empty = no source filter
-	SenderIDs         []int64 // participant IDs for `from:`
-	ToIDs             []int64 // participant IDs for `to:`
-	CcIDs             []int64 // participant IDs for `cc:`
-	BccIDs            []int64 // participant IDs for `bcc:`
-	LabelIDs          []int64 // from labels.name
+	SourceIDs         []int64   // from [server/sources].identifier; empty = no source filter
+	SenderIDs         []int64   // participant IDs for `from:` — intersected across tokens
+	ToGroups          [][]int64 // one inner slice per `to:` token; AND across, OR within
+	CcGroups          [][]int64 // one inner slice per `cc:` token; AND across, OR within
+	BccGroups         [][]int64 // one inner slice per `bcc:` token; AND across, OR within
+	LabelGroups       [][]int64 // one inner slice per `label:` token; AND across, OR within
 	HasAttachment     *bool
 	After, Before     *time.Time
 	LargerThan        *int64   // `larger:` — strictly greater than
@@ -77,10 +84,10 @@ type Filter struct {
 func (f Filter) IsEmpty() bool {
 	return len(f.SourceIDs) == 0 &&
 		len(f.SenderIDs) == 0 &&
-		len(f.ToIDs) == 0 &&
-		len(f.CcIDs) == 0 &&
-		len(f.BccIDs) == 0 &&
-		len(f.LabelIDs) == 0 &&
+		len(f.ToGroups) == 0 &&
+		len(f.CcGroups) == 0 &&
+		len(f.BccGroups) == 0 &&
+		len(f.LabelGroups) == 0 &&
 		f.HasAttachment == nil &&
 		f.After == nil &&
 		f.Before == nil &&

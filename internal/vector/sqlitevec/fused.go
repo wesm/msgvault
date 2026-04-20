@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/wesm/msgvault/internal/vector"
 )
@@ -58,21 +59,21 @@ func (b *Backend) FusedSearch(ctx context.Context, req vector.FusedRequest) ([]v
 	if err != nil {
 		return nil, false, fmt.Errorf("encode sender_ids: %w", err)
 	}
-	toIDs, err := idsToJSON(req.Filter.ToIDs)
+	toGroupSQL, toGroupArgs, err := recipientGroupClauses("to", req.Filter.ToGroups)
 	if err != nil {
-		return nil, false, fmt.Errorf("encode to_ids: %w", err)
+		return nil, false, fmt.Errorf("encode to_groups: %w", err)
 	}
-	ccIDs, err := idsToJSON(req.Filter.CcIDs)
+	ccGroupSQL, ccGroupArgs, err := recipientGroupClauses("cc", req.Filter.CcGroups)
 	if err != nil {
-		return nil, false, fmt.Errorf("encode cc_ids: %w", err)
+		return nil, false, fmt.Errorf("encode cc_groups: %w", err)
 	}
-	bccIDs, err := idsToJSON(req.Filter.BccIDs)
+	bccGroupSQL, bccGroupArgs, err := recipientGroupClauses("bcc", req.Filter.BccGroups)
 	if err != nil {
-		return nil, false, fmt.Errorf("encode bcc_ids: %w", err)
+		return nil, false, fmt.Errorf("encode bcc_groups: %w", err)
 	}
-	labelIDs, err := idsToJSON(req.Filter.LabelIDs)
+	labelGroupSQL, labelGroupArgs, err := labelGroupClauses(req.Filter.LabelGroups)
 	if err != nil {
-		return nil, false, fmt.Errorf("encode label_ids: %w", err)
+		return nil, false, fmt.Errorf("encode label_groups: %w", err)
 	}
 	var hasAttachment sql.NullBool
 	if req.Filter.HasAttachment != nil {
@@ -135,21 +136,9 @@ WITH
                   WHERE mr.message_id = m.id
                     AND mr.recipient_type = 'from'
                     AND mr.participant_id IN (SELECT value FROM json_each(:sender_ids))))
-       AND (:to_ids IS NULL OR EXISTS (
-             SELECT 1 FROM message_recipients mr
-              WHERE mr.message_id = m.id
-                AND mr.recipient_type = 'to'
-                AND mr.participant_id IN (SELECT value FROM json_each(:to_ids))))
-       AND (:cc_ids IS NULL OR EXISTS (
-             SELECT 1 FROM message_recipients mr
-              WHERE mr.message_id = m.id
-                AND mr.recipient_type = 'cc'
-                AND mr.participant_id IN (SELECT value FROM json_each(:cc_ids))))
-       AND (:bcc_ids IS NULL OR EXISTS (
-             SELECT 1 FROM message_recipients mr
-              WHERE mr.message_id = m.id
-                AND mr.recipient_type = 'bcc'
-                AND mr.participant_id IN (SELECT value FROM json_each(:bcc_ids))))
+       %s
+       %s
+       %s
        AND (:has_attachment IS NULL OR m.has_attachments = :has_attachment)
        AND (:after IS NULL OR m.sent_at >= :after)
        AND (:before IS NULL OR m.sent_at < :before)
@@ -158,10 +147,7 @@ WITH
        AND (:subject_patterns IS NULL OR NOT EXISTS (
              SELECT 1 FROM json_each(:subject_patterns) sp
               WHERE m.subject IS NULL OR m.subject NOT LIKE sp.value ESCAPE '\'))
-       AND (:label_ids IS NULL OR EXISTS (
-             SELECT 1 FROM message_labels ml
-              WHERE ml.message_id = m.id
-                AND ml.label_id IN (SELECT value FROM json_each(:label_ids))))
+       %s
   ),
   bm25 AS (
     SELECT fts.rowid AS message_id,
@@ -205,7 +191,8 @@ SELECT message_id, rrf_score, bm25_score, vector_score,
   FROM fused
  ORDER BY rrf_score DESC, message_id ASC
  LIMIT :limit
-`, kPlus1, req.KPerSignal, vecTable, kPlus1, req.KPerSignal)
+`, toGroupSQL, ccGroupSQL, bccGroupSQL, labelGroupSQL,
+		kPlus1, req.KPerSignal, vecTable, kPlus1, req.KPerSignal)
 
 	var queryVecArg any
 	if req.QueryVec != nil {
@@ -216,25 +203,27 @@ SELECT message_id, rrf_score, bm25_score, vector_score,
 		ftsArg = req.FTSQuery
 	}
 
-	rows, err := conn.QueryContext(ctx, query,
+	args := []any{
 		sql.Named("source_ids", sourceIDs),
 		sql.Named("sender_ids", senderIDs),
-		sql.Named("to_ids", toIDs),
-		sql.Named("cc_ids", ccIDs),
-		sql.Named("bcc_ids", bccIDs),
 		sql.Named("has_attachment", hasAttachment),
 		sql.Named("after", after),
 		sql.Named("before", before),
 		sql.Named("larger_than", largerThan),
 		sql.Named("smaller_than", smallerThan),
 		sql.Named("subject_patterns", subjectPatterns),
-		sql.Named("label_ids", labelIDs),
 		sql.Named("fts_query", ftsArg),
 		sql.Named("query_vec", queryVecArg),
 		sql.Named("gen", int64(req.Generation)),
 		sql.Named("rrf_k", req.RRFK),
 		sql.Named("limit", req.Limit),
-	)
+	}
+	args = append(args, toGroupArgs...)
+	args = append(args, ccGroupArgs...)
+	args = append(args, bccGroupArgs...)
+	args = append(args, labelGroupArgs...)
+
+	rows, err := conn.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, false, fmt.Errorf("fused query: %w", err)
 	}
@@ -309,6 +298,72 @@ func idsToJSON(ids []int64) (sql.NullString, error) {
 		return sql.NullString{}, fmt.Errorf("marshal ids: %w", err)
 	}
 	return sql.NullString{Valid: true, String: string(buf)}, nil
+}
+
+// recipientGroupClauses produces the SQL fragment and named args for a
+// repeated address operator (to/cc/bcc). Each group becomes its own
+// EXISTS clause AND'd together, so a query like `to:alice to:bob`
+// requires the message to have a 'to' recipient matching alice AND a
+// 'to' recipient matching bob. Empty groups yields the empty string
+// (no clause appended) so the field is unrestricted.
+func recipientGroupClauses(recipientType string, groups [][]int64) (string, []any, error) {
+	if len(groups) == 0 {
+		return "", nil, nil
+	}
+	var sb strings.Builder
+	args := make([]any, 0, len(groups))
+	for i, ids := range groups {
+		js, err := idsToJSON(ids)
+		if err != nil {
+			return "", nil, fmt.Errorf("encode %s_grp_%d: %w", recipientType, i, err)
+		}
+		// Skip if a group resolved to nil (BuildFilter substitutes
+		// the no-match sentinel for empty groups, so this only fires
+		// for callers constructing Filter directly with a nil entry).
+		if !js.Valid {
+			continue
+		}
+		paramName := fmt.Sprintf("%s_grp_%d", recipientType, i)
+		fmt.Fprintf(&sb, `
+       AND EXISTS (
+             SELECT 1 FROM message_recipients mr
+              WHERE mr.message_id = m.id
+                AND mr.recipient_type = '%s'
+                AND mr.participant_id IN (SELECT value FROM json_each(:%s)))`,
+			recipientType, paramName)
+		args = append(args, sql.Named(paramName, js))
+	}
+	return sb.String(), args, nil
+}
+
+// labelGroupClauses produces the SQL fragment and named args for
+// repeated `label:` operators. Each group becomes its own EXISTS
+// clause; the message must have a label in EVERY group. Mirrors
+// recipientGroupClauses' shape so the SQL pattern is consistent.
+func labelGroupClauses(groups [][]int64) (string, []any, error) {
+	if len(groups) == 0 {
+		return "", nil, nil
+	}
+	var sb strings.Builder
+	args := make([]any, 0, len(groups))
+	for i, ids := range groups {
+		js, err := idsToJSON(ids)
+		if err != nil {
+			return "", nil, fmt.Errorf("encode label_grp_%d: %w", i, err)
+		}
+		if !js.Valid {
+			continue
+		}
+		paramName := fmt.Sprintf("label_grp_%d", i)
+		fmt.Fprintf(&sb, `
+       AND EXISTS (
+             SELECT 1 FROM message_labels ml
+              WHERE ml.message_id = m.id
+                AND ml.label_id IN (SELECT value FROM json_each(:%s)))`,
+			paramName)
+		args = append(args, sql.Named(paramName, js))
+	}
+	return sb.String(), args, nil
 }
 
 // applySubjectBoost is a stub. Subject boosting lives in Task 11.

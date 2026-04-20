@@ -767,16 +767,16 @@ func TestBackend_Search_NewFilterFields(t *testing.T) {
 		return got
 	}
 
-	t.Run("ToIDs", func(t *testing.T) {
-		got := matched(t, vector.Filter{ToIDs: []int64{20}})
+	t.Run("ToGroups_singleGroup", func(t *testing.T) {
+		got := matched(t, vector.Filter{ToGroups: [][]int64{{20}}})
 		if !got[2] || !got[3] || got[1] || got[4] {
-			t.Errorf("ToIDs=[20]: got %v, want {2,3}", got)
+			t.Errorf("ToGroups=[[20]]: got %v, want {2,3}", got)
 		}
 	})
-	t.Run("CcIDs", func(t *testing.T) {
-		got := matched(t, vector.Filter{CcIDs: []int64{10}})
+	t.Run("CcGroups_singleGroup", func(t *testing.T) {
+		got := matched(t, vector.Filter{CcGroups: [][]int64{{10}}})
 		if !got[2] || got[1] || got[3] || got[4] {
-			t.Errorf("CcIDs=[10]: got %v, want {2}", got)
+			t.Errorf("CcGroups=[[10]]: got %v, want {2}", got)
 		}
 	})
 	t.Run("LargerThan", func(t *testing.T) {
@@ -808,12 +808,119 @@ func TestBackend_Search_NewFilterFields(t *testing.T) {
 	t.Run("CombinedFilter", func(t *testing.T) {
 		size := int64(1_000_000)
 		got := matched(t, vector.Filter{
-			ToIDs:             []int64{20},
+			ToGroups:          [][]int64{{20}},
 			LargerThan:        &size,
 			SubjectSubstrings: []string{"quarterly"},
 		})
 		if !got[2] || got[1] || got[3] || got[4] {
 			t.Errorf("combined to=20 + >1MB + quarterly: got %v, want {2}", got)
+		}
+	})
+}
+
+// TestBackend_Search_RecipientGroupsAreANDed asserts that multiple
+// groups for the same recipient field require the message to match
+// EVERY group — i.e. `to:alice to:bob` is NOT the same as
+// `to:(alice OR bob)`. Each group becomes its own EXISTS clause and
+// they are AND'd together. Same shape as label group AND'ing.
+func TestBackend_Search_RecipientGroupsAreANDed(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+
+	if _, err := b.mainDB.ExecContext(ctx,
+		`DELETE FROM messages; DELETE FROM messages_fts; DELETE FROM message_recipients; DELETE FROM message_labels`); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+
+	// Three messages, distinguishable by recipient set:
+	//   1: to=100 only
+	//   2: to=100, to=200       <- matches both groups
+	//   3: to=200 only
+	rows := []struct {
+		id  int64
+		tos []int64
+	}{
+		{1, []int64{100}},
+		{2, []int64{100, 200}},
+		{3, []int64{200}},
+	}
+	for _, r := range rows {
+		if _, err := b.mainDB.ExecContext(ctx,
+			`INSERT INTO messages (id) VALUES (?)`, r.id); err != nil {
+			t.Fatalf("insert msg %d: %v", r.id, err)
+		}
+		for _, p := range r.tos {
+			if _, err := b.mainDB.ExecContext(ctx,
+				`INSERT INTO message_recipients (message_id, recipient_type, participant_id)
+				 VALUES (?, 'to', ?)`, r.id, p); err != nil {
+				t.Fatalf("insert to: %v", err)
+			}
+		}
+	}
+	// Seed message_labels with the same shape: msg 2 has both labels,
+	// msg 1 only label_id=1, msg 3 only label_id=2. The backend's filter
+	// goes straight to message_labels (no labels-table join), so raw
+	// label_ids are sufficient.
+	for _, ml := range []struct {
+		mid int64
+		lid int64
+	}{
+		{1, 1},
+		{2, 1}, {2, 2},
+		{3, 2},
+	} {
+		if _, err := b.mainDB.ExecContext(ctx,
+			`INSERT INTO message_labels (message_id, label_id) VALUES (?, ?)`,
+			ml.mid, ml.lid); err != nil {
+			t.Fatalf("insert message_label: %v", err)
+		}
+	}
+
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	chunks := make([]vector.Chunk, 0, len(rows))
+	for _, r := range rows {
+		chunks = append(chunks, vector.Chunk{MessageID: r.id, Vector: unitVec(768, 0)})
+	}
+	if err := b.Upsert(ctx, gid, chunks); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	matched := func(t *testing.T, f vector.Filter) map[int64]bool {
+		t.Helper()
+		hits, err := b.Search(ctx, gid, unitVec(768, 0), 10, f)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		got := make(map[int64]bool, len(hits))
+		for _, h := range hits {
+			got[h.MessageID] = true
+		}
+		return got
+	}
+
+	t.Run("two_to_groups_require_both", func(t *testing.T) {
+		// `to:100 to:200` ⇒ ToGroups=[[100],[200]]; only msg 2 has both.
+		got := matched(t, vector.Filter{ToGroups: [][]int64{{100}, {200}}})
+		if !got[2] || got[1] || got[3] {
+			t.Errorf("ToGroups=[[100],[200]]: got %v, want only {2}", got)
+		}
+	})
+
+	t.Run("two_label_groups_require_both", func(t *testing.T) {
+		// `label:1 label:2` ⇒ LabelGroups=[[1],[2]]; only msg 2 has both.
+		got := matched(t, vector.Filter{LabelGroups: [][]int64{{1}, {2}}})
+		if !got[2] || got[1] || got[3] {
+			t.Errorf("LabelGroups=[[1],[2]]: got %v, want only {2}", got)
+		}
+	})
+
+	t.Run("OR_within_a_group_still_works", func(t *testing.T) {
+		// One group containing both ids ⇒ matches messages with either.
+		got := matched(t, vector.Filter{ToGroups: [][]int64{{100, 200}}})
+		if !got[1] || !got[2] || !got[3] {
+			t.Errorf("ToGroups=[[100,200]]: got %v, want {1,2,3}", got)
 		}
 	})
 }

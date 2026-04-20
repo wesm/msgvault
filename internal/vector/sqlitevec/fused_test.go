@@ -656,11 +656,11 @@ func TestFusedSearch_RecipientFiltersMatchNoneSentinel(t *testing.T) {
 		name   string
 		filter vector.Filter
 	}{
-		{"ToIDs_sentinel", vector.Filter{ToIDs: []int64{sentinel}}},
-		{"CcIDs_sentinel", vector.Filter{CcIDs: []int64{sentinel}}},
-		{"BccIDs_sentinel", vector.Filter{BccIDs: []int64{sentinel}}},
+		{"ToGroups_sentinel", vector.Filter{ToGroups: [][]int64{{sentinel}}}},
+		{"CcGroups_sentinel", vector.Filter{CcGroups: [][]int64{{sentinel}}}},
+		{"BccGroups_sentinel", vector.Filter{BccGroups: [][]int64{{sentinel}}}},
 		{"SenderIDs_sentinel", vector.Filter{SenderIDs: []int64{sentinel}}},
-		{"LabelIDs_sentinel", vector.Filter{LabelIDs: []int64{sentinel}}},
+		{"LabelGroups_sentinel", vector.Filter{LabelGroups: [][]int64{{sentinel}}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

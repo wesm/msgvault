@@ -71,17 +71,18 @@ func TestBuildFilter_AddressesResolveViaSubstring(t *testing.T) {
 		t.Fatalf("BuildFilter: %v", err)
 	}
 
-	// from:example.com → alice, bob, dave.work (all @example.com)
+	// from:example.com → alice, bob, dave.work (all @example.com).
+	// Single from: token, so SenderIDs is the substring-match set.
 	if got := len(f.SenderIDs); got != 3 {
 		t.Errorf("len(SenderIDs) = %d, want 3 (all @example.com), got ids %v", got, sortedIDs(f.SenderIDs))
 	}
-	// to:alice → alice only
-	if len(f.ToIDs) != 1 {
-		t.Errorf("len(ToIDs) = %d, want 1, got %v", len(f.ToIDs), sortedIDs(f.ToIDs))
+	// to:alice → one group with one id.
+	if len(f.ToGroups) != 1 || len(f.ToGroups[0]) != 1 {
+		t.Errorf("ToGroups = %v, want one group with one id (alice)", f.ToGroups)
 	}
-	// cc:other.com → carol only
-	if len(f.CcIDs) != 1 {
-		t.Errorf("len(CcIDs) = %d, want 1, got %v", len(f.CcIDs), sortedIDs(f.CcIDs))
+	// cc:other.com → one group with one id (carol).
+	if len(f.CcGroups) != 1 || len(f.CcGroups[0]) != 1 {
+		t.Errorf("CcGroups = %v, want one group with one id (carol)", f.CcGroups)
 	}
 }
 
@@ -126,8 +127,8 @@ func TestBuildFilter_LabelsAndAttachments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildFilter: %v", err)
 	}
-	if len(f.LabelIDs) != 1 {
-		t.Errorf("len(LabelIDs) = %d, want 1", len(f.LabelIDs))
+	if len(f.LabelGroups) != 1 || len(f.LabelGroups[0]) != 1 {
+		t.Errorf("LabelGroups = %v, want one group with one id (Work)", f.LabelGroups)
 	}
 	if f.HasAttachment == nil || !*f.HasAttachment {
 		t.Errorf("HasAttachment = %v, want true", f.HasAttachment)
@@ -181,20 +182,18 @@ func TestBuildFilter_NonexistentLabelReturnsSentinel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildFilter: %v", err)
 	}
-	if len(f.LabelIDs) != 1 || f.LabelIDs[0] >= 0 {
-		t.Errorf("LabelIDs=%v, want single negative sentinel id", f.LabelIDs)
+	if len(f.LabelGroups) != 1 || len(f.LabelGroups[0]) != 1 || f.LabelGroups[0][0] >= 0 {
+		t.Errorf("LabelGroups=%v, want one group with the negative sentinel id", f.LabelGroups)
 	}
 }
 
-// TestBuildFilter_RepeatedAddressTokens_PerTermAND regression-guards
-// the bug where repeated same-field address operators (e.g.
-// `from:alice from:nobody`) were resolved with OR semantics: both
-// tokens were sent to a single LIKE … OR LIKE query, so the sentinel
-// only fired when ALL tokens matched zero rows. The SQLite search
-// path treats each repeated operator as its own AND condition, so
-// the vector path must match nothing as soon as any single token
-// resolves to zero participants.
-func TestBuildFilter_RepeatedAddressTokens_PerTermAND(t *testing.T) {
+// TestBuildFilter_RepeatedSenderTokens_Intersect regression-guards the
+// bug where repeated `from:` operators were resolved with OR semantics:
+// both tokens were sent to a single LIKE … OR LIKE query, so the
+// sentinel only fired when ALL tokens matched zero rows. Sender is a
+// single-valued field per message, so repeated tokens must intersect:
+// the participant's email_address must contain EVERY substring.
+func TestBuildFilter_RepeatedSenderTokens_Intersect(t *testing.T) {
 	ctx := context.Background()
 	db := newFilterTestDB(t)
 
@@ -205,42 +204,134 @@ func TestBuildFilter_RepeatedAddressTokens_PerTermAND(t *testing.T) {
 			t.Fatalf("BuildFilter: %v", err)
 		}
 		if len(f.SenderIDs) != 1 || f.SenderIDs[0] >= 0 {
-			t.Errorf("SenderIDs=%v, want sentinel — second token resolves empty so the whole field must not match", f.SenderIDs)
+			t.Errorf("SenderIDs=%v, want sentinel — no participant matches both substrings", f.SenderIDs)
 		}
 	})
 
-	t.Run("all tokens non-empty unions ids", func(t *testing.T) {
+	t.Run("disjoint tokens sentinel the field", func(t *testing.T) {
+		// alice@example.com and bob@example.com share no substring beyond
+		// "example.com" and "@", so requiring both substrings must match
+		// zero participants and trip the sentinel.
 		q := search.Parse(`from:alice from:bob`)
 		f, err := BuildFilter(ctx, db, q)
 		if err != nil {
 			t.Fatalf("BuildFilter: %v", err)
 		}
-		// Both tokens resolve: alice→1, bob→1, union→2 distinct ids.
-		if len(f.SenderIDs) != 2 {
-			t.Errorf("SenderIDs=%v, want 2 ids (union of alice + bob)", sortedIDs(f.SenderIDs))
+		if len(f.SenderIDs) != 1 || f.SenderIDs[0] >= 0 {
+			t.Errorf("SenderIDs=%v, want sentinel — no participant has both 'alice' and 'bob' in their address", f.SenderIDs)
 		}
-		for _, id := range f.SenderIDs {
-			if id < 0 {
-				t.Errorf("SenderIDs=%v contains negative sentinel; both tokens resolved non-empty so no sentinel expected", f.SenderIDs)
-			}
+	})
+
+	t.Run("overlapping substrings intersect to participants matching all", func(t *testing.T) {
+		// dave.work@example.com matches both "dave" and "work"; alice/bob
+		// match neither, so intersection is just dave.
+		q := search.Parse(`from:dave from:work`)
+		f, err := BuildFilter(ctx, db, q)
+		if err != nil {
+			t.Fatalf("BuildFilter: %v", err)
+		}
+		if len(f.SenderIDs) != 1 {
+			t.Fatalf("SenderIDs=%v, want exactly one participant (dave.work)", sortedIDs(f.SenderIDs))
+		}
+		if f.SenderIDs[0] < 0 {
+			t.Errorf("SenderIDs=%v contains negative sentinel; both tokens resolved non-empty intersection", f.SenderIDs)
 		}
 	})
 }
 
-// TestBuildFilter_RepeatedLabelTokens_PerTermAND is the label-side
-// counterpart of TestBuildFilter_RepeatedAddressTokens_PerTermAND.
-func TestBuildFilter_RepeatedLabelTokens_PerTermAND(t *testing.T) {
+// TestBuildFilter_RepeatedRecipientTokens_PerTokenGroups asserts that
+// repeated to:/cc:/bcc: operators each become their own group. The
+// backend AND-combines groups (OR within), so `to:alice to:bob`
+// requires the message to have a `to` recipient matching alice AND a
+// `to` recipient matching bob — preserving the SQLite path's per-token
+// AND semantics for multi-valued recipient fields.
+func TestBuildFilter_RepeatedRecipientTokens_PerTokenGroups(t *testing.T) {
 	ctx := context.Background()
 	db := newFilterTestDB(t)
 
-	q := search.Parse(`label:Work label:nonexistent-xyz`)
+	q := search.Parse(`to:alice to:bob`)
 	f, err := BuildFilter(ctx, db, q)
 	if err != nil {
 		t.Fatalf("BuildFilter: %v", err)
 	}
-	if len(f.LabelIDs) != 1 || f.LabelIDs[0] >= 0 {
-		t.Errorf("LabelIDs=%v, want sentinel — second token resolves empty so the whole field must not match", f.LabelIDs)
+	if len(f.ToGroups) != 2 {
+		t.Fatalf("ToGroups=%v, want 2 groups (one per to: token)", f.ToGroups)
 	}
+	for i, g := range f.ToGroups {
+		if len(g) != 1 {
+			t.Errorf("ToGroups[%d]=%v, want exactly 1 id (alice/bob each match one participant)", i, g)
+		}
+		if g[0] < 0 {
+			t.Errorf("ToGroups[%d]=%v contains negative sentinel; both tokens resolved", i, g)
+		}
+	}
+}
+
+// TestBuildFilter_RepeatedRecipientTokens_OneEmptySentinelsThatGroup
+// confirms that when one of several recipient tokens resolves to zero
+// participants, only that group gets the sentinel — the other groups
+// keep their real IDs. The backend's AND-of-groups means the sentinel
+// group still poisons the entire field (its EXISTS clause cannot
+// match), so the message set narrows to zero — same effect as the FTS
+// path, but without conflating the two tokens at resolution time.
+func TestBuildFilter_RepeatedRecipientTokens_OneEmptySentinelsThatGroup(t *testing.T) {
+	ctx := context.Background()
+	db := newFilterTestDB(t)
+
+	q := search.Parse(`to:alice to:nobody@nowhere.invalid`)
+	f, err := BuildFilter(ctx, db, q)
+	if err != nil {
+		t.Fatalf("BuildFilter: %v", err)
+	}
+	if len(f.ToGroups) != 2 {
+		t.Fatalf("ToGroups=%v, want 2 groups", f.ToGroups)
+	}
+	if len(f.ToGroups[0]) != 1 || f.ToGroups[0][0] < 0 {
+		t.Errorf("ToGroups[0]=%v, want one positive id (alice resolved)", f.ToGroups[0])
+	}
+	if len(f.ToGroups[1]) != 1 || f.ToGroups[1][0] >= 0 {
+		t.Errorf("ToGroups[1]=%v, want sentinel (nobody resolves empty)", f.ToGroups[1])
+	}
+}
+
+// TestBuildFilter_RepeatedLabelTokens_PerTokenGroups is the label-side
+// counterpart of TestBuildFilter_RepeatedRecipientTokens_PerTokenGroups.
+func TestBuildFilter_RepeatedLabelTokens_PerTokenGroups(t *testing.T) {
+	ctx := context.Background()
+	db := newFilterTestDB(t)
+
+	t.Run("two real labels become two groups", func(t *testing.T) {
+		q := search.Parse(`label:Work label:Archive`)
+		f, err := BuildFilter(ctx, db, q)
+		if err != nil {
+			t.Fatalf("BuildFilter: %v", err)
+		}
+		if len(f.LabelGroups) != 2 {
+			t.Fatalf("LabelGroups=%v, want 2 groups", f.LabelGroups)
+		}
+		for i, g := range f.LabelGroups {
+			if len(g) != 1 || g[0] < 0 {
+				t.Errorf("LabelGroups[%d]=%v, want one positive id", i, g)
+			}
+		}
+	})
+
+	t.Run("one missing token sentinels only that group", func(t *testing.T) {
+		q := search.Parse(`label:Work label:nonexistent-xyz`)
+		f, err := BuildFilter(ctx, db, q)
+		if err != nil {
+			t.Fatalf("BuildFilter: %v", err)
+		}
+		if len(f.LabelGroups) != 2 {
+			t.Fatalf("LabelGroups=%v, want 2 groups", f.LabelGroups)
+		}
+		if len(f.LabelGroups[0]) != 1 || f.LabelGroups[0][0] < 0 {
+			t.Errorf("LabelGroups[0]=%v, want positive id (Work resolved)", f.LabelGroups[0])
+		}
+		if len(f.LabelGroups[1]) != 1 || f.LabelGroups[1][0] >= 0 {
+			t.Errorf("LabelGroups[1]=%v, want sentinel", f.LabelGroups[1])
+		}
+	})
 }
 
 // TestBuildFilter_LabelsMatchCaseInsensitiveSubstring verifies the
@@ -254,14 +345,15 @@ func TestBuildFilter_LabelsMatchCaseInsensitiveSubstring(t *testing.T) {
 	db := newFilterTestDB(t)
 
 	cases := []struct {
-		name  string
-		query string
-		want  int
+		name       string
+		query      string
+		wantGroups int
+		wantInOnly int // expected length of the single group
 	}{
-		{"lowercased exact", `label:work`, 1}, // "Work"
-		{"partial prefix", `label:arch`, 1},   // "Archive"
-		{"partial uppercase", `label:INB`, 1}, // "INBOX"
-		{"no match", `label:nowhere`, 1},      // sentinel (no real matches)
+		{"lowercased exact", `label:work`, 1, 1}, // "Work"
+		{"partial prefix", `label:arch`, 1, 1},   // "Archive"
+		{"partial uppercase", `label:INB`, 1, 1}, // "INBOX"
+		{"no match", `label:nowhere`, 1, 1},      // sentinel (no real matches)
 	}
 	for _, c := range cases {
 		c := c
@@ -271,9 +363,14 @@ func TestBuildFilter_LabelsMatchCaseInsensitiveSubstring(t *testing.T) {
 			if err != nil {
 				t.Fatalf("BuildFilter: %v", err)
 			}
-			if len(f.LabelIDs) != c.want {
-				t.Errorf("query %q: len(LabelIDs)=%d, want %d (got %v)",
-					c.query, len(f.LabelIDs), c.want, f.LabelIDs)
+			if len(f.LabelGroups) != c.wantGroups {
+				t.Errorf("query %q: len(LabelGroups)=%d, want %d (got %v)",
+					c.query, len(f.LabelGroups), c.wantGroups, f.LabelGroups)
+				return
+			}
+			if len(f.LabelGroups[0]) != c.wantInOnly {
+				t.Errorf("query %q: len(LabelGroups[0])=%d, want %d (got %v)",
+					c.query, len(f.LabelGroups[0]), c.wantInOnly, f.LabelGroups[0])
 			}
 		})
 	}

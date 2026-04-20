@@ -276,12 +276,15 @@ func TestPickEmbedGeneration_StaleActivePlusMatchingBuilding(t *testing.T) {
 	}
 }
 
-// TestPickEmbedGeneration_ActivePlusBuildingDifferentFingerprint covers
-// the inverse of TestPickEmbedGeneration_StaleActivePlusMatchingBuilding:
-// active matches the configured fingerprint, but a stale building from
-// a different model is also present. The active generation should be
-// targeted (incremental top-up) rather than the mismatched build.
-func TestPickEmbedGeneration_ActivePlusBuildingDifferentFingerprint(t *testing.T) {
+// TestPickEmbedGeneration_ActivePlusMismatchedBuildingRejected covers
+// the case where the active generation matches the configured
+// fingerprint AND a building generation exists for a different model.
+// Silently topping up the active would leave the wrong-model build
+// stranded forever; the user has to explicitly retire or activate it
+// before embedding can proceed. Regression for the bug where the code
+// only rejected mismatched builds via the ErrIndexBuilding branch and
+// missed this active-also-matches case.
+func TestPickEmbedGeneration_ActivePlusMismatchedBuildingRejected(t *testing.T) {
 	ctx := context.Background()
 	b := openTestBackend(t)
 
@@ -296,22 +299,18 @@ func TestPickEmbedGeneration_ActivePlusBuildingDifferentFingerprint(t *testing.T
 		t.Fatalf("CreateGeneration (stale building): %v", err)
 	}
 
-	gotGen, rebuildInProgress, err := pickEmbedGeneration(ctx, b, embedGenerationOpts{
+	_, _, err = pickEmbedGeneration(ctx, b, embedGenerationOpts{
 		FullRebuild: false,
 		Model:       "fake",
 		Dimension:   4,
 		Fingerprint: "fake:4",
 		Stderr:      openStderrSink(t),
 	})
-	if err != nil {
-		t.Fatalf("pickEmbedGeneration: %v (should fall back to active)", err)
+	if err == nil {
+		t.Fatal("expected error when a mismatched building exists alongside matching active, got nil")
 	}
-	if gotGen != matchingActive {
-		t.Errorf("gotGen=%d, want active=%d (mismatched build must not be picked over matching active)",
-			gotGen, matchingActive)
-	}
-	if rebuildInProgress {
-		t.Errorf("rebuildInProgress=true, want false (we picked the active generation)")
+	if !bytes.Contains([]byte(err.Error()), []byte("fingerprint")) {
+		t.Errorf("error should mention fingerprint, got %q", err.Error())
 	}
 }
 

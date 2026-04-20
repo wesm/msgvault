@@ -18,6 +18,12 @@ import (
 // name; subject terms, size bounds, attachment and date filters pass
 // through unchanged.
 //
+// Repeated same-field operators (e.g. `to:alice to:bob`) preserve
+// per-token AND semantics: SenderIDs is intersected at the participant
+// lookup (each message has one sender), and To/Cc/Bcc/LabelGroups
+// each carry one inner slice per token so the backend can require
+// every group to match.
+//
 // Caller is responsible for any additional filter fields that do not
 // derive from the query string (e.g. a SourceID coming from an HTTP
 // account parameter) — just set them on the returned Filter.
@@ -27,32 +33,39 @@ func BuildFilter(ctx context.Context, db *sql.DB, q *search.Query) (vector.Filte
 		return f, nil
 	}
 
-	addressFilters := []struct {
-		addrs []string
-		dst   *[]int64
-	}{
-		{q.FromAddrs, &f.SenderIDs},
-		{q.ToAddrs, &f.ToIDs},
-		{q.CcAddrs, &f.CcIDs},
-		{q.BccAddrs, &f.BccIDs},
-	}
-	for _, af := range addressFilters {
-		if len(af.addrs) == 0 {
-			continue
-		}
-		ids, err := resolveAddressTokensAND(ctx, db, af.addrs)
+	if len(q.FromAddrs) > 0 {
+		ids, err := resolveSenderIntersection(ctx, db, q.FromAddrs)
 		if err != nil {
 			return f, err
 		}
-		*af.dst = ids
+		f.SenderIDs = ids
+	}
+
+	groupFilters := []struct {
+		addrs []string
+		dst   *[][]int64
+	}{
+		{q.ToAddrs, &f.ToGroups},
+		{q.CcAddrs, &f.CcGroups},
+		{q.BccAddrs, &f.BccGroups},
+	}
+	for _, gf := range groupFilters {
+		if len(gf.addrs) == 0 {
+			continue
+		}
+		groups, err := resolveAddressGroups(ctx, db, gf.addrs)
+		if err != nil {
+			return f, err
+		}
+		*gf.dst = groups
 	}
 
 	if len(q.Labels) > 0 {
-		ids, err := resolveLabelTokensAND(ctx, db, q.Labels)
+		groups, err := resolveLabelGroups(ctx, db, q.Labels)
 		if err != nil {
 			return f, err
 		}
-		f.LabelIDs = ids
+		f.LabelGroups = groups
 	}
 
 	if q.HasAttachment != nil {
@@ -79,64 +92,82 @@ func BuildFilter(ctx context.Context, db *sql.DB, q *search.Query) (vector.Filte
 	return f, nil
 }
 
-// resolveAddressTokensAND mirrors the SQLite search path's per-term
-// semantics for repeated address operators (e.g. `from:alice from:bob`):
-// each token must match at least one participant for the field to
-// produce any hits. If ANY token resolves to zero participants, the
-// returned slice is the no-match sentinel so the backend filter
-// short-circuits instead of falling back to "unrestricted" or silently
-// OR-ing partial matches.
-//
-// Within a single non-empty token's resolution we still union the IDs
-// (i.e. `from:alice` matching alice@foo and alice@bar both pass), and
-// across non-empty tokens we union as well. Strict per-message
-// intersection (the SQLite EXISTS-per-token form) would require a
-// schema change to vector.Filter; the behavior here is the strictest
-// match achievable without that refactor and addresses the bug where
-// `from:nobody` was being silently dropped from `from:alice from:nobody`.
-func resolveAddressTokensAND(ctx context.Context, db *sql.DB, addrs []string) ([]int64, error) {
-	seen := make(map[int64]struct{})
+// resolveSenderIntersection returns participants whose email contains
+// EVERY supplied substring. The sender field is single-valued per
+// message, so a query like `from:alice from:bob` requires the sender
+// to match both substrings — a single SQL with ANDed LIKE clauses
+// computes that directly. Empty result collapses to the no-match
+// sentinel so the backend's IN check finds zero rows.
+func resolveSenderIntersection(ctx context.Context, db *sql.DB, addrs []string) ([]int64, error) {
+	if len(addrs) == 0 {
+		return nil, nil
+	}
+	parts := make([]string, 0, len(addrs))
+	args := make([]any, 0, len(addrs))
+	for _, a := range addrs {
+		parts = append(parts, `LOWER(email_address) LIKE ? ESCAPE '\'`)
+		args = append(args, "%"+escapeLike(strings.ToLower(a))+"%")
+	}
+	q := fmt.Sprintf(`SELECT id FROM participants WHERE %s`, strings.Join(parts, " AND "))
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query sender intersection: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan participant id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate participants: %w", err)
+	}
+	if len(ids) == 0 {
+		return []int64{noMatchSentinel}, nil
+	}
+	return ids, nil
+}
+
+// resolveAddressGroups produces one IDs slice per supplied token. The
+// backend AND-combines groups: a message must have at least one
+// recipient matching every group. An individual token that resolves
+// to zero participants collapses to the no-match sentinel for that
+// group, which makes the per-group EXISTS check fail and returns zero
+// hits overall — preserving the SQLite path's "any unknown token
+// poisons the whole field" semantic.
+func resolveAddressGroups(ctx context.Context, db *sql.DB, addrs []string) ([][]int64, error) {
+	groups := make([][]int64, 0, len(addrs))
 	for _, a := range addrs {
 		ids, err := resolveParticipantIDs(ctx, db, []string{a})
 		if err != nil {
 			return nil, err
 		}
 		if len(ids) == 0 {
-			return []int64{noMatchSentinel}, nil
+			ids = []int64{noMatchSentinel}
 		}
-		for _, id := range ids {
-			seen[id] = struct{}{}
-		}
+		groups = append(groups, ids)
 	}
-	out := make([]int64, 0, len(seen))
-	for id := range seen {
-		out = append(out, id)
-	}
-	return out, nil
+	return groups, nil
 }
 
-// resolveLabelTokensAND is the label-side counterpart of
-// resolveAddressTokensAND: any label token that resolves to zero
-// matches collapses the whole filter to the no-match sentinel.
-func resolveLabelTokensAND(ctx context.Context, db *sql.DB, labels []string) ([]int64, error) {
-	seen := make(map[int64]struct{})
+// resolveLabelGroups is the label-side counterpart of
+// resolveAddressGroups.
+func resolveLabelGroups(ctx context.Context, db *sql.DB, labels []string) ([][]int64, error) {
+	groups := make([][]int64, 0, len(labels))
 	for _, l := range labels {
 		ids, err := resolveLabelIDs(ctx, db, []string{l})
 		if err != nil {
 			return nil, err
 		}
 		if len(ids) == 0 {
-			return []int64{noMatchSentinel}, nil
+			ids = []int64{noMatchSentinel}
 		}
-		for _, id := range ids {
-			seen[id] = struct{}{}
-		}
+		groups = append(groups, ids)
 	}
-	out := make([]int64, 0, len(seen))
-	for id := range seen {
-		out = append(out, id)
-	}
-	return out, nil
+	return groups, nil
 }
 
 // resolveParticipantIDs returns every participant whose email_address

@@ -706,25 +706,30 @@ func (b *Backend) filteredMessageIDs(ctx context.Context, f vector.Filter) ([]in
 			args = append(args, id)
 		}
 	}
-	// Recipient filters: one EXISTS per type, matching participant_id.
-	addRecipientFilter := func(recipientType string, ids []int64) {
-		if len(ids) == 0 {
-			return
-		}
-		clauses = append(clauses, fmt.Sprintf(
-			`EXISTS (
-				SELECT 1 FROM message_recipients mr
-				 WHERE mr.message_id = m.id
-				   AND mr.recipient_type = '%s'
-				   AND %s
-			)`, recipientType, inClause("mr.participant_id", ids)))
-		for _, id := range ids {
-			args = append(args, id)
+	// Recipient filters: one EXISTS per group, matching participant_id.
+	// Multiple groups for the same recipient type are AND'd so that
+	// `to:alice to:bob` requires the message to have a `to` recipient
+	// matching alice AND a `to` recipient matching bob.
+	addRecipientGroups := func(recipientType string, groups [][]int64) {
+		for _, ids := range groups {
+			if len(ids) == 0 {
+				continue
+			}
+			clauses = append(clauses, fmt.Sprintf(
+				`EXISTS (
+					SELECT 1 FROM message_recipients mr
+					 WHERE mr.message_id = m.id
+					   AND mr.recipient_type = '%s'
+					   AND %s
+				)`, recipientType, inClause("mr.participant_id", ids)))
+			for _, id := range ids {
+				args = append(args, id)
+			}
 		}
 	}
-	addRecipientFilter("to", f.ToIDs)
-	addRecipientFilter("cc", f.CcIDs)
-	addRecipientFilter("bcc", f.BccIDs)
+	addRecipientGroups("to", f.ToGroups)
+	addRecipientGroups("cc", f.CcGroups)
+	addRecipientGroups("bcc", f.BccGroups)
 
 	if f.HasAttachment != nil {
 		clauses = append(clauses, "m.has_attachments = ?")
@@ -750,11 +755,16 @@ func (b *Backend) filteredMessageIDs(ctx context.Context, f vector.Filter) ([]in
 		clauses = append(clauses, `m.subject LIKE ? ESCAPE '\'`)
 		args = append(args, "%"+escapeLikeSubject(term)+"%")
 	}
-	if len(f.LabelIDs) > 0 {
+	// Label filters: one EXISTS per group, AND'd across groups so that
+	// `label:promo label:billing` requires both labels to be present.
+	for _, ids := range f.LabelGroups {
+		if len(ids) == 0 {
+			continue
+		}
 		clauses = append(clauses, fmt.Sprintf(
 			`EXISTS (SELECT 1 FROM message_labels ml WHERE ml.message_id = m.id AND %s)`,
-			inClause("ml.label_id", f.LabelIDs)))
-		for _, id := range f.LabelIDs {
+			inClause("ml.label_id", ids)))
+		for _, id := range ids {
 			args = append(args, id)
 		}
 	}

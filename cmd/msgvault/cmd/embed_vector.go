@@ -168,20 +168,31 @@ func pickEmbedGeneration(ctx context.Context, backend vector.Backend, opts embed
 		return gen, true, nil
 	}
 
-	// Check building first: if a rebuild for the configured model is
-	// in flight, drain it to completion regardless of whether an
-	// active (possibly stale) generation also exists. The previous
-	// "active wins" ordering left building generations stranded
-	// whenever the user already had any active index, even one for
-	// a different model.
+	// Check building first. The order here matters in two directions:
+	//
+	//  1. A matching in-flight rebuild gets drained even if an
+	//     (older / stale) active generation also exists — otherwise
+	//     `msgvault embed` would top up the active index forever and
+	//     leave the new build stranded in `building`.
+	//
+	//  2. A mismatched in-flight rebuild is rejected immediately,
+	//     regardless of whether an active generation matches the
+	//     config. If we deferred to the active path on a config-match
+	//     here, the user could keep embedding into an active index
+	//     while the wrong-model build sat unfinished and untouched
+	//     beside it.
 	building, bErr := backend.BuildingGeneration(ctx)
 	if bErr != nil {
 		return 0, false, fmt.Errorf("lookup building generation: %w", bErr)
 	}
-	if building != nil && building.Fingerprint == opts.Fingerprint {
-		_, _ = fmt.Fprintf(opts.Stderr, "Resuming building generation %d (%s).\n",
-			building.ID, building.Fingerprint)
-		return building.ID, true, nil
+	if building != nil {
+		if building.Fingerprint == opts.Fingerprint {
+			_, _ = fmt.Fprintf(opts.Stderr, "Resuming building generation %d (%s).\n",
+				building.ID, building.Fingerprint)
+			return building.ID, true, nil
+		}
+		return 0, false, fmt.Errorf("in-progress rebuild has fingerprint=%q, config has %q — activate or retire it before running with a different model",
+			building.Fingerprint, opts.Fingerprint)
 	}
 
 	active, err := vector.ResolveActiveForFingerprint(ctx, backend, opts.Fingerprint)
@@ -190,16 +201,11 @@ func pickEmbedGeneration(ctx context.Context, backend vector.Backend, opts embed
 		_, _ = fmt.Fprintf(opts.Stderr, "Using active generation %d (%s).\n", active.ID, active.Fingerprint)
 		return active.ID, false, nil
 	case errors.Is(err, vector.ErrIndexBuilding):
-		// ResolveActive said "building" but our earlier check either
-		// found no row or found a fingerprint mismatch. Re-derive the
-		// best error message for the caller.
-		if building == nil {
-			// Race: the building row vanished between our two
-			// lookups. Treat as "nothing to resume".
-			return 0, false, fmt.Errorf("resolve active generation: %w (hint: run with --full-rebuild to start)", err)
-		}
-		return 0, false, fmt.Errorf("in-progress rebuild has fingerprint=%q, config has %q — activate or retire it before running with a different model",
-			building.Fingerprint, opts.Fingerprint)
+		// Building row vanished between our BuildingGeneration call
+		// and ResolveActive's lookup (e.g. concurrent activation).
+		// Surface the underlying sentinel so the caller can hint at
+		// --full-rebuild.
+		return 0, false, fmt.Errorf("resolve active generation: %w (hint: run with --full-rebuild to start)", err)
 	default:
 		return 0, false, fmt.Errorf("resolve active generation: %w (hint: run with --full-rebuild to start)", err)
 	}
