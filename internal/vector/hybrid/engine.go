@@ -82,8 +82,15 @@ func (e *Engine) BuildFilter(ctx context.Context, q *search.Query) (vector.Filte
 	return BuildFilter(ctx, e.mainDB, q)
 }
 
-// Search runs hybrid or vector mode. Returns ErrIndexStale if the active
-// generation's fingerprint does not match ExpectedFingerprint.
+// Search runs hybrid or vector mode. Resolves the active generation
+// via vector.ResolveActiveForFingerprint, so callers get the full
+// family of sentinel errors:
+//
+//   - ErrIndexStale: an active generation exists but its fingerprint
+//     differs from the configured model+dimension.
+//   - ErrIndexBuilding: no active yet, but a build is in progress.
+//   - ErrNotEnabled: no generation at all (vector search unused).
+//
 // mode=fts is rejected with a clear error (legacy path handles it).
 func (e *Engine) Search(ctx context.Context, req SearchRequest) ([]vector.FusedHit, ResultMeta, error) {
 	if req.Mode == ModeFTS {
@@ -93,13 +100,9 @@ func (e *Engine) Search(ctx context.Context, req SearchRequest) ([]vector.FusedH
 		return nil, ResultMeta{}, fmt.Errorf("unknown mode %q", req.Mode)
 	}
 
-	active, err := e.backend.ActiveGeneration(ctx)
+	active, err := vector.ResolveActiveForFingerprint(ctx, e.backend, e.cfg.ExpectedFingerprint)
 	if err != nil {
-		return nil, ResultMeta{}, fmt.Errorf("active generation: %w", err)
-	}
-	if e.cfg.ExpectedFingerprint != "" && active.Fingerprint != e.cfg.ExpectedFingerprint {
-		return nil, ResultMeta{}, fmt.Errorf("%w: active=%q configured=%q",
-			vector.ErrIndexStale, active.Fingerprint, e.cfg.ExpectedFingerprint)
+		return nil, ResultMeta{}, err
 	}
 
 	if req.FreeText == "" {

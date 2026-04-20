@@ -17,12 +17,19 @@ import (
 //
 // Any other error from the Backend is wrapped and returned as-is.
 func ResolveActive(ctx context.Context, b Backend, cfg EmbeddingsConfig) (Generation, error) {
+	return ResolveActiveForFingerprint(ctx, b, cfg.Fingerprint())
+}
+
+// ResolveActiveForFingerprint is the same as ResolveActive but takes a
+// pre-computed fingerprint string instead of a full EmbeddingsConfig.
+// Useful for callers that already have a configured fingerprint (e.g.
+// hybrid.Engine) and don't want to carry the whole config through.
+func ResolveActiveForFingerprint(ctx context.Context, b Backend, fingerprint string) (Generation, error) {
 	active, err := b.ActiveGeneration(ctx)
 	if err == nil {
-		fp := cfg.Fingerprint()
-		if active.Fingerprint != fp {
+		if fingerprint != "" && active.Fingerprint != fingerprint {
 			return Generation{}, fmt.Errorf("%w: active=%q configured=%q",
-				ErrIndexStale, active.Fingerprint, fp)
+				ErrIndexStale, active.Fingerprint, fingerprint)
 		}
 		return active, nil
 	}

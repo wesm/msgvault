@@ -314,7 +314,12 @@ func TestEngine_PoolSaturated_WhenLimitBelowK(t *testing.T) {
 	}
 }
 
-func TestEngine_NoActiveGeneration_Rejected(t *testing.T) {
+// TestEngine_NoGenerations_ReturnsNotEnabled verifies the Search
+// error path after the active generation is retired and no building
+// one exists: callers expect ErrNotEnabled via ResolveActive, so the
+// API layer can 503 with "vector_not_enabled" instead of a generic
+// ErrNoActiveGeneration.
+func TestEngine_NoGenerations_ReturnsNotEnabled(t *testing.T) {
 	ctx := context.Background()
 	f := newEngineFixture(t)
 	if err := f.Backend.RetireGeneration(ctx, f.GenID); err != nil {
@@ -323,7 +328,30 @@ func TestEngine_NoActiveGeneration_Rejected(t *testing.T) {
 	_, _, err := f.Engine.Search(ctx, SearchRequest{
 		Mode: ModeHybrid, FreeText: "meeting", Limit: 5,
 	})
-	if !errors.Is(err, vector.ErrNoActiveGeneration) {
-		t.Errorf("err = %v, want ErrNoActiveGeneration", err)
+	if !errors.Is(err, vector.ErrNotEnabled) {
+		t.Errorf("err = %v, want ErrNotEnabled", err)
+	}
+}
+
+// TestEngine_BuildingOnly_ReturnsBuilding covers the "no active yet,
+// first build running" case. ResolveActiveForFingerprint must
+// differentiate this from ErrNotEnabled so clients can distinguish
+// "configure vector search" from "wait for build".
+func TestEngine_BuildingOnly_ReturnsBuilding(t *testing.T) {
+	ctx := context.Background()
+	f := newEngineFixture(t)
+	if err := f.Backend.RetireGeneration(ctx, f.GenID); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	// A new building generation must be present; CreateGeneration
+	// writes one directly.
+	if _, err := f.Backend.CreateGeneration(ctx, "fake-model", 4); err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	_, _, err := f.Engine.Search(ctx, SearchRequest{
+		Mode: ModeHybrid, FreeText: "meeting", Limit: 5,
+	})
+	if !errors.Is(err, vector.ErrIndexBuilding) {
+		t.Errorf("err = %v, want ErrIndexBuilding", err)
 	}
 }
