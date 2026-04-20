@@ -46,4 +46,12 @@ var (
 	// this as a retryable race and re-resolve the active/building
 	// state instead of aborting.
 	ErrGenerationNotBuilding = errors.New("generation is not in state=building")
+
+	// ErrEmbeddingTimeout is returned by the hybrid engine when the
+	// embedding endpoint did not respond before the request context
+	// was cancelled (typically because the HTTP server's per-request
+	// timeout elapsed first). Callers should map this to a 503-style
+	// "transient backend slow" response so clients can retry instead
+	// of treating it as a permanent failure.
+	ErrEmbeddingTimeout = errors.New("embedding request timed out")
 )

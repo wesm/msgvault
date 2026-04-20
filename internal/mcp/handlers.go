@@ -63,6 +63,11 @@ func translateVectorErr(err error) *mcp.CallToolResult {
 			"no_active_generation: vector search has no active index yet; " +
 				"run `msgvault embed` to build one",
 		)
+	case errors.Is(err, vector.ErrEmbeddingTimeout):
+		return mcp.NewToolResultError(
+			"embedding_timeout: the embedding endpoint did not respond in time; " +
+				"retry, or raise [vector.embeddings].timeout in config",
+		)
 	}
 	return nil
 }

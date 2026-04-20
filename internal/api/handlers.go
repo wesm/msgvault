@@ -455,6 +455,9 @@ func (s *Server) handleHybridSearch(
 		case errors.Is(err, vector.ErrIndexBuilding):
 			writeError(w, http.StatusServiceUnavailable, "index_building",
 				"the initial vector index is still being built")
+		case errors.Is(err, vector.ErrEmbeddingTimeout):
+			writeError(w, http.StatusServiceUnavailable, "embedding_timeout",
+				"the embedding endpoint did not respond in time; retry, or raise [vector.embeddings].timeout")
 		default:
 			s.logger.Error("hybrid search failed", "query", q, "mode", mode, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal_error", "search failed")

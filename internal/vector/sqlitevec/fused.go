@@ -240,7 +240,22 @@ SELECT message_id, rrf_score, bm25_score, vector_score,
 	defer func() { _ = rows.Close() }()
 
 	var hits []vector.FusedHit
+	// bm25_pool_size and ann_pool_size are correlated subqueries that
+	// evaluate to the same value on every row of the result. We only
+	// need them once, so capture from the first row (they are
+	// otherwise redundantly assigned per-iteration). When the result
+	// set is empty, both pools are empty by construction:
+	//
+	//   fused = bm25_used FULL OUTER JOIN ann_used
+	//   bm25_used = bm25 WHERE rnk <= KPerSignal       (rnk starts at 1)
+	//   ann_used  = ann  WHERE rnk <= KPerSignal
+	//
+	// FULL OUTER JOIN of two empty sets is empty, and bm25_used/ann_used
+	// cannot be empty unless their parent CTE was — so an empty `fused`
+	// implies both pools were empty post-filter, which means saturation
+	// is provably false. Default-zero pool sizes are correct in that case.
 	var bm25PoolSize, annPoolSize int
+	var poolSizeRead bool
 	for rows.Next() {
 		var h vector.FusedHit
 		var bm, vec sql.NullFloat64
@@ -248,8 +263,11 @@ SELECT message_id, rrf_score, bm25_score, vector_score,
 		if err := rows.Scan(&h.MessageID, &h.RRFScore, &bm, &vec, &bmPool, &annPool); err != nil {
 			return nil, false, fmt.Errorf("scan fused hit: %w", err)
 		}
-		bm25PoolSize = bmPool
-		annPoolSize = annPool
+		if !poolSizeRead {
+			bm25PoolSize = bmPool
+			annPoolSize = annPool
+			poolSizeRead = true
+		}
 		h.BM25Score = math.NaN()
 		if bm.Valid {
 			h.BM25Score = bm.Float64

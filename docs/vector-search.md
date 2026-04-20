@@ -180,6 +180,7 @@ Common error codes and fixes:
 | `missing_free_text` | `mode=vector` or `mode=hybrid` used with a filter-only query (no free text to embed). | Add free-text terms to `q`, or switch to `mode=fts`. |
 | `pagination_unsupported` | Request asked for `page>1` with `mode=vector|hybrid`. | Use `page=1` with a larger `page_size` instead. |
 | `invalid_mode` | `mode=` value other than `fts`, `vector`, `hybrid`. | Pick one of those. |
+| `embedding_timeout` | The embedding endpoint did not respond before the request deadline (transient — slow/cold model, network blip). | Retry; if persistent, raise `[vector.embeddings].timeout` or use a faster endpoint. |
 
 `msgvault embed` repeatedly logs `embed batch failed ... HTTP 400` and
 aborts after 5 consecutive failures: check the embedder's logs. If

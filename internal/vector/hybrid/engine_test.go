@@ -334,6 +334,41 @@ func TestEngine_NoGenerations_ReturnsNotEnabled(t *testing.T) {
 	}
 }
 
+// TestEngine_EmbedTimeout_WrappedAsErrEmbeddingTimeout covers the
+// HTTP timeout path: when the embed call returns
+// context.DeadlineExceeded (request handler timeout fired before
+// the embedder responded), Search must wrap the error with
+// vector.ErrEmbeddingTimeout so the API/MCP error mappers can
+// surface a 503 embedding_timeout instead of a generic 500.
+func TestEngine_EmbedTimeout_WrappedAsErrEmbeddingTimeout(t *testing.T) {
+	ctx := context.Background()
+	f := newEngineFixture(t)
+	timingOutEng := NewEngine(f.Backend, f.MainDB, &timeoutEmbedder{}, Config{
+		ExpectedFingerprint: f.Fingerprint,
+		RRFK:                60,
+		KPerSignal:          10,
+	})
+
+	_, _, err := timingOutEng.Search(ctx, SearchRequest{
+		Mode: ModeHybrid, FreeText: "meeting", Limit: 5,
+	})
+	if !errors.Is(err, vector.ErrEmbeddingTimeout) {
+		t.Errorf("err = %v, want wrapped ErrEmbeddingTimeout", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, must also wrap context.DeadlineExceeded", err)
+	}
+}
+
+// timeoutEmbedder always reports the request context's deadline-exceeded
+// — simulating an embedder that didn't respond before the HTTP handler
+// timeout fired.
+type timeoutEmbedder struct{}
+
+func (timeoutEmbedder) Embed(_ context.Context, _ []string) ([][]float32, error) {
+	return nil, context.DeadlineExceeded
+}
+
 // TestEngine_BuildingOnly_ReturnsBuilding covers the "no active yet,
 // first build running" case. ResolveActiveForFingerprint must
 // differentiate this from ErrNotEnabled so clients can distinguish

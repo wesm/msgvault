@@ -652,6 +652,7 @@ All errors return a consistent JSON format:
 | `vector_not_enabled` | 503 | Server has no vector backend configured |
 | `index_stale` | 503 | Active generation does not match the configured model; run `msgvault embed --full-rebuild` |
 | `index_building` | 503 | Initial vector index is still being built |
+| `embedding_timeout` | 503 | Embedding endpoint did not respond before the request deadline (transient; safe to retry) |
 
 All timestamps in responses use RFC 3339 format in UTC (e.g., `"2024-01-15T10:30:00Z"`).
 

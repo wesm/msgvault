@@ -837,6 +837,62 @@ func TestFusedSearch_SubjectBoost(t *testing.T) {
 	})
 }
 
+// TestFusedSearch_EmptyFilteredSetReportsNotSaturated guards the
+// invariant the comment in fused.go's scan loop documents: when a
+// filter excludes every candidate from both signals, the result is
+// empty, the pool-size correlated subqueries return 0, and saturation
+// must report false (no overflow possible). Locks the contract so a
+// future SQL rewrite that breaks the FULL OUTER JOIN identity has to
+// update this test too.
+func TestFusedSearch_EmptyFilteredSetReportsNotSaturated(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+
+	if _, err := b.mainDB.ExecContext(ctx,
+		`DELETE FROM messages; DELETE FROM messages_fts`); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	// Two messages with the same body. Both will match FTS, both will
+	// match the vector query — but neither has the filter's required
+	// HasAttachment=true, so the filtered CTE drops them and bm25/ann
+	// derive nothing.
+	if _, err := b.mainDB.ExecContext(ctx,
+		`INSERT INTO messages (id, subject, has_attachments) VALUES (1, 'a', 0), (2, 'b', 0)`); err != nil {
+		t.Fatalf("insert msgs: %v", err)
+	}
+	for _, id := range []int64{1, 2} {
+		if _, err := b.mainDB.ExecContext(ctx,
+			`INSERT INTO messages_fts (rowid, subject, body) VALUES (?, ?, ?)`,
+			id, "x", "report ships next week"); err != nil {
+			t.Fatalf("insert fts %d: %v", id, err)
+		}
+	}
+	gid := seedAndEmbed(t, b, map[int64][]float32{
+		1: unitVec(768, 0),
+		2: unitVec(768, 1),
+	})
+	if err := b.ActivateGeneration(ctx, gid); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+
+	yes := true
+	hits, saturated, err := b.FusedSearch(ctx, vector.FusedRequest{
+		QueryVec:   unitVec(768, 0),
+		Generation: gid,
+		FTSQuery:   "report",
+		Filter:     vector.Filter{HasAttachment: &yes},
+		KPerSignal: 1, Limit: 5, RRFK: 60,
+	})
+	if err != nil {
+		t.Fatalf("FusedSearch: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("hits=%+v, want empty (filter excludes everything)", hits)
+	}
+	if saturated {
+		t.Errorf("saturated=true on empty filtered result; saturation requires overflow, which is impossible when no rows pass the filter")
+	}
+}
+
 // TestFusedSearch_SubjectBoostOverFetchesBeyondLimit regresses the
 // case where the subject boost was applied AFTER the SQL LIMIT, so
 // any boost-eligible hit ranked just past the page was invisible.

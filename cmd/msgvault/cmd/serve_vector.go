@@ -64,9 +64,11 @@ func setupVectorFeatures(ctx context.Context, mainDB *sql.DB, mainPath string) (
 			StripQuotes:     cfg.Vector.Preprocess.StripQuotesEnabled(),
 			StripSignatures: cfg.Vector.Preprocess.StripSignaturesEnabled(),
 		},
-		MaxInputChars: cfg.Vector.Embeddings.MaxInputChars,
-		BatchSize:     cfg.Vector.Embeddings.BatchSize,
-		Log:           logger,
+		MaxInputChars:   cfg.Vector.Embeddings.MaxInputChars,
+		BatchSize:       cfg.Vector.Embeddings.BatchSize,
+		EmbedTimeout:    cfg.Vector.Embeddings.Timeout,
+		EmbedMaxRetries: cfg.Vector.Embeddings.MaxRetries,
+		Log:             logger,
 	})
 
 	engine := hybrid.NewEngine(backend, mainDB, client, hybrid.Config{

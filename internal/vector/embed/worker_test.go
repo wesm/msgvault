@@ -10,6 +10,30 @@ import (
 	"time"
 )
 
+func TestDerivedStaleThreshold(t *testing.T) {
+	cases := []struct {
+		name       string
+		timeout    time.Duration
+		maxRetries int
+		want       time.Duration
+	}{
+		{"zero timeout returns floor", 0, 3, 10 * time.Minute},
+		{"small budget keeps floor", 30 * time.Second, 3, 10 * time.Minute},         // 2*30s*4 = 4m → floor wins
+		{"large timeout exceeds floor", 5 * time.Minute, 3, 40 * time.Minute},       // 2*5m*4 = 40m
+		{"high retries scale", 30 * time.Second, 30, 31 * time.Minute},              // 2*30s*31 = 31m
+		{"negative retries treated as 1 attempt", 1 * time.Hour, -5, 2 * time.Hour}, // 2*1h*1 = 2h, exceeds floor
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := derivedStaleThreshold(tc.timeout, tc.maxRetries)
+			if got != tc.want {
+				t.Errorf("derivedStaleThreshold(%v, %d) = %v, want %v",
+					tc.timeout, tc.maxRetries, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWorker_DrainsPendingEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	f := newWorkerFixture(t, 3)

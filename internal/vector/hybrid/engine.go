@@ -111,6 +111,15 @@ func (e *Engine) Search(ctx context.Context, req SearchRequest) ([]vector.FusedH
 
 	vecs, err := e.client.Embed(ctx, []string{req.FreeText})
 	if err != nil {
+		// Surface deadline-exceeded distinctly so HTTP/MCP can map it
+		// to a transient 503 instead of a generic 500. The handler
+		// timeout (default 60s) often fires before a cold local
+		// embedding endpoint responds, and "deadline exceeded" wrapped
+		// inside an opaque error gives clients no way to know whether
+		// to retry.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, ResultMeta{}, fmt.Errorf("embed query: %w: %w", vector.ErrEmbeddingTimeout, err)
+		}
 		return nil, ResultMeta{}, fmt.Errorf("embed query: %w", err)
 	}
 	if len(vecs) != 1 {

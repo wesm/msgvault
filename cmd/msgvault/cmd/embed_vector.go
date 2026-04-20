@@ -76,8 +76,10 @@ func runEmbed(ctx context.Context) error {
 			StripQuotes:     cfg.Vector.Preprocess.StripQuotesEnabled(),
 			StripSignatures: cfg.Vector.Preprocess.StripSignaturesEnabled(),
 		},
-		MaxInputChars: cfg.Vector.Embeddings.MaxInputChars,
-		BatchSize:     cfg.Vector.Embeddings.BatchSize,
+		MaxInputChars:   cfg.Vector.Embeddings.MaxInputChars,
+		BatchSize:       cfg.Vector.Embeddings.BatchSize,
+		EmbedTimeout:    cfg.Vector.Embeddings.Timeout,
+		EmbedMaxRetries: cfg.Vector.Embeddings.MaxRetries,
 	})
 
 	if n, err := worker.ReclaimStale(ctx); err != nil {

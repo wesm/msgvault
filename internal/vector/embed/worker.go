@@ -21,9 +21,10 @@ type EmbeddingClient interface {
 
 // WorkerDeps bundles the collaborators a Worker needs. Backend, VectorsDB,
 // MainDB, and Client are required; the remaining fields have sensible
-// defaults when zero: BatchSize defaults to 32, StaleThreshold defaults to
-// 10 minutes, MaxConsecutiveFailures defaults to 5, Log defaults to
-// slog.Default().
+// defaults when zero: BatchSize defaults to 32, StaleThreshold is
+// auto-derived from EmbedTimeout × EmbedMaxRetries with a 10-minute
+// floor (see NewWorker), MaxConsecutiveFailures defaults to 5, Log
+// defaults to slog.Default().
 type WorkerDeps struct {
 	Backend        vector.Backend
 	VectorsDB      *sql.DB
@@ -32,7 +33,16 @@ type WorkerDeps struct {
 	Preprocess     PreprocessConfig
 	MaxInputChars  int
 	BatchSize      int
-	StaleThreshold time.Duration // default 10 minutes
+	StaleThreshold time.Duration
+	// EmbedTimeout and EmbedMaxRetries inform the StaleThreshold
+	// auto-derivation: a single batch can legitimately stay claimed for
+	// up to Timeout × (MaxRetries + 1) before the worker gives up, so
+	// reclaim must wait longer than that to avoid reclaiming live work.
+	// Both are read only when StaleThreshold is zero. Zero means
+	// "fall back to whatever defaults config.ApplyDefaults uses (30s,
+	// 3 retries)" — see derivedStaleThreshold.
+	EmbedTimeout    time.Duration
+	EmbedMaxRetries int
 	// MaxConsecutiveFailures caps the number of consecutive batch
 	// failures (embed error or upsert error) before RunOnce gives up
 	// and returns an error. A successful batch resets the counter.
@@ -51,8 +61,8 @@ type Worker struct {
 }
 
 // NewWorker constructs a Worker, applying defaults for BatchSize (32),
-// StaleThreshold (10 minutes), MaxConsecutiveFailures (5), and Log
-// (slog.Default()).
+// StaleThreshold (auto-derived; see derivedStaleThreshold),
+// MaxConsecutiveFailures (5), and Log (slog.Default()).
 func NewWorker(d WorkerDeps) *Worker {
 	if d.Log == nil {
 		d.Log = slog.Default()
@@ -61,12 +71,38 @@ func NewWorker(d WorkerDeps) *Worker {
 		d.BatchSize = 32
 	}
 	if d.StaleThreshold == 0 {
-		d.StaleThreshold = 10 * time.Minute
+		d.StaleThreshold = derivedStaleThreshold(d.EmbedTimeout, d.EmbedMaxRetries)
 	}
 	if d.MaxConsecutiveFailures == 0 {
 		d.MaxConsecutiveFailures = 5
 	}
 	return &Worker{deps: d, q: NewQueue(d.VectorsDB)}
+}
+
+// derivedStaleThreshold picks a default StaleThreshold from the
+// embedder's per-request timeout and retry count, with a 10-minute
+// floor. A claim must outlive at least one full retry budget
+// (timeout × (retries + 1)) — anything less risks ReclaimStale
+// pulling rows out from under a still-running embed call, which
+// would then race a concurrent worker on the same batch and leave
+// stale Complete tokens. The 2× safety factor absorbs scheduler
+// jitter and pre/post-call overhead. The floor preserves the
+// historical default for the common case (Timeout=30s × 3 retries =
+// 4 minutes derived; floor wins).
+func derivedStaleThreshold(timeout time.Duration, maxRetries int) time.Duration {
+	const floor = 10 * time.Minute
+	if timeout <= 0 {
+		return floor
+	}
+	attempts := maxRetries + 1
+	if attempts < 1 {
+		attempts = 1
+	}
+	derived := 2 * timeout * time.Duration(attempts)
+	if derived < floor {
+		return floor
+	}
+	return derived
 }
 
 // RunResult summarizes the outcome of RunOnce.
