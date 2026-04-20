@@ -278,6 +278,11 @@ func (b *Backend) generationByState(ctx context.Context, state vector.Generation
 // Returns an error wrapping vector.ErrUnknownGeneration if gen does not
 // exist, and an error wrapping vector.ErrDimensionMismatch if any chunk's
 // vector length does not match the generation's recorded dimension.
+//
+// Upsert does NOT touch pending_embeddings — that is the queue's
+// responsibility and must go through Queue.Complete, which matches the
+// claim_token so a late-finishing stale worker cannot erase the queue
+// row belonging to the newer worker that has already reclaimed it.
 func (b *Backend) Upsert(ctx context.Context, gen vector.GenerationID, chunks []vector.Chunk) error {
 	if len(chunks) == 0 {
 		return nil
@@ -331,13 +336,6 @@ func (b *Backend) Upsert(ctx context.Context, gen vector.GenerationID, chunks []
 	}
 	defer func() { _ = vecStmt.Close() }()
 
-	pendingStmt, err := tx.PrepareContext(ctx,
-		`DELETE FROM pending_embeddings WHERE generation_id = ? AND message_id = ?`)
-	if err != nil {
-		return fmt.Errorf("prepare pending delete: %w", err)
-	}
-	defer func() { _ = pendingStmt.Close() }()
-
 	for _, c := range chunks {
 		truncFlag := 0
 		if c.Truncated {
@@ -353,9 +351,6 @@ func (b *Backend) Upsert(ctx context.Context, gen vector.GenerationID, chunks []
 		}
 		if _, err := vecStmt.ExecContext(ctx, int64(gen), c.MessageID, float32SliceBlob(c.Vector)); err != nil {
 			return fmt.Errorf("insert vector: %w", err)
-		}
-		if _, err := pendingStmt.ExecContext(ctx, int64(gen), c.MessageID); err != nil {
-			return fmt.Errorf("clear pending: %w", err)
 		}
 	}
 

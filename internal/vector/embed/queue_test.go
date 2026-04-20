@@ -147,3 +147,75 @@ func TestQueue_Complete_EmptyIDsIsNoop(t *testing.T) {
 		t.Errorf("Complete(nil): %v", err)
 	}
 }
+
+// TestQueue_Complete_AfterReclaim_PreservesNewClaim simulates the
+// stale-worker-completing-late race: worker A claims rows, stalls
+// long enough for ReclaimStale to clear the claim, worker B
+// re-claims the same rows, then worker A finally finishes and calls
+// Complete with its old token. The token check must prevent A from
+// deleting B's row.
+func TestQueue_Complete_AfterReclaim_PreservesNewClaim(t *testing.T) {
+	ctx := context.Background()
+	db := openVectorsDBWithPending(t, 2)
+	q := NewQueue(db)
+
+	idsA, tokenA, err := q.Claim(ctx, 1, 2)
+	if err != nil {
+		t.Fatalf("Claim A: %v", err)
+	}
+	if len(idsA) != 2 {
+		t.Fatalf("Claim A ids=%v, want 2", idsA)
+	}
+
+	// Back-date A's claim past the threshold, then reclaim.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE pending_embeddings SET claimed_at = ? WHERE generation_id = 1`,
+		time.Now().Add(-20*time.Minute).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := q.ReclaimStale(ctx, 10*time.Minute); err != nil || n != 2 {
+		t.Fatalf("ReclaimStale: n=%d err=%v, want n=2 err=nil", n, err)
+	}
+
+	idsB, tokenB, err := q.Claim(ctx, 1, 2)
+	if err != nil {
+		t.Fatalf("Claim B: %v", err)
+	}
+	if len(idsB) != 2 || tokenB == tokenA {
+		t.Fatalf("Claim B ids=%v token=%q (A=%q)", idsB, tokenB, tokenA)
+	}
+
+	// Stale worker A finishes and calls Complete with its dead token.
+	// The token check must keep B's rows intact.
+	if err := q.Complete(ctx, 1, tokenA, idsA); err != nil {
+		t.Fatalf("Complete(stale tokenA): %v", err)
+	}
+	var remaining int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pending_embeddings`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 2 {
+		t.Fatalf("pending rows after stale Complete = %d, want 2 (stale token must not delete)", remaining)
+	}
+
+	// B's claim should still be intact (claim_token matches tokenB).
+	var claimed int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pending_embeddings WHERE claim_token = ?`, tokenB).Scan(&claimed); err != nil {
+		t.Fatal(err)
+	}
+	if claimed != 2 {
+		t.Errorf("rows still holding B's token = %d, want 2", claimed)
+	}
+
+	// B can now legitimately Complete.
+	if err := q.Complete(ctx, 1, tokenB, idsB); err != nil {
+		t.Fatalf("Complete(tokenB): %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pending_embeddings`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Errorf("pending rows after B's Complete = %d, want 0", remaining)
+	}
+}

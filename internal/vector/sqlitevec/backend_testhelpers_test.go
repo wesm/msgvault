@@ -202,5 +202,13 @@ func seedAndEmbed(t *testing.T, b *Backend, vecs map[int64][]float32) vector.Gen
 	if err := b.Upsert(ctx, gid, chunks); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
+	// Upsert intentionally does not clear pending_embeddings — that
+	// belongs to the queue's token-aware Complete. For helper
+	// scenarios that want the "fully embedded" end state, we clear
+	// pending here directly.
+	if _, err := b.db.ExecContext(ctx,
+		`DELETE FROM pending_embeddings WHERE generation_id = ?`, int64(gid)); err != nil {
+		t.Fatalf("clear pending: %v", err)
+	}
 	return gid
 }

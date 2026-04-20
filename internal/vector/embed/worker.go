@@ -119,11 +119,13 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 			w.deps.Log.Error("upsert failed", "gen", gen, "ids", len(ids), "error", err)
 			continue
 		}
-		// Backend.Upsert already removes pending rows inside its
-		// transaction; this belt-and-suspenders call is a no-op unless
-		// the contract drifts. Errors here are informational only.
+		// Complete acknowledges work via (gen, msg, claim_token) so a
+		// stale worker whose claim was already reclaimed cannot wipe
+		// the queue row belonging to the newer worker. A row count
+		// mismatch just means the stale-completion case hit us — the
+		// newer worker's claim will still drive a later success.
 		if cerr := w.q.Complete(ctx, gen, token, ids); cerr != nil {
-			w.deps.Log.Debug("complete (post-upsert) returned error", "error", cerr)
+			w.deps.Log.Error("complete failed", "error", cerr, "gen", gen, "ids", len(ids))
 		}
 		res.Succeeded += len(ids)
 	}

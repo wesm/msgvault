@@ -185,7 +185,13 @@ func TestBackend_CreateGeneration_SkipsDeletedMessages(t *testing.T) {
 	}
 }
 
-func TestBackend_Upsert_InsertsAndClearsPending(t *testing.T) {
+// TestBackend_Upsert_WritesEmbeddingAndVector verifies Upsert's
+// contract: it writes the embeddings row and the dimension-specific
+// vec0 row, and explicitly does NOT touch pending_embeddings. The
+// queue is the sole owner of that table so that Queue.Complete's
+// token check can prevent a stale worker from wiping a newer worker's
+// claim.
+func TestBackend_Upsert_WritesEmbeddingAndVector(t *testing.T) {
 	b, ctx := newBackendForTest(t)
 	gid, err := b.CreateGeneration(ctx, "m", 768)
 	if err != nil {
@@ -201,7 +207,6 @@ func TestBackend_Upsert_InsertsAndClearsPending(t *testing.T) {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	// embeddings row exists
 	var n int
 	if err := b.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM embeddings WHERE generation_id = ? AND message_id = 1`, gid).Scan(&n); err != nil {
@@ -211,7 +216,6 @@ func TestBackend_Upsert_InsertsAndClearsPending(t *testing.T) {
 		t.Errorf("embeddings count = %d, want 1", n)
 	}
 
-	// vectors_vec_d768 row exists
 	if err := b.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM vectors_vec_d768 WHERE generation_id = ? AND message_id = 1`, gid).Scan(&n); err != nil {
 		t.Fatalf("count vectors_vec_d768: %v", err)
@@ -220,13 +224,14 @@ func TestBackend_Upsert_InsertsAndClearsPending(t *testing.T) {
 		t.Errorf("vectors_vec_d768 count = %d, want 1", n)
 	}
 
-	// pending row gone
+	// Pending row is still present — the queue owns that table and
+	// only Queue.Complete may remove it.
 	if err := b.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM pending_embeddings WHERE generation_id = ? AND message_id = 1`, gid).Scan(&n); err != nil {
 		t.Fatalf("count pending: %v", err)
 	}
-	if n != 0 {
-		t.Errorf("pending count = %d, want 0 after upsert", n)
+	if n != 1 {
+		t.Errorf("pending count = %d, want 1 (Upsert must not touch pending_embeddings)", n)
 	}
 }
 
