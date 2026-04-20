@@ -36,9 +36,32 @@ type EmbeddingsConfig struct {
 }
 
 // PreprocessConfig controls message text preprocessing before embedding.
+//
+// Fields are pointers so the decoder can distinguish "unset" (nil,
+// defaults to true) from an explicit `false` in the TOML file. Call the
+// StripQuotesEnabled / StripSignaturesEnabled helpers to resolve the
+// effective value.
 type PreprocessConfig struct {
-	StripQuotes     bool `toml:"strip_quotes"`
-	StripSignatures bool `toml:"strip_signatures"`
+	StripQuotes     *bool `toml:"strip_quotes"`
+	StripSignatures *bool `toml:"strip_signatures"`
+}
+
+// StripQuotesEnabled returns the effective strip_quotes setting.
+// Defaults to true when the field is unset.
+func (p PreprocessConfig) StripQuotesEnabled() bool {
+	if p.StripQuotes == nil {
+		return true
+	}
+	return *p.StripQuotes
+}
+
+// StripSignaturesEnabled returns the effective strip_signatures setting.
+// Defaults to true when the field is unset.
+func (p PreprocessConfig) StripSignaturesEnabled() bool {
+	if p.StripSignatures == nil {
+		return true
+	}
+	return *p.StripSignatures
 }
 
 // SearchConfig controls hybrid-search ranking and result limits.
@@ -78,8 +101,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("vector.embeddings.endpoint: required")
 	}
 	u, err := url.Parse(c.Embeddings.Endpoint)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return fmt.Errorf("vector.embeddings.endpoint: must be an absolute URL with scheme and host (got %q)", c.Embeddings.Endpoint)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("vector.embeddings.endpoint: must be an http or https URL with a host (got %q)", c.Embeddings.Endpoint)
 	}
 	if c.Embeddings.Dimension <= 0 {
 		return fmt.Errorf("vector.embeddings.dimension: must be positive, got %d", c.Embeddings.Dimension)
@@ -120,11 +143,10 @@ func (c *Config) ApplyDefaults() {
 	if c.Search.MaxPageSizeHybrid == 0 {
 		c.Search.MaxPageSizeHybrid = 50
 	}
-	if !c.Preprocess.StripQuotes && !c.Preprocess.StripSignatures {
-		// default both on
-		c.Preprocess.StripQuotes = true
-		c.Preprocess.StripSignatures = true
-	}
+	// Preprocess booleans are *bool so unset (nil) means "default true"
+	// without overwriting an explicit false from the config file. The
+	// StripQuotesEnabled / StripSignaturesEnabled helpers resolve the
+	// effective value.
 }
 
 // APIKey resolves the API key from the env var named in APIKeyEnv.

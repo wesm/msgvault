@@ -61,8 +61,8 @@ func setupVectorFeatures(ctx context.Context, mainDB *sql.DB, mainPath string) (
 		MainDB:    mainDB,
 		Client:    client,
 		Preprocess: embed.PreprocessConfig{
-			StripQuotes:     cfg.Vector.Preprocess.StripQuotes,
-			StripSignatures: cfg.Vector.Preprocess.StripSignatures,
+			StripQuotes:     cfg.Vector.Preprocess.StripQuotesEnabled(),
+			StripSignatures: cfg.Vector.Preprocess.StripSignaturesEnabled(),
 		},
 		MaxInputChars: cfg.Vector.Embeddings.MaxInputChars,
 		BatchSize:     cfg.Vector.Embeddings.BatchSize,

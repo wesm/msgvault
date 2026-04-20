@@ -292,6 +292,7 @@ func Load(path, homeDir string) (*Config, error) {
 	cfg.Data.DataDir = expandPath(cfg.Data.DataDir)
 	cfg.Log.Dir = expandPath(cfg.Log.Dir)
 	cfg.OAuth.ClientSecrets = expandPath(cfg.OAuth.ClientSecrets)
+	cfg.Vector.DBPath = expandPath(cfg.Vector.DBPath)
 	for name, app := range cfg.OAuth.Apps {
 		app.ClientSecrets = expandPath(app.ClientSecrets)
 		cfg.OAuth.Apps[name] = app
@@ -303,11 +304,18 @@ func Load(path, homeDir string) (*Config, error) {
 		cfg.Data.DataDir = resolveRelative(cfg.Data.DataDir, cfg.HomeDir)
 		cfg.Log.Dir = resolveRelative(cfg.Log.Dir, cfg.HomeDir)
 		cfg.OAuth.ClientSecrets = resolveRelative(cfg.OAuth.ClientSecrets, cfg.HomeDir)
+		cfg.Vector.DBPath = resolveRelative(cfg.Vector.DBPath, cfg.HomeDir)
 		for name, app := range cfg.OAuth.Apps {
 			app.ClientSecrets = resolveRelative(app.ClientSecrets, cfg.HomeDir)
 			cfg.OAuth.Apps[name] = app
 		}
 	}
+
+	// Re-apply numeric defaults over any zero-valued vector fields that
+	// survived decode (e.g. `max_retries = 0` or an omitted timeout).
+	// Preprocess booleans are *bool so pointer-nil still means "default";
+	// an explicit false in the file stays false.
+	cfg.Vector.ApplyDefaults()
 
 	return cfg, nil
 }

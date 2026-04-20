@@ -8,6 +8,8 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+func boolPtr(v bool) *bool { return &v }
+
 func TestConfig_DefaultsAndParse(t *testing.T) {
 	input := `
 enabled = true
@@ -69,6 +71,10 @@ func TestConfig_Validate(t *testing.T) {
 		{"MissingEndpoint", func(c *Config) { c.Embeddings.Endpoint = "" }, "endpoint"},
 		{"InvalidEndpoint", func(c *Config) { c.Embeddings.Endpoint = "::not a url" }, "endpoint"},
 		{"MissingScheme", func(c *Config) { c.Embeddings.Endpoint = "mac-studio:8080/v1" }, "endpoint"},
+		{"UnsupportedScheme_FTP", func(c *Config) { c.Embeddings.Endpoint = "ftp://host/v1" }, "endpoint"},
+		{"UnsupportedScheme_File", func(c *Config) { c.Embeddings.Endpoint = "file:///tmp/endpoint" }, "endpoint"},
+		{"Hostless", func(c *Config) { c.Embeddings.Endpoint = "http:///v1" }, "endpoint"},
+		{"HTTPS_OK", func(c *Config) { c.Embeddings.Endpoint = "https://host:8080/v1" }, ""},
 		{"ZeroDim", func(c *Config) { c.Embeddings.Dimension = 0 }, "dimension"},
 		{"NegativeDim", func(c *Config) { c.Embeddings.Dimension = -1 }, "dimension"},
 		{"UnknownBackend", func(c *Config) { c.Backend = "mystery" }, "backend"},
@@ -115,5 +121,125 @@ func validConfig() Config {
 			SubjectBoost:      2.0,
 			MaxPageSizeHybrid: 50,
 		},
+	}
+}
+
+// TestPreprocessConfig_Defaults covers the pointer-bool semantics: nil
+// means "default true"; an explicit false in TOML must be preserved even
+// when the sibling field is left unset.
+func TestPreprocessConfig_Defaults(t *testing.T) {
+	tests := []struct {
+		name            string
+		toml            string
+		wantStripQuotes bool
+		wantStripSig    bool
+	}{
+		{
+			name:            "both_omitted",
+			toml:            ``,
+			wantStripQuotes: true,
+			wantStripSig:    true,
+		},
+		{
+			name: "both_explicit_true",
+			toml: `
+strip_quotes = true
+strip_signatures = true
+`,
+			wantStripQuotes: true,
+			wantStripSig:    true,
+		},
+		{
+			name: "both_explicit_false",
+			toml: `
+strip_quotes = false
+strip_signatures = false
+`,
+			wantStripQuotes: false,
+			wantStripSig:    false,
+		},
+		{
+			name: "quotes_false_signatures_omitted",
+			toml: `
+strip_quotes = false
+`,
+			wantStripQuotes: false,
+			wantStripSig:    true,
+		},
+		{
+			name: "signatures_false_quotes_omitted",
+			toml: `
+strip_signatures = false
+`,
+			wantStripQuotes: true,
+			wantStripSig:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var p PreprocessConfig
+			if _, err := toml.Decode(tt.toml, &p); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got := p.StripQuotesEnabled(); got != tt.wantStripQuotes {
+				t.Errorf("StripQuotesEnabled() = %v, want %v", got, tt.wantStripQuotes)
+			}
+			if got := p.StripSignaturesEnabled(); got != tt.wantStripSig {
+				t.Errorf("StripSignaturesEnabled() = %v, want %v", got, tt.wantStripSig)
+			}
+		})
+	}
+}
+
+// TestApplyDefaults_OverridesZeroValues verifies that zero-valued numeric
+// fields get normalized to the documented defaults, so an omitted (or
+// explicit 0) max_retries / timeout in TOML doesn't silently disable the
+// underlying behavior.
+func TestApplyDefaults_OverridesZeroValues(t *testing.T) {
+	c := Config{
+		Backend:    "", // defaults to sqlite-vec
+		Embeddings: EmbeddingsConfig{},
+		// Preprocess intentionally left with nil pointers to confirm
+		// ApplyDefaults doesn't clobber them.
+		Preprocess: PreprocessConfig{
+			StripQuotes: boolPtr(false), // explicit user intent
+		},
+	}
+	c.ApplyDefaults()
+
+	if c.Backend != "sqlite-vec" {
+		t.Errorf("Backend = %q, want sqlite-vec", c.Backend)
+	}
+	if c.Embeddings.BatchSize != 32 {
+		t.Errorf("BatchSize = %d, want 32", c.Embeddings.BatchSize)
+	}
+	if c.Embeddings.Timeout != 30*time.Second {
+		t.Errorf("Timeout = %v, want 30s", c.Embeddings.Timeout)
+	}
+	if c.Embeddings.MaxRetries != 3 {
+		t.Errorf("MaxRetries = %d, want 3", c.Embeddings.MaxRetries)
+	}
+	if c.Embeddings.MaxInputChars != 32768 {
+		t.Errorf("MaxInputChars = %d, want 32768", c.Embeddings.MaxInputChars)
+	}
+	if c.Search.RRFK != 60 {
+		t.Errorf("Search.RRFK = %d, want 60", c.Search.RRFK)
+	}
+	if c.Search.KPerSignal != 100 {
+		t.Errorf("Search.KPerSignal = %d, want 100", c.Search.KPerSignal)
+	}
+	if c.Search.SubjectBoost != 2.0 {
+		t.Errorf("Search.SubjectBoost = %v, want 2.0", c.Search.SubjectBoost)
+	}
+	if c.Search.MaxPageSizeHybrid != 50 {
+		t.Errorf("Search.MaxPageSizeHybrid = %d, want 50", c.Search.MaxPageSizeHybrid)
+	}
+	// Preprocess pointer must not be clobbered.
+	if c.Preprocess.StripQuotesEnabled() != false {
+		t.Errorf("StripQuotesEnabled() = %v, want false (user explicitly set)", c.Preprocess.StripQuotesEnabled())
+	}
+	if c.Preprocess.StripSignaturesEnabled() != true {
+		t.Errorf("StripSignaturesEnabled() = %v, want true (unset → default)", c.Preprocess.StripSignaturesEnabled())
 	}
 }
