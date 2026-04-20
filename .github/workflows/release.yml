@@ -157,19 +157,25 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Windows release binaries omit the sqlite_vec tag for the same
-      # reason as CI — see .github/workflows/ci.yml for context.
+      # sqlite-vec's CGo bindings need sqlite3.h at compile time; see
+      # .github/workflows/ci.yml for context.
+      - name: Install sqlite3 dev headers
+        shell: pwsh
+        run: |
+          C:\msys64\usr\bin\pacman.exe -S --noconfirm --needed mingw-w64-x86_64-sqlite3
+
       - name: Build
         env:
           GOOS: windows
           GOARCH: amd64
           CGO_ENABLED: '1'
+          CGO_CFLAGS: "-IC:/msys64/mingw64/include"
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
 
           mkdir -p dist
           LDFLAGS="-s -w -X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=v${VERSION} -X github.com/wesm/msgvault/cmd/msgvault/cmd.Commit=$(printf '%s' "$GITHUB_SHA" | cut -c1-8) -X github.com/wesm/msgvault/cmd/msgvault/cmd.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          go build -tags "fts5" -trimpath -ldflags="$LDFLAGS" -o dist/msgvault.exe ./cmd/msgvault
+          go build -tags "fts5 sqlite_vec" -trimpath -ldflags="$LDFLAGS" -o dist/msgvault.exe ./cmd/msgvault
 
           # Smoke test
           echo "--- Smoke test ---"

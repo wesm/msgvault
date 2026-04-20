@@ -3,10 +3,10 @@
 #
 # Builds msgvault.exe in the repo root with debug info and FTS5 +
 # sqlite-vec support. Requires Go, a C compiler (GCC via MSYS2/MinGW
-# or TDM-GCC), and sqlite3 development headers (e.g.
-# `pacman -S mingw-w64-x86_64-sqlite3` under MSYS2). The official
-# release binary for Windows is built without sqlite_vec, so this
-# script is primarily for users opting into vector search on Windows.
+# or TDM-GCC), and sqlite3 development headers. Install them under
+# MSYS2 with `pacman -S mingw-w64-x86_64-sqlite3` and ensure
+# CGO_CFLAGS points to the include directory (this script sets it
+# automatically for the default MSYS2 path).
 
 $ErrorActionPreference = 'Stop'
 
@@ -23,6 +23,9 @@ $ldflags = @(
 ) -join ' '
 
 $env:CGO_ENABLED = 1
+if (-not $env:CGO_CFLAGS -and (Test-Path "C:\msys64\mingw64\include\sqlite3.h")) {
+    $env:CGO_CFLAGS = "-IC:/msys64/mingw64/include"
+}
 
 Write-Host "Building msgvault $version ($commit)..."
 & go build -tags "fts5 sqlite_vec" -ldflags "$ldflags" -o msgvault.exe ./cmd/msgvault

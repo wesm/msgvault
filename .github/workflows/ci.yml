@@ -39,20 +39,27 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Windows builds omit the sqlite_vec tag: the sqlite-vec CGo
-      # bindings #include <sqlite3.h>, which GitHub's windows-latest
-      # runner does not ship. Vector search remains available on Linux
-      # and macOS; Windows users can still build with sqlite_vec
-      # themselves by providing sqlite3 dev headers (e.g. via MSYS2).
+      # sqlite-vec's CGo bindings #include <sqlite3.h>, which isn't on
+      # the default windows-latest include path. Install it from MSYS2
+      # (already present on the runner) and point CGO_CFLAGS at it.
+      - name: Install sqlite3 dev headers
+        shell: pwsh
+        run: |
+          C:\msys64\usr\bin\pacman.exe -S --noconfirm --needed mingw-w64-x86_64-sqlite3
+
       - name: Build
+        shell: pwsh
         env:
           CGO_ENABLED: "1"
-        run: go build -tags "fts5" -o msgvault.exe ./cmd/msgvault
+          CGO_CFLAGS: "-IC:/msys64/mingw64/include"
+        run: go build -tags "fts5 sqlite_vec" -o msgvault.exe ./cmd/msgvault
 
       - name: Test
+        shell: pwsh
         env:
           CGO_ENABLED: "1"
-        run: go test -tags "fts5" ./...
+          CGO_CFLAGS: "-IC:/msys64/mingw64/include"
+        run: go test -tags "fts5 sqlite_vec" ./...
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
