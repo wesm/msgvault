@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 
@@ -296,6 +297,77 @@ CREATE TABLE message_recipients (
 }
 
 func formatInt(n int64) string { return fmt.Sprintf("%d", n) }
+
+// TestFusedSearch_PinnedPoolKeepsAttach regression-guards the pool
+// pinning in openFusedConn. SQLite's ATTACH DATABASE is per-connection,
+// so if the pool is allowed to open a second connection, any query
+// that references vec.* tables on the unattached connection fails
+// with "no such table". Two checks here:
+//
+//  1. The pool reports MaxOpenConnections == 1, which is the
+//     compile-time-adjacent guarantee that the pin is still in
+//     place.
+//  2. A second query sent via the same *sql.DB still sees the
+//     attached vec table — catching any future refactor that
+//     unsets the pin in a way the stats check might miss.
+func TestFusedSearch_PinnedPoolKeepsAttach(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+	gid := seedAndEmbed(t, b, map[int64][]float32{1: unitVec(768, 0)})
+	if err := b.ActivateGeneration(ctx, gid); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+
+	conn, err := b.openFusedConn(ctx)
+	if err != nil {
+		t.Fatalf("openFusedConn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if got := conn.Stats().MaxOpenConnections; got != 1 {
+		t.Errorf("MaxOpenConnections=%d, want 1 (ATTACH is per-connection; pool must be pinned)", got)
+	}
+
+	// Hit vec.* repeatedly. If the pool ever hands out a fresh
+	// connection mid-test, the ATTACH is gone and the query errors.
+	for i := 0; i < 3; i++ {
+		var n int
+		if err := conn.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM vec.embeddings WHERE generation_id = ?`,
+			int64(gid)).Scan(&n); err != nil {
+			t.Fatalf("query #%d: %v (attach likely dropped)", i+1, err)
+		}
+		if n != 1 {
+			t.Errorf("query #%d: count=%d, want 1", i+1, n)
+		}
+	}
+
+	// Force a simulated "busy first connection" scenario: open a
+	// transaction on the pool and then issue a second query. Under
+	// the pin, the second query waits for the tx's connection. Under
+	// an unpinned pool, the second query would get a fresh
+	// connection without ATTACH and fail.
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	// Send the second query with a short deadline so if the pool
+	// were unpinned AND vec.* actually missing, we wouldn't hang.
+	// With the pin it will timeout waiting for the tx's conn — which
+	// is exactly the intended serialisation, not a failure.
+	queryCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+	defer cancel()
+	_, secondErr := conn.QueryContext(queryCtx,
+		`SELECT COUNT(*) FROM vec.embeddings`)
+	// Finish the tx so the connection is released.
+	_ = tx.Rollback()
+
+	// Under the pin, we expect a context deadline error (the query
+	// was queued waiting for the single connection). We do NOT
+	// expect a "no such table: vec.embeddings" error.
+	if secondErr != nil && strings.Contains(secondErr.Error(), "no such table") {
+		t.Errorf("second query saw 'no such table' — pool is not pinned: %v", secondErr)
+	}
+}
 
 func TestFusedSearch_DimensionMismatch(t *testing.T) {
 	b, ctx, _ := newFusedBackendForTest(t)
