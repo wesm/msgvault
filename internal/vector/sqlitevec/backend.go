@@ -79,7 +79,10 @@ func (b *Backend) Path() string { return b.path }
 // spec) and seeds pending_embeddings with every currently-embeddable
 // message. If a building generation already exists with the same
 // fingerprint, returns its id so a crashed or interrupted rebuild can
-// resume. A mismatched fingerprint returns an error wrapping
+// resume; the seed pass is skipped on resume so messages that the
+// previous attempt already embedded (and that Queue.Complete therefore
+// already removed from pending_embeddings) are NOT re-enqueued.
+// A mismatched fingerprint returns an error wrapping
 // vector.ErrBuildingInProgress so the caller can surface an actionable
 // message rather than a raw unique-index violation.
 //
@@ -95,40 +98,46 @@ func (b *Backend) CreateGeneration(ctx context.Context, model string, dim int) (
 	fp := fmt.Sprintf("%s:%d", model, dim)
 	now := time.Now().Unix()
 
-	gen, err := b.claimOrInsertBuilding(ctx, model, dim, fp, now)
+	gen, isNew, err := b.claimOrInsertBuilding(ctx, model, dim, fp, now)
 	if err != nil {
 		return 0, err
 	}
 
+	// Resume: skip seeding entirely. The pending_embeddings queue
+	// already reflects exactly what's still owed for this generation
+	// (originally-seeded rows minus what Queue.Complete removed, plus
+	// anything the Enqueuer added via dual-enqueue since the previous
+	// attempt). Re-seeding here would re-enqueue every successfully
+	// embedded message and force them to be embedded again on retry.
+	if !isNew {
+		return gen, nil
+	}
 	if err := b.seedPending(ctx, gen, now); err != nil {
 		return 0, err
 	}
 	return gen, nil
 }
 
-// claimOrInsertBuilding returns the id of the building generation.
-// Reuses an existing row when its fingerprint matches, otherwise
-// inserts a new row in its own short-lived transaction so the rest of
-// the world can see it immediately.
-func (b *Backend) claimOrInsertBuilding(ctx context.Context, model string, dim int, fp string, now int64) (vector.GenerationID, error) {
-	var (
-		id         int64
-		existingFP string
-	)
-	err := b.db.QueryRowContext(ctx,
-		`SELECT id, fingerprint FROM index_generations WHERE state = 'building'`).
-		Scan(&id, &existingFP)
-	switch {
-	case err == nil:
+// claimOrInsertBuilding returns (id, isNew, err). isNew=true means
+// this call inserted a fresh building row; isNew=false means we
+// reused an existing building row whose fingerprint matched. Reusing
+// an existing row keeps interrupted rebuilds idempotent.
+//
+// On a UNIQUE-constraint failure during INSERT (a concurrent caller
+// raced us between SELECT and INSERT), we re-read the now-visible
+// building row and return it instead of bubbling the raw SQLite
+// error: this closes the read-then-insert gap that would otherwise
+// surface as "UNIQUE constraint failed" instead of a clean resume or
+// a wrapped ErrBuildingInProgress.
+func (b *Backend) claimOrInsertBuilding(ctx context.Context, model string, dim int, fp string, now int64) (vector.GenerationID, bool, error) {
+	if id, existingFP, ok, err := b.lookupBuilding(ctx); err != nil {
+		return 0, false, err
+	} else if ok {
 		if existingFP != fp {
-			return 0, fmt.Errorf("%w: existing building fingerprint=%q, requested=%q — activate or retire it before starting a new rebuild",
+			return 0, false, fmt.Errorf("%w: existing building fingerprint=%q, requested=%q — activate or retire it before starting a new rebuild",
 				vector.ErrBuildingInProgress, existingFP, fp)
 		}
-		return vector.GenerationID(id), nil
-	case errors.Is(err, sql.ErrNoRows):
-		// fall through to insert
-	default:
-		return 0, fmt.Errorf("lookup building generation: %w", err)
+		return id, false, nil
 	}
 
 	res, err := b.db.ExecContext(ctx,
@@ -137,13 +146,68 @@ func (b *Backend) claimOrInsertBuilding(ctx context.Context, model string, dim i
 		 VALUES (?, ?, ?, ?, 'building')`,
 		model, dim, fp, now)
 	if err != nil {
-		return 0, fmt.Errorf("insert generation: %w", err)
+		// A concurrent CreateGeneration may have inserted between our
+		// SELECT and INSERT. The unique partial index on (state) where
+		// state='building' rejects the second writer. Re-read and
+		// return the existing row (clean resume) or wrap
+		// ErrBuildingInProgress (mismatched fingerprint).
+		if isUniqueConstraintErr(err) {
+			id, existingFP, ok, lookupErr := b.lookupBuilding(ctx)
+			if lookupErr != nil {
+				return 0, false, fmt.Errorf("lookup after insert race: %w", lookupErr)
+			}
+			if !ok {
+				// The concurrent writer already activated/retired
+				// before we could re-read. Surface the original
+				// constraint failure rather than swallow it.
+				return 0, false, fmt.Errorf("insert generation: %w", err)
+			}
+			if existingFP != fp {
+				return 0, false, fmt.Errorf("%w: existing building fingerprint=%q, requested=%q — activate or retire it before starting a new rebuild",
+					vector.ErrBuildingInProgress, existingFP, fp)
+			}
+			return id, false, nil
+		}
+		return 0, false, fmt.Errorf("insert generation: %w", err)
 	}
 	newID, err := res.LastInsertId()
 	if err != nil {
-		return 0, fmt.Errorf("new generation id: %w", err)
+		return 0, false, fmt.Errorf("new generation id: %w", err)
 	}
-	return vector.GenerationID(newID), nil
+	return vector.GenerationID(newID), true, nil
+}
+
+// lookupBuilding returns the current building generation's id and
+// fingerprint. ok=false (with err=nil) means there is no building row.
+func (b *Backend) lookupBuilding(ctx context.Context) (vector.GenerationID, string, bool, error) {
+	var (
+		id int64
+		fp string
+	)
+	err := b.db.QueryRowContext(ctx,
+		`SELECT id, fingerprint FROM index_generations WHERE state = 'building'`).
+		Scan(&id, &fp)
+	switch {
+	case err == nil:
+		return vector.GenerationID(id), fp, true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return 0, "", false, nil
+	default:
+		return 0, "", false, fmt.Errorf("lookup building generation: %w", err)
+	}
+}
+
+// isUniqueConstraintErr reports whether err originates from SQLite's
+// UNIQUE constraint enforcement. We rely on the error's text rather
+// than the typed sqlite3.Error so this file doesn't need to import
+// the driver — the existing Backend code is otherwise driver-agnostic.
+func isUniqueConstraintErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed") ||
+		strings.Contains(msg, "constraint failed: UNIQUE")
 }
 
 // seedPending inserts one pending_embeddings row per non-deleted
@@ -310,6 +374,20 @@ func (b *Backend) Upsert(ctx context.Context, gen vector.GenerationID, chunks []
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Count how many of these message_ids already have a row in
+	// embeddings for this generation, so we can apply an O(1) delta to
+	// index_generations.message_count instead of rescanning the whole
+	// table after every Upsert. Touches len(chunks) rows via the PK
+	// index, not the entire generation.
+	chunkIDs := make([]int64, len(chunks))
+	for i, c := range chunks {
+		chunkIDs[i] = c.MessageID
+	}
+	preexisting, err := countExistingEmbeddings(ctx, tx, gen, chunkIDs)
+	if err != nil {
+		return err
+	}
+
 	now := time.Now().Unix()
 	vecTable := VectorTableName(dim)
 
@@ -354,26 +432,56 @@ func (b *Backend) Upsert(ctx context.Context, gen vector.GenerationID, chunks []
 		}
 	}
 
-	if err := recomputeMessageCount(ctx, tx, gen); err != nil {
+	delta := len(chunks) - preexisting
+	if err := applyMessageCountDelta(ctx, tx, gen, delta); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// recomputeMessageCount refreshes index_generations.message_count from
-// the current embeddings table contents so upserts and deletes keep the
-// generation metadata in sync. Runs inside the caller's transaction.
-func recomputeMessageCount(ctx context.Context, tx *sql.Tx, gen vector.GenerationID) error {
+// applyMessageCountDelta nudges index_generations.message_count by
+// delta inside the caller's transaction. Used by Upsert and Delete to
+// keep the generation metadata in sync without rescanning the whole
+// embeddings table on every batch (a full COUNT(*) per Upsert turned
+// large rebuilds quadratic). delta=0 is a no-op.
+func applyMessageCountDelta(ctx context.Context, tx *sql.Tx, gen vector.GenerationID, delta int) error {
+	if delta == 0 {
+		return nil
+	}
 	_, err := tx.ExecContext(ctx,
-		`UPDATE index_generations
-		    SET message_count = (
-		        SELECT COUNT(*) FROM embeddings WHERE generation_id = ?
-		    )
-		  WHERE id = ?`, int64(gen), int64(gen))
+		`UPDATE index_generations SET message_count = message_count + ? WHERE id = ?`,
+		delta, int64(gen))
 	if err != nil {
 		return fmt.Errorf("update message_count: %w", err)
 	}
 	return nil
+}
+
+// countExistingEmbeddings returns how many of ids already have a row
+// in embeddings for the given generation. The query touches len(ids)
+// rows via the (generation_id, message_id) PK index, not the whole
+// generation, so callers can compute an O(1) message_count delta. ids
+// is JSON-encoded and consumed via json_each so the bind-parameter
+// count stays at 2 regardless of batch size (matches the pattern used
+// by resolveFilter for the same reason).
+func countExistingEmbeddings(ctx context.Context, tx *sql.Tx, gen vector.GenerationID, ids []int64) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	blob, err := json.Marshal(ids)
+	if err != nil {
+		return 0, fmt.Errorf("encode ids: %w", err)
+	}
+	var n int
+	err = tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM embeddings
+		  WHERE generation_id = ?
+		    AND message_id IN (SELECT value FROM json_each(?))`,
+		int64(gen), string(blob)).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count existing embeddings: %w", err)
+	}
+	return n, nil
 }
 
 // float32SliceBlob converts a float32 slice to the little-endian byte
@@ -674,6 +782,16 @@ func (b *Backend) Delete(ctx context.Context, gen vector.GenerationID, messageID
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Count rows that will actually be removed before issuing the
+	// per-id deletes so we can apply a precise message_count delta.
+	// Counting up-front (rather than summing RowsAffected from each
+	// per-id stmt) keeps the helper symmetric with the Upsert path
+	// and avoids a second pass.
+	willDelete, err := countExistingEmbeddings(ctx, tx, gen, messageIDs)
+	if err != nil {
+		return err
+	}
+
 	embedStmt, err := tx.PrepareContext(ctx,
 		`DELETE FROM embeddings WHERE generation_id = ? AND message_id = ?`)
 	if err != nil {
@@ -697,7 +815,7 @@ func (b *Backend) Delete(ctx context.Context, gen vector.GenerationID, messageID
 			return fmt.Errorf("delete vector: %w", err)
 		}
 	}
-	if err := recomputeMessageCount(ctx, tx, gen); err != nil {
+	if err := applyMessageCountDelta(ctx, tx, gen, -willDelete); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

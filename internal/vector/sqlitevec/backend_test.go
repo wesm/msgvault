@@ -126,46 +126,184 @@ func TestBackend_CreateGeneration_MismatchedFingerprint(t *testing.T) {
 	}
 }
 
+// TestBackend_CreateGeneration_ResumeDoesNotReseedCompleted is the
+// regression test for the "interrupted full rebuild re-embeds
+// everything" bug: after the worker has already embedded some messages
+// (Queue.Complete removed those rows from pending_embeddings), a
+// retry'd CreateGeneration must NOT push them back onto the queue. We
+// simulate this by manually removing a pending row, then calling
+// CreateGeneration again with the same fingerprint and asserting the
+// removed row is not re-enqueued.
+func TestBackend_CreateGeneration_ResumeDoesNotReseedCompleted(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+
+	gen, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+
+	// Simulate Queue.Complete: remove the pending row for the only
+	// pre-seeded message (id=1) as if it were already embedded.
+	if _, err := b.db.ExecContext(ctx,
+		`DELETE FROM pending_embeddings WHERE generation_id = ? AND message_id = ?`,
+		int64(gen), int64(1)); err != nil {
+		t.Fatalf("delete pending: %v", err)
+	}
+
+	// Resume: CreateGeneration must reuse the existing building gen
+	// and NOT re-enqueue the completed message.
+	resumed, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("resume Create: %v", err)
+	}
+	if resumed != gen {
+		t.Errorf("resumed gen = %d, want reused %d", resumed, gen)
+	}
+	var pending int
+	if err := b.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pending_embeddings WHERE generation_id = ? AND message_id = 1`,
+		int64(gen)).Scan(&pending); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	if pending != 0 {
+		t.Errorf("pending count for completed msg 1 = %d, want 0 (resume re-seeded a completed message)", pending)
+	}
+}
+
+// TestBackend_ClaimOrInsertBuilding_RaceRecoversFromUniqueConstraint
+// exercises the post-INSERT unique-constraint recovery path: when a
+// concurrent writer slips a building row in between our SELECT and
+// INSERT, the partial unique index on (state) WHERE state='building'
+// rejects the second writer. We must re-read the existing row and
+// return its id (clean resume) rather than surfacing the raw SQLite
+// error. We can't easily race two real callers in a single test, so
+// we drive the helper directly: pre-insert a building row, then call
+// claimOrInsertBuilding with the same fingerprint via a mocked
+// "select returns no row" by using a fresh connection mid-flight.
+//
+// The simpler, deterministic guard: invoke claimOrInsertBuilding
+// twice with matching fingerprints and confirm the second call
+// returns isNew=false even after the first has committed. The
+// dedicated race path is covered indirectly because both code paths
+// converge on lookupBuilding.
+func TestBackend_ClaimOrInsertBuilding_RecoversFromExistingRow(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+
+	gen1, isNew1, err := b.claimOrInsertBuilding(ctx, "m", 768, "m:768", time.Now().Unix())
+	if err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	if !isNew1 {
+		t.Errorf("first claim: isNew=false, want true")
+	}
+
+	// Second claim must reuse the row (isNew=false), and the path
+	// would have hit the unique constraint had we tried INSERT first
+	// without the SELECT. The recovery branch is what guarantees we
+	// don't surface a raw SQLite error if some other writer wins.
+	gen2, isNew2, err := b.claimOrInsertBuilding(ctx, "m", 768, "m:768", time.Now().Unix())
+	if err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+	if isNew2 {
+		t.Errorf("second claim: isNew=true, want false (existing row should be reused)")
+	}
+	if gen1 != gen2 {
+		t.Errorf("second claim: gen=%d, want reused %d", gen2, gen1)
+	}
+}
+
 // TestBackend_CreateGeneration_SeedCommitsVisibleFirst confirms the
 // new building row is committed *before* the seed pass runs, so a
 // concurrent Enqueuer can see the generation and dual-enqueue
 // newly-synced messages. Without this ordering there is a window
 // during which sync-side enqueues would be scoped only to the active
 // generation and the new build would be missing messages.
+//
+// The previous version of this test polled on a short loop and
+// passed even if visibility happened only AFTER CreateGeneration
+// returned, because <-done would block until the goroutine finished
+// and the polling loop would then see the committed row regardless.
+// We now seed many messages to make seedPending take measurable time
+// and require visibility to be observed strictly while the goroutine
+// is still in flight (done has not fired yet).
 func TestBackend_CreateGeneration_SeedCommitsVisibleFirst(t *testing.T) {
-	b, ctx := newBackendForTest(t)
+	ctx := context.Background()
 
-	// Start a CreateGeneration in the background. Before it returns,
-	// any observer should be able to see the building row — this is
-	// the pre-condition the Enqueuer relies on for dual-enqueue.
+	// Build a backend whose main DB has many messages so seedPending
+	// has enough work that we can race a visibility poll against it.
+	// 5_000 rows is comfortably more than the one row in the standard
+	// helper and drives seedPending into the millisecond range even on
+	// a fast laptop — far longer than the polling interval below.
+	main := openMainDBWithOneMessage(t)
+	insert, err := main.PrepareContext(ctx, `INSERT INTO messages (id) VALUES (?)`)
+	if err != nil {
+		t.Fatalf("prepare insert: %v", err)
+	}
+	defer func() { _ = insert.Close() }()
+	for i := int64(2); i <= 5000; i++ {
+		if _, err := insert.ExecContext(ctx, i); err != nil {
+			t.Fatalf("insert msg %d: %v", i, err)
+		}
+	}
+
+	b, err := Open(ctx, Options{
+		Path:      filepath.Join(t.TempDir(), "vectors.db"),
+		Dimension: 768,
+		MainDB:    main,
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+
 	done := make(chan error, 1)
 	go func() {
 		_, err := b.CreateGeneration(ctx, "m", 768)
 		done <- err
 	}()
 
-	// Poll for visibility of the building row. A generous deadline
-	// guards against CI slowness; the assertion we're making is that
-	// the row becomes visible some time before CreateGeneration
-	// returns (i.e. it was committed before the seed pass).
-	deadline := time.Now().Add(2 * time.Second)
-	var visible bool
+	// Poll for visibility, but strictly while the goroutine is still
+	// in flight: every iteration first checks `done` via select-default,
+	// and a poll that fires after `done` is closed counts as a failure
+	// because we'd then be observing a row that was committed at any
+	// point — including after return. With 5000 messages to seed, we
+	// have hundreds of polling windows before CreateGeneration returns.
+	deadline := time.Now().Add(5 * time.Second)
+	var (
+		visibleInFlight bool
+		doneFiredFirst  bool
+	)
+poll:
 	for time.Now().Before(deadline) {
-		var id int64
-		err := b.db.QueryRowContext(ctx,
-			`SELECT id FROM index_generations WHERE state = 'building'`).Scan(&id)
-		if err == nil && id > 0 {
-			visible = true
-			break
+		select {
+		case err := <-done:
+			// Push the result back so the post-loop assertion can
+			// also read it. If we got here without observing the row
+			// yet, that is a failure.
+			done <- err
+			doneFiredFirst = true
+			break poll
+		default:
 		}
-		time.Sleep(2 * time.Millisecond)
+		var id int64
+		qErr := b.db.QueryRowContext(ctx,
+			`SELECT id FROM index_generations WHERE state = 'building'`).Scan(&id)
+		if qErr == nil && id > 0 {
+			visibleInFlight = true
+			break poll
+		}
+		time.Sleep(1 * time.Millisecond)
 	}
 
 	if err := <-done; err != nil {
 		t.Fatalf("CreateGeneration: %v", err)
 	}
-	if !visible {
-		t.Error("building generation was never visible while CreateGeneration was in flight")
+	if doneFiredFirst {
+		t.Fatal("CreateGeneration returned before the building row became visible — commit was deferred to after seed")
+	}
+	if !visibleInFlight {
+		t.Fatal("building generation was never visible while CreateGeneration was in flight")
 	}
 }
 

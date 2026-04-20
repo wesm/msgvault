@@ -65,11 +65,29 @@ func (p PreprocessConfig) StripSignaturesEnabled() bool {
 }
 
 // SearchConfig controls hybrid-search ranking and result limits.
+//
+// MaxPageSizeHybrid is a *int so an omitted field (nil) can be told
+// apart from an explicit 0 in the TOML file. ApplyDefaults fills in
+// 50 only when nil; explicit `max_page_size_hybrid = 0` is preserved
+// and disables the per-request clamp entirely. Use the
+// MaxPageSizeHybridClamp helper to read the effective value at the
+// API/MCP boundary.
 type SearchConfig struct {
 	RRFK              int     `toml:"rrf_k"`
 	KPerSignal        int     `toml:"k_per_signal"`
 	SubjectBoost      float64 `toml:"subject_boost"`
-	MaxPageSizeHybrid int     `toml:"max_page_size_hybrid"`
+	MaxPageSizeHybrid *int    `toml:"max_page_size_hybrid"`
+}
+
+// MaxPageSizeHybridClamp returns the effective per-request limit
+// clamp: zero means "no clamp", a positive value means "clamp to N".
+// Helper exists because callers want a flat int and need to handle
+// the nil-pointer "unset" case identically to an explicit 0.
+func (s SearchConfig) MaxPageSizeHybridClamp() int {
+	if s.MaxPageSizeHybrid == nil {
+		return 0
+	}
+	return *s.MaxPageSizeHybrid
 }
 
 // EmbedConfig groups embed-side concerns that aren't part of the
@@ -143,8 +161,9 @@ func (c *Config) ApplyDefaults() {
 	if c.Search.SubjectBoost == 0 {
 		c.Search.SubjectBoost = 2.0
 	}
-	if c.Search.MaxPageSizeHybrid == 0 {
-		c.Search.MaxPageSizeHybrid = 50
+	if c.Search.MaxPageSizeHybrid == nil {
+		v := 50
+		c.Search.MaxPageSizeHybrid = &v
 	}
 	// Preprocess booleans are *bool so unset (nil) means "default true"
 	// without overwriting an explicit false from the config file. The

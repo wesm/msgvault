@@ -103,7 +103,13 @@ See the [CLI Reference](https://msgvault.io/cli-reference/) for full details.
 
 ## Vector Search
 
-msgvault can search your archive semantically using vector embeddings in addition to the default FTS5 keyword search. Point it at a self-hosted OpenAI-compatible embedding endpoint (Ollama, llama.cpp, LM Studio) and the `search` command, the HTTP `/api/v1/search` endpoint, and the MCP `search_messages` tool accept `--mode vector` (pure semantic) and `--mode hybrid` (BM25 + vector fused with Reciprocal Rank Fusion). A separate MCP tool, `find_similar_messages`, returns nearest neighbors for a seed message. See [docs/vector-search.md](docs/vector-search.md) for setup, backfill, and troubleshooting.
+msgvault can search your archive semantically using vector embeddings in addition to the default FTS5 keyword search. Point it at a self-hosted OpenAI-compatible embedding endpoint (Ollama, llama.cpp, LM Studio) and three surfaces accept either pure semantic search or BM25+vector fused via Reciprocal Rank Fusion:
+
+- **CLI:** `msgvault search "..." --mode vector` or `--mode hybrid`
+- **HTTP:** `GET /api/v1/search?q=...&mode=vector` or `mode=hybrid`
+- **MCP:** the `search_messages` tool with a `mode` argument set to `vector` or `hybrid`
+
+A separate MCP tool, `find_similar_messages`, returns nearest neighbors for a seed message. See [docs/vector-search.md](docs/vector-search.md) for setup, backfill, and troubleshooting.
 
 ## Importing from MBOX or Apple Mail
 

@@ -75,6 +75,11 @@ func openTestDB(t *testing.T, path string) *sql.DB {
 // against *sql.DB only enables enforcement on whatever physical conn the
 // pool happened to hand back. The ConnectHook in RegisterExtension is
 // what makes enforcement pool-wide.
+//
+// We force the pool to allocate N distinct physical connections by
+// holding N *sql.Conn handles open simultaneously — sequential
+// db.Conn() calls or db.ExecContext() calls can all be served by the
+// same pooled conn, which would let a buggy hook hide undetected.
 func TestForeignKeys_PerConnection(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -86,44 +91,48 @@ func TestForeignKeys_PerConnection(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	// Force the pool to have multiple physical connections, then probe
-	// each for FK enforcement. If the hook fails on any of them, one
-	// will report foreign_keys = 0.
-	db.SetMaxOpenConns(4)
+	const conns = 4
+	db.SetMaxOpenConns(conns)
 
-	// Probe by inserting a pending_embeddings row with a non-existent
-	// generation_id on several connections. The FK to index_generations
-	// must fail every time.
-	const probes = 6
-	for i := 0; i < probes; i++ {
-		_, err := db.ExecContext(ctx,
+	// Acquire all N conns up front and keep them open. Each db.Conn()
+	// call must allocate a fresh physical connection because earlier
+	// ones haven't been released. This is what guarantees the hook is
+	// being tested against distinct conns rather than a single reused
+	// one.
+	held := make([]*sql.Conn, conns)
+	for i := 0; i < conns; i++ {
+		c, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("conn %d: %v", i, err)
+		}
+		held[i] = c
+	}
+	t.Cleanup(func() {
+		for _, c := range held {
+			_ = c.Close()
+		}
+	})
+
+	// Verify each held conn directly: PRAGMA foreign_keys must read
+	// back as 1, and an FK-violating insert must fail on every conn.
+	for i, c := range held {
+		var fk int
+		if err := c.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&fk); err != nil {
+			t.Fatalf("conn %d pragma read: %v", i, err)
+		}
+		if fk != 1 {
+			t.Errorf("conn %d: foreign_keys = %d, want 1 (ConnectHook missed this conn)", i, fk)
+		}
+		_, err := c.ExecContext(ctx,
 			`INSERT INTO pending_embeddings (generation_id, message_id, enqueued_at)
 			 VALUES (?, ?, ?)`, 9999999, int64(i), int64(i))
 		if err == nil {
-			t.Errorf("probe %d: insert succeeded; foreign_keys enforcement missing on this connection", i)
+			t.Errorf("conn %d: FK-violating insert succeeded; foreign_keys not enforced", i)
 			continue
 		}
 		msg := err.Error()
 		if !strings.Contains(msg, "FOREIGN KEY") && !strings.Contains(msg, "foreign key") {
-			t.Errorf("probe %d: error = %v; want FOREIGN KEY violation", i, err)
-		}
-	}
-
-	// Also verify directly: each probe opens a fresh conn and reads
-	// the PRAGMA back.
-	for i := 0; i < probes; i++ {
-		conn, err := db.Conn(ctx)
-		if err != nil {
-			t.Fatalf("conn %d: %v", i, err)
-		}
-		var fk int
-		if err := conn.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&fk); err != nil {
-			_ = conn.Close()
-			t.Fatalf("conn %d pragma read: %v", i, err)
-		}
-		_ = conn.Close()
-		if fk != 1 {
-			t.Errorf("conn %d: foreign_keys = %d, want 1", i, fk)
+			t.Errorf("conn %d: error = %v; want FOREIGN KEY violation", i, err)
 		}
 	}
 }

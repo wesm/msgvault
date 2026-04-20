@@ -266,7 +266,7 @@ func (h *handlers) searchMessagesHybrid(
 	}
 
 	limit := limitArg(args, "limit", 20)
-	if maxPage := h.vectorCfg.Search.MaxPageSizeHybrid; maxPage > 0 && limit > maxPage {
+	if maxPage := h.vectorCfg.Search.MaxPageSizeHybridClamp(); maxPage > 0 && limit > maxPage {
 		limit = maxPage
 	}
 
@@ -413,7 +413,7 @@ func (h *handlers) findSimilarMessages(ctx context.Context, req mcp.CallToolRequ
 	}
 
 	limit := limitArg(args, "limit", 20)
-	if maxPage := h.vectorCfg.Search.MaxPageSizeHybrid; maxPage > 0 && limit > maxPage {
+	if maxPage := h.vectorCfg.Search.MaxPageSizeHybridClamp(); maxPage > 0 && limit > maxPage {
 		limit = maxPage
 	}
 

@@ -69,10 +69,11 @@ type ServeOptions struct {
 	// mode=vector and mode=hybrid with a vector_not_enabled error.
 	HybridEngine *hybrid.Engine
 	// VectorCfg should already have ApplyDefaults() called on it.
-	// The handler reads Search.MaxPageSizeHybrid at request time; a
-	// positive value clamps the per-request limit, and zero disables
-	// clamping (callers that want the default cap must call
-	// ApplyDefaults first — it fills in 50).
+	// The handler reads Search.MaxPageSizeHybridClamp() at request
+	// time; a positive value clamps the per-request limit, and zero
+	// disables clamping (the user can set
+	// `max_page_size_hybrid = 0` in TOML to disable; ApplyDefaults
+	// only fills in 50 when the field was omitted).
 	VectorCfg vector.Config
 	// Backend is optional. When nil, find_similar_messages rejects all
 	// calls with a vector_not_enabled error.

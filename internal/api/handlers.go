@@ -334,7 +334,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if pageSize < 1 {
 			pageSize = 20
 		}
-		if maxPage := s.vectorCfg.Search.MaxPageSizeHybrid; maxPage > 0 && pageSize > maxPage {
+		if maxPage := s.vectorCfg.Search.MaxPageSizeHybridClamp(); maxPage > 0 && pageSize > maxPage {
 			pageSize = maxPage
 		}
 		s.handleHybridSearch(w, r, query, mode, explain, pageSize)

@@ -9,6 +9,7 @@ import (
 )
 
 func boolPtr(v bool) *bool { return &v }
+func intPtr(v int) *int    { return &v }
 
 func TestConfig_DefaultsAndParse(t *testing.T) {
 	input := `
@@ -120,7 +121,7 @@ func validConfig() Config {
 			RRFK:              60,
 			KPerSignal:        100,
 			SubjectBoost:      2.0,
-			MaxPageSizeHybrid: 50,
+			MaxPageSizeHybrid: intPtr(50),
 		},
 	}
 }
@@ -233,8 +234,8 @@ func TestApplyDefaults_OverridesZeroValues(t *testing.T) {
 	if c.Search.SubjectBoost != 2.0 {
 		t.Errorf("Search.SubjectBoost = %v, want 2.0", c.Search.SubjectBoost)
 	}
-	if c.Search.MaxPageSizeHybrid != 50 {
-		t.Errorf("Search.MaxPageSizeHybrid = %d, want 50", c.Search.MaxPageSizeHybrid)
+	if c.Search.MaxPageSizeHybrid == nil || *c.Search.MaxPageSizeHybrid != 50 {
+		t.Errorf("Search.MaxPageSizeHybrid = %v, want pointer to 50", c.Search.MaxPageSizeHybrid)
 	}
 	// Preprocess pointer must not be clobbered.
 	if c.Preprocess.StripQuotesEnabled() != false {
@@ -242,5 +243,50 @@ func TestApplyDefaults_OverridesZeroValues(t *testing.T) {
 	}
 	if c.Preprocess.StripSignaturesEnabled() != true {
 		t.Errorf("StripSignaturesEnabled() = %v, want true (unset → default)", c.Preprocess.StripSignaturesEnabled())
+	}
+}
+
+// TestApplyDefaults_PreservesExplicitMaxPageSizeHybridZero guards the
+// "no clamp" sentinel: a user who explicitly sets
+// `max_page_size_hybrid = 0` (an int* in TOML) wants to disable the
+// per-request clamp, and ApplyDefaults must not silently rewrite that
+// to 50. Repeated ApplyDefaults calls (Load() runs it twice) must not
+// clobber the explicit zero either.
+func TestApplyDefaults_PreservesExplicitMaxPageSizeHybridZero(t *testing.T) {
+	c := Config{
+		Search: SearchConfig{MaxPageSizeHybrid: intPtr(0)},
+	}
+	c.ApplyDefaults()
+	c.ApplyDefaults() // idempotent: second call must not clobber
+	if got := c.Search.MaxPageSizeHybridClamp(); got != 0 {
+		t.Errorf("MaxPageSizeHybridClamp() = %d, want 0 (explicit user disable)", got)
+	}
+}
+
+// TestSearchConfig_PointerSemantics_FromTOML rounds out the
+// pointer-semantic guarantee at the TOML decode layer: omitted →
+// nil → ApplyDefaults fills 50; explicit 0 → preserved; explicit
+// positive → preserved.
+func TestSearchConfig_PointerSemantics_FromTOML(t *testing.T) {
+	cases := []struct {
+		name      string
+		tomlInput string
+		want      int
+	}{
+		{"omitted_defaults_to_50", `[search]`, 50},
+		{"explicit_zero_disables_clamp", "[search]\nmax_page_size_hybrid = 0", 0},
+		{"explicit_positive_preserved", "[search]\nmax_page_size_hybrid = 200", 200},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var c Config
+			if _, err := toml.Decode(tc.tomlInput, &c); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			c.ApplyDefaults()
+			if got := c.Search.MaxPageSizeHybridClamp(); got != tc.want {
+				t.Errorf("MaxPageSizeHybridClamp() = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
