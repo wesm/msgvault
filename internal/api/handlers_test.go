@@ -86,7 +86,114 @@ func TestHandleStats(t *testing.T) {
 	if resp.TotalAccounts != 1 {
 		t.Errorf("total_accounts = %d, want 1", resp.TotalAccounts)
 	}
+	// No backend wired → vector_search field must be omitted.
+	if resp.VectorSearch != nil {
+		t.Errorf("VectorSearch=%+v, want nil when no backend wired", resp.VectorSearch)
+	}
 }
+
+// TestHandleStats_WithVectorBackend verifies the vector_search
+// sub-object is populated when the API server is constructed with a
+// Backend. Previously the field stayed nil in production because
+// runServe did not forward the backend through ServerOptions.
+func TestHandleStats_WithVectorBackend(t *testing.T) {
+	store := &mockStore{
+		stats: &StoreStats{MessageCount: 10, SourceCount: 1, DatabaseSize: 1024},
+	}
+	cfg := &config.Config{Server: config.ServerConfig{APIPort: 8080}}
+	sched := newMockScheduler()
+	activatedAt := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
+	backend := &stubVectorBackend{
+		active: vector.Generation{
+			ID:          7,
+			Model:       "test-model",
+			Dimension:   4,
+			Fingerprint: "test-model:4",
+			State:       vector.GenerationActive,
+			ActivatedAt: &activatedAt,
+		},
+		stats: vector.Stats{EmbeddingCount: 42, PendingCount: 3},
+	}
+
+	srv := NewServerWithOptions(ServerOptions{
+		Config:    cfg,
+		Store:     store,
+		Scheduler: sched,
+		Logger:    testLogger(),
+		Backend:   backend,
+	})
+
+	req := httptest.NewRequest("GET", "/api/v1/stats", nil)
+	w := httptest.NewRecorder()
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+
+	var resp StatsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.VectorSearch == nil {
+		t.Fatal("VectorSearch=nil, want populated")
+	}
+	if !resp.VectorSearch.Enabled {
+		t.Errorf("VectorSearch.Enabled=false, want true")
+	}
+	if resp.VectorSearch.ActiveGeneration == nil {
+		t.Fatal("ActiveGeneration=nil, want populated")
+	}
+	if resp.VectorSearch.ActiveGeneration.Fingerprint != "test-model:4" {
+		t.Errorf("Fingerprint=%q, want test-model:4", resp.VectorSearch.ActiveGeneration.Fingerprint)
+	}
+	if resp.VectorSearch.ActiveGeneration.MessageCount != 42 {
+		t.Errorf("MessageCount=%d, want 42", resp.VectorSearch.ActiveGeneration.MessageCount)
+	}
+	if resp.VectorSearch.PendingEmbeddingsTotal != 3 {
+		t.Errorf("PendingEmbeddingsTotal=%d, want 3", resp.VectorSearch.PendingEmbeddingsTotal)
+	}
+}
+
+// stubVectorBackend is a minimal vector.Backend that returns canned
+// data for the stats endpoint. All other methods panic — tests that
+// exercise them should use a real backend.
+type stubVectorBackend struct {
+	active vector.Generation
+	stats  vector.Stats
+}
+
+func (s *stubVectorBackend) ActiveGeneration(context.Context) (vector.Generation, error) {
+	return s.active, nil
+}
+func (s *stubVectorBackend) BuildingGeneration(context.Context) (*vector.Generation, error) {
+	return nil, nil
+}
+func (s *stubVectorBackend) Stats(context.Context, vector.GenerationID) (vector.Stats, error) {
+	return s.stats, nil
+}
+func (s *stubVectorBackend) CreateGeneration(context.Context, string, int) (vector.GenerationID, error) {
+	panic("not implemented")
+}
+func (s *stubVectorBackend) ActivateGeneration(context.Context, vector.GenerationID) error {
+	panic("not implemented")
+}
+func (s *stubVectorBackend) RetireGeneration(context.Context, vector.GenerationID) error {
+	panic("not implemented")
+}
+func (s *stubVectorBackend) Upsert(context.Context, vector.GenerationID, []vector.Chunk) error {
+	panic("not implemented")
+}
+func (s *stubVectorBackend) Search(context.Context, vector.GenerationID, []float32, int, vector.Filter) ([]vector.Hit, error) {
+	panic("not implemented")
+}
+func (s *stubVectorBackend) Delete(context.Context, vector.GenerationID, []int64) error {
+	panic("not implemented")
+}
+func (s *stubVectorBackend) LoadVector(context.Context, int64) ([]float32, error) {
+	panic("not implemented")
+}
+func (s *stubVectorBackend) Close() error { return nil }
 
 func TestHandleListMessages(t *testing.T) {
 	srv, _ := newTestServerWithMockStore(t)
