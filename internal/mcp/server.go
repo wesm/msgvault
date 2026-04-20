@@ -66,7 +66,10 @@ type ServeOptions struct {
 	// HybridEngine is optional. When nil, search_messages rejects
 	// mode=vector and mode=hybrid with a vector_not_enabled error.
 	HybridEngine *hybrid.Engine
-	VectorCfg    vector.Config
+	// VectorCfg should already have ApplyDefaults() called on it; the
+	// handler reads Search.MaxPageSizeHybrid at request time and zero
+	// means "no clamp".
+	VectorCfg vector.Config
 }
 
 // Serve creates an MCP server with email archive tools and serves over stdio.

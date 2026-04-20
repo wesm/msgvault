@@ -328,10 +328,10 @@ func (h *handlers) searchMessagesHybrid(
 	})
 }
 
-// messageDetailToSummary projects a full MessageDetail down to the
-// summary shape used in search result lists. The first From address
-// populates FromEmail/FromName; any further addresses are dropped since
-// email "From" is almost always singular.
+// messageDetailToSummary projects a MessageDetail onto the lighter
+// MessageSummary shape used by search list responses. The first From
+// address populates FromEmail/FromName; any further addresses are
+// dropped since email "From" is almost always singular.
 func messageDetailToSummary(d *query.MessageDetail) query.MessageSummary {
 	var fromEmail, fromName string
 	if len(d.From) > 0 {
