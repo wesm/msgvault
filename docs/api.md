@@ -93,9 +93,11 @@ Returns server health status. No authentication required.
 GET /api/v1/stats
 ```
 
-Returns archive statistics.
+Returns archive statistics. When vector search is configured on the
+server, the response also includes a `vector_search` sub-object
+describing the state of the index.
 
-**Response:**
+**Response (vector search disabled):**
 ```json
 {
   "total_messages": 125000,
@@ -106,6 +108,43 @@ Returns archive statistics.
   "database_size_bytes": 52428800
 }
 ```
+
+**Response (vector search enabled):**
+```json
+{
+  "total_messages": 125000,
+  "total_threads": 45000,
+  "total_accounts": 2,
+  "total_labels": 35,
+  "total_attachments": 8500,
+  "database_size_bytes": 52428800,
+  "vector_search": {
+    "enabled": true,
+    "active_generation": {
+      "id": 3,
+      "model": "nomic-embed-text-v1.5",
+      "dimension": 768,
+      "fingerprint": "nomic-embed-text-v1.5:768",
+      "state": "active",
+      "activated_at": "2026-04-18T15:12:33Z",
+      "message_count": 124980
+    },
+    "building_generation": {
+      "id": 4,
+      "model": "nomic-embed-text-v2",
+      "dimension": 768,
+      "started_at": "2026-04-19T09:02:10Z",
+      "progress": { "done": 8200, "total": 125000 }
+    },
+    "pending_embeddings_total": 116820
+  }
+}
+```
+
+`active_generation` is always present in the object (null until the
+first build completes). `building_generation` is omitted when no
+rebuild is in flight. `pending_embeddings_total` is the sum of rows
+still pending across the active and building generations.
 
 ---
 
@@ -190,16 +229,21 @@ Returns a single message with full body and attachments.
 GET /api/v1/search?q={query}
 ```
 
-Search messages using full-text search (FTS5 with LIKE fallback).
+Search messages. The default mode is full-text search (FTS5 with LIKE
+fallback). When the server is configured for vector search, `mode=vector`
+runs semantic-only search and `mode=hybrid` fuses BM25 and vector
+ranking via Reciprocal Rank Fusion.
 
 **Query Parameters:**
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `q` | string | Yes | Search query |
-| `page` | int | No | Page number (default: 1) |
-| `page_size` | int | No | Items per page (default: 20, max: 100) |
+| `mode` | enum | No | `fts` (default), `vector`, or `hybrid` |
+| `page` | int | No | Page number (default: 1; FTS only — vector/hybrid reject `page>1`) |
+| `page_size` | int | No | Items per page (default: 20; max 100 for FTS, max [vector].search.max_page_size_hybrid for vector/hybrid) |
+| `explain` | 0/1 | No | When `1` and `mode=vector|hybrid`, include per-signal scores |
 
-**Response:**
+**Response (mode=fts, default):**
 ```json
 {
   "query": "meeting tomorrow",
@@ -221,6 +265,65 @@ Search messages using full-text search (FTS5 with LIKE fallback).
   ]
 }
 ```
+
+**Response (mode=vector or mode=hybrid):**
+```json
+{
+  "query": "when is the planning offsite",
+  "mode": "hybrid",
+  "returned": 12,
+  "pool_saturated": false,
+  "generation": {
+    "id": 3,
+    "model": "nomic-embed-text-v1.5",
+    "dimension": 768,
+    "fingerprint": "nomic-embed-text-v1.5:768",
+    "state": "active"
+  },
+  "took_ms": 84,
+  "results": [
+    {
+      "id": 12345,
+      "subject": "Q2 planning offsite agenda",
+      "from": "alice@example.com",
+      "to": ["team@example.com"],
+      "sent_at": "2024-01-15T10:30:00Z",
+      "snippet": "Proposed agenda for the offsite on...",
+      "labels": ["INBOX"],
+      "has_attachments": false,
+      "size_bytes": 2048
+    }
+  ]
+}
+```
+
+Vector and hybrid responses expose `returned` instead of `total`
+(ANN search does not have a meaningful total count), add a
+`generation` sub-object naming the index generation that answered the
+query, and include `took_ms`. The top-level `results` array replaces
+`messages`. `pool_saturated` is true when the number of results
+equals the per-signal candidate pool, hinting that some relevant
+hits may have been cut off.
+
+When `explain=1`, each element of `results` carries an extra `score`
+object exposing the fused-score components:
+
+```json
+{
+  "id": 12345,
+  "subject": "...",
+  "score": {
+    "rrf": 0.032,
+    "bm25": 7.4,
+    "vector": 0.82,
+    "subject_boosted": true
+  }
+}
+```
+
+`bm25` and `vector` are omitted when the message did not appear in
+that signal (i.e. BM25 missed it or ANN pool did not include it).
+`subject_boosted` is true when the subject-line boost was applied.
 
 ---
 
@@ -528,13 +631,18 @@ All errors return a consistent JSON format:
 | `unauthorized` | 401 | Missing or invalid API key |
 | `rate_limit_exceeded` | 429 | Too many requests |
 | `invalid_id` | 400 | Invalid message/resource ID |
+| `invalid_mode` | 400 | `mode=` must be `fts`, `vector`, or `hybrid` |
 | `missing_query` | 400 | Required query parameter missing |
 | `missing_account` | 400 | Account email is required |
+| `pagination_unsupported` | 400 | `mode=vector|hybrid` only supports `page=1` |
 | `not_found` | 404 | Resource not found |
 | `sync_error` | 409 | Sync conflict (already running) |
 | `internal_error` | 500 | Server error |
 | `store_unavailable` | 503 | Database not available |
 | `scheduler_unavailable` | 503 | Scheduler not available |
+| `vector_not_enabled` | 503 | Server has no vector backend configured |
+| `index_stale` | 503 | Active generation does not match the configured model; run `msgvault embed --full-rebuild` |
+| `index_building` | 503 | Initial vector index is still being built |
 
 All timestamps in responses use RFC 3339 format in UTC (e.g., `"2024-01-15T10:30:00Z"`).
 
@@ -546,8 +654,12 @@ All timestamps in responses use RFC 3339 format in UTC (e.g., `"2024-01-15T10:30
 # Get stats
 curl -H "X-API-Key: your-key" http://localhost:8080/api/v1/stats
 
-# Search messages
+# Search messages (full-text)
 curl -H "X-API-Key: your-key" "http://localhost:8080/api/v1/search?q=invoice"
+
+# Hybrid search (requires server-side vector config)
+curl -H "X-API-Key: your-key" \
+  "http://localhost:8080/api/v1/search?q=planning+offsite&mode=hybrid&explain=1"
 
 # Trigger sync
 curl -X POST -H "X-API-Key: your-key" http://localhost:8080/api/v1/sync/user@gmail.com
