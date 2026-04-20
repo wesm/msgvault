@@ -13,5 +13,5 @@ import (
 // the real implementation in embed_vector.go.
 func runEmbed(_ context.Context) error {
 	return fmt.Errorf(
-		"msgvault embed requires sqlite-vec support; rebuild with `go build -tags \"fts5 sqlite_vec\"`")
+		"msgvault build-embeddings requires sqlite-vec support; rebuild with `go build -tags \"fts5 sqlite_vec\"`")
 }

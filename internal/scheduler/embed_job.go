@@ -159,7 +159,7 @@ func (j *EmbedJob) Run(ctx context.Context) {
 //     can activate. Building takes precedence over active even when
 //     active matches, because a stranded build is the bigger problem.
 //  2. Mismatched building generation — log and bail. Resolution
-//     requires the CLI (`msgvault embed --full-rebuild` or retire),
+//     requires the CLI (`msgvault build-embeddings --full-rebuild` or retire),
 //     not the daemon.
 //  3. Active generation — incremental top-up.
 //

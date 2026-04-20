@@ -52,7 +52,7 @@ func translateVectorErr(err error) *mcp.CallToolResult {
 	case errors.Is(err, vector.ErrIndexStale):
 		return mcp.NewToolResultError(
 			"index_stale: the vector index does not match the configured model; " +
-				"run `msgvault embed --full-rebuild`",
+				"run `msgvault build-embeddings --full-rebuild`",
 		)
 	case errors.Is(err, vector.ErrIndexBuilding):
 		return mcp.NewToolResultError(
@@ -61,7 +61,7 @@ func translateVectorErr(err error) *mcp.CallToolResult {
 	case errors.Is(err, vector.ErrNoActiveGeneration):
 		return mcp.NewToolResultError(
 			"no_active_generation: vector search has no active index yet; " +
-				"run `msgvault embed` to build one",
+				"run `msgvault build-embeddings` to build one",
 		)
 	case errors.Is(err, vector.ErrEmbeddingTimeout):
 		return mcp.NewToolResultError(
