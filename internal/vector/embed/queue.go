@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/wesm/msgvault/internal/vector"
@@ -85,6 +86,12 @@ func (q *Queue) Claim(ctx context.Context, gen vector.GenerationID, batch int) (
 	if len(ids) == 0 {
 		return nil, "", nil
 	}
+	// The subquery's ORDER BY decides WHICH rows get claimed, but
+	// SQLite does not guarantee RETURNING yields them in that order.
+	// Sort explicitly so callers can rely on ascending ids (matters
+	// for deterministic test assertions and for pairing ids with
+	// fetched message bodies by position).
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	return ids, token, nil
 }
 

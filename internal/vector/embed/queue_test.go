@@ -4,6 +4,7 @@ package embed
 
 import (
 	"context"
+	"sort"
 	"testing"
 	"time"
 )
@@ -145,6 +146,28 @@ func TestQueue_Complete_EmptyIDsIsNoop(t *testing.T) {
 	q := NewQueue(db)
 	if err := q.Complete(ctx, 1, "token", nil); err != nil {
 		t.Errorf("Complete(nil): %v", err)
+	}
+}
+
+// TestQueue_Claim_ReturnsIDsAscending verifies that Claim's returned
+// slice is sorted ascending regardless of the order SQLite's
+// UPDATE...RETURNING clause produces rows. Callers (the Worker) pair
+// ids with fetched message rows by position, so a non-deterministic
+// order would cause silent vector↔message mixups.
+func TestQueue_Claim_ReturnsIDsAscending(t *testing.T) {
+	ctx := context.Background()
+	db := openVectorsDBWithPending(t, 10)
+	q := NewQueue(db)
+
+	ids, _, err := q.Claim(ctx, 1, 10)
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if len(ids) != 10 {
+		t.Fatalf("len(ids) = %d, want 10", len(ids))
+	}
+	if !sort.SliceIsSorted(ids, func(i, j int) bool { return ids[i] < ids[j] }) {
+		t.Errorf("ids not ascending: %v", ids)
 	}
 }
 
