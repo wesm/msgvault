@@ -109,7 +109,7 @@ msgvault can search your archive semantically using vector embeddings in additio
 - **HTTP:** `GET /api/v1/search?q=...&mode=vector` or `mode=hybrid`
 - **MCP:** the `search_messages` tool with a `mode` argument set to `vector` or `hybrid`
 
-A separate MCP tool, `find_similar_messages`, returns nearest neighbors for a seed message. See [docs/vector-search.md](docs/vector-search.md) for setup, backfill, and troubleshooting.
+A separate MCP tool, `find_similar_messages`, returns nearest neighbors for a seed message. See the [Vector Search guide](https://msgvault.io/usage/vector-search/) for setup, backfill, and troubleshooting.
 
 ## Importing from MBOX or Apple Mail
 
