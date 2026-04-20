@@ -16,6 +16,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/search"
+	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/vector"
 	"github.com/wesm/msgvault/internal/vector/embed"
 	"github.com/wesm/msgvault/internal/vector/hybrid"
@@ -90,6 +91,29 @@ func runHybridSearch(cmd *cobra.Command, queryStr, mode string, explain bool) er
 	filter, err := hybrid.BuildFilter(ctx, mainDB, q)
 	if err != nil {
 		return fmt.Errorf("build filter: %w", err)
+	}
+
+	// Resolve --account to a SourceID so vector/hybrid respects
+	// account scoping the same way FTS mode does. A missing account
+	// must return a clear error rather than silently searching the
+	// whole corpus.
+	if searchAccount != "" {
+		s, err := store.Open(cfg.DatabaseDSN())
+		if err != nil {
+			return fmt.Errorf("open store for account lookup: %w", err)
+		}
+		src, err := s.GetSourceByIdentifier(searchAccount)
+		closeErr := s.Close()
+		if err != nil {
+			return fmt.Errorf("look up account: %w", err)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close store: %w", closeErr)
+		}
+		if src == nil {
+			return fmt.Errorf("account %q not found", searchAccount)
+		}
+		filter.SourceIDs = []int64{src.ID}
 	}
 
 	freeText := strings.Join(q.TextTerms, " ")

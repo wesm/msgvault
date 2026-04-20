@@ -149,3 +149,75 @@ func TestBuildFilter_EmptyQueryYieldsEmptyFilter(t *testing.T) {
 		t.Errorf("filter not empty: %+v", f)
 	}
 }
+
+// TestBuildFilter_NonexistentSenderReturnsSentinel guards the
+// "operator was present but matched zero rows" path. Without a
+// sentinel, an unknown from: address would resolve to an empty
+// SenderIDs slice, which the backend treats as "no filter" —
+// broadening the search instead of returning zero hits.
+func TestBuildFilter_NonexistentSenderReturnsSentinel(t *testing.T) {
+	ctx := context.Background()
+	db := newFilterTestDB(t)
+
+	q := search.Parse(`from:nobody@nowhere.invalid`)
+	f, err := BuildFilter(ctx, db, q)
+	if err != nil {
+		t.Fatalf("BuildFilter: %v", err)
+	}
+	if len(f.SenderIDs) != 1 || f.SenderIDs[0] >= 0 {
+		t.Errorf("SenderIDs=%v, want single negative sentinel id (never matches)", f.SenderIDs)
+	}
+}
+
+// TestBuildFilter_NonexistentLabelReturnsSentinel: same as above but
+// for labels. Critical because the label path used to do exact-name
+// lookups with IN (...), and an unknown label silently became a no-op.
+func TestBuildFilter_NonexistentLabelReturnsSentinel(t *testing.T) {
+	ctx := context.Background()
+	db := newFilterTestDB(t)
+
+	q := search.Parse(`label:nonexistent-label-xyz`)
+	f, err := BuildFilter(ctx, db, q)
+	if err != nil {
+		t.Fatalf("BuildFilter: %v", err)
+	}
+	if len(f.LabelIDs) != 1 || f.LabelIDs[0] >= 0 {
+		t.Errorf("LabelIDs=%v, want single negative sentinel id", f.LabelIDs)
+	}
+}
+
+// TestBuildFilter_LabelsMatchCaseInsensitiveSubstring verifies the
+// label resolution matches the SQLite path's semantics: a substring
+// of the configured label name, case-folded. Previously
+// resolveLabelIDs did exact-name IN (...) matching, which failed on
+// the common `label:work` / stored-label `Work` mismatch and on
+// partial names.
+func TestBuildFilter_LabelsMatchCaseInsensitiveSubstring(t *testing.T) {
+	ctx := context.Background()
+	db := newFilterTestDB(t)
+
+	cases := []struct {
+		name  string
+		query string
+		want  int
+	}{
+		{"lowercased exact", `label:work`, 1}, // "Work"
+		{"partial prefix", `label:arch`, 1},   // "Archive"
+		{"partial uppercase", `label:INB`, 1}, // "INBOX"
+		{"no match", `label:nowhere`, 1},      // sentinel (no real matches)
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			q := search.Parse(c.query)
+			f, err := BuildFilter(ctx, db, q)
+			if err != nil {
+				t.Fatalf("BuildFilter: %v", err)
+			}
+			if len(f.LabelIDs) != c.want {
+				t.Errorf("query %q: len(LabelIDs)=%d, want %d (got %v)",
+					c.query, len(f.LabelIDs), c.want, f.LabelIDs)
+			}
+		})
+	}
+}

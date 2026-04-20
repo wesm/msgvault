@@ -44,6 +44,15 @@ func BuildFilter(ctx context.Context, db *sql.DB, q *search.Query) (vector.Filte
 		if err != nil {
 			return f, err
 		}
+		// The operator was present in the query but matched zero
+		// participants. Leaving ids nil would drop to "no filter"
+		// in backend code (empty slice means unrestricted), so
+		// substitute a sentinel id that can never match a real
+		// row. This preserves "zero hits" for nonexistent
+		// senders/recipients, mirroring the SQLite search path.
+		if len(ids) == 0 {
+			ids = []int64{noMatchSentinel}
+		}
 		*af.dst = ids
 	}
 
@@ -51,6 +60,9 @@ func BuildFilter(ctx context.Context, db *sql.DB, q *search.Query) (vector.Filte
 		ids, err := resolveLabelIDs(ctx, db, q.Labels)
 		if err != nil {
 			return f, err
+		}
+		if len(ids) == 0 {
+			ids = []int64{noMatchSentinel}
 		}
 		f.LabelIDs = ids
 	}
@@ -115,19 +127,24 @@ func resolveParticipantIDs(ctx context.Context, db *sql.DB, addrs []string) ([]i
 	return ids, nil
 }
 
+// resolveLabelIDs returns labels whose name contains any of the
+// supplied tokens as a case-insensitive substring. Mirrors the
+// `label:` behavior in internal/store/api.go (LOWER(l.name) LIKE
+// '%token%' ESCAPE '\') so vector/hybrid search agrees with the FTS
+// path on which label matches a user-supplied token.
 func resolveLabelIDs(ctx context.Context, db *sql.DB, labels []string) ([]int64, error) {
 	if len(labels) == 0 {
 		return nil, nil
 	}
-	placeholders := make([]string, len(labels))
-	args := make([]any, len(labels))
-	for i, l := range labels {
-		placeholders[i] = "?"
-		args[i] = l
+	parts := make([]string, 0, len(labels))
+	args := make([]any, 0, len(labels))
+	for _, l := range labels {
+		parts = append(parts, `LOWER(name) LIKE ? ESCAPE '\'`)
+		args = append(args, "%"+escapeLike(strings.ToLower(l))+"%")
 	}
 	q := fmt.Sprintf(
-		`SELECT id FROM labels WHERE name IN (%s)`,
-		strings.Join(placeholders, ","))
+		`SELECT id FROM labels WHERE %s`,
+		strings.Join(parts, " OR "))
 	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query labels: %w", err)
@@ -146,6 +163,14 @@ func resolveLabelIDs(ctx context.Context, db *sql.DB, labels []string) ([]int64,
 	}
 	return ids, nil
 }
+
+// noMatchSentinel is the id stored in a resolved-to-empty filter
+// slice. SQLite auto-increment ids start at 1, so -1 is guaranteed
+// not to match any real row. BuildFilter substitutes this when a
+// requested operator resolves to zero participants/labels, so the
+// backend IN (...) check returns zero rows instead of degrading
+// back to "unrestricted".
+const noMatchSentinel int64 = -1
 
 // escapeLike escapes SQL LIKE special characters (%, _, \) so they
 // are matched literally. Used with ESCAPE '\'. Mirrors escapeLike in
