@@ -104,7 +104,10 @@ func CollectStats(ctx context.Context, b Backend) (*StatsView, error) {
 	}
 
 	building, err := b.BuildingGeneration(ctx)
-	if err == nil && building != nil {
+	if err != nil {
+		return nil, fmt.Errorf("building generation: %w", err)
+	}
+	if building != nil {
 		s, sErr := b.Stats(ctx, building.ID)
 		if sErr == nil {
 			out.BuildingGeneration = &BuildingSummary{

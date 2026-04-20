@@ -261,6 +261,53 @@ func TestCollectStats_ActiveError(t *testing.T) {
 	}
 }
 
+func TestCollectStats_BuildingError(t *testing.T) {
+	// A non-sentinel error from BuildingGeneration is wrapped and
+	// returned, symmetric with the ActiveGeneration error path.
+	wantErr := errors.New("db connection refused")
+	b := &statsFakeBackend{buildErr: wantErr}
+
+	sv, err := CollectStats(context.Background(), b)
+	if err == nil {
+		t.Fatalf("CollectStats err = nil, want wrapping %v", wantErr)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("CollectStats err = %v, want to wrap %v", err, wantErr)
+	}
+	if sv != nil {
+		t.Errorf("CollectStats sv = %+v, want nil on error", sv)
+	}
+}
+
+func TestCollectStats_BuildingStatsError_Tolerated(t *testing.T) {
+	// BuildingGeneration loads fine, but its Stats call fails. Mirrors
+	// the active-side StatsError_Tolerated case: BuildingGeneration in
+	// the result stays nil, the envelope is still returned, and the
+	// pending total excludes the unmeasured building generation.
+	b := &statsFakeBackend{
+		building: &Generation{
+			ID:        2,
+			Model:     "nomic-embed",
+			Dimension: 768,
+		},
+		statsErr: map[GenerationID]error{2: errors.New("stats table locked")},
+	}
+
+	sv, err := CollectStats(context.Background(), b)
+	if err != nil {
+		t.Fatalf("CollectStats err = %v, want nil (tolerated)", err)
+	}
+	if sv == nil {
+		t.Fatal("CollectStats sv = nil, want non-nil envelope")
+	}
+	if sv.BuildingGeneration != nil {
+		t.Errorf("BuildingGeneration = %+v, want nil (Stats failed)", sv.BuildingGeneration)
+	}
+	if sv.PendingEmbeddingsTotal != 0 {
+		t.Errorf("PendingEmbeddingsTotal = %d, want 0", sv.PendingEmbeddingsTotal)
+	}
+}
+
 func TestCollectStats_StatsError_Tolerated(t *testing.T) {
 	// Active generation loads fine, but Stats(active.ID) fails. The
 	// helper should return a StatsView with ActiveGeneration=nil and
