@@ -3,11 +3,14 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/wesm/msgvault/internal/config"
+	"github.com/wesm/msgvault/internal/vector"
+	"github.com/wesm/msgvault/internal/vector/embed"
 )
 
 func TestNew(t *testing.T) {
@@ -447,6 +450,379 @@ func TestTriggerSyncAfterStop(t *testing.T) {
 	err := s.TriggerSync("test@gmail.com")
 	if err == nil {
 		t.Error("TriggerSync() after Stop() = nil, want error")
+	}
+}
+
+// ---------- fakes for EmbedJob tests ----------
+
+// fakeBackend implements vector.Backend. Only ActiveGeneration and
+// BuildingGeneration are meaningfully populated; the rest panic to
+// catch accidental usage.
+type fakeBackend struct {
+	active    vector.Generation
+	activeErr error
+	building  *vector.Generation
+	buildErr  error
+
+	activeCalls   atomic.Int32
+	buildingCalls atomic.Int32
+}
+
+func (f *fakeBackend) ActiveGeneration(ctx context.Context) (vector.Generation, error) {
+	f.activeCalls.Add(1)
+	return f.active, f.activeErr
+}
+
+func (f *fakeBackend) BuildingGeneration(ctx context.Context) (*vector.Generation, error) {
+	f.buildingCalls.Add(1)
+	return f.building, f.buildErr
+}
+
+func (f *fakeBackend) CreateGeneration(ctx context.Context, model string, dim int) (vector.GenerationID, error) {
+	panic("unexpected: CreateGeneration")
+}
+func (f *fakeBackend) ActivateGeneration(ctx context.Context, gen vector.GenerationID) error {
+	panic("unexpected: ActivateGeneration")
+}
+func (f *fakeBackend) RetireGeneration(ctx context.Context, gen vector.GenerationID) error {
+	panic("unexpected: RetireGeneration")
+}
+func (f *fakeBackend) Upsert(ctx context.Context, gen vector.GenerationID, chunks []vector.Chunk) error {
+	panic("unexpected: Upsert")
+}
+func (f *fakeBackend) Search(ctx context.Context, gen vector.GenerationID, q []float32, k int, fl vector.Filter) ([]vector.Hit, error) {
+	panic("unexpected: Search")
+}
+func (f *fakeBackend) Delete(ctx context.Context, gen vector.GenerationID, ids []int64) error {
+	panic("unexpected: Delete")
+}
+func (f *fakeBackend) Stats(ctx context.Context, gen vector.GenerationID) (vector.Stats, error) {
+	panic("unexpected: Stats")
+}
+func (f *fakeBackend) LoadVector(ctx context.Context, messageID int64) ([]float32, error) {
+	panic("unexpected: LoadVector")
+}
+func (f *fakeBackend) Close() error { return nil }
+
+// fakeRunner records calls to satisfy EmbedRunner.
+type fakeRunner struct {
+	mu            sync.Mutex
+	reclaimErr    error
+	reclaimCalls  int
+	runErr        error
+	runCalls      int
+	lastRunGen    vector.GenerationID
+	runOnceResult embed.RunResult
+	runDoneOnce   sync.Once
+	runDone       chan struct{} // optional: closed after first RunOnce
+}
+
+func (r *fakeRunner) ReclaimStale(ctx context.Context) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reclaimCalls++
+	return 0, r.reclaimErr
+}
+
+func (r *fakeRunner) RunOnce(ctx context.Context, gen vector.GenerationID) (embed.RunResult, error) {
+	r.mu.Lock()
+	r.runCalls++
+	r.lastRunGen = gen
+	ch := r.runDone
+	res := r.runOnceResult
+	err := r.runErr
+	r.mu.Unlock()
+	if ch != nil {
+		r.runDoneOnce.Do(func() { close(ch) })
+	}
+	return res, err
+}
+
+func (r *fakeRunner) calls() (reclaim, run int, lastGen vector.GenerationID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.reclaimCalls, r.runCalls, r.lastRunGen
+}
+
+// ---------- EmbedJob tests ----------
+
+func TestEmbedJob_Run_ActiveGeneration(t *testing.T) {
+	backend := &fakeBackend{active: vector.Generation{ID: 5, State: vector.GenerationActive}}
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend}
+
+	job.Run(context.Background())
+
+	reclaim, run, gen := runner.calls()
+	if reclaim != 1 {
+		t.Errorf("ReclaimStale calls = %d, want 1", reclaim)
+	}
+	if run != 1 {
+		t.Errorf("RunOnce calls = %d, want 1", run)
+	}
+	if gen != 5 {
+		t.Errorf("RunOnce gen = %d, want 5", gen)
+	}
+	if backend.buildingCalls.Load() != 0 {
+		t.Errorf("BuildingGeneration should not be called when active exists")
+	}
+}
+
+func TestEmbedJob_Run_BuildingFallback(t *testing.T) {
+	building := &vector.Generation{ID: 7, State: vector.GenerationBuilding}
+	backend := &fakeBackend{
+		activeErr: vector.ErrNoActiveGeneration,
+		building:  building,
+	}
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend}
+
+	job.Run(context.Background())
+
+	_, run, gen := runner.calls()
+	if run != 1 {
+		t.Errorf("RunOnce calls = %d, want 1", run)
+	}
+	if gen != 7 {
+		t.Errorf("RunOnce gen = %d, want 7", gen)
+	}
+}
+
+func TestEmbedJob_Run_NothingToDo(t *testing.T) {
+	backend := &fakeBackend{
+		activeErr: vector.ErrNoActiveGeneration,
+		building:  nil,
+	}
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend}
+
+	job.Run(context.Background())
+
+	_, run, _ := runner.calls()
+	if run != 0 {
+		t.Errorf("RunOnce calls = %d, want 0 (nothing to do)", run)
+	}
+}
+
+func TestEmbedJob_Run_ReclaimStaleFailureContinues(t *testing.T) {
+	backend := &fakeBackend{active: vector.Generation{ID: 3}}
+	runner := &fakeRunner{reclaimErr: errors.New("boom")}
+	job := &EmbedJob{Worker: runner, Backend: backend}
+
+	job.Run(context.Background())
+
+	_, run, gen := runner.calls()
+	if run != 1 {
+		t.Errorf("RunOnce calls = %d, want 1 (should proceed despite reclaim error)", run)
+	}
+	if gen != 3 {
+		t.Errorf("RunOnce gen = %d, want 3", gen)
+	}
+}
+
+func TestEmbedJob_Run_ActiveGenerationError(t *testing.T) {
+	backend := &fakeBackend{activeErr: errors.New("db failure")}
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend}
+
+	job.Run(context.Background())
+
+	_, run, _ := runner.calls()
+	if run != 0 {
+		t.Errorf("RunOnce calls = %d, want 0 on active lookup error", run)
+	}
+	if backend.buildingCalls.Load() != 0 {
+		t.Errorf("BuildingGeneration should not be consulted on non-sentinel error")
+	}
+}
+
+// ---------- SetEmbedJob tests ----------
+
+func TestScheduler_SetEmbedJob_AddsCronEntry(t *testing.T) {
+	s := New(func(ctx context.Context, email string) error { return nil })
+	backend := &fakeBackend{active: vector.Generation{ID: 1}}
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend}
+
+	if err := s.SetEmbedJob(job, "*/5 * * * *", false); err != nil {
+		t.Fatalf("SetEmbedJob first = %v", err)
+	}
+	if !s.embedEntrySet {
+		t.Error("embedEntrySet should be true after first SetEmbedJob")
+	}
+
+	// Replacing with a new schedule should not error.
+	if err := s.SetEmbedJob(job, "0 * * * *", true); err != nil {
+		t.Fatalf("SetEmbedJob replace = %v", err)
+	}
+	if !s.embedEntrySet {
+		t.Error("embedEntrySet should remain true after replacement")
+	}
+	if !s.runEmbedAfterSync {
+		t.Error("runEmbedAfterSync should be true after replacement with runAfterSync=true")
+	}
+
+	// Clearing.
+	if err := s.SetEmbedJob(nil, "", false); err != nil {
+		t.Fatalf("SetEmbedJob clear = %v", err)
+	}
+	if s.embedEntrySet {
+		t.Error("embedEntrySet should be false after clear")
+	}
+	if s.embedJob != nil {
+		t.Error("embedJob should be nil after clear")
+	}
+	if s.runEmbedAfterSync {
+		t.Error("runEmbedAfterSync should be false after clear")
+	}
+}
+
+func TestScheduler_SetEmbedJob_InvalidCron(t *testing.T) {
+	s := New(func(ctx context.Context, email string) error { return nil })
+	backend := &fakeBackend{}
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend}
+
+	err := s.SetEmbedJob(job, "not a cron", false)
+	if err == nil {
+		t.Fatal("SetEmbedJob with invalid cron = nil, want error")
+	}
+	if s.embedEntrySet {
+		t.Error("embedEntrySet should remain false after invalid cron")
+	}
+}
+
+func TestScheduler_SetEmbedJob_EmptyScheduleNoCronEntry(t *testing.T) {
+	s := New(func(ctx context.Context, email string) error { return nil })
+	backend := &fakeBackend{}
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend}
+
+	if err := s.SetEmbedJob(job, "", true); err != nil {
+		t.Fatalf("SetEmbedJob = %v", err)
+	}
+	if s.embedEntrySet {
+		t.Error("empty schedule should not create a cron entry")
+	}
+	if s.embedJob == nil {
+		t.Error("embedJob should be set even with empty schedule")
+	}
+	if !s.runEmbedAfterSync {
+		t.Error("runEmbedAfterSync should be true")
+	}
+}
+
+func TestScheduler_RunAfterSync_Fires(t *testing.T) {
+	syncDone := make(chan struct{})
+	s := New(func(ctx context.Context, email string) error {
+		close(syncDone)
+		return nil
+	})
+	backend := &fakeBackend{active: vector.Generation{ID: 42}}
+	runDone := make(chan struct{})
+	runner := &fakeRunner{runDone: runDone}
+	job := &EmbedJob{Worker: runner, Backend: backend}
+
+	if err := s.SetEmbedJob(job, "", true); err != nil {
+		t.Fatalf("SetEmbedJob = %v", err)
+	}
+	if err := s.AddAccount("test@gmail.com", "0 0 1 1 *"); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
+
+	s.Start()
+	defer func() {
+		ctx := s.Stop()
+		<-ctx.Done()
+	}()
+
+	if err := s.TriggerSync("test@gmail.com"); err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+
+	select {
+	case <-syncDone:
+	case <-time.After(time.Second):
+		t.Fatal("syncFunc did not run")
+	}
+	select {
+	case <-runDone:
+	case <-time.After(time.Second):
+		t.Fatal("embed RunOnce did not fire after sync")
+	}
+
+	_, run, gen := runner.calls()
+	if run != 1 {
+		t.Errorf("RunOnce calls = %d, want 1", run)
+	}
+	if gen != 42 {
+		t.Errorf("RunOnce gen = %d, want 42", gen)
+	}
+}
+
+func TestScheduler_RunAfterSync_DisabledDoesNotFire(t *testing.T) {
+	s := New(func(ctx context.Context, email string) error { return nil })
+	backend := &fakeBackend{active: vector.Generation{ID: 1}}
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend}
+
+	// runAfterSync = false
+	if err := s.SetEmbedJob(job, "", false); err != nil {
+		t.Fatalf("SetEmbedJob = %v", err)
+	}
+	if err := s.AddAccount("test@gmail.com", "0 0 1 1 *"); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
+
+	s.Start()
+	defer func() {
+		ctx := s.Stop()
+		<-ctx.Done()
+	}()
+
+	if err := s.TriggerSync("test@gmail.com"); err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+
+	// Give runSync a chance to finish.
+	time.Sleep(50 * time.Millisecond)
+
+	_, run, _ := runner.calls()
+	if run != 0 {
+		t.Errorf("RunOnce calls = %d, want 0 when runAfterSync is false", run)
+	}
+}
+
+func TestScheduler_RunAfterSync_SkipOnSyncError(t *testing.T) {
+	s := New(func(ctx context.Context, email string) error {
+		return errors.New("sync failed")
+	})
+	backend := &fakeBackend{active: vector.Generation{ID: 1}}
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend}
+
+	if err := s.SetEmbedJob(job, "", true); err != nil {
+		t.Fatalf("SetEmbedJob = %v", err)
+	}
+	if err := s.AddAccount("test@gmail.com", "0 0 1 1 *"); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
+
+	s.Start()
+	defer func() {
+		ctx := s.Stop()
+		<-ctx.Done()
+	}()
+
+	if err := s.TriggerSync("test@gmail.com"); err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	_, run, _ := runner.calls()
+	if run != 0 {
+		t.Errorf("RunOnce calls = %d, want 0 when sync failed", run)
 	}
 }
 

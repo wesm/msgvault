@@ -39,6 +39,13 @@ type Scheduler struct {
 	lastRun   map[string]time.Time    // email -> last successful run
 	lastErr   map[string]error        // email -> last error
 
+	// Embed job state (optional). Set via SetEmbedJob; cron.EntryID 0
+	// may be valid, so embedEntrySet tracks whether an entry exists.
+	embedJob          *EmbedJob
+	embedEntry        cron.EntryID
+	embedEntrySet     bool
+	runEmbedAfterSync bool
+
 	ctx     context.Context    // cancelled on Stop
 	cancel  context.CancelFunc // cancels ctx
 	wg      sync.WaitGroup     // tracks running sync goroutines
@@ -140,6 +147,49 @@ func (s *Scheduler) RemoveAccount(email string) {
 	}
 }
 
+// SetEmbedJob registers the embed job on a cron schedule. If schedule
+// is empty, no cron entry is created (the job can still fire via the
+// post-sync hook when runAfterSync is true). Replacing a previously-set
+// job removes the old cron entry. Passing nil clears any existing job.
+func (s *Scheduler) SetEmbedJob(job *EmbedJob, schedule string, runAfterSync bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.embedEntrySet {
+		s.cron.Remove(s.embedEntry)
+		s.embedEntrySet = false
+	}
+	s.embedJob = job
+	s.runEmbedAfterSync = runAfterSync && job != nil
+
+	if job == nil || schedule == "" {
+		return nil
+	}
+	entryID, err := s.cron.AddFunc(schedule, func() {
+		if s.isStopped() {
+			return
+		}
+		job.Run(s.ctx)
+	})
+	if err != nil {
+		return fmt.Errorf("invalid embed cron expression %q: %w", schedule, err)
+	}
+	s.embedEntry = entryID
+	s.embedEntrySet = true
+	s.logger.Info("scheduled embed job",
+		"schedule", schedule,
+		"next_run", s.cron.Entry(entryID).Next)
+	return nil
+}
+
+// isStopped is an internal helper for cron callbacks to check the
+// stopped flag without holding a lock that the caller already holds.
+func (s *Scheduler) isStopped() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.stopped
+}
+
 // Start begins executing scheduled jobs.
 func (s *Scheduler) Start() {
 	s.mu.Lock()
@@ -215,6 +265,22 @@ func (s *Scheduler) runSync(email string) {
 			"duration", time.Since(start))
 	}
 	s.mu.Unlock()
+
+	// Post-sync embed hook: only fire on successful sync, and only
+	// when configured. Runs synchronously in this goroutine so it's
+	// naturally covered by the wg.Done deferred above.
+	if err != nil {
+		return
+	}
+	var postSync *EmbedJob
+	s.mu.Lock()
+	if s.runEmbedAfterSync && s.embedJob != nil && !s.stopped {
+		postSync = s.embedJob
+	}
+	s.mu.Unlock()
+	if postSync != nil {
+		postSync.Run(s.ctx)
+	}
 }
 
 // IsScheduled returns true if the account has been added to the scheduler.
