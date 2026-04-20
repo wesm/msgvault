@@ -158,6 +158,7 @@ WITH
       FROM messages_fts fts
       JOIN filtered f ON f.id = fts.rowid
      WHERE :fts_query IS NOT NULL AND messages_fts MATCH :fts_query
+     ORDER BY fts.rank
      LIMIT %d
   ),
   ann AS (
