@@ -61,6 +61,10 @@ func Open(ctx context.Context, opts Options) (*Backend, error) {
 // Close releases the vectors.db handle.
 func (b *Backend) Close() error { return b.db.Close() }
 
+// DB returns the underlying *sql.DB for vectors.db. Exposed for callers
+// that need to share the pool (e.g. the embed worker's VectorsDB field).
+func (b *Backend) DB() *sql.DB { return b.db }
+
 // Path returns the filesystem path of vectors.db.
 func (b *Backend) Path() string { return b.path }
 
