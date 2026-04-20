@@ -25,9 +25,14 @@ $ldflags = @(
 $env:CGO_ENABLED = 1
 if (-not $env:CGO_CFLAGS -and (Test-Path "C:\msys64\mingw64\include\sqlite3.h")) {
     # -fgnu89-inline works around arrow-go/v18 cdata helpers relying on
-    # GNU-style inline; without it MinGW 15+ leaves ArrowArrayIsReleased
-    # and friends undefined at link time.
+    # GNU-style inline; --allow-multiple-definition then lets ld pick
+    # the first of the duplicate externals that the flag emits in
+    # every translation unit. Without both, MinGW 15+ either fails to
+    # resolve ArrowArrayIsReleased (C99 inline) or rejects duplicates.
     $env:CGO_CFLAGS = "-IC:/msys64/mingw64/include -fgnu89-inline"
+    if (-not $env:CGO_LDFLAGS) {
+        $env:CGO_LDFLAGS = "-Wl,--allow-multiple-definition"
+    }
 }
 
 Write-Host "Building msgvault $version ($commit)..."

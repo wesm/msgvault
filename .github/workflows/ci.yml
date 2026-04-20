@@ -43,11 +43,13 @@ jobs:
       # the default windows-latest include path. Install it from MSYS2
       # (already present on the runner) and point CGO_CFLAGS at it.
       #
-      # -fgnu89-inline is needed because arrow-go/v18's cdata helpers.h
-      # defines helpers as bare `inline` (not `static inline`) — under
-      # C99 that needs a single external definition that no TU
-      # provides, so MinGW's ld fails on ArrowArrayIsReleased etc.
-      # GNU89 inline semantics always emit the external definition.
+      # arrow-go/v18's cdata helpers.h declares its helpers as plain
+      # `inline` (not `static inline`). Under C99 that requires exactly
+      # one external definition somewhere, and no TU in arrow-go
+      # provides one. -fgnu89-inline forces every TU to emit the
+      # external copy, and --allow-multiple-definition lets MinGW's ld
+      # pick the first and continue instead of erroring on the
+      # duplicates that flag produces.
       - name: Install sqlite3 dev headers
         shell: pwsh
         run: |
@@ -58,6 +60,7 @@ jobs:
         env:
           CGO_ENABLED: "1"
           CGO_CFLAGS: "-IC:/msys64/mingw64/include -fgnu89-inline"
+          CGO_LDFLAGS: "-Wl,--allow-multiple-definition"
         run: go build -tags "fts5 sqlite_vec" -o msgvault.exe ./cmd/msgvault
 
       - name: Test
@@ -65,6 +68,7 @@ jobs:
         env:
           CGO_ENABLED: "1"
           CGO_CFLAGS: "-IC:/msys64/mingw64/include -fgnu89-inline"
+          CGO_LDFLAGS: "-Wl,--allow-multiple-definition"
         run: go test -tags "fts5 sqlite_vec" ./...
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

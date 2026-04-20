@@ -171,6 +171,7 @@ jobs:
           GOARCH: amd64
           CGO_ENABLED: '1'
           CGO_CFLAGS: "-IC:/msys64/mingw64/include -fgnu89-inline"
+          CGO_LDFLAGS: "-Wl,--allow-multiple-definition"
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
 
