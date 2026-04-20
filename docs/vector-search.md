@@ -43,7 +43,7 @@ dimension = 768
 batch_size = 32                          # embeddings per HTTP call
 timeout = "30s"
 max_retries = 3
-max_input_chars = 32768                  # messages longer than this are truncated
+max_input_chars = 32768                  # messages longer than this are truncated (see note below about Ollama context limits)
 
 [vector.preprocess]
 strip_quotes = true                      # drop quoted reply blocks before embedding
@@ -64,6 +64,28 @@ The `[vector]` section only takes effect when `enabled = true` **and**
 the binary was built with `sqlite_vec`. If either is missing, msgvault
 behaves as before and the search features described here return
 `vector_not_enabled`.
+
+### Matching `max_input_chars` to your embedder's context window
+
+`max_input_chars` is an upper bound in characters; the embedder converts
+this to tokens on its own. Set it below the embedder's maximum context
+or full-length messages will fail with HTTP 400 during `embed`. Ollama
+in particular ships several embedding models with GGUF-declared context
+of 2048 tokens even when the upstream model supports more, and adding
+`PARAMETER num_ctx 8192` to a Modelfile does not raise the hard cap.
+
+Practical guidance:
+
+- **Ollama `nomic-embed-text` (2048 tokens):** use `max_input_chars =
+  2000`. Expect ~20% of messages to be truncated.
+- **OpenAI `text-embedding-3-small` (8192 tokens):** `max_input_chars =
+  24000` is a safe cap.
+- **Self-hosted llama.cpp with an 8k-context GGUF:** match the context
+  window; 24000 is a reasonable default.
+
+If `msgvault embed` fails with repeated `HTTP 400` warnings, check the
+embedder's logs — `the input length exceeds the context length`
+confirms you need to lower `max_input_chars`.
 
 ## Backfill
 
@@ -144,6 +166,13 @@ Common error codes and fixes:
 | `missing_free_text` | `mode=vector` or `mode=hybrid` used with a filter-only query (no free text to embed). | Add free-text terms to `q`, or switch to `mode=fts`. |
 | `pagination_unsupported` | Request asked for `page>1` with `mode=vector|hybrid`. | Use `page=1` with a larger `page_size` instead. |
 | `invalid_mode` | `mode=` value other than `fts`, `vector`, `hybrid`. | Pick one of those. |
+
+`msgvault embed` repeatedly logs `embed batch failed ... HTTP 400` and
+aborts after 5 consecutive failures: check the embedder's logs. If
+they say `the input length exceeds the context length` (Ollama) or an
+equivalent token-limit error, lower `max_input_chars` to match the
+model's context window — see the sizing guidance in [Matching
+`max_input_chars` to your embedder's context window](#matching-max_input_chars-to-your-embedders-context-window).
 
 To confirm the binary was built with vector support:
 
