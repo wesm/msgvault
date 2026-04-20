@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/wesm/msgvault/internal/export"
@@ -24,8 +25,9 @@ type toolHandler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult
 
 // Response types for runTool generic calls.
 type statsResponse struct {
-	Stats    query.TotalStats    `json:"stats"`
-	Accounts []query.AccountInfo `json:"accounts"`
+	Stats        query.TotalStats    `json:"stats"`
+	Accounts     []query.AccountInfo `json:"accounts"`
+	VectorSearch *vector.StatsView   `json:"vector_search"`
 }
 
 type attachmentMeta struct {
@@ -206,7 +208,7 @@ func TestGetMessage(t *testing.T) {
 	}
 }
 
-func TestGetStats(t *testing.T) {
+func TestGetStats_VectorDisabled(t *testing.T) {
 	eng := &querytest.MockEngine{
 		Stats: &query.TotalStats{
 			MessageCount: 1000,
@@ -218,6 +220,7 @@ func TestGetStats(t *testing.T) {
 			{ID: 2, Identifier: "bob@gmail.com"},
 		},
 	}
+	// newTestHandlers leaves backend nil, mirroring a non-vector install.
 	h := newTestHandlers(eng)
 
 	resp := runTool[statsResponse](t, "get_stats", h.getStats, map[string]any{})
@@ -227,6 +230,80 @@ func TestGetStats(t *testing.T) {
 	}
 	if len(resp.Accounts) != 2 {
 		t.Fatalf("unexpected account count: %d", len(resp.Accounts))
+	}
+	if resp.VectorSearch != nil {
+		t.Fatalf("expected VectorSearch to be nil when backend is disabled, got %+v",
+			resp.VectorSearch)
+	}
+
+	// Also confirm the JSON payload omits the key entirely, so clients
+	// that type-check the wire format see a clean absence rather than
+	// a null value.
+	r := callToolDirect(t, "get_stats", h.getStats, map[string]any{})
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(resultText(t, r)), &raw); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	if _, ok := raw["vector_search"]; ok {
+		t.Errorf("expected 'vector_search' to be absent from JSON when backend is nil")
+	}
+}
+
+func TestGetStats_VectorEnabled(t *testing.T) {
+	eng := &querytest.MockEngine{
+		Stats: &query.TotalStats{
+			MessageCount: 100,
+			AccountCount: 1,
+		},
+		Accounts: []query.AccountInfo{
+			{ID: 1, Identifier: "alice@gmail.com"},
+		},
+	}
+	activatedAt := time.Date(2025, 3, 1, 12, 0, 0, 0, time.UTC)
+	fb := &fakeBackend{
+		active: vector.Generation{
+			ID:          5,
+			Model:       "nomic-embed",
+			Dimension:   768,
+			Fingerprint: "nomic-embed:768",
+			State:       vector.GenerationActive,
+			ActivatedAt: &activatedAt,
+		},
+		stats: map[vector.GenerationID]vector.Stats{
+			5: {EmbeddingCount: 100, PendingCount: 3},
+		},
+	}
+
+	h := &handlers{engine: eng, backend: fb}
+
+	resp := runTool[statsResponse](t, "get_stats", h.getStats, map[string]any{})
+
+	if resp.VectorSearch == nil {
+		t.Fatal("expected vector_search sub-object, got nil")
+	}
+	if !resp.VectorSearch.Enabled {
+		t.Error("vector_search.enabled = false, want true")
+	}
+	if resp.VectorSearch.ActiveGeneration == nil {
+		t.Fatal("expected vector_search.active_generation to be populated")
+	}
+	ag := resp.VectorSearch.ActiveGeneration
+	if ag.ID != 5 {
+		t.Errorf("active_generation.id = %d, want 5", ag.ID)
+	}
+	if ag.Model != "nomic-embed" {
+		t.Errorf("active_generation.model = %q, want 'nomic-embed'", ag.Model)
+	}
+	if ag.MessageCount != 100 {
+		t.Errorf("active_generation.message_count = %d, want 100", ag.MessageCount)
+	}
+	if resp.VectorSearch.PendingEmbeddingsTotal != 3 {
+		t.Errorf("pending_embeddings_total = %d, want 3",
+			resp.VectorSearch.PendingEmbeddingsTotal)
+	}
+	if resp.VectorSearch.BuildingGeneration != nil {
+		t.Errorf("building_generation = %+v, want nil",
+			resp.VectorSearch.BuildingGeneration)
 	}
 }
 
@@ -1095,16 +1172,22 @@ func TestStageDeletion(t *testing.T) {
 }
 
 // fakeBackend is a minimal vector.Backend used to exercise
-// find_similar_messages without standing up a real sqlitevec backend.
-// Only LoadVector, ActiveGeneration, and Search are exercised; the
-// remaining methods return errors and should never be called.
+// find_similar_messages and get_stats without standing up a real
+// sqlitevec backend. LoadVector/ActiveGeneration/Search are driven
+// by their dedicated fields; BuildingGeneration and Stats expose
+// optional fields so the get_stats tests can populate them. Methods
+// not otherwise configured return errors and should not be called.
 type fakeBackend struct {
-	loadVec    []float32
-	loadErr    error
-	active     vector.Generation
-	activeErr  error
-	searchHits []vector.Hit
-	searchErr  error
+	loadVec     []float32
+	loadErr     error
+	active      vector.Generation
+	activeErr   error
+	searchHits  []vector.Hit
+	searchErr   error
+	building    *vector.Generation
+	buildingErr error
+	stats       map[vector.GenerationID]vector.Stats
+	statsErr    error
 }
 
 func (f *fakeBackend) LoadVector(_ context.Context, _ int64) ([]float32, error) {
@@ -1126,7 +1209,7 @@ func (f *fakeBackend) RetireGeneration(_ context.Context, _ vector.GenerationID)
 	return errors.New("not implemented")
 }
 func (f *fakeBackend) BuildingGeneration(_ context.Context) (*vector.Generation, error) {
-	return nil, nil
+	return f.building, f.buildingErr
 }
 func (f *fakeBackend) Upsert(_ context.Context, _ vector.GenerationID, _ []vector.Chunk) error {
 	return errors.New("not implemented")
@@ -1134,8 +1217,11 @@ func (f *fakeBackend) Upsert(_ context.Context, _ vector.GenerationID, _ []vecto
 func (f *fakeBackend) Delete(_ context.Context, _ vector.GenerationID, _ []int64) error {
 	return errors.New("not implemented")
 }
-func (f *fakeBackend) Stats(_ context.Context, _ vector.GenerationID) (vector.Stats, error) {
-	return vector.Stats{}, errors.New("not implemented")
+func (f *fakeBackend) Stats(_ context.Context, gen vector.GenerationID) (vector.Stats, error) {
+	if f.statsErr != nil {
+		return vector.Stats{}, f.statsErr
+	}
+	return f.stats[gen], nil
 }
 func (f *fakeBackend) Close() error { return nil }
 

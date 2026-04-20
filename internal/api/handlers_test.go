@@ -1535,7 +1535,7 @@ func TestHandleStats_VectorEnabledWithActive(t *testing.T) {
 			Fingerprint: "nomic-embed:768",
 			State:       vector.GenerationActive,
 		},
-		stats: vector.Stats{EmbeddingCount: 100, PendingCount: 0, StorageBytes: 4096},
+		stats: vector.Stats{EmbeddingCount: 100, PendingCount: 7, StorageBytes: 4096},
 	}
 
 	store := &mockStore{
@@ -1576,13 +1576,20 @@ func TestHandleStats_VectorEnabledWithActive(t *testing.T) {
 		t.Fatalf("expected 'vector_search' object, got %T: %v", resp["vector_search"], resp["vector_search"])
 	}
 
-	active, ok := vs["active"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected 'vector_search.active' object, got %T", vs["active"])
+	if got := vs["enabled"]; got != true {
+		t.Errorf("enabled = %v, want true", got)
+	}
+	if got := vs["pending_embeddings_total"]; got != float64(7) {
+		t.Errorf("pending_embeddings_total = %v, want 7", got)
 	}
 
-	if got := active["embedding_count"]; got != float64(100) {
-		t.Errorf("embedding_count = %v, want 100", got)
+	active, ok := vs["active_generation"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected 'vector_search.active_generation' object, got %T", vs["active_generation"])
+	}
+
+	if got := active["message_count"]; got != float64(100) {
+		t.Errorf("message_count = %v, want 100", got)
 	}
 	if got := active["model"]; got != "nomic-embed" {
 		t.Errorf("model = %v, want 'nomic-embed'", got)
@@ -1590,8 +1597,17 @@ func TestHandleStats_VectorEnabledWithActive(t *testing.T) {
 	if got := active["id"]; got != float64(5) {
 		t.Errorf("id = %v, want 5", got)
 	}
+	if got := active["dimension"]; got != float64(768) {
+		t.Errorf("dimension = %v, want 768", got)
+	}
+	if got := active["fingerprint"]; got != "nomic-embed:768" {
+		t.Errorf("fingerprint = %v, want 'nomic-embed:768'", got)
+	}
+	if got := active["state"]; got != "active" {
+		t.Errorf("state = %v, want 'active'", got)
+	}
 
-	if _, exists := vs["building"]; exists {
-		t.Error("expected 'building' to be absent when there is no building generation")
+	if _, exists := vs["building_generation"]; exists {
+		t.Error("expected 'building_generation' to be absent when there is no building generation")
 	}
 }

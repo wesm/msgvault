@@ -713,6 +713,15 @@ func (h *handlers) listMessages(ctx context.Context, req mcp.CallToolRequest) (*
 	return jsonResult(results)
 }
 
+// getStatsResponse is the JSON body returned by the get_stats MCP tool.
+// VectorSearch is omitempty so archives without vector search do not
+// surface an empty sub-object to callers.
+type getStatsResponse struct {
+	Stats        *query.TotalStats   `json:"stats"`
+	Accounts     []query.AccountInfo `json:"accounts"`
+	VectorSearch *vector.StatsView   `json:"vector_search,omitempty"`
+}
+
 func (h *handlers) getStats(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	stats, err := h.engine.GetTotalStats(ctx, query.StatsOptions{})
 	if err != nil {
@@ -724,15 +733,19 @@ func (h *handlers) getStats(ctx context.Context, _ mcp.CallToolRequest) (*mcp.Ca
 		return mcp.NewToolResultError(fmt.Sprintf("accounts failed: %v", err)), nil
 	}
 
-	resp := struct {
-		Stats    *query.TotalStats   `json:"stats"`
-		Accounts []query.AccountInfo `json:"accounts"`
-	}{
-		Stats:    stats,
-		Accounts: accounts,
+	// Vector stats are best-effort. Partial failures yield nil/zero
+	// sub-fields; only a hard error from ActiveGeneration (other than
+	// ErrNoActiveGeneration) produces a non-nil vsErr.
+	vs, vsErr := vector.CollectStats(ctx, h.backend)
+	if vsErr != nil {
+		fmt.Fprintf(os.Stderr, "mcp: vector stats failed: %v\n", vsErr)
 	}
 
-	return jsonResult(resp)
+	return jsonResult(getStatsResponse{
+		Stats:        stats,
+		Accounts:     accounts,
+		VectorSearch: vs,
+	})
 }
 
 func (h *handlers) aggregate(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
