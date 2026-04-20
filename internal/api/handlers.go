@@ -131,11 +131,14 @@ type generationSummary struct {
 	State       string `json:"state"`
 }
 
-// hybridSearchItem is a single hit in a vector/hybrid response. The
-// embedded APIMessage carries the standard message fields; Score is
-// present only when explain=1 was requested.
+// hybridSearchItem is a single hit in a vector/hybrid response. It
+// embeds MessageSummary (not APIMessage) so the JSON schema matches
+// /api/v1/search's summary surface — callers get the same snake-case
+// fields, and we do not leak full message bodies, headers, or
+// attachment metadata in search results. Score is present only when
+// explain=1 was requested.
 type hybridSearchItem struct {
-	APIMessage
+	MessageSummary
 	Score *scoreBreakdown `json:"score,omitempty"`
 }
 
@@ -403,6 +406,18 @@ func (s *Server) handleHybridSearch(
 	start := time.Now()
 
 	parsed := search.Parse(q)
+	freeText := strings.Join(parsed.TextTerms, " ")
+	// Vector/hybrid search requires text to embed; filter-only
+	// queries have no query vector to rank by. Callers that want
+	// pure structured filtering should use mode=fts instead of
+	// falling through to a 500 from the engine's "empty query"
+	// rejection.
+	if freeText == "" {
+		writeError(w, http.StatusBadRequest, "missing_free_text",
+			"mode=vector|hybrid requires at least one free-text term; use mode=fts for filter-only queries")
+		return
+	}
+
 	subjectTerms := make([]string, 0, len(parsed.TextTerms))
 	for _, t := range parsed.TextTerms {
 		subjectTerms = append(subjectTerms, strings.ToLower(t))
@@ -417,7 +432,7 @@ func (s *Server) handleHybridSearch(
 
 	req := hybrid.SearchRequest{
 		Mode:         hybrid.Mode(mode),
-		FreeText:     strings.Join(parsed.TextTerms, " "),
+		FreeText:     freeText,
 		Filter:       filter,
 		Limit:        pageSize,
 		SubjectTerms: subjectTerms,
@@ -454,7 +469,7 @@ func (s *Server) handleHybridSearch(
 		if msg == nil {
 			continue
 		}
-		item := hybridSearchItem{APIMessage: *msg}
+		item := hybridSearchItem{MessageSummary: toMessageSummary(*msg)}
 		if explain {
 			sb := &scoreBreakdown{
 				RRF:            h.RRFScore,
