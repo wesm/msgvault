@@ -157,8 +157,9 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # sqlite-vec's CGo bindings need sqlite3.h at compile time; see
-      # .github/workflows/ci.yml for context.
+      # sqlite-vec's CGo bindings need sqlite3.h at compile time and
+      # arrow-go/v18's cdata helpers need GNU89 inline semantics on
+      # MinGW; see .github/workflows/ci.yml for details.
       - name: Install sqlite3 dev headers
         shell: pwsh
         run: |
@@ -169,7 +170,7 @@ jobs:
           GOOS: windows
           GOARCH: amd64
           CGO_ENABLED: '1'
-          CGO_CFLAGS: "-IC:/msys64/mingw64/include"
+          CGO_CFLAGS: "-IC:/msys64/mingw64/include -fgnu89-inline"
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
 

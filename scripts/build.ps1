@@ -24,7 +24,10 @@ $ldflags = @(
 
 $env:CGO_ENABLED = 1
 if (-not $env:CGO_CFLAGS -and (Test-Path "C:\msys64\mingw64\include\sqlite3.h")) {
-    $env:CGO_CFLAGS = "-IC:/msys64/mingw64/include"
+    # -fgnu89-inline works around arrow-go/v18 cdata helpers relying on
+    # GNU-style inline; without it MinGW 15+ leaves ArrowArrayIsReleased
+    # and friends undefined at link time.
+    $env:CGO_CFLAGS = "-IC:/msys64/mingw64/include -fgnu89-inline"
 }
 
 Write-Host "Building msgvault $version ($commit)..."
