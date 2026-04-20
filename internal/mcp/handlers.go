@@ -466,13 +466,10 @@ func (h *handlers) findSimilarMessages(ctx context.Context, req mcp.CallToolRequ
 
 // filterFromFindSimilarArgs builds a vector.Filter from the
 // find_similar_messages args. Returns an error if account lookup fails.
-//
-// The schema accepts `from` and `label` filters (per plan §T24) but
-// applying them requires resolving participant/label names to IDs
-// against the main DB — and this handlers struct does not hold a direct
-// *sql.DB. For T24 we accept those args silently without applying them;
-// T27 may wire a DB handle through here so sender/label filters can be
-// resolved.
+// Sender/label filters are intentionally not exposed — resolving
+// participant/label names to IDs requires a main-DB handle that the
+// MCP handlers struct does not currently hold. A future task that
+// wires the DB through can extend both the schema and this helper.
 func (h *handlers) filterFromFindSimilarArgs(ctx context.Context, args map[string]any) (vector.Filter, error) {
 	var f vector.Filter
 
