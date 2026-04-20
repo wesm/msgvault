@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -68,9 +70,11 @@ type embeddingResponse struct {
 
 // Embed returns one vector per input, in input order. Empty input is a no-op
 // and returns (nil, nil) without making an HTTP call. Every returned vector
-// is verified to match cfg.Dimension. Transient 5xx and network errors are
-// retried with exponential backoff up to cfg.MaxRetries total attempts; 4xx
-// responses fail immediately.
+// is verified to match cfg.Dimension. Transient errors — 5xx responses, 429
+// Too Many Requests, network failures, and body-read / decode hiccups — are
+// retried with exponential backoff up to cfg.MaxRetries total attempts. A
+// 429 response's Retry-After header (when present and parseable) overrides
+// the backoff for that attempt. Other 4xx responses fail immediately.
 func (c *Client) Embed(ctx context.Context, inputs []string) ([][]float32, error) {
 	if len(inputs) == 0 {
 		return nil, nil
@@ -95,6 +99,9 @@ func (c *Client) Embed(ctx context.Context, inputs []string) ([][]float32, error
 			break
 		}
 		backoff := time.Duration(1<<attempt) * 100 * time.Millisecond
+		if re.retryAfter > 0 {
+			backoff = re.retryAfter
+		}
 		select {
 		case <-ctx.Done():
 			return nil, fmt.Errorf("embed: context canceled during backoff: %w", ctx.Err())
@@ -123,6 +130,14 @@ func (c *Client) doOnce(ctx context.Context, body []byte, want int) ([][]float32
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == http.StatusTooManyRequests {
+		// 429 is a transient rate-limit signal. Honor Retry-After
+		// when the server provides it so we don't thrash.
+		return nil, &retryError{
+			err:        fmt.Errorf("embed: HTTP 429 (rate limited)"),
+			retryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+		}
+	}
 	if resp.StatusCode >= 500 {
 		return nil, &retryError{err: fmt.Errorf("embed: HTTP %d", resp.StatusCode)}
 	}
@@ -132,7 +147,11 @@ func (c *Client) doOnce(ctx context.Context, body []byte, want int) ([][]float32
 
 	var r embeddingResponse
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+		// Body read/decode failures usually mean the connection
+		// dropped mid-stream (unexpected EOF, deadline hit while
+		// reading). Treat as transient so a healthy retry can
+		// succeed rather than failing the whole batch.
+		return nil, &retryError{err: fmt.Errorf("decode response: %w", err)}
 	}
 	vecs := make([][]float32, want)
 	for _, d := range r.Data {
@@ -154,9 +173,44 @@ func (c *Client) doOnce(ctx context.Context, body []byte, want int) ([][]float32
 }
 
 // retryError wraps a transient error. Callers use errors.As to detect it.
+// retryAfter is an optional server-specified delay (from a 429 Retry-After
+// header). Zero means "use the default backoff".
 type retryError struct {
-	err error
+	err        error
+	retryAfter time.Duration
 }
 
 func (e *retryError) Error() string { return e.err.Error() }
 func (e *retryError) Unwrap() error { return e.err }
+
+// parseRetryAfter parses an HTTP Retry-After header (RFC 7231 §7.1.3),
+// which may be either a non-negative delta-seconds integer or an
+// HTTP-date. Unparseable values and values in the past return 0, which
+// tells the caller to fall back to its default backoff. A very large
+// delta is capped to one hour so a misbehaving server can't stall a
+// worker indefinitely.
+func parseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	const maxWait = time.Hour
+	if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+		d := time.Duration(secs) * time.Second
+		if d > maxWait {
+			return maxWait
+		}
+		return d
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		d := time.Until(t)
+		if d <= 0 {
+			return 0
+		}
+		if d > maxWait {
+			return maxWait
+		}
+		return d
+	}
+	return 0
+}

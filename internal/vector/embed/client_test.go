@@ -261,6 +261,148 @@ func TestClient_Embed_MissingIndex(t *testing.T) {
 	}
 }
 
+// TestClient_Embed_Retries429 verifies 429 Too Many Requests is
+// treated as transient and retried rather than failing immediately.
+func TestClient_Embed_Retries429(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n < 2 {
+			http.Error(w, "slow down", http.StatusTooManyRequests)
+			return
+		}
+		writeEmbeddings(t, w, [][]float32{{0.1, 0.2, 0.3}})
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{Endpoint: srv.URL, Model: "m", Dimension: 3, MaxRetries: 3})
+	vecs, err := c.Embed(context.Background(), []string{"a"})
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Errorf("attempts=%d want 2 (retry after 429)", got)
+	}
+	if len(vecs) != 1 || len(vecs[0]) != 3 {
+		t.Errorf("unexpected vecs: %v", vecs)
+	}
+}
+
+// TestClient_Embed_HonorsRetryAfterOverridesBackoff verifies that a
+// long Retry-After value stretches the retry wait past the default
+// exponential backoff. Cancelling the context mid-wait must return
+// a context-cancel error rather than racing the default-backoff
+// deadline.
+func TestClient_Embed_HonorsRetryAfterOverridesBackoff(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Retry-After", "30") // much longer than default 200ms
+		http.Error(w, "rl", http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{Endpoint: srv.URL, Model: "m", Dimension: 3, MaxRetries: 3})
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	_, err := c.Embed(ctx, []string{"a"})
+	elapsed := time.Since(start)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+	// Should be interrupted at ~100ms by the cancel, well before
+	// 30s. A test failure here would mean Retry-After wasn't
+	// honored and the default backoff completed first.
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("elapsed=%v, want <500ms (cancel during Retry-After wait)", elapsed)
+	}
+	// One attempt plus possibly a second before cancel; never
+	// enough to finish the Retry-After window.
+	if got := attempts.Load(); got > 2 {
+		t.Errorf("attempts=%d, want <=2 (Retry-After should extend the wait)", got)
+	}
+}
+
+// TestClient_Embed_RetriesTruncatedBody verifies a truncated JSON
+// response is treated as transient. Mid-stream cutoffs are common
+// when the server hits a deadline, and the old code failed them
+// outright.
+func TestClient_Embed_RetriesTruncatedBody(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if n < 2 {
+			// Write a prefix then cut the connection mid-JSON.
+			_, _ = w.Write([]byte(`{"data": [{"embedd`))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			if h, ok := w.(http.Hijacker); ok {
+				conn, _, err := h.Hijack()
+				if err == nil {
+					_ = conn.Close()
+				}
+			}
+			return
+		}
+		writeEmbeddings(t, w, [][]float32{{0.1, 0.2, 0.3}})
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{Endpoint: srv.URL, Model: "m", Dimension: 3, MaxRetries: 3})
+	vecs, err := c.Embed(context.Background(), []string{"a"})
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Errorf("attempts=%d want 2 (retry after truncated body)", got)
+	}
+	if len(vecs) != 1 {
+		t.Fatalf("len(vecs)=%d want 1", len(vecs))
+	}
+}
+
+// TestClient_parseRetryAfter covers the three Retry-After formats
+// (seconds, HTTP-date, unparseable) and the cap that protects
+// against absurd server-supplied values.
+func TestClient_parseRetryAfter(t *testing.T) {
+	cases := []struct {
+		in   string
+		zero bool // expect zero (fall back to default backoff)
+	}{
+		{"", true},
+		{"   ", true},
+		{"abc", true},
+		{"-5", true},
+		{"0", false},
+		{"2", false},
+	}
+	for _, c := range cases {
+		got := parseRetryAfter(c.in)
+		if c.zero && got != 0 {
+			t.Errorf("parseRetryAfter(%q)=%v, want 0", c.in, got)
+		}
+		if !c.zero && got < 0 {
+			t.Errorf("parseRetryAfter(%q)=%v, want >= 0", c.in, got)
+		}
+	}
+	// Cap: 7200 seconds is capped to 1 hour.
+	if got := parseRetryAfter("7200"); got != time.Hour {
+		t.Errorf("parseRetryAfter(7200)=%v, want 1h cap", got)
+	}
+	// HTTP-date: one second in the future is a non-zero positive
+	// duration well under the cap.
+	future := time.Now().Add(5 * time.Second).UTC().Format(http.TimeFormat)
+	if got := parseRetryAfter(future); got <= 0 || got > time.Hour {
+		t.Errorf("parseRetryAfter(%q)=%v, want (0, 1h]", future, got)
+	}
+}
+
 func TestClient_Embed_InvalidIndex(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Return index 5 for a 1-input request.
