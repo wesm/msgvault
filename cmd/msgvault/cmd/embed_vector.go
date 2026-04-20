@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,26 +44,19 @@ func runEmbed(ctx context.Context) error {
 	}
 	defer func() { _ = backend.Close() }()
 
-	var gen vector.GenerationID
-	if embedFullRebuild {
-		if !embedYes {
-			if !confirmEmbed("Start a full rebuild? This builds a new generation and atomically swaps it in when complete. ") {
-				return fmt.Errorf("aborted")
-			}
-		}
-		gen, err = backend.CreateGeneration(ctx, cfg.Vector.Embeddings.Model, cfg.Vector.Embeddings.Dimension)
-		if err != nil {
-			return fmt.Errorf("create generation: %w", err)
-		}
-		fmt.Fprintf(os.Stderr, "Created building generation %d (%s:%d).\n",
-			gen, cfg.Vector.Embeddings.Model, cfg.Vector.Embeddings.Dimension)
-	} else {
-		active, err := vector.ResolveActive(ctx, backend, cfg.Vector.Embeddings)
-		if err != nil {
-			return fmt.Errorf("resolve active generation: %w (hint: run with --full-rebuild to start)", err)
-		}
-		gen = active.ID
-		fmt.Fprintf(os.Stderr, "Using active generation %d (%s).\n", gen, active.Fingerprint)
+	gen, rebuildInProgress, err := pickEmbedGeneration(ctx, backend, embedGenerationOpts{
+		FullRebuild: embedFullRebuild,
+		Model:       cfg.Vector.Embeddings.Model,
+		Dimension:   cfg.Vector.Embeddings.Dimension,
+		Fingerprint: cfg.Vector.Embeddings.Fingerprint(),
+		Confirm: func() bool {
+			return embedYes ||
+				confirmEmbed("Start a full rebuild? This builds a new generation and atomically swaps it in when complete. ")
+		},
+		Stderr: os.Stderr,
+	})
+	if err != nil {
+		return err
 	}
 
 	client := embed.NewClient(embed.Config{
@@ -99,7 +93,11 @@ func runEmbed(ctx context.Context) error {
 	fmt.Printf("Claimed: %d, succeeded: %d, failed: %d, truncated: %d\n",
 		res.Claimed, res.Succeeded, res.Failed, res.Truncated)
 
-	if embedFullRebuild && res.Failed == 0 {
+	// Activation is a function of the generation's final state, not
+	// of the cumulative retry counter — transient failures that the
+	// worker later recovers from must not block activation, and an
+	// active generation must not be re-activated.
+	if rebuildInProgress {
 		remaining, err := pendingCount(ctx, backend.DB(), gen)
 		if err != nil {
 			return fmt.Errorf("count pending: %w", err)
@@ -116,6 +114,80 @@ func runEmbed(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// embedGenerationOpts bundles the inputs pickEmbedGeneration needs.
+// Externalized so tests can drive the logic without the command-line
+// globals.
+type embedGenerationOpts struct {
+	FullRebuild bool
+	Model       string
+	Dimension   int
+	Fingerprint string // must equal Model:Dimension
+	// Confirm is only called when FullRebuild is true. Returns
+	// true if the user agreed to proceed.
+	Confirm func() bool
+	Stderr  *os.File
+}
+
+// pickEmbedGeneration resolves which generation this embed run
+// should target. Returns (gen, rebuildInProgress, err):
+//
+//   - FullRebuild: prompt for confirmation, then call
+//     CreateGeneration. That call reuses an existing building
+//     generation with the matching fingerprint (so interrupted
+//     rebuilds resume cleanly), or returns ErrBuildingInProgress
+//     for a mismatch.
+//   - default mode with an active generation: target it (incremental
+//     top-up).
+//   - default mode with no active but a building generation: resume
+//     the building one. This path is the "run embed again to finish"
+//     recovery flow — previously impossible because ResolveActive
+//     returned ErrIndexBuilding and embed_vector would refuse to
+//     proceed.
+//   - otherwise: error with a hint to use --full-rebuild.
+//
+// rebuildInProgress is true whenever the target is a building
+// generation; activation is considered only in that case.
+func pickEmbedGeneration(ctx context.Context, backend vector.Backend, opts embedGenerationOpts) (vector.GenerationID, bool, error) {
+	if opts.FullRebuild {
+		if opts.Confirm != nil && !opts.Confirm() {
+			return 0, false, fmt.Errorf("aborted")
+		}
+		gen, err := backend.CreateGeneration(ctx, opts.Model, opts.Dimension)
+		if err != nil {
+			return 0, false, fmt.Errorf("create generation: %w", err)
+		}
+		fmt.Fprintf(opts.Stderr, "Building generation %d (%s:%d).\n",
+			gen, opts.Model, opts.Dimension)
+		return gen, true, nil
+	}
+
+	active, err := vector.ResolveActiveForFingerprint(ctx, backend, opts.Fingerprint)
+	switch {
+	case err == nil:
+		fmt.Fprintf(opts.Stderr, "Using active generation %d (%s).\n", active.ID, active.Fingerprint)
+		return active.ID, false, nil
+	case errors.Is(err, vector.ErrIndexBuilding):
+		building, bErr := backend.BuildingGeneration(ctx)
+		if bErr != nil {
+			return 0, false, fmt.Errorf("lookup building generation: %w", bErr)
+		}
+		if building == nil {
+			// ResolveActive said building but no row — race with a
+			// concurrent Retire/Activate. Fall through to the error.
+			return 0, false, fmt.Errorf("resolve active generation: %w (hint: run with --full-rebuild to start)", err)
+		}
+		if building.Fingerprint != opts.Fingerprint {
+			return 0, false, fmt.Errorf("in-progress rebuild has fingerprint=%q, config has %q — activate or retire it before running with a different model",
+				building.Fingerprint, opts.Fingerprint)
+		}
+		fmt.Fprintf(opts.Stderr, "Resuming building generation %d (%s).\n",
+			building.ID, building.Fingerprint)
+		return building.ID, true, nil
+	default:
+		return 0, false, fmt.Errorf("resolve active generation: %w (hint: run with --full-rebuild to start)", err)
+	}
 }
 
 func pendingCount(ctx context.Context, db *sql.DB, gen vector.GenerationID) (int, error) {
