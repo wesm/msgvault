@@ -36,11 +36,12 @@ type WorkerDeps struct {
 	StaleThreshold time.Duration
 	// EmbedTimeout and EmbedMaxRetries inform the StaleThreshold
 	// auto-derivation: a single batch can legitimately stay claimed for
-	// up to Timeout × (MaxRetries + 1) before the worker gives up, so
-	// reclaim must wait longer than that to avoid reclaiming live work.
-	// Both are read only when StaleThreshold is zero. Zero means
-	// "fall back to whatever defaults config.ApplyDefaults uses (30s,
-	// 3 retries)" — see derivedStaleThreshold.
+	// up to Timeout × MaxRetries (MaxRetries is the embed.Client's
+	// total-attempts count, not retries-after-the-first) before the
+	// worker gives up, so reclaim must wait longer than that to avoid
+	// reclaiming live work. Both are read only when StaleThreshold is
+	// zero; EmbedMaxRetries=0 is normalized to 3 to match
+	// embed.NewClient's default — see derivedStaleThreshold.
 	EmbedTimeout    time.Duration
 	EmbedMaxRetries int
 	// MaxConsecutiveFailures caps the number of consecutive batch
@@ -82,18 +83,20 @@ func NewWorker(d WorkerDeps) *Worker {
 // derivedStaleThreshold picks a default StaleThreshold from the
 // embedder's per-request timeout and retry count, with a 10-minute
 // floor. A claim must outlive at least one full retry budget
-// (timeout × (retries + 1)) — anything less risks ReclaimStale
-// pulling rows out from under a still-running embed call, which
-// would then race a concurrent worker on the same batch and leave
-// stale Complete tokens. The 2× safety factor absorbs scheduler
-// jitter and pre/post-call overhead. The floor preserves the
-// historical default for the common case (Timeout=30s × 3 retries =
-// 4 minutes derived; floor wins).
+// (timeout × attempts) — anything less risks ReclaimStale pulling
+// rows out from under a still-running embed call, which would then
+// race a concurrent worker on the same batch and leave stale
+// Complete tokens. The 2× safety factor absorbs scheduler jitter
+// and pre/post-call overhead. The floor preserves the historical
+// default for the common case (Timeout=30s × 3 attempts = 3 minutes
+// derived; floor wins).
 //
-// maxRetries == 0 is normalized to 3 to mirror embed.NewClient's
+// maxRetries here matches embed.Client's MaxRetries semantics: it is
+// the TOTAL number of HTTP attempts (not retries-after-the-first).
+// A zero value is normalized to 3 to mirror embed.NewClient's
 // default. Without this, callers that set EmbedTimeout but leave
 // EmbedMaxRetries at its zero value would derive a budget for a
-// single attempt, while the client would actually try up to four
+// single attempt, while the client would actually try up to three
 // times — and ReclaimStale could pull live claims out from under a
 // retrying embed call.
 func derivedStaleThreshold(timeout time.Duration, maxRetries int) time.Duration {
@@ -101,10 +104,10 @@ func derivedStaleThreshold(timeout time.Duration, maxRetries int) time.Duration 
 	if timeout <= 0 {
 		return floor
 	}
-	if maxRetries == 0 {
-		maxRetries = 3
+	attempts := maxRetries
+	if attempts == 0 {
+		attempts = 3
 	}
-	attempts := maxRetries + 1
 	if attempts < 1 {
 		attempts = 1
 	}

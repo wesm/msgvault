@@ -75,8 +75,11 @@ type ServerOptions struct {
 	Scheduler    SyncScheduler
 	Logger       *slog.Logger
 	// RequestTimeout caps each request via chi's gentle Timeout
-	// middleware. Zero defaults to 60s. Tests use a much shorter value
-	// to exercise the chi-timeout-fires path.
+	// middleware. Zero defaults to 60s. The underlying http.Server's
+	// WriteTimeout is set to RequestTimeout + 5s so the chi timeout
+	// always fires first, preserving the structured error response.
+	// Tests use a much shorter value to exercise the chi-timeout-fires
+	// path.
 	RequestTimeout time.Duration
 }
 
@@ -206,11 +209,18 @@ func (s *Server) Start() error {
 		s.logger.Warn("API server running without authentication — set [server] api_key in config.toml")
 	}
 
+	// WriteTimeout must comfortably exceed the chi request timeout so
+	// the inner timeout always fires first; otherwise a request whose
+	// chi deadline equals the server WriteTimeout could lose the race
+	// and have its TCP connection torn down before the structured
+	// error response reaches the client. The 5s buffer covers chi's
+	// deferred WriteHeader plus response flush overhead.
+	writeTimeout := s.requestTimeout + 5*time.Second
 	s.server = &http.Server{
 		Addr:         addr,
 		Handler:      s.router,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		WriteTimeout: writeTimeout,
 		IdleTimeout:  120 * time.Second,
 	}
 

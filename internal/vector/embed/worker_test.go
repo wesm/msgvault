@@ -18,15 +18,15 @@ func TestDerivedStaleThreshold(t *testing.T) {
 		want       time.Duration
 	}{
 		{"zero timeout returns floor", 0, 3, 10 * time.Minute},
-		{"small budget keeps floor", 30 * time.Second, 3, 10 * time.Minute},         // 2*30s*4 = 4m → floor wins
-		{"large timeout exceeds floor", 5 * time.Minute, 3, 40 * time.Minute},       // 2*5m*4 = 40m
-		{"high retries scale", 30 * time.Second, 30, 31 * time.Minute},              // 2*30s*31 = 31m
-		{"negative retries treated as 1 attempt", 1 * time.Hour, -5, 2 * time.Hour}, // 2*1h*1 = 2h, exceeds floor
+		{"small budget keeps floor", 30 * time.Second, 3, 10 * time.Minute},          // 2*30s*3 = 3m → floor wins
+		{"large timeout exceeds floor", 5 * time.Minute, 3, 30 * time.Minute},        // 2*5m*3 = 30m
+		{"high attempts scale", 30 * time.Second, 30, 30 * time.Minute},              // 2*30s*30 = 30m
+		{"negative attempts treated as 1 attempt", 1 * time.Hour, -5, 2 * time.Hour}, // 2*1h*1 = 2h, exceeds floor
 		// Regression: callers that set EmbedTimeout but leave
 		// EmbedMaxRetries at zero used to derive a budget for a single
 		// attempt (2*10m*1 = 20m). The fix mirrors embed.NewClient's
-		// default of 3 retries → 4 attempts → 80m.
-		{"zero retries mirrors client default", 10 * time.Minute, 0, 80 * time.Minute},
+		// default of 3 total attempts → 60m.
+		{"zero attempts mirror client default", 10 * time.Minute, 0, 60 * time.Minute},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
