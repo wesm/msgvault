@@ -31,4 +31,10 @@ var (
 	// ErrUnknownGeneration is returned when a caller references a
 	// generation ID that does not exist in index_generations.
 	ErrUnknownGeneration = errors.New("unknown generation")
+
+	// ErrBuildingInProgress is returned when CreateGeneration is called
+	// while another generation is already being built with a different
+	// fingerprint, so the caller can surface an actionable message
+	// instead of a raw unique-index violation.
+	ErrBuildingInProgress = errors.New("a rebuild with a different fingerprint is already in progress")
 )

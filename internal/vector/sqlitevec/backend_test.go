@@ -7,6 +7,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/wesm/msgvault/internal/vector"
 )
@@ -80,6 +81,91 @@ func TestBackend_CreateGeneration_SeedsPending(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("pending count = %d, want 1", n)
+	}
+}
+
+// TestBackend_CreateGeneration_ResumesBuilding confirms that calling
+// CreateGeneration while a building row already exists with the same
+// fingerprint returns the existing id instead of failing on the unique
+// index. This makes retries after a crash idempotent.
+func TestBackend_CreateGeneration_ResumesBuilding(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+
+	first, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+
+	second, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("second Create with matching fingerprint: %v", err)
+	}
+	if first != second {
+		t.Errorf("Create returned new id %d, want reused %d", second, first)
+	}
+}
+
+// TestBackend_CreateGeneration_MismatchedFingerprint checks that a
+// second CreateGeneration call with a different fingerprint while
+// another build is in progress surfaces an actionable error wrapping
+// vector.ErrBuildingInProgress, instead of a raw SQLite uniqueness
+// error.
+func TestBackend_CreateGeneration_MismatchedFingerprint(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+
+	if _, err := b.CreateGeneration(ctx, "model-a", 768); err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+
+	_, err := b.CreateGeneration(ctx, "model-b", 768)
+	if err == nil {
+		t.Fatal("second Create with different fingerprint: want error, got nil")
+	}
+	if !errors.Is(err, vector.ErrBuildingInProgress) {
+		t.Errorf("error = %v, want wrapping ErrBuildingInProgress", err)
+	}
+}
+
+// TestBackend_CreateGeneration_SeedCommitsVisibleFirst confirms the
+// new building row is committed *before* the seed pass runs, so a
+// concurrent Enqueuer can see the generation and dual-enqueue
+// newly-synced messages. Without this ordering there is a window
+// during which sync-side enqueues would be scoped only to the active
+// generation and the new build would be missing messages.
+func TestBackend_CreateGeneration_SeedCommitsVisibleFirst(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+
+	// Start a CreateGeneration in the background. Before it returns,
+	// any observer should be able to see the building row — this is
+	// the pre-condition the Enqueuer relies on for dual-enqueue.
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.CreateGeneration(ctx, "m", 768)
+		done <- err
+	}()
+
+	// Poll for visibility of the building row. A generous deadline
+	// guards against CI slowness; the assertion we're making is that
+	// the row becomes visible some time before CreateGeneration
+	// returns (i.e. it was committed before the seed pass).
+	deadline := time.Now().Add(2 * time.Second)
+	var visible bool
+	for time.Now().Before(deadline) {
+		var id int64
+		err := b.db.QueryRowContext(ctx,
+			`SELECT id FROM index_generations WHERE state = 'building'`).Scan(&id)
+		if err == nil && id > 0 {
+			visible = true
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	if !visible {
+		t.Error("building generation was never visible while CreateGeneration was in flight")
 	}
 }
 

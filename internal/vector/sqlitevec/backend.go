@@ -68,8 +68,19 @@ func (b *Backend) DB() *sql.DB { return b.db }
 // Path returns the filesystem path of vectors.db.
 func (b *Backend) Path() string { return b.path }
 
-// CreateGeneration allocates a new building generation and seeds
-// pending_embeddings in the same transaction (§5.1 of the spec).
+// CreateGeneration allocates a new building generation (§5.1 of the
+// spec) and seeds pending_embeddings with every currently-embeddable
+// message. If a building generation already exists with the same
+// fingerprint, returns its id so a crashed or interrupted rebuild can
+// resume. A mismatched fingerprint returns an error wrapping
+// vector.ErrBuildingInProgress so the caller can surface an actionable
+// message rather than a raw unique-index violation.
+//
+// Concurrency note: the new building generation is committed *before*
+// seeding so that a concurrent Enqueuer (driven by sync) immediately
+// sees the new generation and dual-enqueues newly-synced messages. The
+// seed loop then uses INSERT OR IGNORE, so any rows the Enqueuer has
+// already written are silently de-duplicated and nothing is missed.
 func (b *Backend) CreateGeneration(ctx context.Context, model string, dim int) (vector.GenerationID, error) {
 	if err := EnsureVectorTable(ctx, b.db, dim); err != nil {
 		return 0, err
@@ -77,13 +88,43 @@ func (b *Backend) CreateGeneration(ctx context.Context, model string, dim int) (
 	fp := fmt.Sprintf("%s:%d", model, dim)
 	now := time.Now().Unix()
 
-	tx, err := b.db.BeginTx(ctx, nil)
+	gen, err := b.claimOrInsertBuilding(ctx, model, dim, fp, now)
 	if err != nil {
 		return 0, err
 	}
-	defer func() { _ = tx.Rollback() }()
 
-	res, err := tx.ExecContext(ctx,
+	if err := b.seedPending(ctx, gen, now); err != nil {
+		return 0, err
+	}
+	return gen, nil
+}
+
+// claimOrInsertBuilding returns the id of the building generation.
+// Reuses an existing row when its fingerprint matches, otherwise
+// inserts a new row in its own short-lived transaction so the rest of
+// the world can see it immediately.
+func (b *Backend) claimOrInsertBuilding(ctx context.Context, model string, dim int, fp string, now int64) (vector.GenerationID, error) {
+	var (
+		id         int64
+		existingFP string
+	)
+	err := b.db.QueryRowContext(ctx,
+		`SELECT id, fingerprint FROM index_generations WHERE state = 'building'`).
+		Scan(&id, &existingFP)
+	switch {
+	case err == nil:
+		if existingFP != fp {
+			return 0, fmt.Errorf("%w: existing building fingerprint=%q, requested=%q — activate or retire it before starting a new rebuild",
+				vector.ErrBuildingInProgress, existingFP, fp)
+		}
+		return vector.GenerationID(id), nil
+	case errors.Is(err, sql.ErrNoRows):
+		// fall through to insert
+	default:
+		return 0, fmt.Errorf("lookup building generation: %w", err)
+	}
+
+	res, err := b.db.ExecContext(ctx,
 		`INSERT INTO index_generations
 		 (model, dimension, fingerprint, started_at, state)
 		 VALUES (?, ?, ?, ?, 'building')`,
@@ -91,24 +132,20 @@ func (b *Backend) CreateGeneration(ctx context.Context, model string, dim int) (
 	if err != nil {
 		return 0, fmt.Errorf("insert generation: %w", err)
 	}
-	id, err := res.LastInsertId()
+	newID, err := res.LastInsertId()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("new generation id: %w", err)
 	}
-
-	if err := b.seedPending(ctx, tx, vector.GenerationID(id), now); err != nil {
-		return 0, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return vector.GenerationID(id), nil
+	return vector.GenerationID(newID), nil
 }
 
 // seedPending inserts one pending_embeddings row per non-deleted
-// message in the main DB.
-func (b *Backend) seedPending(ctx context.Context, tx *sql.Tx, gen vector.GenerationID, now int64) error {
+// message in the main DB. Uses INSERT OR IGNORE so rows that the
+// Enqueuer already added for this generation (via the dual-enqueue
+// path) are silently de-duplicated, and the operation is safe to
+// retry if interrupted. Runs under a single vectors.db transaction so
+// the seed itself is atomic.
+func (b *Backend) seedPending(ctx context.Context, gen vector.GenerationID, now int64) error {
 	rows, err := b.mainDB.QueryContext(ctx,
 		`SELECT id FROM messages WHERE deleted_from_source_at IS NULL`)
 	if err != nil {
@@ -116,11 +153,17 @@ func (b *Backend) seedPending(ctx context.Context, tx *sql.Tx, gen vector.Genera
 	}
 	defer func() { _ = rows.Close() }()
 
+	tx, err := b.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin seed tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO pending_embeddings (generation_id, message_id, enqueued_at)
+		`INSERT OR IGNORE INTO pending_embeddings (generation_id, message_id, enqueued_at)
 		 VALUES (?, ?, ?)`)
 	if err != nil {
-		return err
+		return fmt.Errorf("prepare pending insert: %w", err)
 	}
 	defer func() { _ = stmt.Close() }()
 
@@ -133,7 +176,10 @@ func (b *Backend) seedPending(ctx context.Context, tx *sql.Tx, gen vector.Genera
 			return fmt.Errorf("insert pending: %w", err)
 		}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ActivateGeneration atomically retires the current active generation
