@@ -3,6 +3,7 @@ package embed
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -65,19 +66,22 @@ func (e *Enqueuer) EnqueueMessages(ctx context.Context, messageIDs []int64) erro
 		return tx.Commit()
 	}
 
-	now := time.Now().Unix()
-	stmt, err := tx.PrepareContext(ctx,
-		`INSERT OR IGNORE INTO pending_embeddings (generation_id, message_id, enqueued_at) VALUES (?, ?, ?)`)
+	// Bulk-insert one row per (gen, message) pair via a single statement
+	// per generation, expanded with json_each(message_ids). For a 5,000-
+	// message incremental batch with two non-retired generations, this
+	// is two writes against the vectors.db lock instead of 10,000 — keeps
+	// the embed worker's Claim from starving while sync flushes.
+	blob, err := json.Marshal(messageIDs)
 	if err != nil {
-		return fmt.Errorf("prepare enqueue stmt: %w", err)
+		return fmt.Errorf("encode message ids: %w", err)
 	}
-	defer func() { _ = stmt.Close() }()
-
+	now := time.Now().Unix()
 	for _, g := range gens {
-		for _, m := range messageIDs {
-			if _, err := stmt.ExecContext(ctx, g, m, now); err != nil {
-				return fmt.Errorf("insert pending (gen=%d msg=%d): %w", g, m, err)
-			}
+		if _, err := tx.ExecContext(ctx, `
+            INSERT OR IGNORE INTO pending_embeddings (generation_id, message_id, enqueued_at)
+            SELECT ?, value, ? FROM json_each(?)`,
+			g, now, string(blob)); err != nil {
+			return fmt.Errorf("insert pending (gen=%d): %w", g, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

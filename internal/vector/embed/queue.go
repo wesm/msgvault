@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -103,24 +104,17 @@ func (q *Queue) Complete(ctx context.Context, gen vector.GenerationID, token str
 	if len(ids) == 0 {
 		return nil
 	}
-	tx, err := q.db.BeginTx(ctx, nil)
+	blob, err := json.Marshal(ids)
 	if err != nil {
-		return fmt.Errorf("begin complete tx: %w", err)
+		return fmt.Errorf("encode ids: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
-	stmt, err := tx.PrepareContext(ctx,
-		`DELETE FROM pending_embeddings WHERE generation_id = ? AND message_id = ? AND claim_token = ?`)
-	if err != nil {
-		return fmt.Errorf("prepare complete: %w", err)
-	}
-	defer func() { _ = stmt.Close() }()
-	for _, id := range ids {
-		if _, err := stmt.ExecContext(ctx, int64(gen), id, token); err != nil {
-			return fmt.Errorf("delete pending (msg=%d): %w", id, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit complete: %w", err)
+	if _, err := q.db.ExecContext(ctx, `
+        DELETE FROM pending_embeddings
+         WHERE generation_id = ?
+           AND claim_token   = ?
+           AND message_id IN (SELECT value FROM json_each(?))`,
+		int64(gen), token, string(blob)); err != nil {
+		return fmt.Errorf("delete pending: %w", err)
 	}
 	return nil
 }
@@ -132,26 +126,18 @@ func (q *Queue) Release(ctx context.Context, gen vector.GenerationID, token stri
 	if len(ids) == 0 {
 		return nil
 	}
-	tx, err := q.db.BeginTx(ctx, nil)
+	blob, err := json.Marshal(ids)
 	if err != nil {
-		return fmt.Errorf("begin release tx: %w", err)
+		return fmt.Errorf("encode ids: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
-	stmt, err := tx.PrepareContext(ctx, `
+	if _, err := q.db.ExecContext(ctx, `
         UPDATE pending_embeddings
            SET claimed_at = NULL, claim_token = NULL
-         WHERE generation_id = ? AND message_id = ? AND claim_token = ?`)
-	if err != nil {
-		return fmt.Errorf("prepare release: %w", err)
-	}
-	defer func() { _ = stmt.Close() }()
-	for _, id := range ids {
-		if _, err := stmt.ExecContext(ctx, int64(gen), id, token); err != nil {
-			return fmt.Errorf("release (msg=%d): %w", id, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit release: %w", err)
+         WHERE generation_id = ?
+           AND claim_token   = ?
+           AND message_id IN (SELECT value FROM json_each(?))`,
+		int64(gen), token, string(blob)); err != nil {
+		return fmt.Errorf("release: %w", err)
 	}
 	return nil
 }
