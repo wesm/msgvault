@@ -151,7 +151,19 @@ func (s *Scheduler) RemoveAccount(email string) {
 // is empty, no cron entry is created (the job can still fire via the
 // post-sync hook when runAfterSync is true). Replacing a previously-set
 // job removes the old cron entry. Passing nil clears any existing job.
+//
+// If schedule is non-empty and invalid, the previous job and cron entry
+// are preserved and an error is returned — the call is all-or-nothing.
 func (s *Scheduler) SetEmbedJob(job *EmbedJob, schedule string, runAfterSync bool) error {
+	// Validate the cron expression before mutating any state so a bad
+	// schedule can't leave the scheduler with a half-removed previous
+	// job. ValidateCronExpr is cheap and pure.
+	if job != nil && schedule != "" {
+		if err := ValidateCronExpr(schedule); err != nil {
+			return fmt.Errorf("invalid embed cron expression %q: %w", schedule, err)
+		}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -172,7 +184,12 @@ func (s *Scheduler) SetEmbedJob(job *EmbedJob, schedule string, runAfterSync boo
 		job.Run(s.ctx)
 	})
 	if err != nil {
-		return fmt.Errorf("invalid embed cron expression %q: %w", schedule, err)
+		// ValidateCronExpr above should have caught any parse error;
+		// if AddFunc still fails here it's an internal invariant
+		// violation, not caller input. Roll back the state we mutated.
+		s.embedJob = nil
+		s.runEmbedAfterSync = false
+		return fmt.Errorf("register embed cron: %w", err)
 	}
 	s.embedEntry = entryID
 	s.embedEntrySet = true
@@ -182,8 +199,8 @@ func (s *Scheduler) SetEmbedJob(job *EmbedJob, schedule string, runAfterSync boo
 	return nil
 }
 
-// isStopped is an internal helper for cron callbacks to check the
-// stopped flag without holding a lock that the caller already holds.
+// isStopped reports s.stopped under a read lock. Used by cron
+// callbacks that only need to abort on shutdown.
 func (s *Scheduler) isStopped() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -210,6 +227,8 @@ func (s *Scheduler) IsRunning() bool {
 
 // Stop gracefully stops the scheduler, cancels running sync jobs, and waits
 // for them to finish. Returns a context that is done when all work completes.
+// Stop also waits for any post-sync embed passes that are in flight. Those
+// passes receive the cancelled s.ctx and are expected to bail quickly.
 func (s *Scheduler) Stop() context.Context {
 	s.logger.Info("scheduler stopping")
 
@@ -273,11 +292,11 @@ func (s *Scheduler) runSync(email string) {
 		return
 	}
 	var postSync *EmbedJob
-	s.mu.Lock()
+	s.mu.RLock()
 	if s.runEmbedAfterSync && s.embedJob != nil && !s.stopped {
 		postSync = s.embedJob
 	}
-	s.mu.Unlock()
+	s.mu.RUnlock()
 	if postSync != nil {
 		postSync.Run(s.ctx)
 	}

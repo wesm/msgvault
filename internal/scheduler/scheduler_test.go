@@ -636,6 +636,29 @@ func TestEmbedJob_Run_ActiveGenerationError(t *testing.T) {
 	}
 }
 
+func TestEmbedJob_Run_NilSafe(t *testing.T) {
+	// All nil-safety guards should return cleanly without panicking or
+	// calling the worker. Use a runner that panics if touched.
+	touchy := &fakeRunner{}
+	cases := []struct {
+		name string
+		job  *EmbedJob
+	}{
+		{"nil job", nil},
+		{"nil worker", &EmbedJob{Backend: &fakeBackend{}}},
+		{"nil backend", &EmbedJob{Worker: touchy}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.job.Run(context.Background())
+		})
+	}
+	_, run, _ := touchy.calls()
+	if run != 0 {
+		t.Errorf("nil-safe Run should not invoke worker; got runCalls=%d", run)
+	}
+}
+
 // ---------- SetEmbedJob tests ----------
 
 func TestScheduler_SetEmbedJob_AddsCronEntry(t *testing.T) {
@@ -689,6 +712,35 @@ func TestScheduler_SetEmbedJob_InvalidCron(t *testing.T) {
 	}
 	if s.embedEntrySet {
 		t.Error("embedEntrySet should remain false after invalid cron")
+	}
+}
+
+func TestScheduler_SetEmbedJob_InvalidReplacePreservesPrevious(t *testing.T) {
+	// After a successful SetEmbedJob, a later call with an invalid cron
+	// must leave the previous job, schedule, and post-sync flag intact.
+	s := New(func(ctx context.Context, email string) error { return nil })
+	backend := &fakeBackend{}
+	job1 := &EmbedJob{Worker: &fakeRunner{}, Backend: backend}
+	job2 := &EmbedJob{Worker: &fakeRunner{}, Backend: backend}
+
+	if err := s.SetEmbedJob(job1, "*/5 * * * *", true); err != nil {
+		t.Fatalf("SetEmbedJob(job1) = %v", err)
+	}
+	prevEntry := s.embedEntry
+
+	if err := s.SetEmbedJob(job2, "bogus cron", true); err == nil {
+		t.Fatal("SetEmbedJob(job2, invalid) = nil, want error")
+	}
+
+	if s.embedJob != job1 {
+		t.Errorf("embedJob was replaced on invalid cron; want job1")
+	}
+	if !s.runEmbedAfterSync {
+		t.Error("runEmbedAfterSync should remain true")
+	}
+	if !s.embedEntrySet || s.embedEntry != prevEntry {
+		t.Errorf("cron entry should still be job1's (entrySet=%v, entry=%v, want %v)",
+			s.embedEntrySet, s.embedEntry, prevEntry)
 	}
 }
 
@@ -790,6 +842,42 @@ func TestScheduler_RunAfterSync_DisabledDoesNotFire(t *testing.T) {
 	_, run, _ := runner.calls()
 	if run != 0 {
 		t.Errorf("RunOnce calls = %d, want 0 when runAfterSync is false", run)
+	}
+}
+
+func TestScheduler_RunAfterSync_SkipOnStopped(t *testing.T) {
+	// When a sync's post-sync window coincides with Stop(), the embed
+	// hook must skip. We gate the syncFunc on a release channel so the
+	// test can Stop the scheduler before the sync completes.
+	release := make(chan struct{})
+	s := New(func(ctx context.Context, email string) error {
+		<-release
+		return nil
+	})
+	backend := &fakeBackend{active: vector.Generation{ID: 1}}
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend}
+
+	if err := s.SetEmbedJob(job, "", true); err != nil {
+		t.Fatalf("SetEmbedJob = %v", err)
+	}
+	if err := s.AddAccount("test@gmail.com", "0 0 1 1 *"); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
+
+	s.Start()
+	if err := s.TriggerSync("test@gmail.com"); err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+
+	// Ask the scheduler to stop while the sync is still in-flight.
+	stopCtx := s.Stop()
+	close(release) // let the sync complete
+	<-stopCtx.Done()
+
+	_, run, _ := runner.calls()
+	if run != 0 {
+		t.Errorf("RunOnce calls = %d, want 0 when scheduler is stopped", run)
 	}
 }
 
