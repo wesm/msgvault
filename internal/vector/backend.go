@@ -88,6 +88,12 @@ type Backend interface {
 	Delete(ctx context.Context, gen GenerationID, messageIDs []int64) error
 	Stats(ctx context.Context, gen GenerationID) (Stats, error)
 
+	// LoadVector returns the embedding for a specific message in the
+	// active generation. Returns ErrNoActiveGeneration if none exists, or
+	// a descriptive error if the message isn't embedded in the active
+	// generation.
+	LoadVector(ctx context.Context, messageID int64) ([]float32, error)
+
 	Close() error
 }
 

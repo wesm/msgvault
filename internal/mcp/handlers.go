@@ -32,9 +32,39 @@ type handlers struct {
 
 	// Optional vector-search wiring. When hybridEngine is nil, the
 	// search_messages handler rejects mode=vector and mode=hybrid with
-	// a vector_not_enabled error.
+	// a vector_not_enabled error. backend is additionally required by
+	// the find_similar_messages handler to load seed vectors and
+	// resolve the active generation.
 	hybridEngine *hybrid.Engine
 	vectorCfg    vector.Config
+	backend      vector.Backend
+}
+
+// translateVectorErr maps well-known vector sentinel errors to MCP tool
+// error results. Returns nil if the error is not a known sentinel
+// (callers should wrap it themselves).
+func translateVectorErr(err error) *mcp.CallToolResult {
+	switch {
+	case errors.Is(err, vector.ErrNotEnabled):
+		return mcp.NewToolResultError(
+			"vector_not_enabled: vector search is not configured",
+		)
+	case errors.Is(err, vector.ErrIndexStale):
+		return mcp.NewToolResultError(
+			"index_stale: the vector index does not match the configured model; " +
+				"run `msgvault embed --full-rebuild`",
+		)
+	case errors.Is(err, vector.ErrIndexBuilding):
+		return mcp.NewToolResultError(
+			"index_building: the initial vector index is still being built",
+		)
+	case errors.Is(err, vector.ErrNoActiveGeneration):
+		return mcp.NewToolResultError(
+			"no_active_generation: vector search has no active index yet; " +
+				"run `msgvault embed` to build one",
+		)
+	}
+	return nil
 }
 
 // getAccountID looks up a source ID by email address.
@@ -262,23 +292,10 @@ func (h *handlers) searchMessagesHybrid(
 
 	hits, meta, err := h.hybridEngine.Search(ctx, req)
 	if err != nil {
-		switch {
-		case errors.Is(err, vector.ErrNotEnabled):
-			return mcp.NewToolResultError(
-				"vector_not_enabled: vector search is not configured",
-			), nil
-		case errors.Is(err, vector.ErrIndexStale):
-			return mcp.NewToolResultError(
-				"index_stale: the vector index does not match the configured model; " +
-					"run `msgvault embed --full-rebuild`",
-			), nil
-		case errors.Is(err, vector.ErrIndexBuilding):
-			return mcp.NewToolResultError(
-				"index_building: the initial vector index is still being built",
-			), nil
-		default:
-			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+		if r := translateVectorErr(err); r != nil {
+			return r, nil
 		}
+		return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 	}
 
 	items := make([]hybridMessageItem, 0, len(hits))
@@ -352,6 +369,141 @@ func messageDetailToSummary(d *query.MessageDetail) query.MessageSummary {
 		AttachmentCount: len(d.Attachments),
 		Labels:          d.Labels,
 	}
+}
+
+// similarMessagesResponse is the full response body for
+// find_similar_messages.
+type similarMessagesResponse struct {
+	SeedMessageID int64                   `json:"seed_message_id"`
+	Returned      int                     `json:"returned"`
+	Generation    hybridGenerationSummary `json:"generation"`
+	Messages      []query.MessageSummary  `json:"messages"`
+}
+
+// findSimilarMessages returns nearest-neighbour messages to a seed
+// message using the active vector index. The seed is excluded from
+// results. Structured filters (account, after, before, has_attachment)
+// are applied at the backend level.
+func (h *handlers) findSimilarMessages(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if h.backend == nil {
+		return mcp.NewToolResultError(
+			"vector_not_enabled: vector search is not configured on this server",
+		), nil
+	}
+	args := req.GetArguments()
+
+	seedID, err := getIDArg(args, "message_id")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	limit := limitArg(args, "limit", 20)
+	if maxPage := h.vectorCfg.Search.MaxPageSizeHybrid; maxPage > 0 && limit > maxPage {
+		limit = maxPage
+	}
+
+	filter, err := h.filterFromFindSimilarArgs(ctx, args)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	seed, err := h.backend.LoadVector(ctx, seedID)
+	if err != nil {
+		if r := translateVectorErr(err); r != nil {
+			return r, nil
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("load seed vector: %v", err)), nil
+	}
+
+	active, err := h.backend.ActiveGeneration(ctx)
+	if err != nil {
+		if r := translateVectorErr(err); r != nil {
+			return r, nil
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("active generation: %v", err)), nil
+	}
+
+	// +1 so we can drop the seed itself from results without coming up short.
+	hits, err := h.backend.Search(ctx, active.ID, seed, limit+1, filter)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+	}
+
+	messages := make([]query.MessageSummary, 0, limit)
+	for _, hit := range hits {
+		if hit.MessageID == seedID {
+			continue
+		}
+		if len(messages) >= limit {
+			break
+		}
+		msg, err := h.engine.GetMessage(ctx, hit.MessageID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"mcp: hydrate similar hit failed: message_id=%d error=%v\n",
+				hit.MessageID, err)
+			continue
+		}
+		if msg == nil {
+			continue
+		}
+		messages = append(messages, messageDetailToSummary(msg))
+	}
+
+	return jsonResult(similarMessagesResponse{
+		SeedMessageID: seedID,
+		Returned:      len(messages),
+		Generation: hybridGenerationSummary{
+			ID:          int64(active.ID),
+			Model:       active.Model,
+			Dimension:   active.Dimension,
+			Fingerprint: active.Fingerprint,
+			State:       string(active.State),
+		},
+		Messages: messages,
+	})
+}
+
+// filterFromFindSimilarArgs builds a vector.Filter from the
+// find_similar_messages args. Returns an error if account lookup fails.
+//
+// The schema accepts `from` and `label` filters (per plan §T24) but
+// applying them requires resolving participant/label names to IDs
+// against the main DB — and this handlers struct does not hold a direct
+// *sql.DB. For T24 we accept those args silently without applying them;
+// T27 may wire a DB handle through here so sender/label filters can be
+// resolved.
+func (h *handlers) filterFromFindSimilarArgs(ctx context.Context, args map[string]any) (vector.Filter, error) {
+	var f vector.Filter
+
+	account, _ := args["account"].(string)
+	srcID, err := h.getAccountID(ctx, account)
+	if err != nil {
+		return f, err
+	}
+	if srcID != nil {
+		f.SourceIDs = []int64{*srcID}
+	}
+
+	if v, ok := args["has_attachment"].(bool); ok && v {
+		tr := true
+		f.HasAttachment = &tr
+	}
+	after, err := getDateArg(args, "after")
+	if err != nil {
+		return f, err
+	}
+	if after != nil {
+		f.After = after
+	}
+	before, err := getDateArg(args, "before")
+	if err != nil {
+		return f, err
+	}
+	if before != nil {
+		f.Before = before
+	}
+	return f, nil
 }
 
 func (h *handlers) getMessage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

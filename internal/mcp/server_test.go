@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/query/querytest"
 	"github.com/wesm/msgvault/internal/testutil"
+	"github.com/wesm/msgvault/internal/vector"
 )
 
 // toolHandler is the function signature for MCP tool handler methods.
@@ -1090,4 +1092,167 @@ func TestStageDeletion(t *testing.T) {
 				maxStageDeletionResults, capturedFilter.Pagination.Limit)
 		}
 	})
+}
+
+// fakeBackend is a minimal vector.Backend used to exercise
+// find_similar_messages without standing up a real sqlitevec backend.
+// Only LoadVector, ActiveGeneration, and Search are exercised; the
+// remaining methods return errors and should never be called.
+type fakeBackend struct {
+	loadVec    []float32
+	loadErr    error
+	active     vector.Generation
+	activeErr  error
+	searchHits []vector.Hit
+	searchErr  error
+}
+
+func (f *fakeBackend) LoadVector(_ context.Context, _ int64) ([]float32, error) {
+	return f.loadVec, f.loadErr
+}
+func (f *fakeBackend) ActiveGeneration(_ context.Context) (vector.Generation, error) {
+	return f.active, f.activeErr
+}
+func (f *fakeBackend) Search(_ context.Context, _ vector.GenerationID, _ []float32, _ int, _ vector.Filter) ([]vector.Hit, error) {
+	return f.searchHits, f.searchErr
+}
+func (f *fakeBackend) CreateGeneration(_ context.Context, _ string, _ int) (vector.GenerationID, error) {
+	return 0, errors.New("not implemented")
+}
+func (f *fakeBackend) ActivateGeneration(_ context.Context, _ vector.GenerationID) error {
+	return errors.New("not implemented")
+}
+func (f *fakeBackend) RetireGeneration(_ context.Context, _ vector.GenerationID) error {
+	return errors.New("not implemented")
+}
+func (f *fakeBackend) BuildingGeneration(_ context.Context) (*vector.Generation, error) {
+	return nil, nil
+}
+func (f *fakeBackend) Upsert(_ context.Context, _ vector.GenerationID, _ []vector.Chunk) error {
+	return errors.New("not implemented")
+}
+func (f *fakeBackend) Delete(_ context.Context, _ vector.GenerationID, _ []int64) error {
+	return errors.New("not implemented")
+}
+func (f *fakeBackend) Stats(_ context.Context, _ vector.GenerationID) (vector.Stats, error) {
+	return vector.Stats{}, errors.New("not implemented")
+}
+func (f *fakeBackend) Close() error { return nil }
+
+var _ vector.Backend = (*fakeBackend)(nil)
+
+// similarResponse matches the JSON response shape of find_similar_messages.
+type similarResponse struct {
+	SeedMessageID int64                  `json:"seed_message_id"`
+	Returned      int                    `json:"returned"`
+	Generation    generationSummary      `json:"generation"`
+	Messages      []query.MessageSummary `json:"messages"`
+}
+
+type generationSummary struct {
+	ID          int64  `json:"id"`
+	Model       string `json:"model"`
+	Dimension   int    `json:"dimension"`
+	Fingerprint string `json:"fingerprint"`
+	State       string `json:"state"`
+}
+
+func TestFindSimilarMessages_VectorNotEnabled(t *testing.T) {
+	h := newTestHandlers(&querytest.MockEngine{})
+
+	r := runToolExpectError(t, "find_similar_messages", h.findSimilarMessages, map[string]any{
+		"message_id": float64(1),
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "vector_not_enabled") {
+		t.Fatalf("expected 'vector_not_enabled' error, got: %s", txt)
+	}
+}
+
+func TestFindSimilarMessages_MissingID(t *testing.T) {
+	h := &handlers{
+		engine:  &querytest.MockEngine{},
+		backend: &fakeBackend{},
+	}
+
+	r := runToolExpectError(t, "find_similar_messages", h.findSimilarMessages, map[string]any{})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "message_id") {
+		t.Fatalf("expected error mentioning 'message_id', got: %s", txt)
+	}
+}
+
+func TestFindSimilarMessages_HappyPath(t *testing.T) {
+	seed := make([]float32, 4)
+	for i := range seed {
+		seed[i] = float32(i)
+	}
+	fb := &fakeBackend{
+		loadVec: seed,
+		active: vector.Generation{
+			ID:          7,
+			Model:       "nomic-embed",
+			Dimension:   4,
+			Fingerprint: "nomic-embed:4",
+			State:       vector.GenerationActive,
+		},
+		searchHits: []vector.Hit{
+			{MessageID: 100, Score: 0.99, Rank: 1}, // seed — must be filtered out
+			{MessageID: 200, Score: 0.95, Rank: 2},
+			{MessageID: 300, Score: 0.90, Rank: 3},
+		},
+	}
+
+	eng := &querytest.MockEngine{
+		Messages: map[int64]*query.MessageDetail{
+			200: testutil.NewMessageDetail(200).WithSubject("related one").BuildPtr(),
+			300: testutil.NewMessageDetail(300).WithSubject("related two").BuildPtr(),
+		},
+	}
+
+	h := &handlers{engine: eng, backend: fb}
+
+	resp := runTool[similarResponse](t, "find_similar_messages", h.findSimilarMessages, map[string]any{
+		"message_id": float64(100),
+		"limit":      float64(20),
+	})
+
+	if resp.SeedMessageID != 100 {
+		t.Fatalf("seed_message_id = %d, want 100", resp.SeedMessageID)
+	}
+	if resp.Returned != 2 {
+		t.Fatalf("returned = %d, want 2", resp.Returned)
+	}
+	if resp.Generation.ID != 7 {
+		t.Fatalf("generation.id = %d, want 7", resp.Generation.ID)
+	}
+	if resp.Generation.Fingerprint != "nomic-embed:4" {
+		t.Fatalf("generation.fingerprint = %s, want nomic-embed:4", resp.Generation.Fingerprint)
+	}
+	if len(resp.Messages) != 2 {
+		t.Fatalf("messages len = %d, want 2", len(resp.Messages))
+	}
+	for _, m := range resp.Messages {
+		if m.ID == 100 {
+			t.Fatalf("seed message 100 must not appear in results")
+		}
+	}
+	if resp.Messages[0].ID != 200 || resp.Messages[1].ID != 300 {
+		t.Fatalf("unexpected order: %v", resp.Messages)
+	}
+}
+
+func TestFindSimilarMessages_NoActiveGeneration(t *testing.T) {
+	fb := &fakeBackend{
+		loadErr: vector.ErrNoActiveGeneration,
+	}
+	h := &handlers{engine: &querytest.MockEngine{}, backend: fb}
+
+	r := runToolExpectError(t, "find_similar_messages", h.findSimilarMessages, map[string]any{
+		"message_id": float64(1),
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "no_active_generation") {
+		t.Fatalf("expected 'no_active_generation' error, got: %s", txt)
+	}
 }

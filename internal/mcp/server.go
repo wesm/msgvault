@@ -13,14 +13,15 @@ import (
 
 // Tool name constants.
 const (
-	ToolSearchMessages   = "search_messages"
-	ToolGetMessage       = "get_message"
-	ToolGetAttachment    = "get_attachment"
-	ToolExportAttachment = "export_attachment"
-	ToolListMessages     = "list_messages"
-	ToolGetStats         = "get_stats"
-	ToolAggregate        = "aggregate"
-	ToolStageDeletion    = "stage_deletion"
+	ToolSearchMessages      = "search_messages"
+	ToolGetMessage          = "get_message"
+	ToolGetAttachment       = "get_attachment"
+	ToolExportAttachment    = "export_attachment"
+	ToolListMessages        = "list_messages"
+	ToolGetStats            = "get_stats"
+	ToolAggregate           = "aggregate"
+	ToolStageDeletion       = "stage_deletion"
+	ToolFindSimilarMessages = "find_similar_messages"
 )
 
 // Common argument helpers for recurring tool option definitions.
@@ -57,7 +58,8 @@ func withAccount() mcp.ToolOption {
 
 // ServeOptions configures an MCP server. Only Engine is required; the
 // HybridEngine and VectorCfg fields enable the vector/hybrid modes on
-// the search_messages tool.
+// the search_messages tool, and Backend additionally enables the
+// find_similar_messages tool.
 type ServeOptions struct {
 	Engine         query.Engine
 	AttachmentsDir string
@@ -70,6 +72,9 @@ type ServeOptions struct {
 	// handler reads Search.MaxPageSizeHybrid at request time and zero
 	// means "no clamp".
 	VectorCfg vector.Config
+	// Backend is optional. When nil, find_similar_messages rejects all
+	// calls with a vector_not_enabled error.
+	Backend vector.Backend
 }
 
 // Serve creates an MCP server with email archive tools and serves over stdio.
@@ -102,6 +107,7 @@ func ServeWithOptions(ctx context.Context, opts ServeOptions) error {
 		dataDir:        opts.DataDir,
 		hybridEngine:   opts.HybridEngine,
 		vectorCfg:      opts.VectorCfg,
+		backend:        opts.Backend,
 	}
 
 	s.AddTool(searchMessagesTool(), h.searchMessages)
@@ -112,6 +118,7 @@ func ServeWithOptions(ctx context.Context, opts ServeOptions) error {
 	s.AddTool(getStatsTool(), h.getStats)
 	s.AddTool(aggregateTool(), h.aggregate)
 	s.AddTool(stageDeletionTool(), h.stageDeletion)
+	s.AddTool(findSimilarMessagesTool(), h.findSimilarMessages)
 
 	stdio := server.NewStdioServer(s)
 	return stdio.Listen(ctx, os.Stdin, os.Stdout)
@@ -235,6 +242,30 @@ func stageDeletionTool() mcp.Tool {
 		),
 		mcp.WithString("label",
 			mcp.Description("Filter by Gmail label (e.g. 'CATEGORY_PROMOTIONS')"),
+		),
+		withAfter(),
+		withBefore(),
+		mcp.WithBoolean("has_attachment",
+			mcp.Description("Only messages with attachments"),
+		),
+	)
+}
+
+func findSimilarMessagesTool() mcp.Tool {
+	return mcp.NewTool(ToolFindSimilarMessages,
+		mcp.WithDescription("Find messages whose embeddings are closest to the given message. Requires vector search to be configured and an active index generation."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithNumber("message_id",
+			mcp.Required(),
+			mcp.Description("Seed message ID; its embedding is used as the query vector"),
+		),
+		withLimit("20"),
+		withAccount(),
+		mcp.WithString("from",
+			mcp.Description("Filter by sender email"),
+		),
+		mcp.WithString("label",
+			mcp.Description("Filter by Gmail label"),
 		),
 		withAfter(),
 		withBefore(),

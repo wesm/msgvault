@@ -1498,6 +1498,9 @@ func (f *fakeVectorBackend) Delete(_ context.Context, _ vector.GenerationID, _ [
 func (f *fakeVectorBackend) Stats(_ context.Context, _ vector.GenerationID) (vector.Stats, error) {
 	return f.stats, nil
 }
+func (f *fakeVectorBackend) LoadVector(_ context.Context, _ int64) ([]float32, error) {
+	return nil, errors.New("not implemented")
+}
 func (f *fakeVectorBackend) Close() error { return nil }
 
 func TestHandleStats_VectorDisabled(t *testing.T) {

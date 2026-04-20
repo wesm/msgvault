@@ -322,6 +322,44 @@ func float32SliceBlob(v []float32) []byte {
 	return buf
 }
 
+// blobToFloat32 decodes the little-endian byte representation produced
+// by float32SliceBlob back into a float32 slice of length dim.
+func blobToFloat32(b []byte, dim int) ([]float32, error) {
+	if len(b) != 4*dim {
+		return nil, fmt.Errorf("blob length %d does not match dimension %d", len(b), dim)
+	}
+	out := make([]float32, dim)
+	for i := 0; i < dim; i++ {
+		bits := uint32(b[4*i]) | uint32(b[4*i+1])<<8 | uint32(b[4*i+2])<<16 | uint32(b[4*i+3])<<24
+		out[i] = math.Float32frombits(bits)
+	}
+	return out, nil
+}
+
+// LoadVector returns the embedding for a specific message in the active
+// generation. Returns vector.ErrNoActiveGeneration if no active
+// generation exists, or a descriptive error if the message is not
+// embedded in the active generation.
+func (b *Backend) LoadVector(ctx context.Context, messageID int64) ([]float32, error) {
+	active, err := b.ActiveGeneration(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// vecTable name derives from VectorTableName(active.Dimension) where dimension is sourced from index_generations; safe to interpolate.
+	q := fmt.Sprintf(
+		`SELECT embedding FROM %s WHERE generation_id = ? AND message_id = ?`,
+		VectorTableName(active.Dimension))
+	var blob []byte
+	err = b.db.QueryRowContext(ctx, q, int64(active.ID), messageID).Scan(&blob)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("no embedding for message %d in generation %d", messageID, active.ID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load vector for message %d: %w", messageID, err)
+	}
+	return blobToFloat32(blob, active.Dimension)
+}
+
 // Search runs an ANN query against the given generation and returns the
 // top-k hits (optionally intersected with a structured filter). Hits are
 // ordered by ascending distance and assigned 1-based ranks.

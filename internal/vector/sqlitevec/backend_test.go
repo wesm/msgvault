@@ -451,3 +451,69 @@ func TestBackend_Stats_AggregateAcrossGenerations(t *testing.T) {
 		t.Errorf("aggregate EmbeddingCount=%d want 1", s.EmbeddingCount)
 	}
 }
+
+func TestBackend_LoadVector(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+
+	vec := make([]float32, 768)
+	for i := range vec {
+		vec[i] = float32(i) * 0.01
+	}
+	chunks := []vector.Chunk{{MessageID: 1, Vector: vec, SourceCharLen: 42}}
+	if err := b.Upsert(ctx, gid, chunks); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if err := b.ActivateGeneration(ctx, gid); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+
+	got, err := b.LoadVector(ctx, 1)
+	if err != nil {
+		t.Fatalf("LoadVector: %v", err)
+	}
+	if len(got) != 768 {
+		t.Fatalf("len=%d, want 768", len(got))
+	}
+	for i, v := range got {
+		if v != vec[i] {
+			t.Fatalf("mismatch at i=%d: got %f, want %f", i, v, vec[i])
+		}
+	}
+}
+
+func TestBackend_LoadVector_NotEmbedded(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+
+	vec := make([]float32, 768)
+	for i := range vec {
+		vec[i] = 0.1
+	}
+	chunks := []vector.Chunk{{MessageID: 1, Vector: vec, SourceCharLen: 42}}
+	if err := b.Upsert(ctx, gid, chunks); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if err := b.ActivateGeneration(ctx, gid); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+
+	_, err = b.LoadVector(ctx, 999)
+	if err == nil {
+		t.Fatal("LoadVector for missing message should error")
+	}
+}
+
+func TestBackend_LoadVector_NoActive(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+	_, err := b.LoadVector(ctx, 1)
+	if err == nil || !errors.Is(err, vector.ErrNoActiveGeneration) {
+		t.Fatalf("want ErrNoActiveGeneration, got %v", err)
+	}
+}

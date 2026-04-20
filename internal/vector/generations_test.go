@@ -52,6 +52,9 @@ func (f *fakeBackend) Delete(context.Context, GenerationID, []int64) error {
 func (f *fakeBackend) Stats(context.Context, GenerationID) (Stats, error) {
 	return Stats{}, errors.New("not implemented")
 }
+func (f *fakeBackend) LoadVector(context.Context, int64) ([]float32, error) {
+	return nil, errors.New("not implemented")
+}
 func (f *fakeBackend) Close() error { return nil }
 
 func TestResolveActive_Matches(t *testing.T) {
