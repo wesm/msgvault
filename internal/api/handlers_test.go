@@ -16,6 +16,7 @@ import (
 	"github.com/wesm/msgvault/internal/config"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/query/querytest"
+	"github.com/wesm/msgvault/internal/vector"
 )
 
 func newTestServerWithMockStore(t *testing.T) (*Server, *mockStore) {
@@ -1453,5 +1454,141 @@ func TestHandleQuery_SQLiteEngine503(t *testing.T) {
 	}
 	if errResp.Error != "engine_unavailable" {
 		t.Errorf("error = %q, want 'engine_unavailable'", errResp.Error)
+	}
+}
+
+// fakeVectorBackend is a test stub implementing vector.Backend. Only
+// ActiveGeneration, BuildingGeneration, and Stats are exercised by T22
+// tests; the rest return errors.
+type fakeVectorBackend struct {
+	active   *vector.Generation
+	building *vector.Generation
+	stats    vector.Stats
+}
+
+func (f *fakeVectorBackend) CreateGeneration(_ context.Context, _ string, _ int) (vector.GenerationID, error) {
+	return 0, errors.New("not implemented")
+}
+func (f *fakeVectorBackend) ActivateGeneration(_ context.Context, _ vector.GenerationID) error {
+	return errors.New("not implemented")
+}
+func (f *fakeVectorBackend) RetireGeneration(_ context.Context, _ vector.GenerationID) error {
+	return errors.New("not implemented")
+}
+func (f *fakeVectorBackend) ActiveGeneration(_ context.Context) (vector.Generation, error) {
+	if f.active == nil {
+		return vector.Generation{}, vector.ErrNoActiveGeneration
+	}
+	return *f.active, nil
+}
+func (f *fakeVectorBackend) BuildingGeneration(_ context.Context) (*vector.Generation, error) {
+	return f.building, nil
+}
+func (f *fakeVectorBackend) Upsert(_ context.Context, _ vector.GenerationID, _ []vector.Chunk) error {
+	return errors.New("not implemented")
+}
+func (f *fakeVectorBackend) Search(
+	_ context.Context, _ vector.GenerationID, _ []float32, _ int, _ vector.Filter,
+) ([]vector.Hit, error) {
+	return nil, errors.New("not implemented")
+}
+func (f *fakeVectorBackend) Delete(_ context.Context, _ vector.GenerationID, _ []int64) error {
+	return errors.New("not implemented")
+}
+func (f *fakeVectorBackend) Stats(_ context.Context, _ vector.GenerationID) (vector.Stats, error) {
+	return f.stats, nil
+}
+func (f *fakeVectorBackend) Close() error { return nil }
+
+func TestHandleStats_VectorDisabled(t *testing.T) {
+	srv, _ := newTestServerWithMockStore(t)
+	// newTestServerWithMockStore uses NewServer (no Backend), so backend == nil.
+
+	req := httptest.NewRequest("GET", "/api/v1/stats", nil)
+	w := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	// Parse raw JSON to verify "vector_search" is absent entirely.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, exists := raw["vector_search"]; exists {
+		t.Error("expected 'vector_search' to be absent from JSON when backend is nil")
+	}
+}
+
+func TestHandleStats_VectorEnabledWithActive(t *testing.T) {
+	backend := &fakeVectorBackend{
+		active: &vector.Generation{
+			ID:          5,
+			Model:       "nomic-embed",
+			Dimension:   768,
+			Fingerprint: "nomic-embed:768",
+			State:       vector.GenerationActive,
+		},
+		stats: vector.Stats{EmbeddingCount: 100, PendingCount: 0, StorageBytes: 4096},
+	}
+
+	store := &mockStore{
+		stats: &StoreStats{
+			MessageCount: 100,
+			ThreadCount:  50,
+			SourceCount:  1,
+		},
+	}
+	cfg := &config.Config{
+		Server: config.ServerConfig{APIPort: 8080},
+	}
+	sched := newMockScheduler()
+	srv := NewServerWithOptions(ServerOptions{
+		Config:    cfg,
+		Store:     store,
+		Backend:   backend,
+		Scheduler: sched,
+		Logger:    testLogger(),
+	})
+
+	req := httptest.NewRequest("GET", "/api/v1/stats", nil)
+	w := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	vs, ok := resp["vector_search"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected 'vector_search' object, got %T: %v", resp["vector_search"], resp["vector_search"])
+	}
+
+	active, ok := vs["active"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected 'vector_search.active' object, got %T", vs["active"])
+	}
+
+	if got := active["embedding_count"]; got != float64(100) {
+		t.Errorf("embedding_count = %v, want 100", got)
+	}
+	if got := active["model"]; got != "nomic-embed" {
+		t.Errorf("model = %v, want 'nomic-embed'", got)
+	}
+	if got := active["id"]; got != float64(5) {
+		t.Errorf("id = %v, want 5", got)
+	}
+
+	if _, exists := vs["building"]; exists {
+		t.Error("expected 'building' to be absent when there is no building generation")
 	}
 }

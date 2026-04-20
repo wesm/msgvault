@@ -53,6 +53,7 @@ type Server struct {
 	engine       query.Engine // Query engine for aggregates and TUI support
 	hybridEngine *hybrid.Engine
 	vectorCfg    vector.Config
+	backend      vector.Backend
 	scheduler    SyncScheduler
 	logger       *slog.Logger
 	router       chi.Router
@@ -68,6 +69,7 @@ type ServerOptions struct {
 	Engine       query.Engine // Optional: query engine for aggregates and TUI support
 	HybridEngine *hybrid.Engine
 	VectorCfg    vector.Config
+	Backend      vector.Backend
 	Scheduler    SyncScheduler
 	Logger       *slog.Logger
 }
@@ -90,6 +92,7 @@ func NewServerWithOptions(opts ServerOptions) *Server {
 		engine:       opts.Engine,
 		hybridEngine: opts.HybridEngine,
 		vectorCfg:    opts.VectorCfg,
+		backend:      opts.Backend,
 		scheduler:    opts.Scheduler,
 		logger:       opts.Logger,
 	}

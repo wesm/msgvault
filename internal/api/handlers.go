@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -31,12 +32,31 @@ const maxPageSize = 500
 
 // StatsResponse represents the archive statistics.
 type StatsResponse struct {
-	TotalMessages int64 `json:"total_messages"`
-	TotalThreads  int64 `json:"total_threads"`
-	TotalAccounts int64 `json:"total_accounts"`
-	TotalLabels   int64 `json:"total_labels"`
-	TotalAttach   int64 `json:"total_attachments"`
-	DatabaseSize  int64 `json:"database_size_bytes"`
+	TotalMessages int64              `json:"total_messages"`
+	TotalThreads  int64              `json:"total_threads"`
+	TotalAccounts int64              `json:"total_accounts"`
+	TotalLabels   int64              `json:"total_labels"`
+	TotalAttach   int64              `json:"total_attachments"`
+	DatabaseSize  int64              `json:"database_size_bytes"`
+	VectorSearch  *VectorSearchStats `json:"vector_search,omitempty"`
+}
+
+// VectorSearchStats is the optional sub-object attached to StatsResponse
+// when vector search is configured.
+type VectorSearchStats struct {
+	Active   *GenerationStats `json:"active,omitempty"`
+	Building *GenerationStats `json:"building,omitempty"`
+}
+
+// GenerationStats reports counts for one index generation.
+type GenerationStats struct {
+	ID             int64  `json:"id"`
+	Model          string `json:"model"`
+	Dimension      int    `json:"dimension"`
+	Fingerprint    string `json:"fingerprint"`
+	State          string `json:"state"`
+	EmbeddingCount int64  `json:"embedding_count"`
+	PendingCount   int64  `json:"pending_count"`
 }
 
 // APIMessage is an alias for store.APIMessage — single source of truth for
@@ -208,9 +228,60 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		TotalLabels:   stats.LabelCount,
 		TotalAttach:   stats.AttachmentCount,
 		DatabaseSize:  stats.DatabaseSize,
+		VectorSearch:  s.collectVectorStats(r.Context()),
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// collectVectorStats returns a populated VectorSearchStats when vector
+// search is configured (backend is non-nil). Returns nil when vector
+// search is disabled — callers should use this to drive omitempty.
+// Errors are logged but do not fail the stats request: returning nil is
+// the safe degradation path.
+func (s *Server) collectVectorStats(ctx context.Context) *VectorSearchStats {
+	if s.backend == nil {
+		return nil
+	}
+	out := &VectorSearchStats{}
+
+	active, err := s.backend.ActiveGeneration(ctx)
+	if err == nil {
+		out.Active = s.generationStatsOrNil(ctx, active)
+	} else if !errors.Is(err, vector.ErrNoActiveGeneration) {
+		s.logger.Warn("vector stats: active generation", "error", err)
+	}
+
+	building, err := s.backend.BuildingGeneration(ctx)
+	if err != nil {
+		s.logger.Warn("vector stats: building generation", "error", err)
+	} else if building != nil {
+		out.Building = s.generationStatsOrNil(ctx, *building)
+	}
+
+	if out.Active == nil && out.Building == nil {
+		return nil
+	}
+	return out
+}
+
+// generationStatsOrNil returns a GenerationStats for g, populating counts
+// via Backend.Stats. On failure, logs and returns nil.
+func (s *Server) generationStatsOrNil(ctx context.Context, g vector.Generation) *GenerationStats {
+	stats, err := s.backend.Stats(ctx, g.ID)
+	if err != nil {
+		s.logger.Warn("vector stats: Stats", "gen", g.ID, "error", err)
+		return nil
+	}
+	return &GenerationStats{
+		ID:             int64(g.ID),
+		Model:          g.Model,
+		Dimension:      g.Dimension,
+		Fingerprint:    g.Fingerprint,
+		State:          string(g.State),
+		EmbeddingCount: stats.EmbeddingCount,
+		PendingCount:   stats.PendingCount,
+	}
 }
 
 // handleListMessages returns a paginated list of messages.
