@@ -85,7 +85,31 @@ Add to Claude Desktop config:
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		return mcpserver.Serve(ctx, engine, cfg.AttachmentsDir(), cfg.Data.DataDir)
+		// Build optional vector-search components. MCP runs as a
+		// query-only server, so the worker and enqueuer fields go
+		// unused — only Backend, HybridEngine, and VectorCfg reach
+		// the MCP layer.
+		vf, err := setupVectorFeatures(ctx, s.DB(), dbPath)
+		if err != nil {
+			return fmt.Errorf("vector features: %w", err)
+		}
+		defer func() {
+			if vf != nil && vf.Close != nil {
+				_ = vf.Close()
+			}
+		}()
+
+		opts := mcpserver.ServeOptions{
+			Engine:         engine,
+			AttachmentsDir: cfg.AttachmentsDir(),
+			DataDir:        cfg.Data.DataDir,
+		}
+		if vf != nil {
+			opts.HybridEngine = vf.HybridEngine
+			opts.Backend = vf.Backend
+			opts.VectorCfg = vf.Cfg
+		}
+		return mcpserver.ServeWithOptions(ctx, opts)
 	},
 }
 

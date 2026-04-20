@@ -65,6 +65,18 @@ Examples:
 			cancel()
 		}()
 
+		// Open vector backend (optional) so newly-ingested messages
+		// are enqueued for embedding.
+		vf, err := setupVectorFeatures(ctx, s.DB(), dbPath)
+		if err != nil {
+			return fmt.Errorf("vector features: %w", err)
+		}
+		defer func() {
+			if vf != nil && vf.Close != nil {
+				_ = vf.Close()
+			}
+		}()
+
 		getOAuthMgr := oauthManagerCache()
 
 		// Determine which accounts to sync.
@@ -158,7 +170,7 @@ Examples:
 				break
 			}
 			fmt.Printf("Note: IMAP account %s does not support incremental sync. Running full sync.\n\n", src.Identifier)
-			if err := runFullSync(ctx, s, getOAuthMgr, src); err != nil {
+			if err := runFullSync(ctx, s, getOAuthMgr, src, vf); err != nil {
 				syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", src.Identifier, err))
 			}
 		}
@@ -172,7 +184,7 @@ Examples:
 				syncErrors = append(syncErrors, fmt.Sprintf("%s: no source found - run 'sync-full' first", target.email))
 				continue
 			}
-			if err := runIncrementalSync(ctx, s, getOAuthMgr, target.source); err != nil {
+			if err := runIncrementalSync(ctx, s, getOAuthMgr, target.source, vf); err != nil {
 				syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", target.email, err))
 				continue
 			}
@@ -195,7 +207,7 @@ Examples:
 	},
 }
 
-func runIncrementalSync(ctx context.Context, s *store.Store, getOAuthMgr func(string) (*oauth.Manager, error), source *store.Source) error {
+func runIncrementalSync(ctx context.Context, s *store.Store, getOAuthMgr func(string) (*oauth.Manager, error), source *store.Source, vf *vectorFeatures) error {
 	if !source.SyncCursor.Valid || source.SyncCursor.String == "" {
 		return fmt.Errorf("no history ID - run 'sync-full' first")
 	}
@@ -229,6 +241,9 @@ func runIncrementalSync(ctx context.Context, s *store.Store, getOAuthMgr func(st
 	syncer := sync.New(client, s, opts).
 		WithLogger(logger).
 		WithProgress(&CLIProgress{})
+	if vf != nil && vf.Enqueuer != nil {
+		syncer.SetEmbedEnqueuer(vf.Enqueuer)
+	}
 
 	// Run incremental sync
 	startTime := time.Now()
