@@ -40,29 +40,17 @@ func BuildFilter(ctx context.Context, db *sql.DB, q *search.Query) (vector.Filte
 		if len(af.addrs) == 0 {
 			continue
 		}
-		ids, err := resolveParticipantIDs(ctx, db, af.addrs)
+		ids, err := resolveAddressTokensAND(ctx, db, af.addrs)
 		if err != nil {
 			return f, err
-		}
-		// The operator was present in the query but matched zero
-		// participants. Leaving ids nil would drop to "no filter"
-		// in backend code (empty slice means unrestricted), so
-		// substitute a sentinel id that can never match a real
-		// row. This preserves "zero hits" for nonexistent
-		// senders/recipients, mirroring the SQLite search path.
-		if len(ids) == 0 {
-			ids = []int64{noMatchSentinel}
 		}
 		*af.dst = ids
 	}
 
 	if len(q.Labels) > 0 {
-		ids, err := resolveLabelIDs(ctx, db, q.Labels)
+		ids, err := resolveLabelTokensAND(ctx, db, q.Labels)
 		if err != nil {
 			return f, err
-		}
-		if len(ids) == 0 {
-			ids = []int64{noMatchSentinel}
 		}
 		f.LabelIDs = ids
 	}
@@ -89,6 +77,66 @@ func BuildFilter(ctx context.Context, db *sql.DB, q *search.Query) (vector.Filte
 		f.SubjectSubstrings = append([]string(nil), q.SubjectTerms...)
 	}
 	return f, nil
+}
+
+// resolveAddressTokensAND mirrors the SQLite search path's per-term
+// semantics for repeated address operators (e.g. `from:alice from:bob`):
+// each token must match at least one participant for the field to
+// produce any hits. If ANY token resolves to zero participants, the
+// returned slice is the no-match sentinel so the backend filter
+// short-circuits instead of falling back to "unrestricted" or silently
+// OR-ing partial matches.
+//
+// Within a single non-empty token's resolution we still union the IDs
+// (i.e. `from:alice` matching alice@foo and alice@bar both pass), and
+// across non-empty tokens we union as well. Strict per-message
+// intersection (the SQLite EXISTS-per-token form) would require a
+// schema change to vector.Filter; the behavior here is the strictest
+// match achievable without that refactor and addresses the bug where
+// `from:nobody` was being silently dropped from `from:alice from:nobody`.
+func resolveAddressTokensAND(ctx context.Context, db *sql.DB, addrs []string) ([]int64, error) {
+	seen := make(map[int64]struct{})
+	for _, a := range addrs {
+		ids, err := resolveParticipantIDs(ctx, db, []string{a})
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) == 0 {
+			return []int64{noMatchSentinel}, nil
+		}
+		for _, id := range ids {
+			seen[id] = struct{}{}
+		}
+	}
+	out := make([]int64, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// resolveLabelTokensAND is the label-side counterpart of
+// resolveAddressTokensAND: any label token that resolves to zero
+// matches collapses the whole filter to the no-match sentinel.
+func resolveLabelTokensAND(ctx context.Context, db *sql.DB, labels []string) ([]int64, error) {
+	seen := make(map[int64]struct{})
+	for _, l := range labels {
+		ids, err := resolveLabelIDs(ctx, db, []string{l})
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) == 0 {
+			return []int64{noMatchSentinel}, nil
+		}
+		for _, id := range ids {
+			seen[id] = struct{}{}
+		}
+	}
+	out := make([]int64, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	return out, nil
 }
 
 // resolveParticipantIDs returns every participant whose email_address

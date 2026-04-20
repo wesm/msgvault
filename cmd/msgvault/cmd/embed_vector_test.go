@@ -155,6 +155,85 @@ func TestPickEmbedGeneration_ResumeFingerprintMismatch(t *testing.T) {
 	}
 }
 
+// TestPickEmbedGeneration_PrefersBuildingOverActive_MatchingFingerprint
+// regression-guards the precedence bug where pickEmbedGeneration
+// targeted an existing active generation even when a building
+// generation for the configured model was in flight. The user
+// expectation is that `msgvault embed` drains the in-progress build
+// (so it can be activated) rather than continuing to top up the old
+// active generation.
+func TestPickEmbedGeneration_PrefersBuildingOverActive_MatchingFingerprint(t *testing.T) {
+	ctx := context.Background()
+	b := openTestBackend(t)
+
+	// Build state: an active generation exists, and a second building
+	// generation has been created for the SAME model+dim (the typical
+	// "I want to refresh my index" pattern).
+	activeGen, err := b.CreateGeneration(ctx, "fake", 4)
+	if err != nil {
+		t.Fatalf("CreateGeneration (active): %v", err)
+	}
+	if err := b.ActivateGeneration(ctx, activeGen); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+	buildingGen, err := b.CreateGeneration(ctx, "fake", 4)
+	if err != nil {
+		t.Fatalf("CreateGeneration (building): %v", err)
+	}
+
+	gotGen, rebuildInProgress, err := pickEmbedGeneration(ctx, b, embedGenerationOpts{
+		FullRebuild: false,
+		Model:       "fake",
+		Dimension:   4,
+		Fingerprint: "fake:4",
+		Stderr:      openStderrSink(t),
+	})
+	if err != nil {
+		t.Fatalf("pickEmbedGeneration: %v", err)
+	}
+	if gotGen != buildingGen {
+		t.Errorf("gotGen=%d, want building=%d (preferring active=%d would leave the build stranded)",
+			gotGen, buildingGen, activeGen)
+	}
+	if !rebuildInProgress {
+		t.Errorf("rebuildInProgress=false, want true (we picked the building generation)")
+	}
+}
+
+// TestPickEmbedGeneration_RejectsBuildingWithMismatchedFingerprint
+// regression-guards the case where an active generation matches the
+// config but a building generation exists for a DIFFERENT model. The
+// previous code called ResolveActive first, found the matching active,
+// and silently topped it up — leaving the mismatched build stranded
+// without any warning. The new precedence-then-mismatch flow should
+// either resume a matching build or refuse with a clear error.
+func TestPickEmbedGeneration_RejectsBuildingWithMismatchedFingerprint(t *testing.T) {
+	ctx := context.Background()
+	b := openTestBackend(t)
+
+	// State: building generation exists for an old model. No active
+	// generation, and config now points at a different model.
+	if _, err := b.CreateGeneration(ctx, "old-model", 4); err != nil {
+		t.Fatalf("CreateGeneration (building): %v", err)
+	}
+
+	_, _, err := pickEmbedGeneration(ctx, b, embedGenerationOpts{
+		FullRebuild: false,
+		Model:       "new-model",
+		Dimension:   4,
+		Fingerprint: "new-model:4",
+		Stderr:      openStderrSink(t),
+	})
+	if err == nil {
+		t.Fatal("expected error for mismatched-fingerprint building generation, got nil")
+	}
+	var buf bytes.Buffer
+	_, _ = buf.WriteString(err.Error())
+	if !bytes.Contains(buf.Bytes(), []byte("fingerprint")) {
+		t.Errorf("error should mention fingerprint, got %q", err.Error())
+	}
+}
+
 // TestPickEmbedGeneration_FullRebuildAbortsWhenDeclined verifies the
 // Confirm hook short-circuits when the user declines a rebuild.
 func TestPickEmbedGeneration_FullRebuildAbortsWhenDeclined(t *testing.T) {

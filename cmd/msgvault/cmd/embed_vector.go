@@ -138,13 +138,18 @@ type embedGenerationOpts struct {
 //     generation with the matching fingerprint (so interrupted
 //     rebuilds resume cleanly), or returns ErrBuildingInProgress
 //     for a mismatch.
-//   - default mode with an active generation: target it (incremental
-//     top-up).
-//   - default mode with no active but a building generation: resume
-//     the building one. This path is the "run embed again to finish"
-//     recovery flow — previously impossible because ResolveActive
-//     returned ErrIndexBuilding and embed_vector would refuse to
-//     proceed.
+//   - default mode with a building generation matching the configured
+//     fingerprint: resume it. Building takes precedence over active so
+//     that an in-flight rebuild for the configured model gets drained
+//     to completion before the next activation, even if a stale active
+//     generation from a different model still exists.
+//   - default mode with no matching building but an active generation
+//     matching the configured fingerprint: target the active one
+//     (incremental top-up).
+//   - default mode with a building generation whose fingerprint
+//     differs from the config: error — activating it would silently
+//     swap models. The user must explicitly retire the stale build or
+//     change config.
 //   - otherwise: error with a hint to use --full-rebuild.
 //
 // rebuildInProgress is true whenever the target is a building
@@ -163,28 +168,38 @@ func pickEmbedGeneration(ctx context.Context, backend vector.Backend, opts embed
 		return gen, true, nil
 	}
 
+	// Check building first: if a rebuild for the configured model is
+	// in flight, drain it to completion regardless of whether an
+	// active (possibly stale) generation also exists. The previous
+	// "active wins" ordering left building generations stranded
+	// whenever the user already had any active index, even one for
+	// a different model.
+	building, bErr := backend.BuildingGeneration(ctx)
+	if bErr != nil {
+		return 0, false, fmt.Errorf("lookup building generation: %w", bErr)
+	}
+	if building != nil && building.Fingerprint == opts.Fingerprint {
+		_, _ = fmt.Fprintf(opts.Stderr, "Resuming building generation %d (%s).\n",
+			building.ID, building.Fingerprint)
+		return building.ID, true, nil
+	}
+
 	active, err := vector.ResolveActiveForFingerprint(ctx, backend, opts.Fingerprint)
 	switch {
 	case err == nil:
 		_, _ = fmt.Fprintf(opts.Stderr, "Using active generation %d (%s).\n", active.ID, active.Fingerprint)
 		return active.ID, false, nil
 	case errors.Is(err, vector.ErrIndexBuilding):
-		building, bErr := backend.BuildingGeneration(ctx)
-		if bErr != nil {
-			return 0, false, fmt.Errorf("lookup building generation: %w", bErr)
-		}
+		// ResolveActive said "building" but our earlier check either
+		// found no row or found a fingerprint mismatch. Re-derive the
+		// best error message for the caller.
 		if building == nil {
-			// ResolveActive said building but no row — race with a
-			// concurrent Retire/Activate. Fall through to the error.
+			// Race: the building row vanished between our two
+			// lookups. Treat as "nothing to resume".
 			return 0, false, fmt.Errorf("resolve active generation: %w (hint: run with --full-rebuild to start)", err)
 		}
-		if building.Fingerprint != opts.Fingerprint {
-			return 0, false, fmt.Errorf("in-progress rebuild has fingerprint=%q, config has %q — activate or retire it before running with a different model",
-				building.Fingerprint, opts.Fingerprint)
-		}
-		_, _ = fmt.Fprintf(opts.Stderr, "Resuming building generation %d (%s).\n",
-			building.ID, building.Fingerprint)
-		return building.ID, true, nil
+		return 0, false, fmt.Errorf("in-progress rebuild has fingerprint=%q, config has %q — activate or retire it before running with a different model",
+			building.Fingerprint, opts.Fingerprint)
 	default:
 		return 0, false, fmt.Errorf("resolve active generation: %w (hint: run with --full-rebuild to start)", err)
 	}

@@ -186,6 +186,63 @@ func TestBuildFilter_NonexistentLabelReturnsSentinel(t *testing.T) {
 	}
 }
 
+// TestBuildFilter_RepeatedAddressTokens_PerTermAND regression-guards
+// the bug where repeated same-field address operators (e.g.
+// `from:alice from:nobody`) were resolved with OR semantics: both
+// tokens were sent to a single LIKE … OR LIKE query, so the sentinel
+// only fired when ALL tokens matched zero rows. The SQLite search
+// path treats each repeated operator as its own AND condition, so
+// the vector path must match nothing as soon as any single token
+// resolves to zero participants.
+func TestBuildFilter_RepeatedAddressTokens_PerTermAND(t *testing.T) {
+	ctx := context.Background()
+	db := newFilterTestDB(t)
+
+	t.Run("any empty token sentinels the field", func(t *testing.T) {
+		q := search.Parse(`from:alice from:nobody@nowhere.invalid`)
+		f, err := BuildFilter(ctx, db, q)
+		if err != nil {
+			t.Fatalf("BuildFilter: %v", err)
+		}
+		if len(f.SenderIDs) != 1 || f.SenderIDs[0] >= 0 {
+			t.Errorf("SenderIDs=%v, want sentinel — second token resolves empty so the whole field must not match", f.SenderIDs)
+		}
+	})
+
+	t.Run("all tokens non-empty unions ids", func(t *testing.T) {
+		q := search.Parse(`from:alice from:bob`)
+		f, err := BuildFilter(ctx, db, q)
+		if err != nil {
+			t.Fatalf("BuildFilter: %v", err)
+		}
+		// Both tokens resolve: alice→1, bob→1, union→2 distinct ids.
+		if len(f.SenderIDs) != 2 {
+			t.Errorf("SenderIDs=%v, want 2 ids (union of alice + bob)", sortedIDs(f.SenderIDs))
+		}
+		for _, id := range f.SenderIDs {
+			if id < 0 {
+				t.Errorf("SenderIDs=%v contains negative sentinel; both tokens resolved non-empty so no sentinel expected", f.SenderIDs)
+			}
+		}
+	})
+}
+
+// TestBuildFilter_RepeatedLabelTokens_PerTermAND is the label-side
+// counterpart of TestBuildFilter_RepeatedAddressTokens_PerTermAND.
+func TestBuildFilter_RepeatedLabelTokens_PerTermAND(t *testing.T) {
+	ctx := context.Background()
+	db := newFilterTestDB(t)
+
+	q := search.Parse(`label:Work label:nonexistent-xyz`)
+	f, err := BuildFilter(ctx, db, q)
+	if err != nil {
+		t.Fatalf("BuildFilter: %v", err)
+	}
+	if len(f.LabelIDs) != 1 || f.LabelIDs[0] >= 0 {
+		t.Errorf("LabelIDs=%v, want sentinel — second token resolves empty so the whole field must not match", f.LabelIDs)
+	}
+}
+
 // TestBuildFilter_LabelsMatchCaseInsensitiveSubstring verifies the
 // label resolution matches the SQLite path's semantics: a substring
 // of the configured label name, case-folded. Previously

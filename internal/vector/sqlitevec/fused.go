@@ -20,10 +20,11 @@ var _ vector.FusingBackend = (*Backend)(nil)
 // fresh connection to the main msgvault.db with vectors.db ATTACHed.
 // Filters resolve at the Go layer.
 //
-// The returned saturated flag indicates that the BM25 per-signal pool
-// hit the KPerSignal cap — the internal CTE pulls KPerSignal+1 rows
-// and reports whether the extra slot was filled. ANN's top-K is
-// always capped by k, so saturation is reported solely from BM25.
+// The returned saturated flag indicates that either per-signal pool
+// hit the KPerSignal cap. Both branches are over-fetched by one row
+// (BM25 via LIMIT KPerSignal+1, ANN via k=KPerSignal+1) and trimmed to
+// KPerSignal before fusion. The extra "probe" row exists only so the
+// outer query can report whether the pool was full on either side.
 func (b *Backend) FusedSearch(ctx context.Context, req vector.FusedRequest) ([]vector.FusedHit, bool, error) {
 	if req.QueryVec == nil && req.FTSQuery == "" {
 		return nil, false, fmt.Errorf("FusedSearch: neither vector nor FTS query provided")
@@ -186,6 +187,9 @@ WITH
        AND v.embedding MATCH :query_vec
        AND k = %d
   ),
+  ann_used AS (
+    SELECT * FROM ann WHERE rnk <= %d
+  ),
   fused AS (
     SELECT COALESCE(b.message_id, v.message_id) AS message_id,
            COALESCE(1.0 / (:rrf_k + b.rnk), 0.0) +
@@ -193,14 +197,15 @@ WITH
            b.bm25_raw AS bm25_score,
            CASE WHEN v.vec_dist IS NULL THEN NULL ELSE 1.0 - v.vec_dist END AS vector_score
       FROM bm25_used b
-      FULL OUTER JOIN ann v USING (message_id)
+      FULL OUTER JOIN ann_used v USING (message_id)
   )
 SELECT message_id, rrf_score, bm25_score, vector_score,
-       (SELECT COUNT(*) FROM bm25) AS bm25_pool_size
+       (SELECT COUNT(*) FROM bm25) AS bm25_pool_size,
+       (SELECT COUNT(*) FROM ann)  AS ann_pool_size
   FROM fused
  ORDER BY rrf_score DESC, message_id ASC
  LIMIT :limit
-`, kPlus1, req.KPerSignal, vecTable, req.KPerSignal)
+`, kPlus1, req.KPerSignal, vecTable, kPlus1, req.KPerSignal)
 
 	var queryVecArg any
 	if req.QueryVec != nil {
@@ -236,15 +241,16 @@ SELECT message_id, rrf_score, bm25_score, vector_score,
 	defer func() { _ = rows.Close() }()
 
 	var hits []vector.FusedHit
-	var bm25PoolSize int
+	var bm25PoolSize, annPoolSize int
 	for rows.Next() {
 		var h vector.FusedHit
 		var bm, vec sql.NullFloat64
-		var poolSize int
-		if err := rows.Scan(&h.MessageID, &h.RRFScore, &bm, &vec, &poolSize); err != nil {
+		var bmPool, annPool int
+		if err := rows.Scan(&h.MessageID, &h.RRFScore, &bm, &vec, &bmPool, &annPool); err != nil {
 			return nil, false, fmt.Errorf("scan fused hit: %w", err)
 		}
-		bm25PoolSize = poolSize
+		bm25PoolSize = bmPool
+		annPoolSize = annPool
 		h.BM25Score = math.NaN()
 		if bm.Valid {
 			h.BM25Score = bm.Float64
@@ -262,11 +268,11 @@ SELECT message_id, rrf_score, bm25_score, vector_score,
 	if req.SubjectBoost > 1.0 && len(req.SubjectTerms) > 0 {
 		b.applySubjectBoost(ctx, hits, req.SubjectTerms, req.SubjectBoost)
 	}
-	// Saturated if the BM25 CTE returned more than KPerSignal rows
-	// — i.e. the extra "K+1 probe" slot was filled. When there are
-	// no fused rows there's no sampled pool_size to read, so report
-	// not-saturated by convention.
-	saturated := bm25PoolSize > req.KPerSignal
+	// Saturated if either CTE returned more than KPerSignal rows — the
+	// extra "K+1 probe" slot was filled. When there are no fused rows
+	// there's no sampled pool_size to read, so report not-saturated by
+	// convention.
+	saturated := bm25PoolSize > req.KPerSignal || annPoolSize > req.KPerSignal
 	return hits, saturated, nil
 }
 

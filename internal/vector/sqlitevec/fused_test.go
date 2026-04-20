@@ -117,6 +117,70 @@ func TestFusedSearch_VectorOnly_BM25ScoreIsNaN(t *testing.T) {
 	}
 }
 
+// TestFusedSearch_AnnSaturation_VectorOnly proves ANN-side saturation
+// is reported even when BM25 is silent. Regression for the bug where
+// the returned saturated flag was derived solely from the BM25 pool
+// — a vector-only query that maxed out KPerSignal would falsely
+// report not-saturated.
+func TestFusedSearch_AnnSaturation_VectorOnly(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+	// Seed 5 vectors all close to axis 0, then query along axis 0.
+	// With KPerSignal=2 the ANN CTE probes for 3 (= 2+1) — when the
+	// extra slot is filled, saturation must be reported.
+	vecs := map[int64][]float32{}
+	for i := int64(1); i <= 5; i++ {
+		vecs[i] = unitVec(768, 0)
+	}
+	gid := seedAndEmbed(t, b, vecs)
+	if err := b.ActivateGeneration(ctx, gid); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+
+	req := vector.FusedRequest{
+		QueryVec:   unitVec(768, 0),
+		Generation: gid,
+		KPerSignal: 2,
+		Limit:      10,
+		RRFK:       60,
+	}
+	hits, saturated, err := b.FusedSearch(ctx, req)
+	if err != nil {
+		t.Fatalf("FusedSearch: %v", err)
+	}
+	if !saturated {
+		t.Errorf("saturated=false for ANN pool of 5 with KPerSignal=2; want true (hits=%d)", len(hits))
+	}
+}
+
+// TestFusedSearch_AnnSaturation_BelowCap is the counter-test for
+// TestFusedSearch_AnnSaturation_VectorOnly: with fewer matches than
+// KPerSignal, saturation must NOT be reported.
+func TestFusedSearch_AnnSaturation_BelowCap(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+	gid := seedAndEmbed(t, b, map[int64][]float32{
+		1: unitVec(768, 0),
+		2: unitVec(768, 0),
+	})
+	if err := b.ActivateGeneration(ctx, gid); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+
+	req := vector.FusedRequest{
+		QueryVec:   unitVec(768, 0),
+		Generation: gid,
+		KPerSignal: 5,
+		Limit:      10,
+		RRFK:       60,
+	}
+	_, saturated, err := b.FusedSearch(ctx, req)
+	if err != nil {
+		t.Fatalf("FusedSearch: %v", err)
+	}
+	if saturated {
+		t.Errorf("saturated=true for ANN pool of 2 with KPerSignal=5; want false")
+	}
+}
+
 func TestFusedSearch_NoSignals_Errors(t *testing.T) {
 	b, ctx, _ := newFusedBackendForTest(t)
 	gid := seedAndEmbed(t, b, map[int64][]float32{
@@ -357,8 +421,11 @@ func TestFusedSearch_PinnedPoolKeepsAttach(t *testing.T) {
 	// is exactly the intended serialisation, not a failure.
 	queryCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
 	defer cancel()
-	_, secondErr := conn.QueryContext(queryCtx,
+	rows, secondErr := conn.QueryContext(queryCtx,
 		`SELECT COUNT(*) FROM vec.embeddings`)
+	if rows != nil {
+		_ = rows.Close()
+	}
 	// Finish the tx so the connection is released.
 	_ = tx.Rollback()
 

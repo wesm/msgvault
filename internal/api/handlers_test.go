@@ -17,7 +17,18 @@ import (
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/query/querytest"
 	"github.com/wesm/msgvault/internal/vector"
+	"github.com/wesm/msgvault/internal/vector/hybrid"
 )
+
+// stubEmbedder is an EmbeddingClient placeholder for tests where the
+// engine never reaches the embed step (e.g. ResolveActiveForFingerprint
+// fails first). Calling Embed signals a test bug — guard with a t.Fatal-
+// style failure rather than returning silently.
+type stubEmbedder struct{}
+
+func (stubEmbedder) Embed(_ context.Context, _ []string) ([][]float32, error) {
+	return nil, errors.New("stubEmbedder.Embed should not be called in this test")
+}
 
 func newTestServerWithMockStore(t *testing.T) (*Server, *mockStore) {
 	t.Helper()
@@ -75,8 +86,10 @@ func TestHandleStats(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
+	bodyBytes := w.Body.Bytes()
+
 	var resp StatsResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+	if err := json.Unmarshal(bodyBytes, &resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
@@ -86,114 +99,20 @@ func TestHandleStats(t *testing.T) {
 	if resp.TotalAccounts != 1 {
 		t.Errorf("total_accounts = %d, want 1", resp.TotalAccounts)
 	}
-	// No backend wired → vector_search field must be omitted.
-	if resp.VectorSearch != nil {
-		t.Errorf("VectorSearch=%+v, want nil when no backend wired", resp.VectorSearch)
-	}
-}
 
-// TestHandleStats_WithVectorBackend verifies the vector_search
-// sub-object is populated when the API server is constructed with a
-// Backend. Previously the field stayed nil in production because
-// runServe did not forward the backend through ServerOptions.
-func TestHandleStats_WithVectorBackend(t *testing.T) {
-	store := &mockStore{
-		stats: &StoreStats{MessageCount: 10, SourceCount: 1, DatabaseSize: 1024},
+	// No backend wired → vector_search field must be ABSENT, not
+	// null. Re-decode into raw RawMessage so we distinguish the two:
+	// `omitempty` plus a nil pointer drops the key entirely, while
+	// any encoder bug that emits `"vector_search": null` would still
+	// leave resp.VectorSearch == nil.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(bodyBytes, &raw); err != nil {
+		t.Fatalf("decode raw: %v", err)
 	}
-	cfg := &config.Config{Server: config.ServerConfig{APIPort: 8080}}
-	sched := newMockScheduler()
-	activatedAt := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
-	backend := &stubVectorBackend{
-		active: vector.Generation{
-			ID:          7,
-			Model:       "test-model",
-			Dimension:   4,
-			Fingerprint: "test-model:4",
-			State:       vector.GenerationActive,
-			ActivatedAt: &activatedAt,
-		},
-		stats: vector.Stats{EmbeddingCount: 42, PendingCount: 3},
-	}
-
-	srv := NewServerWithOptions(ServerOptions{
-		Config:    cfg,
-		Store:     store,
-		Scheduler: sched,
-		Logger:    testLogger(),
-		Backend:   backend,
-	})
-
-	req := httptest.NewRequest("GET", "/api/v1/stats", nil)
-	w := httptest.NewRecorder()
-	srv.Router().ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
-	}
-
-	var resp StatsResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.VectorSearch == nil {
-		t.Fatal("VectorSearch=nil, want populated")
-	}
-	if !resp.VectorSearch.Enabled {
-		t.Errorf("VectorSearch.Enabled=false, want true")
-	}
-	if resp.VectorSearch.ActiveGeneration == nil {
-		t.Fatal("ActiveGeneration=nil, want populated")
-	}
-	if resp.VectorSearch.ActiveGeneration.Fingerprint != "test-model:4" {
-		t.Errorf("Fingerprint=%q, want test-model:4", resp.VectorSearch.ActiveGeneration.Fingerprint)
-	}
-	if resp.VectorSearch.ActiveGeneration.MessageCount != 42 {
-		t.Errorf("MessageCount=%d, want 42", resp.VectorSearch.ActiveGeneration.MessageCount)
-	}
-	if resp.VectorSearch.PendingEmbeddingsTotal != 3 {
-		t.Errorf("PendingEmbeddingsTotal=%d, want 3", resp.VectorSearch.PendingEmbeddingsTotal)
+	if _, exists := raw["vector_search"]; exists {
+		t.Errorf("vector_search key present in JSON; want omitted entirely (raw=%s)", string(raw["vector_search"]))
 	}
 }
-
-// stubVectorBackend is a minimal vector.Backend that returns canned
-// data for the stats endpoint. All other methods panic — tests that
-// exercise them should use a real backend.
-type stubVectorBackend struct {
-	active vector.Generation
-	stats  vector.Stats
-}
-
-func (s *stubVectorBackend) ActiveGeneration(context.Context) (vector.Generation, error) {
-	return s.active, nil
-}
-func (s *stubVectorBackend) BuildingGeneration(context.Context) (*vector.Generation, error) {
-	return nil, nil
-}
-func (s *stubVectorBackend) Stats(context.Context, vector.GenerationID) (vector.Stats, error) {
-	return s.stats, nil
-}
-func (s *stubVectorBackend) CreateGeneration(context.Context, string, int) (vector.GenerationID, error) {
-	panic("not implemented")
-}
-func (s *stubVectorBackend) ActivateGeneration(context.Context, vector.GenerationID) error {
-	panic("not implemented")
-}
-func (s *stubVectorBackend) RetireGeneration(context.Context, vector.GenerationID) error {
-	panic("not implemented")
-}
-func (s *stubVectorBackend) Upsert(context.Context, vector.GenerationID, []vector.Chunk) error {
-	panic("not implemented")
-}
-func (s *stubVectorBackend) Search(context.Context, vector.GenerationID, []float32, int, vector.Filter) ([]vector.Hit, error) {
-	panic("not implemented")
-}
-func (s *stubVectorBackend) Delete(context.Context, vector.GenerationID, []int64) error {
-	panic("not implemented")
-}
-func (s *stubVectorBackend) LoadVector(context.Context, int64) ([]float32, error) {
-	panic("not implemented")
-}
-func (s *stubVectorBackend) Close() error { return nil }
 
 func TestHandleListMessages(t *testing.T) {
 	srv, _ := newTestServerWithMockStore(t)
@@ -1487,6 +1406,241 @@ func TestHandleSearch_HybridModeNotConfigured(t *testing.T) {
 	}
 }
 
+// newHybridServerForErrorTest constructs an API server with a real
+// hybrid.Engine wired around a fakeVectorBackend in the supplied state.
+// mainDB is nil because the test queries used here have no operators,
+// so BuildFilter never touches it.
+func newHybridServerForErrorTest(t *testing.T, backend vector.Backend) *Server {
+	t.Helper()
+	engine := hybrid.NewEngine(backend, nil, stubEmbedder{}, hybrid.Config{
+		ExpectedFingerprint: "nomic-embed:768",
+		RRFK:                60,
+		KPerSignal:          10,
+	})
+	cfg := &config.Config{Server: config.ServerConfig{APIPort: 8080}}
+	return NewServerWithOptions(ServerOptions{
+		Config:       cfg,
+		Store:        &mockStore{},
+		HybridEngine: engine,
+		Backend:      backend,
+		Logger:       testLogger(),
+	})
+}
+
+// TestHandleSearch_HybridErrIndexBuilding regression-guards the API's
+// translation of vector.ErrIndexBuilding from the hybrid engine into a
+// 503 with error code "index_building". The engine returns this when
+// no active generation exists yet but a build is in progress.
+func TestHandleSearch_HybridErrIndexBuilding(t *testing.T) {
+	building := &vector.Generation{
+		ID: 1, Model: "nomic-embed", Dimension: 768,
+		Fingerprint: "nomic-embed:768", State: vector.GenerationBuilding,
+	}
+	backend := &fakeVectorBackend{building: building}
+	srv := newHybridServerForErrorTest(t, backend)
+
+	req := httptest.NewRequest("GET", "/api/v1/search?q=anything&mode=hybrid", nil)
+	w := httptest.NewRecorder()
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", w.Code, w.Body.String())
+	}
+	var errResp ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if errResp.Error != "index_building" {
+		t.Errorf("error = %q, want 'index_building'", errResp.Error)
+	}
+}
+
+// TestHandleSearch_HybridErrNotEnabled regression-guards the API's
+// translation of vector.ErrNotEnabled from the hybrid engine into a
+// 503 with error code "vector_not_enabled". The engine returns this
+// when no generation exists at all (no active, no building).
+func TestHandleSearch_HybridErrNotEnabled(t *testing.T) {
+	backend := &fakeVectorBackend{} // no active, no building
+	srv := newHybridServerForErrorTest(t, backend)
+
+	req := httptest.NewRequest("GET", "/api/v1/search?q=anything&mode=hybrid", nil)
+	w := httptest.NewRecorder()
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", w.Code, w.Body.String())
+	}
+	var errResp ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if errResp.Error != "vector_not_enabled" {
+		t.Errorf("error = %q, want 'vector_not_enabled'", errResp.Error)
+	}
+}
+
+// realEmbedder returns a deterministic single vector per input. Used
+// when the test exercises the end-to-end engine path (mode=vector hits
+// backend.Search, which requires a query vector to have been produced).
+type realEmbedder struct {
+	dim int
+}
+
+func (e realEmbedder) Embed(_ context.Context, inputs []string) ([][]float32, error) {
+	out := make([][]float32, len(inputs))
+	for i := range inputs {
+		v := make([]float32, e.dim)
+		v[0] = 1
+		out[i] = v
+	}
+	return out, nil
+}
+
+// TestHandleSearch_HybridFilterOnlyReturnsBadRequest regression-guards
+// the spec contract that mode=vector|hybrid requires at least one
+// free-text term to embed. A query containing only operators (e.g.
+// `from:alice@example.com`) parses to an empty TextTerms slice; the
+// handler must reject this with 400 missing_free_text rather than
+// passing an empty string into the embedder.
+func TestHandleSearch_HybridFilterOnlyReturnsBadRequest(t *testing.T) {
+	// Construct a real engine so the handler progresses past the
+	// "vector_not_enabled" check before evaluating freeText.
+	backend := &fakeVectorBackend{
+		active: &vector.Generation{
+			ID: 1, Model: "fake", Dimension: 4,
+			Fingerprint: "fake:4", State: vector.GenerationActive,
+		},
+	}
+	engine := hybrid.NewEngine(backend, nil, stubEmbedder{}, hybrid.Config{
+		ExpectedFingerprint: "fake:4", RRFK: 60, KPerSignal: 10,
+	})
+	srv := NewServerWithOptions(ServerOptions{
+		Config:       &config.Config{Server: config.ServerConfig{APIPort: 8080}},
+		Store:        &mockStore{},
+		HybridEngine: engine,
+		Backend:      backend,
+		Logger:       testLogger(),
+	})
+
+	req := httptest.NewRequest("GET",
+		"/api/v1/search?q=from:alice@example.com&mode=vector", nil)
+	w := httptest.NewRecorder()
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	var errResp ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if errResp.Error != "missing_free_text" {
+		t.Errorf("error = %q, want 'missing_free_text'", errResp.Error)
+	}
+}
+
+// TestHandleSearch_HybridResponseItemShape regression-guards the
+// hybrid response item shape: each result must be a MessageSummary
+// (snake-case fields shared with /api/v1/search FTS mode), not a
+// bespoke object that diverges from the legacy summary surface.
+// Catches regressions where the embedded type or omitempty rules
+// drift away from MessageSummary.
+func TestHandleSearch_HybridResponseItemShape(t *testing.T) {
+	deletedAt := time.Date(2024, 1, 20, 0, 0, 0, 0, time.UTC)
+	store := &mockStore{
+		messages: []APIMessage{{
+			ID:             42,
+			ConversationID: 7,
+			Subject:        "Quarterly Plan",
+			From:           "alice@example.com",
+			To:             []string{"bob@example.com"},
+			Cc:             []string{"carol@example.com"},
+			SentAt:         time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC),
+			DeletedAt:      &deletedAt,
+			Snippet:        "discussion of Q1 priorities",
+			Labels:         []string{"INBOX", "Work"},
+			HasAttachments: true,
+			SizeEstimate:   2048,
+		}},
+	}
+	backend := &fakeVectorBackend{
+		active: &vector.Generation{
+			ID: 1, Model: "fake", Dimension: 4,
+			Fingerprint: "fake:4", State: vector.GenerationActive,
+		},
+		searchHits: []vector.Hit{{MessageID: 42, Score: 0.9, Rank: 1}},
+	}
+	engine := hybrid.NewEngine(backend, nil, realEmbedder{dim: 4}, hybrid.Config{
+		ExpectedFingerprint: "fake:4", RRFK: 60, KPerSignal: 10,
+	})
+	srv := NewServerWithOptions(ServerOptions{
+		Config:       &config.Config{Server: config.ServerConfig{APIPort: 8080}},
+		Store:        store,
+		HybridEngine: engine,
+		Backend:      backend,
+		Logger:       testLogger(),
+	})
+
+	req := httptest.NewRequest("GET", "/api/v1/search?q=quarterly&mode=vector", nil)
+	w := httptest.NewRecorder()
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	// Decode into a raw map so we can verify field names (snake-case
+	// keys) and that no unexpected wrapper is present.
+	var resp struct {
+		Mode    string                   `json:"mode"`
+		Results []map[string]interface{} `json:"results"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Mode != "vector" {
+		t.Errorf("mode = %q, want 'vector'", resp.Mode)
+	}
+	if len(resp.Results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(resp.Results))
+	}
+	got := resp.Results[0]
+	// Required MessageSummary fields. Score must be ABSENT (no explain=1).
+	wantKeys := []string{
+		"id", "conversation_id", "subject", "from", "to", "cc",
+		"sent_at", "deleted_at", "snippet", "labels",
+		"has_attachments", "size_bytes",
+	}
+	for _, k := range wantKeys {
+		if _, ok := got[k]; !ok {
+			t.Errorf("missing key %q in hybrid result item, got keys: %v", k, mapKeys(got))
+		}
+	}
+	if _, ok := got["score"]; ok {
+		t.Errorf("'score' key present without explain=1, got %v", got["score"])
+	}
+	// Spot-check a couple of values to make sure it's the same message.
+	if id, _ := got["id"].(float64); int64(id) != 42 {
+		t.Errorf("id = %v, want 42", got["id"])
+	}
+	if subj, _ := got["subject"].(string); subj != "Quarterly Plan" {
+		t.Errorf("subject = %v, want 'Quarterly Plan'", got["subject"])
+	}
+	if hasA, _ := got["has_attachments"].(bool); !hasA {
+		t.Errorf("has_attachments = %v, want true", got["has_attachments"])
+	}
+}
+
+// mapKeys returns the keys of a map[string]interface{} for use in
+// assertion error messages.
+func mapKeys(m map[string]interface{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
+}
+
 func TestHandleSearch_HybridModePaginationUnsupported(t *testing.T) {
 	srv, _ := newTestServerWithMockStore(t)
 
@@ -1564,13 +1718,15 @@ func TestHandleQuery_SQLiteEngine503(t *testing.T) {
 	}
 }
 
-// fakeVectorBackend is a test stub implementing vector.Backend. Only
-// ActiveGeneration, BuildingGeneration, and Stats are exercised by T22
-// tests; the rest return errors.
+// fakeVectorBackend is a test stub implementing vector.Backend. Tests
+// that need canned ANN hits set searchHits/searchErr; Stats and the
+// generation-resolution paths use the other fields.
 type fakeVectorBackend struct {
-	active   *vector.Generation
-	building *vector.Generation
-	stats    vector.Stats
+	active     *vector.Generation
+	building   *vector.Generation
+	stats      vector.Stats
+	searchHits []vector.Hit
+	searchErr  error
 }
 
 func (f *fakeVectorBackend) CreateGeneration(_ context.Context, _ string, _ int) (vector.GenerationID, error) {
@@ -1597,7 +1753,7 @@ func (f *fakeVectorBackend) Upsert(_ context.Context, _ vector.GenerationID, _ [
 func (f *fakeVectorBackend) Search(
 	_ context.Context, _ vector.GenerationID, _ []float32, _ int, _ vector.Filter,
 ) ([]vector.Hit, error) {
-	return nil, errors.New("not implemented")
+	return f.searchHits, f.searchErr
 }
 func (f *fakeVectorBackend) Delete(_ context.Context, _ vector.GenerationID, _ []int64) error {
 	return errors.New("not implemented")

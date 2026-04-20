@@ -18,7 +18,17 @@ import (
 	"github.com/wesm/msgvault/internal/query/querytest"
 	"github.com/wesm/msgvault/internal/testutil"
 	"github.com/wesm/msgvault/internal/vector"
+	"github.com/wesm/msgvault/internal/vector/hybrid"
 )
+
+// stubEmbedder is an EmbeddingClient placeholder for tests where the
+// engine never reaches the embed step (e.g. ResolveActiveForFingerprint
+// fails first). Calling Embed signals a test bug.
+type stubEmbedder struct{}
+
+func (stubEmbedder) Embed(_ context.Context, _ []string) ([][]float32, error) {
+	return nil, errors.New("stubEmbedder.Embed should not be called in this test")
+}
 
 // toolHandler is the function signature for MCP tool handler methods.
 type toolHandler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
@@ -135,6 +145,70 @@ func TestSearchMessages_HybridModeNotConfigured(t *testing.T) {
 
 	r := runToolExpectError(t, "search_messages", h.searchMessages, map[string]any{
 		"query": "meeting notes",
+		"mode":  "hybrid",
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "vector_not_enabled") {
+		t.Fatalf("expected 'vector_not_enabled' error, got: %s", txt)
+	}
+}
+
+// newHybridHandlersForErrorTest wires a real hybrid.Engine around the
+// supplied backend so the search_messages handler exercises the engine's
+// sentinel-error translation. mainDB is nil because the test query has
+// no operators, so BuildFilter never touches it.
+func newHybridHandlersForErrorTest(backend vector.Backend) *handlers {
+	engine := hybrid.NewEngine(backend, nil, stubEmbedder{}, hybrid.Config{
+		ExpectedFingerprint: "nomic-embed:768",
+		RRFK:                60,
+		KPerSignal:          10,
+	})
+	return &handlers{
+		engine:       &querytest.MockEngine{},
+		hybridEngine: engine,
+		backend:      backend,
+	}
+}
+
+// TestSearchMessages_HybridErrIndexBuilding regression-guards the MCP
+// handler's translation of vector.ErrIndexBuilding from the hybrid
+// engine into an "index_building" tool error. The engine returns this
+// when no active generation exists yet but a build is in progress.
+func TestSearchMessages_HybridErrIndexBuilding(t *testing.T) {
+	building := &vector.Generation{
+		ID: 1, Model: "nomic-embed", Dimension: 768,
+		Fingerprint: "nomic-embed:768", State: vector.GenerationBuilding,
+	}
+	// activeErr drives ResolveActiveForFingerprint to consult the
+	// building generation; with one present the result is ErrIndexBuilding.
+	h := newHybridHandlersForErrorTest(&fakeBackend{
+		activeErr: vector.ErrNoActiveGeneration,
+		building:  building,
+	})
+
+	r := runToolExpectError(t, "search_messages", h.searchMessages, map[string]any{
+		"query": "anything",
+		"mode":  "hybrid",
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "index_building") {
+		t.Fatalf("expected 'index_building' error, got: %s", txt)
+	}
+}
+
+// TestSearchMessages_HybridErrNotEnabled regression-guards the MCP
+// handler's translation of vector.ErrNotEnabled from the hybrid engine
+// into a "vector_not_enabled" tool error. The engine returns this when
+// no generation exists at all (no active, no building).
+func TestSearchMessages_HybridErrNotEnabled(t *testing.T) {
+	// fakeBackend.activeErr=ErrNoActiveGeneration + building=nil
+	// drives ResolveActiveForFingerprint into the ErrNotEnabled branch.
+	h := newHybridHandlersForErrorTest(&fakeBackend{
+		activeErr: vector.ErrNoActiveGeneration,
+	})
+
+	r := runToolExpectError(t, "search_messages", h.searchMessages, map[string]any{
+		"query": "anything",
 		"mode":  "hybrid",
 	})
 	txt := resultText(t, r)
