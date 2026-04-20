@@ -199,6 +199,20 @@ SELECT message_id, rrf_score, bm25_score, vector_score,
 		ftsArg = req.FTSQuery
 	}
 
+	// When the subject boost is active we have to re-rank in Go after
+	// fetching, so the SQL LIMIT must over-fetch enough that any
+	// boost-eligible hit ranked just below the page is still in the
+	// candidate set when re-sort runs. Without over-fetch, a hit at
+	// pre-boost rank Limit+1 can never surface even if its boosted
+	// score would put it in the top page.
+	sqlLimit := req.Limit
+	if req.SubjectBoost > 1.0 && len(req.SubjectTerms) > 0 {
+		sqlLimit = req.Limit * subjectBoostOverfetchFactor
+		if sqlLimit < req.Limit {
+			sqlLimit = req.Limit // overflow guard
+		}
+	}
+
 	args := []any{
 		sql.Named("source_ids", sourceIDs),
 		sql.Named("has_attachment", hasAttachment),
@@ -211,7 +225,7 @@ SELECT message_id, rrf_score, bm25_score, vector_score,
 		sql.Named("query_vec", queryVecArg),
 		sql.Named("gen", int64(req.Generation)),
 		sql.Named("rrf_k", req.RRFK),
-		sql.Named("limit", req.Limit),
+		sql.Named("limit", sqlLimit),
 	}
 	args = append(args, senderGroupArgs...)
 	args = append(args, toGroupArgs...)
@@ -252,6 +266,11 @@ SELECT message_id, rrf_score, bm25_score, vector_score,
 
 	if req.SubjectBoost > 1.0 && len(req.SubjectTerms) > 0 {
 		b.applySubjectBoost(ctx, hits, req.SubjectTerms, req.SubjectBoost)
+		// Trim the over-fetched candidate pool back to the requested
+		// limit once boost-aware ordering is final.
+		if len(hits) > req.Limit {
+			hits = hits[:req.Limit]
+		}
 	}
 	// Saturated if either CTE returned more than KPerSignal rows — the
 	// extra "K+1 probe" slot was filled. When there are no fused rows
@@ -260,6 +279,15 @@ SELECT message_id, rrf_score, bm25_score, vector_score,
 	saturated := bm25PoolSize > req.KPerSignal || annPoolSize > req.KPerSignal
 	return hits, saturated, nil
 }
+
+// subjectBoostOverfetchFactor sets how many times req.Limit the SQL
+// fetches when the subject boost is active. The boost can only
+// reorder candidates already in the result set — a hit at pre-boost
+// rank Limit+1 never gets a chance unless we widen the pool first.
+// 4× absorbs typical subject-boost movements (a 2–3× score multiplier
+// rarely jumps a hit by more than 4 ranks at K=50) without inflating
+// the SQL working set on the common case where boost is disabled.
+const subjectBoostOverfetchFactor = 4
 
 // openFusedConn opens a fresh connection to the main msgvault.db with
 // vectors.db ATTACHed under the alias "vec". Caller must Close it.
