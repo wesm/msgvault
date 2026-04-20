@@ -305,7 +305,27 @@ func (b *Backend) Upsert(ctx context.Context, gen vector.GenerationID, chunks []
 			return fmt.Errorf("clear pending: %w", err)
 		}
 	}
+
+	if err := recomputeMessageCount(ctx, tx, gen); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+// recomputeMessageCount refreshes index_generations.message_count from
+// the current embeddings table contents so upserts and deletes keep the
+// generation metadata in sync. Runs inside the caller's transaction.
+func recomputeMessageCount(ctx context.Context, tx *sql.Tx, gen vector.GenerationID) error {
+	_, err := tx.ExecContext(ctx,
+		`UPDATE index_generations
+		    SET message_count = (
+		        SELECT COUNT(*) FROM embeddings WHERE generation_id = ?
+		    )
+		  WHERE id = ?`, int64(gen), int64(gen))
+	if err != nil {
+		return fmt.Errorf("update message_count: %w", err)
+	}
+	return nil
 }
 
 // float32SliceBlob converts a float32 slice to the little-endian byte
@@ -569,6 +589,9 @@ func (b *Backend) Delete(ctx context.Context, gen vector.GenerationID, messageID
 			return fmt.Errorf("delete vector: %w", err)
 		}
 	}
+	if err := recomputeMessageCount(ctx, tx, gen); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete tx: %w", err)
 	}
@@ -576,14 +599,27 @@ func (b *Backend) Delete(ctx context.Context, gen vector.GenerationID, messageID
 }
 
 // Stats returns counts for the given generation. When gen == 0, counts
-// are aggregated across all generations. StorageBytes is left zero
-// here; it is derived from the vectors.db file size by the caller.
+// are aggregated across all generations. Returns an error wrapping
+// vector.ErrUnknownGeneration if gen != 0 and the generation does not
+// exist, so callers can distinguish a bad gen id from a valid-but-empty
+// generation. StorageBytes is left zero here; it is derived from the
+// vectors.db file size by the caller.
 func (b *Backend) Stats(ctx context.Context, gen vector.GenerationID) (vector.Stats, error) {
 	var s vector.Stats
 	where := "WHERE generation_id = ?"
 	args := []any{int64(gen)}
 	if gen == 0 {
 		where, args = "", nil
+	} else {
+		var exists int
+		err := b.db.QueryRowContext(ctx,
+			`SELECT 1 FROM index_generations WHERE id = ?`, int64(gen)).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return s, fmt.Errorf("%w: %d", vector.ErrUnknownGeneration, gen)
+		}
+		if err != nil {
+			return s, fmt.Errorf("lookup generation %d: %w", gen, err)
+		}
 	}
 
 	if err := b.db.QueryRowContext(ctx,

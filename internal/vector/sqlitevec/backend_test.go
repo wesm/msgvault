@@ -452,6 +452,86 @@ func TestBackend_Stats_AggregateAcrossGenerations(t *testing.T) {
 	}
 }
 
+// TestBackend_Upsert_UpdatesMessageCount verifies that
+// index_generations.message_count tracks the number of embedded
+// messages after both the initial insert and subsequent re-upsert /
+// delete. Without this, ActiveGeneration().MessageCount stays at zero
+// regardless of how many chunks have been written.
+func TestBackend_Upsert_UpdatesMessageCount(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+
+	// Initially zero.
+	bg, err := b.BuildingGeneration(ctx)
+	if err != nil {
+		t.Fatalf("BuildingGeneration: %v", err)
+	}
+	if bg.MessageCount != 0 {
+		t.Errorf("initial MessageCount=%d, want 0", bg.MessageCount)
+	}
+
+	// Upsert three chunks → count 3.
+	chunks := []vector.Chunk{
+		{MessageID: 1, Vector: unitVec(768, 0), SourceCharLen: 10},
+		{MessageID: 2, Vector: unitVec(768, 1), SourceCharLen: 20},
+		{MessageID: 3, Vector: unitVec(768, 2), SourceCharLen: 30},
+	}
+	if err := b.Upsert(ctx, gid, chunks); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	bg, err = b.BuildingGeneration(ctx)
+	if err != nil {
+		t.Fatalf("BuildingGeneration: %v", err)
+	}
+	if bg.MessageCount != 3 {
+		t.Errorf("after initial Upsert: MessageCount=%d, want 3", bg.MessageCount)
+	}
+
+	// Re-upsert the same messages (update, not insert) → count stays 3.
+	if err := b.Upsert(ctx, gid, chunks[:2]); err != nil {
+		t.Fatalf("re-Upsert: %v", err)
+	}
+	bg, err = b.BuildingGeneration(ctx)
+	if err != nil {
+		t.Fatalf("BuildingGeneration: %v", err)
+	}
+	if bg.MessageCount != 3 {
+		t.Errorf("after re-Upsert: MessageCount=%d, want 3", bg.MessageCount)
+	}
+
+	// Delete one → count drops to 2.
+	if err := b.Delete(ctx, gid, []int64{2}); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	bg, err = b.BuildingGeneration(ctx)
+	if err != nil {
+		t.Fatalf("BuildingGeneration: %v", err)
+	}
+	if bg.MessageCount != 2 {
+		t.Errorf("after Delete: MessageCount=%d, want 2", bg.MessageCount)
+	}
+}
+
+// TestBackend_Stats_UnknownGeneration confirms that passing a non-zero
+// generation id that doesn't exist returns an error wrapping
+// vector.ErrUnknownGeneration, rather than silently reporting 0 counts
+// (which would be indistinguishable from a valid-but-empty generation).
+func TestBackend_Stats_UnknownGeneration(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+
+	_, err := b.Stats(ctx, vector.GenerationID(9999))
+	if err == nil {
+		t.Fatal("Stats on unknown generation: want error, got nil")
+	}
+	if !errors.Is(err, vector.ErrUnknownGeneration) {
+		t.Errorf("error = %v, want wrapping ErrUnknownGeneration", err)
+	}
+}
+
 func TestBackend_LoadVector(t *testing.T) {
 	b, ctx := newBackendForTest(t)
 	gid, err := b.CreateGeneration(ctx, "m", 768)
