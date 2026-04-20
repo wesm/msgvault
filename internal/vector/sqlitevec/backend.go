@@ -560,6 +560,26 @@ func (b *Backend) filteredMessageIDs(ctx context.Context, f vector.Filter) ([]in
 			args = append(args, id)
 		}
 	}
+	// Recipient filters: one EXISTS per type, matching participant_id.
+	addRecipientFilter := func(recipientType string, ids []int64) {
+		if len(ids) == 0 {
+			return
+		}
+		clauses = append(clauses, fmt.Sprintf(
+			`EXISTS (
+				SELECT 1 FROM message_recipients mr
+				 WHERE mr.message_id = m.id
+				   AND mr.recipient_type = '%s'
+				   AND %s
+			)`, recipientType, inClause("mr.participant_id", ids)))
+		for _, id := range ids {
+			args = append(args, id)
+		}
+	}
+	addRecipientFilter("to", f.ToIDs)
+	addRecipientFilter("cc", f.CcIDs)
+	addRecipientFilter("bcc", f.BccIDs)
+
 	if f.HasAttachment != nil {
 		clauses = append(clauses, "m.has_attachments = ?")
 		args = append(args, *f.HasAttachment)
@@ -571,6 +591,18 @@ func (b *Backend) filteredMessageIDs(ctx context.Context, f vector.Filter) ([]in
 	if f.Before != nil {
 		clauses = append(clauses, "m.sent_at < ?")
 		args = append(args, f.Before.Format(sqliteDatetimeFormat))
+	}
+	if f.LargerThan != nil {
+		clauses = append(clauses, "m.size_estimate > ?")
+		args = append(args, *f.LargerThan)
+	}
+	if f.SmallerThan != nil {
+		clauses = append(clauses, "m.size_estimate < ?")
+		args = append(args, *f.SmallerThan)
+	}
+	for _, term := range f.SubjectSubstrings {
+		clauses = append(clauses, `m.subject LIKE ? ESCAPE '\'`)
+		args = append(args, "%"+escapeLikeSubject(term)+"%")
 	}
 	if len(f.LabelIDs) > 0 {
 		clauses = append(clauses, fmt.Sprintf(
@@ -611,6 +643,16 @@ func inClause(col string, ids []int64) string {
 		placeholders[i] = "?"
 	}
 	return fmt.Sprintf("%s IN (%s)", col, strings.Join(placeholders, ","))
+}
+
+// escapeLikeSubject escapes SQL LIKE special characters (%, _, \) so
+// they match literally. Used with ESCAPE '\' to preserve semantics
+// from the existing subject filter in internal/store/api.go.
+func escapeLikeSubject(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
 }
 
 // Delete removes the given messages from the specified generation in

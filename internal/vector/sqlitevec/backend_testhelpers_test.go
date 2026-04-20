@@ -93,9 +93,11 @@ func openFusedMainDB(t *testing.T) (*sql.DB, string) {
 	schema := `
 CREATE TABLE messages (
     id INTEGER PRIMARY KEY,
+    subject TEXT,
     source_id INTEGER,
     sender_id INTEGER,
     has_attachments INTEGER DEFAULT 0,
+    size_estimate INTEGER,
     sent_at INTEGER,
     deleted_from_source_at DATETIME
 );

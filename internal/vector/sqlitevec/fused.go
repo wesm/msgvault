@@ -52,6 +52,18 @@ func (b *Backend) FusedSearch(ctx context.Context, req vector.FusedRequest) ([]v
 	if err != nil {
 		return nil, fmt.Errorf("encode sender_ids: %w", err)
 	}
+	toIDs, err := idsToJSON(req.Filter.ToIDs)
+	if err != nil {
+		return nil, fmt.Errorf("encode to_ids: %w", err)
+	}
+	ccIDs, err := idsToJSON(req.Filter.CcIDs)
+	if err != nil {
+		return nil, fmt.Errorf("encode cc_ids: %w", err)
+	}
+	bccIDs, err := idsToJSON(req.Filter.BccIDs)
+	if err != nil {
+		return nil, fmt.Errorf("encode bcc_ids: %w", err)
+	}
 	labelIDs, err := idsToJSON(req.Filter.LabelIDs)
 	if err != nil {
 		return nil, fmt.Errorf("encode label_ids: %w", err)
@@ -69,6 +81,28 @@ func (b *Backend) FusedSearch(ctx context.Context, req vector.FusedRequest) ([]v
 	}
 	if req.Filter.Before != nil {
 		before = sql.NullString{Valid: true, String: req.Filter.Before.Format(sqliteDatetimeFormat)}
+	}
+	var largerThan, smallerThan sql.NullInt64
+	if req.Filter.LargerThan != nil {
+		largerThan = sql.NullInt64{Valid: true, Int64: *req.Filter.LargerThan}
+	}
+	if req.Filter.SmallerThan != nil {
+		smallerThan = sql.NullInt64{Valid: true, Int64: *req.Filter.SmallerThan}
+	}
+	// SubjectSubstrings all get AND-combined; encode as JSON so the CTE
+	// can iterate via json_each and apply one LIKE per term without
+	// blowing past the bound-parameter cap.
+	var subjectPatterns sql.NullString
+	if len(req.Filter.SubjectSubstrings) > 0 {
+		patterns := make([]string, len(req.Filter.SubjectSubstrings))
+		for i, term := range req.Filter.SubjectSubstrings {
+			patterns[i] = "%" + escapeLikeSubject(term) + "%"
+		}
+		buf, err := json.Marshal(patterns)
+		if err != nil {
+			return nil, fmt.Errorf("encode subject patterns: %w", err)
+		}
+		subjectPatterns = sql.NullString{Valid: true, String: string(buf)}
 	}
 
 	vecTable := "vec." + VectorTableName(dim)
@@ -89,9 +123,29 @@ WITH
                   WHERE mr.message_id = m.id
                     AND mr.recipient_type = 'from'
                     AND mr.participant_id IN (SELECT value FROM json_each(:sender_ids))))
+       AND (:to_ids IS NULL OR EXISTS (
+             SELECT 1 FROM message_recipients mr
+              WHERE mr.message_id = m.id
+                AND mr.recipient_type = 'to'
+                AND mr.participant_id IN (SELECT value FROM json_each(:to_ids))))
+       AND (:cc_ids IS NULL OR EXISTS (
+             SELECT 1 FROM message_recipients mr
+              WHERE mr.message_id = m.id
+                AND mr.recipient_type = 'cc'
+                AND mr.participant_id IN (SELECT value FROM json_each(:cc_ids))))
+       AND (:bcc_ids IS NULL OR EXISTS (
+             SELECT 1 FROM message_recipients mr
+              WHERE mr.message_id = m.id
+                AND mr.recipient_type = 'bcc'
+                AND mr.participant_id IN (SELECT value FROM json_each(:bcc_ids))))
        AND (:has_attachment IS NULL OR m.has_attachments = :has_attachment)
        AND (:after IS NULL OR m.sent_at >= :after)
        AND (:before IS NULL OR m.sent_at < :before)
+       AND (:larger_than IS NULL OR m.size_estimate > :larger_than)
+       AND (:smaller_than IS NULL OR m.size_estimate < :smaller_than)
+       AND (:subject_patterns IS NULL OR NOT EXISTS (
+             SELECT 1 FROM json_each(:subject_patterns) sp
+              WHERE m.subject IS NULL OR m.subject NOT LIKE sp.value ESCAPE '\'))
        AND (:label_ids IS NULL OR EXISTS (
              SELECT 1 FROM message_labels ml
               WHERE ml.message_id = m.id
@@ -144,9 +198,15 @@ SELECT message_id, rrf_score, bm25_score, vector_score
 	rows, err := conn.QueryContext(ctx, query,
 		sql.Named("source_ids", sourceIDs),
 		sql.Named("sender_ids", senderIDs),
+		sql.Named("to_ids", toIDs),
+		sql.Named("cc_ids", ccIDs),
+		sql.Named("bcc_ids", bccIDs),
 		sql.Named("has_attachment", hasAttachment),
 		sql.Named("after", after),
 		sql.Named("before", before),
+		sql.Named("larger_than", largerThan),
+		sql.Named("smaller_than", smallerThan),
+		sql.Named("subject_patterns", subjectPatterns),
 		sql.Named("label_ids", labelIDs),
 		sql.Named("fts_query", ftsArg),
 		sql.Named("query_vec", queryVecArg),

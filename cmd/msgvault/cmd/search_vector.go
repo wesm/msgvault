@@ -87,7 +87,7 @@ func runHybridSearch(cmd *cobra.Command, queryStr, mode string, explain bool) er
 
 	q := search.Parse(queryStr)
 
-	filter, err := buildVectorFilter(ctx, mainDB, q)
+	filter, err := hybrid.BuildFilter(ctx, mainDB, q)
 	if err != nil {
 		return fmt.Errorf("build filter: %w", err)
 	}
@@ -141,106 +141,6 @@ func runHybridSearch(cmd *cobra.Command, queryStr, mode string, explain bool) er
 		return outputHybridResultsJSON(results, meta, explain)
 	}
 	return outputHybridResultsTable(results, meta, explain)
-}
-
-// buildVectorFilter translates a parsed Gmail-syntax query into a
-// vector.Filter by resolving address/label tokens to IDs against the
-// main DB. Unsupported operators (to, cc, bcc, subject, size) are
-// silently ignored for T19; T27 may extend this.
-func buildVectorFilter(ctx context.Context, db *sql.DB, q *search.Query) (vector.Filter, error) {
-	var f vector.Filter
-
-	if len(q.FromAddrs) > 0 {
-		ids, err := resolveParticipantIDs(ctx, db, q.FromAddrs)
-		if err != nil {
-			return f, err
-		}
-		f.SenderIDs = ids
-	}
-
-	if len(q.Labels) > 0 {
-		ids, err := resolveLabelIDs(ctx, db, q.Labels)
-		if err != nil {
-			return f, err
-		}
-		f.LabelIDs = ids
-	}
-
-	if q.HasAttachment != nil {
-		v := *q.HasAttachment
-		f.HasAttachment = &v
-	}
-	if q.AfterDate != nil {
-		f.After = q.AfterDate
-	}
-	if q.BeforeDate != nil {
-		f.Before = q.BeforeDate
-	}
-	return f, nil
-}
-
-func resolveParticipantIDs(ctx context.Context, db *sql.DB, addrs []string) ([]int64, error) {
-	if len(addrs) == 0 {
-		return nil, nil
-	}
-	placeholders := make([]string, len(addrs))
-	args := make([]any, len(addrs))
-	for i, a := range addrs {
-		placeholders[i] = "?"
-		args[i] = strings.ToLower(a)
-	}
-	q := fmt.Sprintf(
-		`SELECT id FROM participants WHERE LOWER(email_address) IN (%s)`,
-		strings.Join(placeholders, ","))
-	rows, err := db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query participants: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan participant id: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate participants: %w", err)
-	}
-	return ids, nil
-}
-
-func resolveLabelIDs(ctx context.Context, db *sql.DB, labels []string) ([]int64, error) {
-	if len(labels) == 0 {
-		return nil, nil
-	}
-	placeholders := make([]string, len(labels))
-	args := make([]any, len(labels))
-	for i, l := range labels {
-		placeholders[i] = "?"
-		args[i] = l
-	}
-	q := fmt.Sprintf(
-		`SELECT id FROM labels WHERE name IN (%s)`,
-		strings.Join(placeholders, ","))
-	rows, err := db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query labels: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan label id: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate labels: %w", err)
-	}
-	return ids, nil
 }
 
 type hybridResultRow struct {

@@ -59,6 +59,7 @@ CREATE TABLE messages (
     source_id INTEGER,
     sender_id INTEGER,
     has_attachments INTEGER DEFAULT 0,
+    size_estimate INTEGER,
     sent_at INTEGER,
     deleted_from_source_at DATETIME
 );

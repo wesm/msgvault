@@ -42,20 +42,51 @@ type Chunk struct {
 }
 
 // Filter carries the structured filters pushed into both signal CTEs
-// in hybrid search. Values are pre-resolved to IDs at the Go layer.
+// in hybrid search. Values are pre-resolved to IDs at the Go layer
+// (addresses → participant IDs, labels → label IDs) so backend code
+// only deals in integers.
+//
+// Semantics match the existing SQLite search path (internal/store/api.go,
+// internal/query/sqlite.go):
+//
+//   - *IDs slices are OR-matched within a field (any id counts) and
+//     AND-combined across fields.
+//   - SenderIDs falls back to message_recipients rows with
+//     recipient_type='from' for legacy rows where sender_id is NULL.
+//   - SubjectSubstrings each add one `m.subject LIKE ? ESCAPE '\'`
+//     condition, ANDed together (all substrings must match).
+//   - After/Before are half-open against m.sent_at:
+//     `>= After` and `< Before`.
+//   - LargerThan/SmallerThan compare against m.size_estimate.
 type Filter struct {
-	SourceIDs     []int64 // from [server/sources].identifier; empty = no source filter
-	SenderIDs     []int64 // from participants.email_address
-	LabelIDs      []int64 // from labels.name
-	HasAttachment *bool
-	After, Before *time.Time
+	SourceIDs         []int64 // from [server/sources].identifier; empty = no source filter
+	SenderIDs         []int64 // participant IDs for `from:`
+	ToIDs             []int64 // participant IDs for `to:`
+	CcIDs             []int64 // participant IDs for `cc:`
+	BccIDs            []int64 // participant IDs for `bcc:`
+	LabelIDs          []int64 // from labels.name
+	HasAttachment     *bool
+	After, Before     *time.Time
+	LargerThan        *int64   // `larger:` — strictly greater than
+	SmallerThan       *int64   // `smaller:` — strictly less than
+	SubjectSubstrings []string // one per `subject:` term (ANDed)
 }
 
 // IsEmpty reports whether the filter has no restrictions. A zero-value
 // Filter is empty and backends should skip filter resolution entirely.
 func (f Filter) IsEmpty() bool {
-	return len(f.SourceIDs) == 0 && len(f.SenderIDs) == 0 && len(f.LabelIDs) == 0 &&
-		f.HasAttachment == nil && f.After == nil && f.Before == nil
+	return len(f.SourceIDs) == 0 &&
+		len(f.SenderIDs) == 0 &&
+		len(f.ToIDs) == 0 &&
+		len(f.CcIDs) == 0 &&
+		len(f.BccIDs) == 0 &&
+		len(f.LabelIDs) == 0 &&
+		f.HasAttachment == nil &&
+		f.After == nil &&
+		f.Before == nil &&
+		f.LargerThan == nil &&
+		f.SmallerThan == nil &&
+		len(f.SubjectSubstrings) == 0
 }
 
 // Hit is one search result.
