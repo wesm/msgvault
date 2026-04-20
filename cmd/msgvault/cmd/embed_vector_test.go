@@ -332,3 +332,85 @@ func TestPickEmbedGeneration_FullRebuildAbortsWhenDeclined(t *testing.T) {
 		t.Fatal("expected abort error, got nil")
 	}
 }
+
+// TestPickEmbedGeneration_ResumeReseedsUnseededBuilding regression-
+// guards the crash-window bug where a process that died between
+// inserting the building row and committing the initial seed would
+// leave the queue empty; a later `msgvault embed` would then "drain"
+// zero rows and silently activate an unseeded generation. The resume
+// path must call EnsureSeeded on the matched build before returning,
+// reseeding pending_embeddings so the activation gate sees real work
+// (or the absence of any) instead of a vacuous empty queue.
+func TestPickEmbedGeneration_ResumeReseedsUnseededBuilding(t *testing.T) {
+	ctx := context.Background()
+	b := openTestBackend(t)
+
+	// Step 1: create a building gen the normal way (which seeds + marks
+	// seeded_at).
+	gen, err := b.CreateGeneration(ctx, "fake", 4)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+
+	// Step 2: simulate the crash window — clear pending_embeddings and
+	// blank seeded_at so the next resume must reseed. This mirrors the
+	// state after a process dies between the building-row insert and
+	// the seedPending commit.
+	if _, err := b.DB().ExecContext(ctx,
+		`DELETE FROM pending_embeddings WHERE generation_id = ?`, int64(gen)); err != nil {
+		t.Fatalf("clear pending: %v", err)
+	}
+	if _, err := b.DB().ExecContext(ctx,
+		`UPDATE index_generations SET seeded_at = NULL WHERE id = ?`, int64(gen)); err != nil {
+		t.Fatalf("clear seeded_at: %v", err)
+	}
+
+	// Sanity: pending really is empty before the resume.
+	var pendingBefore int
+	if err := b.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pending_embeddings WHERE generation_id = ?`, int64(gen)).Scan(&pendingBefore); err != nil {
+		t.Fatalf("count pending before: %v", err)
+	}
+	if pendingBefore != 0 {
+		t.Fatalf("pending count before resume = %d, want 0 (test setup wrong)", pendingBefore)
+	}
+
+	// Step 3: run pickEmbedGeneration on the resume path.
+	gotGen, rebuildInProgress, err := pickEmbedGeneration(ctx, b, embedGenerationOpts{
+		FullRebuild: false,
+		Model:       "fake",
+		Dimension:   4,
+		Fingerprint: "fake:4",
+		Stderr:      openStderrSink(t),
+	})
+	if err != nil {
+		t.Fatalf("pickEmbedGeneration: %v", err)
+	}
+	if gotGen != gen {
+		t.Errorf("gotGen=%d, want %d", gotGen, gen)
+	}
+	if !rebuildInProgress {
+		t.Error("rebuildInProgress=false, want true")
+	}
+
+	// Step 4: pending_embeddings should now contain the message we
+	// seeded in openTestBackend (id=1). Without EnsureSeeded on the
+	// resume path, this would still be 0.
+	var pendingAfter int
+	if err := b.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pending_embeddings WHERE generation_id = ?`, int64(gen)).Scan(&pendingAfter); err != nil {
+		t.Fatalf("count pending after: %v", err)
+	}
+	if pendingAfter != 1 {
+		t.Errorf("pending count after resume = %d, want 1 (EnsureSeeded should have reseeded)", pendingAfter)
+	}
+	// And seeded_at should be set so a subsequent resume skips the work.
+	var seededAt sql.NullInt64
+	if err := b.DB().QueryRowContext(ctx,
+		`SELECT seeded_at FROM index_generations WHERE id = ?`, int64(gen)).Scan(&seededAt); err != nil {
+		t.Fatalf("read seeded_at: %v", err)
+	}
+	if !seededAt.Valid {
+		t.Error("seeded_at still NULL after resume, want set")
+	}
+}

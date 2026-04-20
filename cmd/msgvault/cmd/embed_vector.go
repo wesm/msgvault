@@ -187,6 +187,13 @@ func pickEmbedGeneration(ctx context.Context, backend vector.Backend, opts embed
 	}
 	if building != nil {
 		if building.Fingerprint == opts.Fingerprint {
+			// Re-run the initial seed if the prior CreateGeneration
+			// crashed between inserting the building row and committing
+			// the seed. Without this, a resume could "drain" zero
+			// pending rows and activate an unseeded generation.
+			if err := backend.EnsureSeeded(ctx, building.ID); err != nil {
+				return 0, false, fmt.Errorf("ensure seeded: %w", err)
+			}
 			_, _ = fmt.Fprintf(opts.Stderr, "Resuming building generation %d (%s).\n",
 				building.ID, building.Fingerprint)
 			return building.ID, true, nil

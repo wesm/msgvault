@@ -503,6 +503,9 @@ func (f *fakeBackend) LoadVector(ctx context.Context, messageID int64) ([]float3
 	panic("unexpected: LoadVector")
 }
 func (f *fakeBackend) Close() error { return nil }
+func (f *fakeBackend) EnsureSeeded(_ context.Context, _ vector.GenerationID) error {
+	panic("unexpected: EnsureSeeded")
+}
 
 // fakeRunner records calls to satisfy EmbedRunner.
 type fakeRunner struct {

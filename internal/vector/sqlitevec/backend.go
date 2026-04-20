@@ -161,6 +161,40 @@ func (b *Backend) markGenerationSeeded(ctx context.Context, gen vector.Generatio
 	return nil
 }
 
+// EnsureSeeded re-runs the initial seed pass for gen if seeded_at is
+// NULL. Used on the resume path so that a crash between
+// claimOrInsertBuilding and the original seedPending commit cannot
+// cause a later `msgvault embed` to "drain" zero pending rows and
+// activate an unseeded generation. Returns an error if gen no longer
+// exists or has been activated/retired (state != 'building'); the
+// caller should surface --full-rebuild guidance in that case.
+func (b *Backend) EnsureSeeded(ctx context.Context, gen vector.GenerationID) error {
+	var state string
+	err := b.db.QueryRowContext(ctx,
+		`SELECT state FROM index_generations WHERE id = ?`, int64(gen)).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: %d", vector.ErrUnknownGeneration, gen)
+	}
+	if err != nil {
+		return fmt.Errorf("lookup generation %d: %w", gen, err)
+	}
+	if state != string(vector.GenerationBuilding) {
+		return fmt.Errorf("EnsureSeeded: generation %d state=%q, want building", gen, state)
+	}
+	seeded, err := b.isGenerationSeeded(ctx, gen)
+	if err != nil {
+		return err
+	}
+	if seeded {
+		return nil
+	}
+	now := time.Now().Unix()
+	if err := b.seedPending(ctx, gen, now); err != nil {
+		return err
+	}
+	return b.markGenerationSeeded(ctx, gen, now)
+}
+
 // claimOrInsertBuilding returns (id, isNew, err). isNew=true means
 // this call inserted a fresh building row; isNew=false means we
 // reused an existing building row whose fingerprint matched. Reusing
@@ -684,12 +718,18 @@ func (b *Backend) filteredMessageIDs(ctx context.Context, f vector.Filter) ([]in
 			args = append(args, id)
 		}
 	}
-	if len(f.SenderIDs) > 0 {
-		// Fall back to message_recipients 'from' rows for legacy
-		// messages where sender_id is NULL (see the existing filter
-		// in internal/query/sqlite.go which behaves the same).
-		inDirect := inClause("m.sender_id", f.SenderIDs)
-		inRecipient := inClause("mr.participant_id", f.SenderIDs)
+	// Sender filters: one EXISTS per group, AND'd across groups so
+	// repeated `from:` operators each become an independent
+	// message-level requirement. Within a group, the message's
+	// sender_id OR any of its `from` recipient rows can satisfy the
+	// group — the recipient fallback covers legacy rows where
+	// messages.sender_id is NULL (matches internal/store/api.go).
+	for _, group := range f.SenderGroups {
+		if len(group) == 0 {
+			continue
+		}
+		inDirect := inClause("m.sender_id", group)
+		inRecipient := inClause("mr.participant_id", group)
 		clauses = append(clauses, fmt.Sprintf(
 			`(%s OR EXISTS (
 				SELECT 1 FROM message_recipients mr
@@ -699,10 +739,10 @@ func (b *Backend) filteredMessageIDs(ctx context.Context, f vector.Filter) ([]in
 			))`, inDirect, inRecipient))
 		// Two copies of the ids: one for the direct match, one for
 		// the message_recipients fallback.
-		for _, id := range f.SenderIDs {
+		for _, id := range group {
 			args = append(args, id)
 		}
-		for _, id := range f.SenderIDs {
+		for _, id := range group {
 			args = append(args, id)
 		}
 	}

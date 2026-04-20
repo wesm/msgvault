@@ -55,9 +55,9 @@ func (b *Backend) FusedSearch(ctx context.Context, req vector.FusedRequest) ([]v
 	if err != nil {
 		return nil, false, fmt.Errorf("encode source_ids: %w", err)
 	}
-	senderIDs, err := idsToJSON(req.Filter.SenderIDs)
+	senderGroupSQL, senderGroupArgs, err := senderGroupClauses(req.Filter.SenderGroups)
 	if err != nil {
-		return nil, false, fmt.Errorf("encode sender_ids: %w", err)
+		return nil, false, fmt.Errorf("encode sender_groups: %w", err)
 	}
 	toGroupSQL, toGroupArgs, err := recipientGroupClauses("to", req.Filter.ToGroups)
 	if err != nil {
@@ -130,12 +130,7 @@ WITH
       FROM messages m
      WHERE m.deleted_from_source_at IS NULL
        AND (:source_ids IS NULL OR m.source_id IN (SELECT value FROM json_each(:source_ids)))
-       AND (:sender_ids IS NULL OR m.sender_id IN (SELECT value FROM json_each(:sender_ids))
-            OR EXISTS (
-                 SELECT 1 FROM message_recipients mr
-                  WHERE mr.message_id = m.id
-                    AND mr.recipient_type = 'from'
-                    AND mr.participant_id IN (SELECT value FROM json_each(:sender_ids))))
+       %s
        %s
        %s
        %s
@@ -191,7 +186,7 @@ SELECT message_id, rrf_score, bm25_score, vector_score,
   FROM fused
  ORDER BY rrf_score DESC, message_id ASC
  LIMIT :limit
-`, toGroupSQL, ccGroupSQL, bccGroupSQL, labelGroupSQL,
+`, senderGroupSQL, toGroupSQL, ccGroupSQL, bccGroupSQL, labelGroupSQL,
 		kPlus1, req.KPerSignal, vecTable, kPlus1, req.KPerSignal)
 
 	var queryVecArg any
@@ -205,7 +200,6 @@ SELECT message_id, rrf_score, bm25_score, vector_score,
 
 	args := []any{
 		sql.Named("source_ids", sourceIDs),
-		sql.Named("sender_ids", senderIDs),
 		sql.Named("has_attachment", hasAttachment),
 		sql.Named("after", after),
 		sql.Named("before", before),
@@ -218,6 +212,7 @@ SELECT message_id, rrf_score, bm25_score, vector_score,
 		sql.Named("rrf_k", req.RRFK),
 		sql.Named("limit", req.Limit),
 	}
+	args = append(args, senderGroupArgs...)
 	args = append(args, toGroupArgs...)
 	args = append(args, ccGroupArgs...)
 	args = append(args, bccGroupArgs...)
@@ -298,6 +293,45 @@ func idsToJSON(ids []int64) (sql.NullString, error) {
 		return sql.NullString{}, fmt.Errorf("marshal ids: %w", err)
 	}
 	return sql.NullString{Valid: true, String: string(buf)}, nil
+}
+
+// senderGroupClauses produces the SQL fragment and named args for
+// repeated `from:` operators. Each group becomes its own clause
+// AND'd together, and within a group the message satisfies it via
+// `m.sender_id IN (group)` OR a 'from' row in message_recipients
+// (the legacy fallback for rows where messages.sender_id is NULL).
+// Mirrors the existing SQLite search path in internal/store/api.go,
+// which emits one EXISTS per `from:` token at the message level so
+// a message with multiple `from` recipients can satisfy multiple
+// tokens — e.g. `from:alice from:bob` matches a message whose
+// `from` recipients are alice and bob, even though the message has
+// only one sender_id.
+func senderGroupClauses(groups [][]int64) (string, []any, error) {
+	if len(groups) == 0 {
+		return "", nil, nil
+	}
+	var sb strings.Builder
+	args := make([]any, 0, len(groups))
+	for i, ids := range groups {
+		js, err := idsToJSON(ids)
+		if err != nil {
+			return "", nil, fmt.Errorf("encode sender_grp_%d: %w", i, err)
+		}
+		if !js.Valid {
+			continue
+		}
+		paramName := fmt.Sprintf("sender_grp_%d", i)
+		fmt.Fprintf(&sb, `
+       AND (m.sender_id IN (SELECT value FROM json_each(:%s))
+            OR EXISTS (
+                 SELECT 1 FROM message_recipients mr
+                  WHERE mr.message_id = m.id
+                    AND mr.recipient_type = 'from'
+                    AND mr.participant_id IN (SELECT value FROM json_each(:%s))))`,
+			paramName, paramName)
+		args = append(args, sql.Named(paramName, js))
+	}
+	return sb.String(), args, nil
 }
 
 // recipientGroupClauses produces the SQL fragment and named args for a

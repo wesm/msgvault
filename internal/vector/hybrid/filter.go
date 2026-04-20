@@ -18,11 +18,12 @@ import (
 // name; subject terms, size bounds, attachment and date filters pass
 // through unchanged.
 //
-// Repeated same-field operators (e.g. `to:alice to:bob`) preserve
-// per-token AND semantics: SenderIDs is intersected at the participant
-// lookup (each message has one sender), and To/Cc/Bcc/LabelGroups
-// each carry one inner slice per token so the backend can require
-// every group to match.
+// Repeated same-field operators (e.g. `from:alice from:bob`,
+// `to:alice to:bob`, `label:promo label:billing`) preserve per-token
+// AND semantics at the message level: each token resolves to a group
+// of participant/label IDs, and the backend emits one EXISTS clause
+// per group, AND'd together. A single message with two `from`
+// recipients (one alice, one bob) satisfies both tokens.
 //
 // Caller is responsible for any additional filter fields that do not
 // derive from the query string (e.g. a SourceID coming from an HTTP
@@ -33,18 +34,11 @@ func BuildFilter(ctx context.Context, db *sql.DB, q *search.Query) (vector.Filte
 		return f, nil
 	}
 
-	if len(q.FromAddrs) > 0 {
-		ids, err := resolveSenderIntersection(ctx, db, q.FromAddrs)
-		if err != nil {
-			return f, err
-		}
-		f.SenderIDs = ids
-	}
-
 	groupFilters := []struct {
 		addrs []string
 		dst   *[][]int64
 	}{
+		{q.FromAddrs, &f.SenderGroups},
 		{q.ToAddrs, &f.ToGroups},
 		{q.CcAddrs, &f.CcGroups},
 		{q.BccAddrs, &f.BccGroups},
@@ -90,45 +84,6 @@ func BuildFilter(ctx context.Context, db *sql.DB, q *search.Query) (vector.Filte
 		f.SubjectSubstrings = append([]string(nil), q.SubjectTerms...)
 	}
 	return f, nil
-}
-
-// resolveSenderIntersection returns participants whose email contains
-// EVERY supplied substring. The sender field is single-valued per
-// message, so a query like `from:alice from:bob` requires the sender
-// to match both substrings — a single SQL with ANDed LIKE clauses
-// computes that directly. Empty result collapses to the no-match
-// sentinel so the backend's IN check finds zero rows.
-func resolveSenderIntersection(ctx context.Context, db *sql.DB, addrs []string) ([]int64, error) {
-	if len(addrs) == 0 {
-		return nil, nil
-	}
-	parts := make([]string, 0, len(addrs))
-	args := make([]any, 0, len(addrs))
-	for _, a := range addrs {
-		parts = append(parts, `LOWER(email_address) LIKE ? ESCAPE '\'`)
-		args = append(args, "%"+escapeLike(strings.ToLower(a))+"%")
-	}
-	q := fmt.Sprintf(`SELECT id FROM participants WHERE %s`, strings.Join(parts, " AND "))
-	rows, err := db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query sender intersection: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan participant id: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate participants: %w", err)
-	}
-	if len(ids) == 0 {
-		return []int64{noMatchSentinel}, nil
-	}
-	return ids, nil
 }
 
 // resolveAddressGroups produces one IDs slice per supplied token. The

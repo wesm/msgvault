@@ -687,7 +687,7 @@ func TestBackend_Search_FilterIDsExceedSQLiteParamCap(t *testing.T) {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	hits, err := b.Search(ctx, gid, unitVec(768, 0), 3, vector.Filter{SenderIDs: []int64{42}})
+	hits, err := b.Search(ctx, gid, unitVec(768, 0), 3, vector.Filter{SenderGroups: [][]int64{{42}}})
 	if err != nil {
 		t.Fatalf("Search with broad filter (%d ids) failed: %v", total, err)
 	}
@@ -973,7 +973,7 @@ func TestBackend_Search_SenderFallback_ToMessageRecipients(t *testing.T) {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	hits, err := b.Search(ctx, gid, unitVec(768, 0), 10, vector.Filter{SenderIDs: []int64{100}})
+	hits, err := b.Search(ctx, gid, unitVec(768, 0), 10, vector.Filter{SenderGroups: [][]int64{{100}}})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -990,6 +990,90 @@ func TestBackend_Search_SenderFallback_ToMessageRecipients(t *testing.T) {
 	if got[3] {
 		t.Errorf("unexpected hit: msg 3 (different sender, should be filtered out)")
 	}
+}
+
+// TestBackend_Search_SenderGroupsAreANDed_AtMessageLevel asserts that
+// repeated `from:` operators are AND'd at the message level — a
+// message with two `from` recipient rows can satisfy two `from:`
+// tokens even though messages.sender_id is single-valued. This
+// matches internal/store/api.go's behavior for repeated `from:` and
+// regression-guards the bug where SenderGroups were collapsed to a
+// participant-level intersection (which would drop such messages).
+func TestBackend_Search_SenderGroupsAreANDed_AtMessageLevel(t *testing.T) {
+	b, ctx, _ := newFusedBackendForTest(t)
+
+	if _, err := b.mainDB.ExecContext(ctx,
+		`DELETE FROM messages; DELETE FROM messages_fts; DELETE FROM message_recipients`); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+
+	// Three messages:
+	//   1: sender_id=100, no extra `from` row             — only matches group [100]
+	//   2: sender_id NULL, two `from` rows: pid=100, 200  — matches both groups
+	//   3: sender_id=200, one `from` row: pid=100         — matches both groups
+	if _, err := b.mainDB.ExecContext(ctx,
+		`INSERT INTO messages (id, sender_id) VALUES (1, 100), (2, NULL), (3, 200)`); err != nil {
+		t.Fatalf("insert messages: %v", err)
+	}
+	for _, mr := range []struct {
+		mid int64
+		pid int64
+	}{
+		{2, 100}, {2, 200},
+		{3, 100},
+	} {
+		if _, err := b.mainDB.ExecContext(ctx,
+			`INSERT INTO message_recipients (message_id, recipient_type, participant_id)
+			 VALUES (?, 'from', ?)`, mr.mid, mr.pid); err != nil {
+			t.Fatalf("insert mr: %v", err)
+		}
+	}
+
+	gid, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	chunks := []vector.Chunk{
+		{MessageID: 1, Vector: unitVec(768, 0)},
+		{MessageID: 2, Vector: unitVec(768, 0)},
+		{MessageID: 3, Vector: unitVec(768, 0)},
+	}
+	if err := b.Upsert(ctx, gid, chunks); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	matched := func(t *testing.T, f vector.Filter) map[int64]bool {
+		t.Helper()
+		hits, err := b.Search(ctx, gid, unitVec(768, 0), 10, f)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		got := make(map[int64]bool, len(hits))
+		for _, h := range hits {
+			got[h.MessageID] = true
+		}
+		return got
+	}
+
+	t.Run("two_groups_AND_at_message_level", func(t *testing.T) {
+		// `from:100 from:200` ⇒ SenderGroups=[[100],[200]]:
+		//   msg 1: sender_id=100 ✓, but no `from` row with 200 ✗ → drop
+		//   msg 2: sender_id NULL, but `from` rows {100, 200} ✓✓ → keep
+		//   msg 3: sender_id=200 ✓, `from` row 100 ✓ → keep
+		got := matched(t, vector.Filter{SenderGroups: [][]int64{{100}, {200}}})
+		if got[1] || !got[2] || !got[3] {
+			t.Errorf("SenderGroups=[[100],[200]]: got %v, want {2,3}", got)
+		}
+	})
+
+	t.Run("single_group_OR_within", func(t *testing.T) {
+		// One group containing both ids ⇒ matches messages whose sender
+		// or any `from` row references either id.
+		got := matched(t, vector.Filter{SenderGroups: [][]int64{{100, 200}}})
+		if !got[1] || !got[2] || !got[3] {
+			t.Errorf("SenderGroups=[[100,200]]: got %v, want {1,2,3}", got)
+		}
+	})
 }
 
 func TestBackend_Delete_RemovesFromAllTables(t *testing.T) {

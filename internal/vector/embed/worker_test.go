@@ -5,6 +5,7 @@ package embed
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -371,14 +372,20 @@ func TestWorker_CompleteFailureCountsAsBatchFailure(t *testing.T) {
 }
 
 // TestWorker_OrphanCompleteFailureDoesNotStrandValidWork regresses
-// the bug where a failed Complete(missing) call (the orphan-drain step
-// that runs after embedBatch detects messages deleted from the main DB
-// between enqueue and claim) abandoned the valid messages in the same
-// batch. The original code ran orphan-drain BEFORE Upsert and used
-// `continue` on failure, leaving the still-valid claimed IDs claimed
-// but unembedded until ReclaimStale ran (10 min default). After the
-// fix, orphan-drain runs AFTER the embedded rows are upserted and
-// acknowledged, so an orphan-drain failure cannot strand valid work.
+// two related bugs around orphan-drain failure:
+//
+//  1. Original (R53a): a failed Complete(missing) call ran BEFORE
+//     Upsert and used `continue`, leaving the still-valid claimed IDs
+//     in the same batch claimed but unembedded until ReclaimStale.
+//     After the fix, orphan-drain runs AFTER the embedded rows are
+//     upserted and acknowledged.
+//
+//  2. R58: when the orphan was the last queue row, the next Claim
+//     returned empty and RunOnce exited nil — leaving the orphan
+//     stranded for ~10 min until ReclaimStale, with no signal to
+//     the caller. After the fix, the empty-claim exit surfaces the
+//     orphan-drain failure as a non-nil error so the user knows the
+//     run was incomplete.
 func TestWorker_OrphanCompleteFailureDoesNotStrandValidWork(t *testing.T) {
 	ctx := context.Background()
 	// 2 messages enqueued; we'll delete one from the main DB so it
@@ -414,12 +421,18 @@ func TestWorker_OrphanCompleteFailureDoesNotStrandValidWork(t *testing.T) {
 		MainDB:                 f.MainDB,
 		Client:                 f.FakeClient,
 		BatchSize:              2,
-		MaxConsecutiveFailures: 5, // generous so the orphan drain failure does not abort
+		MaxConsecutiveFailures: 5, // generous so the orphan drain failure does not abort mid-loop
 	})
 
 	res, err := w.RunOnce(ctx, f.BuildingGen)
-	if err != nil {
-		t.Fatalf("RunOnce: unexpected error %v (orphan drain failure should not poison the batch)", err)
+	if err == nil {
+		t.Fatal("RunOnce: want non-nil error (orphan drain failed and orphan remained stuck), got nil")
+	}
+	if !strings.Contains(err.Error(), "orphan-drain") {
+		t.Errorf("RunOnce err = %q, want it to mention 'orphan-drain'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "ReclaimStale") {
+		t.Errorf("RunOnce err = %q, want it to mention 'ReclaimStale' so the user knows recovery is automatic", err.Error())
 	}
 	if res.Succeeded != 1 {
 		t.Errorf("Succeeded=%d, want 1 (the valid message must be counted as completed)", res.Succeeded)
@@ -450,6 +463,20 @@ func TestWorker_OrphanCompleteFailureDoesNotStrandValidWork(t *testing.T) {
 	}
 	if embedded != 1 {
 		t.Errorf("embedded count = %d, want 1 (Upsert should have run before orphan drain)", embedded)
+	}
+
+	// The orphan row stays claimed (token is non-NULL) — that's the
+	// state ReclaimStale is built to recover from. The error returned
+	// above is what tells the caller "this run isn't actually clean".
+	var orphanClaimed int
+	if err := f.VectorsDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pending_embeddings
+		  WHERE generation_id = ? AND message_id = ? AND claim_token IS NOT NULL`,
+		int64(f.BuildingGen), orphanID).Scan(&orphanClaimed); err != nil {
+		t.Fatalf("count orphan claimed: %v", err)
+	}
+	if orphanClaimed != 1 {
+		t.Errorf("orphan claimed rows = %d, want 1 (the trigger blocks the Complete DELETE)", orphanClaimed)
 	}
 }
 

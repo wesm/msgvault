@@ -609,7 +609,7 @@ func TestFusedSearch_SenderFallback_ToMessageRecipients(t *testing.T) {
 	req := vector.FusedRequest{
 		FTSQuery:   "topic",
 		Generation: gid,
-		Filter:     vector.Filter{SenderIDs: []int64{100}},
+		Filter:     vector.Filter{SenderGroups: [][]int64{{100}}},
 		KPerSignal: 10,
 		Limit:      10,
 		RRFK:       60,
@@ -659,7 +659,7 @@ func TestFusedSearch_RecipientFiltersMatchNoneSentinel(t *testing.T) {
 		{"ToGroups_sentinel", vector.Filter{ToGroups: [][]int64{{sentinel}}}},
 		{"CcGroups_sentinel", vector.Filter{CcGroups: [][]int64{{sentinel}}}},
 		{"BccGroups_sentinel", vector.Filter{BccGroups: [][]int64{{sentinel}}}},
-		{"SenderIDs_sentinel", vector.Filter{SenderIDs: []int64{sentinel}}},
+		{"SenderGroups_sentinel", vector.Filter{SenderGroups: [][]int64{{sentinel}}}},
 		{"LabelGroups_sentinel", vector.Filter{LabelGroups: [][]int64{{sentinel}}}},
 	}
 	for _, c := range cases {

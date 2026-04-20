@@ -47,19 +47,20 @@ type Chunk struct {
 // only deals in integers.
 //
 // Semantics match the existing SQLite search path (internal/store/api.go,
-// internal/query/sqlite.go):
+// internal/query/sqlite.go): each repeated same-field operator becomes
+// its own AND'd EXISTS clause at the message level, so a query like
+// `from:alice from:bob` requires the message to have one `from`
+// participant matching "alice" AND another (or the same) matching
+// "bob". Within a group, IDs are OR'd (any matching participant
+// satisfies the group); across groups they are AND'd.
 //
-//   - SenderIDs is single-valued: the message's sender_id (or its
-//     `from` recipient row, for legacy rows where sender_id is NULL)
-//     must appear in this set. Repeated `from:` tokens collapse to
-//     the participants matching ALL substrings (intersection at the
-//     participant lookup), since each message has one sender.
-//   - To/Cc/Bcc/LabelGroups are multi-valued AND-of-OR groups: each
-//     inner slice is one search-token resolution (substring → matching
-//     IDs), and the message must have at least one matching recipient
-//     OR label in EVERY group. A query like `to:alice to:bob` becomes
-//     two ToGroups; the message must have a `to` recipient matching
-//     "alice" AND a `to` recipient matching "bob".
+//   - Sender/To/Cc/Bcc/LabelGroups are AND-of-OR groups: each inner
+//     slice is one search-token resolution (substring → matching IDs).
+//     SenderGroups is at the message level too — multiple `from`
+//     recipient rows on a single message can satisfy different tokens,
+//     and the message's sender_id is also considered for each group
+//     (legacy rows where sender_id is NULL fall back to a `from`
+//     recipient row).
 //   - SubjectSubstrings each add one `m.subject LIKE ? ESCAPE '\'`
 //     condition, ANDed together (all substrings must match).
 //   - After/Before are half-open against m.sent_at:
@@ -67,7 +68,7 @@ type Chunk struct {
 //   - LargerThan/SmallerThan compare against m.size_estimate.
 type Filter struct {
 	SourceIDs         []int64   // from [server/sources].identifier; empty = no source filter
-	SenderIDs         []int64   // participant IDs for `from:` — intersected across tokens
+	SenderGroups      [][]int64 // one inner slice per `from:` token; AND across, OR within
 	ToGroups          [][]int64 // one inner slice per `to:` token; AND across, OR within
 	CcGroups          [][]int64 // one inner slice per `cc:` token; AND across, OR within
 	BccGroups         [][]int64 // one inner slice per `bcc:` token; AND across, OR within
@@ -83,7 +84,7 @@ type Filter struct {
 // Filter is empty and backends should skip filter resolution entirely.
 func (f Filter) IsEmpty() bool {
 	return len(f.SourceIDs) == 0 &&
-		len(f.SenderIDs) == 0 &&
+		len(f.SenderGroups) == 0 &&
 		len(f.ToGroups) == 0 &&
 		len(f.CcGroups) == 0 &&
 		len(f.BccGroups) == 0 &&
@@ -125,6 +126,18 @@ type Backend interface {
 	Search(ctx context.Context, gen GenerationID, queryVec []float32, k int, filter Filter) ([]Hit, error)
 	Delete(ctx context.Context, gen GenerationID, messageIDs []int64) error
 	Stats(ctx context.Context, gen GenerationID) (Stats, error)
+
+	// EnsureSeeded guarantees that the building generation gen has had
+	// its initial pending_embeddings seed pass committed. If a prior
+	// CreateGeneration crashed between inserting the building row and
+	// committing the seed, the queue would be empty and a naive resume
+	// could "drain" zero rows and activate an unseeded index.
+	// EnsureSeeded re-runs the seed (idempotent — INSERT OR IGNORE) and
+	// stamps seeded_at when it commits. Call this on the resume path
+	// before draining the queue. Returns ErrUnknownGeneration if gen no
+	// longer exists in the index, and an error if gen is not in the
+	// `building` state.
+	EnsureSeeded(ctx context.Context, gen GenerationID) error
 
 	// LoadVector returns the embedding for a specific message in the
 	// active generation. Returns ErrNoActiveGeneration if none exists, or

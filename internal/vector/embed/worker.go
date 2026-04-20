@@ -105,6 +105,15 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 	var res RunResult
 	consecutiveFailures := 0
 	var lastErr error
+	// orphanDrainErr/orphanDrainCount preserve the latest orphan-drain
+	// failure across iterations so we can surface it on the empty-claim
+	// exit. Without this, a Complete() failure on orphan rows would be
+	// logged but invisible to the caller — and if those orphans were
+	// the last queue rows, the next Claim returns empty and RunOnce
+	// would falsely report a clean drain even though stuck claimed
+	// rows persist until ReclaimStale (~10 min later).
+	var orphanDrainErr error
+	var orphanDrainCount int
 	for {
 		if err := ctx.Err(); err != nil {
 			return res, fmt.Errorf("RunOnce: %w", err)
@@ -114,6 +123,11 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 			return res, fmt.Errorf("claim: %w", err)
 		}
 		if len(ids) == 0 {
+			if orphanDrainErr != nil {
+				return res, fmt.Errorf(
+					"orphan-drain failed for %d row(s); they remain claimed and will be recovered by ReclaimStale on the next run: %w",
+					orphanDrainCount, orphanDrainErr)
+			}
 			return res, nil
 		}
 		res.Claimed += len(ids)
@@ -150,6 +164,8 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 						"gen", gen, "ids", len(eb.missing))
 					consecutiveFailures++
 					lastErr = cerr
+					orphanDrainErr = cerr
+					orphanDrainCount += len(eb.missing)
 					if consecutiveFailures >= w.deps.MaxConsecutiveFailures {
 						return res, fmt.Errorf("embed worker aborting after %d consecutive failures: %w",
 							consecutiveFailures, lastErr)
@@ -211,6 +227,8 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 					"gen", gen, "ids", len(eb.missing))
 				consecutiveFailures++
 				lastErr = cerr
+				orphanDrainErr = cerr
+				orphanDrainCount += len(eb.missing)
 				if consecutiveFailures >= w.deps.MaxConsecutiveFailures {
 					// Embedded rows were already counted into
 					// res.Succeeded above; record the orphan-drain
@@ -220,12 +238,10 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 						consecutiveFailures, lastErr)
 				}
 				// Even though the orphan drain failed, the embedded
-				// rows ARE done — count them and reset the failure
-				// streak below would be wrong (orphan failure isn't a
-				// real batch failure for embedding). Leave
-				// consecutiveFailures incremented so persistent
-				// orphan-drain bugs still surface, but record the
-				// successful work.
+				// rows ARE done — count them. The orphan rows stay
+				// claimed; orphanDrainErr is now set so the empty-
+				// claim exit will surface the failure to the caller
+				// instead of falsely reporting a clean drain.
 				res.Succeeded += len(eb.embeddedIDs)
 				continue
 			}

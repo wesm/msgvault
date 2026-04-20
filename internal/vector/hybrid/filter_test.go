@@ -72,9 +72,10 @@ func TestBuildFilter_AddressesResolveViaSubstring(t *testing.T) {
 	}
 
 	// from:example.com → alice, bob, dave.work (all @example.com).
-	// Single from: token, so SenderIDs is the substring-match set.
-	if got := len(f.SenderIDs); got != 3 {
-		t.Errorf("len(SenderIDs) = %d, want 3 (all @example.com), got ids %v", got, sortedIDs(f.SenderIDs))
+	// Single from: token, so SenderGroups has one group with the
+	// substring-match set.
+	if len(f.SenderGroups) != 1 || len(f.SenderGroups[0]) != 3 {
+		t.Errorf("SenderGroups = %v, want one group with 3 ids (all @example.com)", f.SenderGroups)
 	}
 	// to:alice → one group with one id.
 	if len(f.ToGroups) != 1 || len(f.ToGroups[0]) != 1 {
@@ -154,7 +155,7 @@ func TestBuildFilter_EmptyQueryYieldsEmptyFilter(t *testing.T) {
 // TestBuildFilter_NonexistentSenderReturnsSentinel guards the
 // "operator was present but matched zero rows" path. Without a
 // sentinel, an unknown from: address would resolve to an empty
-// SenderIDs slice, which the backend treats as "no filter" —
+// SenderGroups slice, which the backend treats as "no filter" —
 // broadening the search instead of returning zero hits.
 func TestBuildFilter_NonexistentSenderReturnsSentinel(t *testing.T) {
 	ctx := context.Background()
@@ -165,8 +166,8 @@ func TestBuildFilter_NonexistentSenderReturnsSentinel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildFilter: %v", err)
 	}
-	if len(f.SenderIDs) != 1 || f.SenderIDs[0] >= 0 {
-		t.Errorf("SenderIDs=%v, want single negative sentinel id (never matches)", f.SenderIDs)
+	if len(f.SenderGroups) != 1 || len(f.SenderGroups[0]) != 1 || f.SenderGroups[0][0] >= 0 {
+		t.Errorf("SenderGroups=%v, want one group with the negative sentinel id", f.SenderGroups)
 	}
 }
 
@@ -187,54 +188,68 @@ func TestBuildFilter_NonexistentLabelReturnsSentinel(t *testing.T) {
 	}
 }
 
-// TestBuildFilter_RepeatedSenderTokens_Intersect regression-guards the
-// bug where repeated `from:` operators were resolved with OR semantics:
-// both tokens were sent to a single LIKE … OR LIKE query, so the
-// sentinel only fired when ALL tokens matched zero rows. Sender is a
-// single-valued field per message, so repeated tokens must intersect:
-// the participant's email_address must contain EVERY substring.
-func TestBuildFilter_RepeatedSenderTokens_Intersect(t *testing.T) {
+// TestBuildFilter_RepeatedSenderTokens_PerTokenGroups asserts that
+// repeated `from:` operators each become their own group. The backend
+// AND-combines groups at the message level — `from:alice from:bob`
+// requires the message to have a `from` participant matching alice
+// AND a `from` participant matching bob. A message with two `from`
+// recipients (one alice, one bob) satisfies both tokens; a message
+// with only one `from` participant cannot. This mirrors the existing
+// SQLite search path (internal/store/api.go), which emits one EXISTS
+// per `from:` token at the message level.
+func TestBuildFilter_RepeatedSenderTokens_PerTokenGroups(t *testing.T) {
 	ctx := context.Background()
 	db := newFilterTestDB(t)
 
-	t.Run("any empty token sentinels the field", func(t *testing.T) {
-		q := search.Parse(`from:alice from:nobody@nowhere.invalid`)
-		f, err := BuildFilter(ctx, db, q)
-		if err != nil {
-			t.Fatalf("BuildFilter: %v", err)
-		}
-		if len(f.SenderIDs) != 1 || f.SenderIDs[0] >= 0 {
-			t.Errorf("SenderIDs=%v, want sentinel — no participant matches both substrings", f.SenderIDs)
-		}
-	})
-
-	t.Run("disjoint tokens sentinel the field", func(t *testing.T) {
-		// alice@example.com and bob@example.com share no substring beyond
-		// "example.com" and "@", so requiring both substrings must match
-		// zero participants and trip the sentinel.
+	t.Run("two real tokens become two non-sentinel groups", func(t *testing.T) {
 		q := search.Parse(`from:alice from:bob`)
 		f, err := BuildFilter(ctx, db, q)
 		if err != nil {
 			t.Fatalf("BuildFilter: %v", err)
 		}
-		if len(f.SenderIDs) != 1 || f.SenderIDs[0] >= 0 {
-			t.Errorf("SenderIDs=%v, want sentinel — no participant has both 'alice' and 'bob' in their address", f.SenderIDs)
+		if len(f.SenderGroups) != 2 {
+			t.Fatalf("SenderGroups=%v, want 2 groups (one per from: token)", f.SenderGroups)
+		}
+		for i, g := range f.SenderGroups {
+			if len(g) != 1 || g[0] < 0 {
+				t.Errorf("SenderGroups[%d]=%v, want exactly one positive id", i, g)
+			}
 		}
 	})
 
-	t.Run("overlapping substrings intersect to participants matching all", func(t *testing.T) {
-		// dave.work@example.com matches both "dave" and "work"; alice/bob
-		// match neither, so intersection is just dave.
-		q := search.Parse(`from:dave from:work`)
+	t.Run("one missing token sentinels only that group", func(t *testing.T) {
+		q := search.Parse(`from:alice from:nobody@nowhere.invalid`)
 		f, err := BuildFilter(ctx, db, q)
 		if err != nil {
 			t.Fatalf("BuildFilter: %v", err)
 		}
-		if len(f.SenderIDs) != 1 {
-			t.Fatalf("SenderIDs=%v, want exactly one participant (dave.work)", sortedIDs(f.SenderIDs))
+		if len(f.SenderGroups) != 2 {
+			t.Fatalf("SenderGroups=%v, want 2 groups", f.SenderGroups)
 		}
-		if f.SenderIDs[0] < 0 {
-			t.Errorf("SenderIDs=%v contains negative sentinel; both tokens resolved non-empty intersection", f.SenderIDs)
+		if len(f.SenderGroups[0]) != 1 || f.SenderGroups[0][0] < 0 {
+			t.Errorf("SenderGroups[0]=%v, want positive id (alice resolved)", f.SenderGroups[0])
+		}
+		if len(f.SenderGroups[1]) != 1 || f.SenderGroups[1][0] >= 0 {
+			t.Errorf("SenderGroups[1]=%v, want sentinel (nobody resolves empty)", f.SenderGroups[1])
+		}
+	})
+
+	t.Run("substring tokens collect all matching participants per group", func(t *testing.T) {
+		// from:example.com → alice, bob, dave.work all match @example.com.
+		// from:work → only dave.work. Two groups, IDs preserved per group.
+		q := search.Parse(`from:example.com from:work`)
+		f, err := BuildFilter(ctx, db, q)
+		if err != nil {
+			t.Fatalf("BuildFilter: %v", err)
+		}
+		if len(f.SenderGroups) != 2 {
+			t.Fatalf("SenderGroups=%v, want 2 groups", f.SenderGroups)
+		}
+		if len(f.SenderGroups[0]) != 3 {
+			t.Errorf("SenderGroups[0]=%v, want 3 ids (@example.com matches alice/bob/dave.work)", sortedIDs(f.SenderGroups[0]))
+		}
+		if len(f.SenderGroups[1]) != 1 {
+			t.Errorf("SenderGroups[1]=%v, want 1 id (only dave.work has 'work' substring)", f.SenderGroups[1])
 		}
 	})
 }

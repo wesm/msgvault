@@ -1393,6 +1393,9 @@ func (f *fakeBackend) Stats(_ context.Context, gen vector.GenerationID) (vector.
 	return f.stats[gen], nil
 }
 func (f *fakeBackend) Close() error { return nil }
+func (f *fakeBackend) EnsureSeeded(_ context.Context, _ vector.GenerationID) error {
+	return nil
+}
 
 var _ vector.Backend = (*fakeBackend)(nil)
 

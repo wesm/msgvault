@@ -1812,6 +1812,9 @@ func (f *fakeVectorBackend) LoadVector(_ context.Context, _ int64) ([]float32, e
 	return nil, errors.New("not implemented")
 }
 func (f *fakeVectorBackend) Close() error { return nil }
+func (f *fakeVectorBackend) EnsureSeeded(_ context.Context, _ vector.GenerationID) error {
+	return errors.New("not implemented")
+}
 
 func TestHandleStats_VectorDisabled(t *testing.T) {
 	srv, _ := newTestServerWithMockStore(t)
