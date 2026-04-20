@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/vector"
@@ -143,22 +144,28 @@ func (e *Engine) Search(ctx context.Context, req SearchRequest) ([]vector.FusedH
 		SubjectTerms: req.SubjectTerms,
 		Filter:       req.Filter,
 	}
-	hits, err := fb.FusedSearch(ctx, fReq)
+	hits, saturated, err := fb.FusedSearch(ctx, fReq)
 	if err != nil {
 		return nil, ResultMeta{}, fmt.Errorf("fused search: %w", err)
 	}
 	return hits, ResultMeta{
 		Generation:    active,
 		ReturnedCount: len(hits),
-		PoolSaturated: e.cfg.KPerSignal > 0 && len(hits) >= e.cfg.KPerSignal,
+		PoolSaturated: saturated,
 	}, nil
 }
 
+// vectorHitsToFused wraps pure-vector hits in the FusedHit schema.
+// BM25Score is set to math.NaN() — the FusedHit contract treats NaN
+// as "message not present in this signal", so explain/rendering code
+// can skip the BM25 column for vector-only hits instead of displaying
+// a meaningless zero score.
 func vectorHitsToFused(hits []vector.Hit) []vector.FusedHit {
 	out := make([]vector.FusedHit, len(hits))
 	for i, h := range hits {
 		out[i] = vector.FusedHit{
 			MessageID:   h.MessageID,
+			BM25Score:   math.NaN(),
 			VectorScore: h.Score,
 			RRFScore:    h.Score,
 		}

@@ -124,6 +124,31 @@ func TestFuse_NoBoostWhenFlagUnset(t *testing.T) {
 	}
 }
 
+// TestFuse_TiedRRFScoresStableByMessageID verifies that when two
+// hits have identical RRF scores (e.g. swapped BM25/vector ranks
+// that add to the same 1/(k+r1) + 1/(k+r2)), the returned order is
+// deterministic — ascending by MessageID — rather than relying on
+// Go map iteration, which would scramble ties across invocations.
+func TestFuse_TiedRRFScoresStableByMessageID(t *testing.T) {
+	// Two hits with BM25 rank 1 / vec rank 2 vs. BM25 rank 2 / vec
+	// rank 1 have identical RRF scores (1/61 + 1/62).
+	bm25 := []vector.Hit{{MessageID: 7, Rank: 1}, {MessageID: 3, Rank: 2}}
+	vec := []vector.Hit{{MessageID: 3, Rank: 1}, {MessageID: 7, Rank: 2}}
+	for i := 0; i < 20; i++ {
+		out := Fuse(bm25, vec, 60, 1.0, nil, nil)
+		if len(out) != 2 {
+			t.Fatalf("iter %d: got %d, want 2", i, len(out))
+		}
+		if out[0].RRFScore != out[1].RRFScore {
+			t.Fatalf("iter %d: scores differ, not a tie scenario: %+v", i, out)
+		}
+		if out[0].MessageID != 3 || out[1].MessageID != 7 {
+			t.Errorf("iter %d: order=[%d,%d], want [3,7] (ascending MessageID on tie)",
+				i, out[0].MessageID, out[1].MessageID)
+		}
+	}
+}
+
 func TestFuse_ScorePreservedFromInputs(t *testing.T) {
 	bm25 := []vector.Hit{{MessageID: 1, Rank: 1, Score: 5.5}}
 	vec := []vector.Hit{{MessageID: 1, Rank: 1, Score: 0.9}}

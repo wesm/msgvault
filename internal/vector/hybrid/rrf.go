@@ -61,8 +61,16 @@ func Fuse(
 		}
 		out = append(out, *h)
 	}
+	// Sort by RRFScore descending with MessageID ascending as
+	// tie-breaker. Tied RRF scores are realistic (e.g. two messages
+	// with the same bm25/vector rank pair), and without a stable
+	// secondary key the output order depends on map iteration,
+	// which breaks pagination and reproducibility.
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].RRFScore > out[j].RRFScore
+		if out[i].RRFScore != out[j].RRFScore {
+			return out[i].RRFScore > out[j].RRFScore
+		}
+		return out[i].MessageID < out[j].MessageID
 	})
 	return out
 }

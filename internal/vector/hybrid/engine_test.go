@@ -200,10 +200,18 @@ func TestEngine_Vector_HappyPath(t *testing.T) {
 	if results[0].MessageID != 1 {
 		t.Errorf("top = %d, want 1", results[0].MessageID)
 	}
-	// Vector-mode hits carry VectorScore; BM25Score is left at zero (not NaN)
-	// by vectorHitsToFused. Mode=Vector callers should key off the request
-	// mode rather than this field.
-	_ = math.NaN()
+	// Vector-mode hits carry VectorScore and BM25Score=NaN — the
+	// FusedHit contract treats NaN as "absent from this signal" so
+	// generic rendering code can skip the BM25 column rather than
+	// showing a spurious zero.
+	for _, r := range results {
+		if !math.IsNaN(r.BM25Score) {
+			t.Errorf("msg %d: BM25Score=%v, want NaN for vector-only hits", r.MessageID, r.BM25Score)
+		}
+		if math.IsNaN(r.VectorScore) {
+			t.Errorf("msg %d: VectorScore=%v, want non-NaN", r.MessageID, r.VectorScore)
+		}
+	}
 	_ = meta
 }
 
@@ -255,6 +263,54 @@ func TestEngine_UnknownMode_Rejected(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("expected error for unknown mode, got nil")
+	}
+}
+
+// TestEngine_PoolSaturated_WhenLimitBelowK verifies the fix for a
+// bug where PoolSaturated was derived from len(hits) >= KPerSignal.
+// When Limit < KPerSignal, the returned hit count could never hit
+// that threshold, so the engine incorrectly reported an unsaturated
+// pool even when the BM25 branch had more than K candidates.
+func TestEngine_PoolSaturated_WhenLimitBelowK(t *testing.T) {
+	ctx := context.Background()
+	f := newEngineFixture(t)
+
+	// Seed a batch of FTS-matching messages well above KPerSignal=2.
+	for i := int64(100); i < 110; i++ {
+		if _, err := f.MainDB.ExecContext(ctx,
+			`INSERT INTO messages (id, subject) VALUES (?, ?)`, i, "meeting"); err != nil {
+			t.Fatalf("insert msg %d: %v", i, err)
+		}
+		if _, err := f.MainDB.ExecContext(ctx,
+			`INSERT INTO messages_fts (rowid, subject, body) VALUES (?, ?, ?)`,
+			i, "meeting", "meeting meeting"); err != nil {
+			t.Fatalf("insert fts %d: %v", i, err)
+		}
+		if err := f.Backend.Upsert(ctx, f.GenID, []vector.Chunk{{MessageID: i, Vector: unitVec(4, 0), SourceCharLen: 10}}); err != nil {
+			t.Fatalf("upsert msg %d: %v", i, err)
+		}
+	}
+
+	tightEng := NewEngine(f.Backend, f.MainDB, &fakeEmbedder{dim: 4}, Config{
+		ExpectedFingerprint: f.Fingerprint,
+		RRFK:                60,
+		KPerSignal:          2, // cap is 2, corpus has many matches
+		SubjectBoost:        1.0,
+	})
+
+	results, meta, err := tightEng.Search(ctx, SearchRequest{
+		Mode:     ModeHybrid,
+		FreeText: "meeting",
+		Limit:    1, // intentionally below KPerSignal
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("len(results)=%d, want 1 (Limit=1)", len(results))
+	}
+	if !meta.PoolSaturated {
+		t.Errorf("PoolSaturated=false despite Limit(1) < KPerSignal(2) and abundant candidates")
 	}
 }
 

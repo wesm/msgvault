@@ -19,54 +19,59 @@ var _ vector.FusingBackend = (*Backend)(nil)
 // FusedSearch runs the single-query hybrid CTE (spec §5.3) by opening a
 // fresh connection to the main msgvault.db with vectors.db ATTACHed.
 // Filters resolve at the Go layer.
-func (b *Backend) FusedSearch(ctx context.Context, req vector.FusedRequest) ([]vector.FusedHit, error) {
+//
+// The returned saturated flag indicates that the BM25 per-signal pool
+// hit the KPerSignal cap — the internal CTE pulls KPerSignal+1 rows
+// and reports whether the extra slot was filled. ANN's top-K is
+// always capped by k, so saturation is reported solely from BM25.
+func (b *Backend) FusedSearch(ctx context.Context, req vector.FusedRequest) ([]vector.FusedHit, bool, error) {
 	if req.QueryVec == nil && req.FTSQuery == "" {
-		return nil, fmt.Errorf("FusedSearch: neither vector nor FTS query provided")
+		return nil, false, fmt.Errorf("FusedSearch: neither vector nor FTS query provided")
 	}
 
 	var dim int
 	err := b.db.QueryRowContext(ctx,
 		`SELECT dimension FROM index_generations WHERE id = ?`, int64(req.Generation)).Scan(&dim)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("%w: %d", vector.ErrUnknownGeneration, req.Generation)
+		return nil, false, fmt.Errorf("%w: %d", vector.ErrUnknownGeneration, req.Generation)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("lookup generation %d: %w", req.Generation, err)
+		return nil, false, fmt.Errorf("lookup generation %d: %w", req.Generation, err)
 	}
 	if req.QueryVec != nil && len(req.QueryVec) != dim {
-		return nil, fmt.Errorf("%w: query has %d dims, gen has %d",
+		return nil, false, fmt.Errorf("%w: query has %d dims, gen has %d",
 			vector.ErrDimensionMismatch, len(req.QueryVec), dim)
 	}
 
 	conn, err := b.openFusedConn(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer func() { _ = conn.Close() }()
 
 	sourceIDs, err := idsToJSON(req.Filter.SourceIDs)
 	if err != nil {
-		return nil, fmt.Errorf("encode source_ids: %w", err)
+		return nil, false, fmt.Errorf("encode source_ids: %w", err)
 	}
 	senderIDs, err := idsToJSON(req.Filter.SenderIDs)
 	if err != nil {
-		return nil, fmt.Errorf("encode sender_ids: %w", err)
+		return nil, false, fmt.Errorf("encode sender_ids: %w", err)
 	}
 	toIDs, err := idsToJSON(req.Filter.ToIDs)
 	if err != nil {
-		return nil, fmt.Errorf("encode to_ids: %w", err)
+		return nil, false, fmt.Errorf("encode to_ids: %w", err)
 	}
 	ccIDs, err := idsToJSON(req.Filter.CcIDs)
 	if err != nil {
-		return nil, fmt.Errorf("encode cc_ids: %w", err)
+		return nil, false, fmt.Errorf("encode cc_ids: %w", err)
 	}
 	bccIDs, err := idsToJSON(req.Filter.BccIDs)
 	if err != nil {
-		return nil, fmt.Errorf("encode bcc_ids: %w", err)
+		return nil, false, fmt.Errorf("encode bcc_ids: %w", err)
 	}
 	labelIDs, err := idsToJSON(req.Filter.LabelIDs)
 	if err != nil {
-		return nil, fmt.Errorf("encode label_ids: %w", err)
+		return nil, false, fmt.Errorf("encode label_ids: %w", err)
 	}
 	var hasAttachment sql.NullBool
 	if req.Filter.HasAttachment != nil {
@@ -100,7 +105,7 @@ func (b *Backend) FusedSearch(ctx context.Context, req vector.FusedRequest) ([]v
 		}
 		buf, err := json.Marshal(patterns)
 		if err != nil {
-			return nil, fmt.Errorf("encode subject patterns: %w", err)
+			return nil, false, fmt.Errorf("encode subject patterns: %w", err)
 		}
 		subjectPatterns = sql.NullString{Valid: true, String: string(buf)}
 	}
@@ -110,6 +115,12 @@ func (b *Backend) FusedSearch(ctx context.Context, req vector.FusedRequest) ([]v
 	// The sqlite-vec virtual table requires `k = <int literal>` rather
 	// than a bound parameter; we interpolate KPerSignal directly (it is
 	// a trusted integer from the caller's request).
+	//
+	// For saturation detection we pull KPerSignal+1 rows from the BM25
+	// CTE and then trim to the first K in bm25_used before fusion. The
+	// unused K+1 row exists only so the outer query can report whether
+	// the pool was full.
+	kPlus1 := req.KPerSignal + 1
 	query := fmt.Sprintf(`
 WITH
   filtered AS (
@@ -161,6 +172,9 @@ WITH
      ORDER BY fts.rank
      LIMIT %d
   ),
+  bm25_used AS (
+    SELECT * FROM bm25 WHERE rnk <= %d
+  ),
   ann AS (
     SELECT v.message_id,
            v.distance AS vec_dist,
@@ -178,14 +192,15 @@ WITH
            COALESCE(1.0 / (:rrf_k + v.rnk), 0.0) AS rrf_score,
            b.bm25_raw AS bm25_score,
            CASE WHEN v.vec_dist IS NULL THEN NULL ELSE 1.0 - v.vec_dist END AS vector_score
-      FROM bm25 b
+      FROM bm25_used b
       FULL OUTER JOIN ann v USING (message_id)
   )
-SELECT message_id, rrf_score, bm25_score, vector_score
+SELECT message_id, rrf_score, bm25_score, vector_score,
+       (SELECT COUNT(*) FROM bm25) AS bm25_pool_size
   FROM fused
- ORDER BY rrf_score DESC
+ ORDER BY rrf_score DESC, message_id ASC
  LIMIT :limit
-`, req.KPerSignal, vecTable, req.KPerSignal)
+`, kPlus1, req.KPerSignal, vecTable, req.KPerSignal)
 
 	var queryVecArg any
 	if req.QueryVec != nil {
@@ -216,17 +231,20 @@ SELECT message_id, rrf_score, bm25_score, vector_score
 		sql.Named("limit", req.Limit),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("fused query: %w", err)
+		return nil, false, fmt.Errorf("fused query: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
 	var hits []vector.FusedHit
+	var bm25PoolSize int
 	for rows.Next() {
 		var h vector.FusedHit
 		var bm, vec sql.NullFloat64
-		if err := rows.Scan(&h.MessageID, &h.RRFScore, &bm, &vec); err != nil {
-			return nil, fmt.Errorf("scan fused hit: %w", err)
+		var poolSize int
+		if err := rows.Scan(&h.MessageID, &h.RRFScore, &bm, &vec, &poolSize); err != nil {
+			return nil, false, fmt.Errorf("scan fused hit: %w", err)
 		}
+		bm25PoolSize = poolSize
 		h.BM25Score = math.NaN()
 		if bm.Valid {
 			h.BM25Score = bm.Float64
@@ -238,13 +256,18 @@ SELECT message_id, rrf_score, bm25_score, vector_score
 		hits = append(hits, h)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate fused hits: %w", err)
+		return nil, false, fmt.Errorf("iterate fused hits: %w", err)
 	}
 
 	if req.SubjectBoost > 1.0 && len(req.SubjectTerms) > 0 {
 		b.applySubjectBoost(ctx, hits, req.SubjectTerms, req.SubjectBoost)
 	}
-	return hits, nil
+	// Saturated if the BM25 CTE returned more than KPerSignal rows
+	// — i.e. the extra "K+1 probe" slot was filled. When there are
+	// no fused rows there's no sampled pool_size to read, so report
+	// not-saturated by convention.
+	saturated := bm25PoolSize > req.KPerSignal
+	return hits, saturated, nil
 }
 
 // openFusedConn opens a fresh connection to the main msgvault.db with

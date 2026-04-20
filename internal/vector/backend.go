@@ -131,9 +131,16 @@ type Backend interface {
 // FusingBackend is an optional capability implemented by backends that
 // can fuse FTS5 + ANN in a single SQL query. The hybrid engine checks
 // for this via type assertion.
+//
+// FusedSearch returns the RRF-ordered hits, a saturation flag, and
+// any error. saturated is true when either the BM25 or the ANN
+// per-signal pool produced KPerSignal candidates — the pool hit its
+// cap, and the final result set has truncated potentially-relevant
+// hits. Callers surface this to clients as pool_saturated so the
+// user can raise KPerSignal or narrow the query.
 type FusingBackend interface {
 	Backend
-	FusedSearch(ctx context.Context, req FusedRequest) ([]FusedHit, error)
+	FusedSearch(ctx context.Context, req FusedRequest) (hits []FusedHit, saturated bool, err error)
 }
 
 // FusedRequest is the parameter bundle for a single-query fused hybrid search.

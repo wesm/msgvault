@@ -37,7 +37,7 @@ func TestFusedSearch_BothSignalsContribute(t *testing.T) {
 		Limit:      5,
 		RRFK:       60,
 	}
-	hits, err := b.FusedSearch(ctx, req)
+	hits, _, err := b.FusedSearch(ctx, req)
 	if err != nil {
 		t.Fatalf("FusedSearch: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestFusedSearch_FTSOnly_VectorScoreIsNaN(t *testing.T) {
 		Limit:      5,
 		RRFK:       60,
 	}
-	hits, err := b.FusedSearch(ctx, req)
+	hits, _, err := b.FusedSearch(ctx, req)
 	if err != nil {
 		t.Fatalf("FusedSearch: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestFusedSearch_VectorOnly_BM25ScoreIsNaN(t *testing.T) {
 		Limit:      5,
 		RRFK:       60,
 	}
-	hits, err := b.FusedSearch(ctx, req)
+	hits, _, err := b.FusedSearch(ctx, req)
 	if err != nil {
 		t.Fatalf("FusedSearch: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestFusedSearch_NoSignals_Errors(t *testing.T) {
 	gid := seedAndEmbed(t, b, map[int64][]float32{
 		1: unitVec(768, 0),
 	})
-	_, err := b.FusedSearch(ctx, vector.FusedRequest{
+	_, _, err := b.FusedSearch(ctx, vector.FusedRequest{
 		Generation: gid,
 		KPerSignal: 10, Limit: 5, RRFK: 60,
 	})
@@ -133,7 +133,7 @@ func TestFusedSearch_NoSignals_Errors(t *testing.T) {
 
 func TestFusedSearch_UnknownGeneration(t *testing.T) {
 	b, ctx, _ := newFusedBackendForTest(t)
-	_, err := b.FusedSearch(ctx, vector.FusedRequest{
+	_, _, err := b.FusedSearch(ctx, vector.FusedRequest{
 		FTSQuery:   "meeting",
 		QueryVec:   unitVec(768, 0),
 		Generation: vector.GenerationID(9999),
@@ -234,7 +234,7 @@ func TestFusedSearch_BM25TopKRespectsRank(t *testing.T) {
 		Limit:      10,
 		RRFK:       60,
 	}
-	hits, err := b.FusedSearch(ctx, req)
+	hits, _, err := b.FusedSearch(ctx, req)
 	if err != nil {
 		t.Fatalf("FusedSearch: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestFusedSearch_DimensionMismatch(t *testing.T) {
 	gid := seedAndEmbed(t, b, map[int64][]float32{
 		1: unitVec(768, 0),
 	})
-	_, err := b.FusedSearch(ctx, vector.FusedRequest{
+	_, _, err := b.FusedSearch(ctx, vector.FusedRequest{
 		QueryVec:   unitVec(64, 0), // wrong dim
 		Generation: gid,
 		KPerSignal: 10, Limit: 5, RRFK: 60,
