@@ -190,7 +190,7 @@ bind_addr = "0.0.0.0"
 api_key = "your-secret-key"
 ```
 
-The TUI can connect to a remote server by configuring `[remote].url`. Use `--local` to force local database when remote is configured. See [docs/api.md](docs/api.md) for the HTTP API reference.
+The TUI can connect to a remote server by configuring `[remote].url`. Use `--local` to force local database when remote is configured. See the [Web Server reference](https://msgvault.io/api-server/) for the HTTP API.
 
 ## Documentation
 
