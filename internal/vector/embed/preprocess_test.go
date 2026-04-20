@@ -79,12 +79,14 @@ func TestPreprocess(t *testing.T) {
 			wantTrunc: true,
 		},
 		{
+			// maxChars is a rune count, so 10 snowmen (3 bytes
+			// each) should produce a 30-byte result.
 			name:      "TruncateAtRuneBoundary",
 			subject:   "",
 			body:      strings.Repeat("\u2603", 50),
 			maxChars:  10,
 			cfg:       PreprocessConfig{},
-			lenLE:     10,
+			lenLE:     30,
 			wantValid: true,
 			wantTrunc: true,
 		},
@@ -116,6 +118,50 @@ func TestPreprocess(t *testing.T) {
 			cfg:       PreprocessConfig{},
 			checkWant: true,
 			want:      "Subject: S\n\n" + strings.Repeat("x", 100),
+			wantTrunc: false,
+		},
+		{
+			// Each snowman is 3 bytes. 100 bytes of snowmen = ~33
+			// runes, well under the 100-rune cap, so no truncation
+			// despite byte length comfortably exceeding maxChars
+			// under the old byte-counting rule.
+			name:      "MultiByteRunesUnderCap",
+			subject:   "",
+			body:      strings.Repeat("\u2603", 33),
+			maxChars:  100,
+			cfg:       PreprocessConfig{},
+			wantTrunc: false,
+			lenLE:     100,
+			wantValid: true,
+		},
+		{
+			name:      "StripsNestedQuotes",
+			subject:   "",
+			body:      ">> deep quote\n>>> deeper quote\nReal content.",
+			maxChars:  1000,
+			cfg:       PreprocessConfig{StripQuotes: true},
+			checkWant: true,
+			want:      "Real content.",
+			wantTrunc: false,
+		},
+		{
+			name:      "StripsQuoteWithoutSpace",
+			subject:   "",
+			body:      ">no space after caret\n>another\nKept content.",
+			maxChars:  1000,
+			cfg:       PreprocessConfig{StripQuotes: true},
+			checkWant: true,
+			want:      "Kept content.",
+			wantTrunc: false,
+		},
+		{
+			name:      "StripsPreambleWithNestedQuotes",
+			subject:   "Re: topic",
+			body:      "My reply.\n\nOn 2026-04-18, bob wrote:\n>> prior reply\n> and response\n>> more",
+			maxChars:  1000,
+			cfg:       PreprocessConfig{StripQuotes: true},
+			checkWant: true,
+			want:      "Subject: Re: topic\n\nMy reply.",
 			wantTrunc: false,
 		},
 	}
