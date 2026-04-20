@@ -66,26 +66,29 @@ type Progress struct {
 // can attach the result directly to a response field tagged with
 // omitempty.
 //
-// Partial failures are tolerated: if Backend.Stats fails for one
-// generation, that generation's summary is left nil and the other
-// generation (plus the overall envelope) is still returned. The
-// helper itself logs nothing — callers wrap this with their own
-// logger if they want visibility.
+// Partial failures are tolerated so one broken sub-query doesn't blank
+// the whole stats response. When Backend.Stats fails for a generation,
+// that generation's summary is left nil and the failure is joined into
+// the returned error via errors.Join — callers get both the usable
+// envelope and a full error log.
 //
 // ErrNoActiveGeneration from ActiveGeneration is NOT an error; it's
 // the expected first-run state. Any other error from ActiveGeneration
-// is wrapped and returned so callers can surface it.
+// or BuildingGeneration is joined into the returned error.
 func CollectStats(ctx context.Context, b Backend) (*StatsView, error) {
 	if b == nil {
 		return nil, nil
 	}
 	out := &StatsView{Enabled: true}
+	var errs []error
 
 	active, err := b.ActiveGeneration(ctx)
 	switch {
 	case err == nil:
 		s, sErr := b.Stats(ctx, active.ID)
-		if sErr == nil {
+		if sErr != nil {
+			errs = append(errs, fmt.Errorf("stats for active generation %d: %w", active.ID, sErr))
+		} else {
 			out.ActiveGeneration = &GenerationSummary{
 				ID:           active.ID,
 				Model:        active.Model,
@@ -100,16 +103,17 @@ func CollectStats(ctx context.Context, b Backend) (*StatsView, error) {
 	case errors.Is(err, ErrNoActiveGeneration):
 		// Leave ActiveGeneration nil; this is normal during first build.
 	default:
-		return nil, fmt.Errorf("active generation: %w", err)
+		errs = append(errs, fmt.Errorf("active generation: %w", err))
 	}
 
 	building, err := b.BuildingGeneration(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("building generation: %w", err)
-	}
-	if building != nil {
+		errs = append(errs, fmt.Errorf("building generation: %w", err))
+	} else if building != nil {
 		s, sErr := b.Stats(ctx, building.ID)
-		if sErr == nil {
+		if sErr != nil {
+			errs = append(errs, fmt.Errorf("stats for building generation %d: %w", building.ID, sErr))
+		} else {
 			out.BuildingGeneration = &BuildingSummary{
 				ID:        building.ID,
 				Model:     building.Model,
@@ -123,7 +127,7 @@ func CollectStats(ctx context.Context, b Backend) (*StatsView, error) {
 			out.PendingEmbeddingsTotal += s.PendingCount
 		}
 	}
-	return out, nil
+	return out, errors.Join(errs...)
 }
 
 // formatTime renders t as RFC3339 UTC, returning "" for the zero value

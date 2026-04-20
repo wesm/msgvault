@@ -111,11 +111,13 @@ type SearchResult struct {
 }
 
 // hybridSearchResponse represents results from vector or hybrid search.
+// PoolSaturated is always emitted so clients can read "pool not
+// saturated" as a positive signal rather than an absent field.
 type hybridSearchResponse struct {
 	Query         string             `json:"query"`
 	Mode          string             `json:"mode"`
 	Returned      int                `json:"returned"`
-	PoolSaturated bool               `json:"pool_saturated,omitempty"`
+	PoolSaturated bool               `json:"pool_saturated"`
 	Generation    generationSummary  `json:"generation"`
 	TookMS        int64              `json:"took_ms"`
 	Results       []hybridSearchItem `json:"results"`

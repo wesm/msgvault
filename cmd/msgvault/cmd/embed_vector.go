@@ -158,7 +158,7 @@ func pickEmbedGeneration(ctx context.Context, backend vector.Backend, opts embed
 		if err != nil {
 			return 0, false, fmt.Errorf("create generation: %w", err)
 		}
-		fmt.Fprintf(opts.Stderr, "Building generation %d (%s:%d).\n",
+		_, _ = fmt.Fprintf(opts.Stderr, "Building generation %d (%s:%d).\n",
 			gen, opts.Model, opts.Dimension)
 		return gen, true, nil
 	}
@@ -166,7 +166,7 @@ func pickEmbedGeneration(ctx context.Context, backend vector.Backend, opts embed
 	active, err := vector.ResolveActiveForFingerprint(ctx, backend, opts.Fingerprint)
 	switch {
 	case err == nil:
-		fmt.Fprintf(opts.Stderr, "Using active generation %d (%s).\n", active.ID, active.Fingerprint)
+		_, _ = fmt.Fprintf(opts.Stderr, "Using active generation %d (%s).\n", active.ID, active.Fingerprint)
 		return active.ID, false, nil
 	case errors.Is(err, vector.ErrIndexBuilding):
 		building, bErr := backend.BuildingGeneration(ctx)
@@ -182,7 +182,7 @@ func pickEmbedGeneration(ctx context.Context, backend vector.Backend, opts embed
 			return 0, false, fmt.Errorf("in-progress rebuild has fingerprint=%q, config has %q — activate or retire it before running with a different model",
 				building.Fingerprint, opts.Fingerprint)
 		}
-		fmt.Fprintf(opts.Stderr, "Resuming building generation %d (%s).\n",
+		_, _ = fmt.Fprintf(opts.Stderr, "Resuming building generation %d (%s).\n",
 			building.ID, building.Fingerprint)
 		return building.ID, true, nil
 	default:

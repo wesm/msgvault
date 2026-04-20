@@ -79,6 +79,7 @@ func TestConfig_Validate(t *testing.T) {
 		{"NegativeDim", func(c *Config) { c.Embeddings.Dimension = -1 }, "dimension"},
 		{"UnknownBackend", func(c *Config) { c.Backend = "mystery" }, "backend"},
 		{"ZeroBatch", func(c *Config) { c.Embeddings.BatchSize = 0 }, "batch_size"},
+		{"MissingModel", func(c *Config) { c.Embeddings.Model = "" }, "model"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

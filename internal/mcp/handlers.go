@@ -238,7 +238,7 @@ type hybridSearchResponse struct {
 	Query         string                  `json:"query"`
 	Mode          string                  `json:"mode"`
 	Returned      int                     `json:"returned"`
-	PoolSaturated bool                    `json:"pool_saturated,omitempty"`
+	PoolSaturated bool                    `json:"pool_saturated"`
 	Generation    hybridGenerationSummary `json:"generation"`
 	Messages      []hybridMessageItem     `json:"messages"`
 }
@@ -271,11 +271,22 @@ func (h *handlers) searchMessagesHybrid(
 	}
 
 	parsed := search.Parse(queryStr)
+	freeText := strings.Join(parsed.TextTerms, " ")
+
+	// mode=vector|hybrid requires at least one free-text term; filter-only
+	// queries have no query vector to rank by. Callers that want pure
+	// structured filtering should use mode=fts instead.
+	if freeText == "" {
+		return mcp.NewToolResultError(
+			"missing_free_text: mode=" + mode +
+				" requires at least one free-text term; use mode=fts for filter-only queries",
+		), nil
+	}
+
 	subjectTerms := make([]string, 0, len(parsed.TextTerms))
 	for _, t := range parsed.TextTerms {
 		subjectTerms = append(subjectTerms, strings.ToLower(t))
 	}
-	freeText := strings.Join(parsed.TextTerms, " ")
 
 	filter, err := h.hybridEngine.BuildFilter(ctx, parsed)
 	if err != nil {
@@ -737,9 +748,8 @@ func (h *handlers) getStats(ctx context.Context, _ mcp.CallToolRequest) (*mcp.Ca
 		return mcp.NewToolResultError(fmt.Sprintf("accounts failed: %v", err)), nil
 	}
 
-	// Vector stats are best-effort. Partial failures yield nil/zero
-	// sub-fields; only a hard error from ActiveGeneration (other than
-	// ErrNoActiveGeneration) produces a non-nil vsErr.
+	// Vector stats are best-effort: partial failures are logged here but
+	// still attached to the response so callers see whatever succeeded.
 	vs, vsErr := vector.CollectStats(ctx, h.backend)
 	if vsErr != nil {
 		fmt.Fprintf(os.Stderr, "mcp: vector stats failed: %v\n", vsErr)

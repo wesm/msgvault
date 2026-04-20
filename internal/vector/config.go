@@ -104,6 +104,9 @@ func (c *Config) Validate() error {
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return fmt.Errorf("vector.embeddings.endpoint: must be an http or https URL with a host (got %q)", c.Embeddings.Endpoint)
 	}
+	if c.Embeddings.Model == "" {
+		return fmt.Errorf("vector.embeddings.model: required (the index generation fingerprint is %q, which is ambiguous without a model name)", c.Embeddings.Fingerprint())
+	}
 	if c.Embeddings.Dimension <= 0 {
 		return fmt.Errorf("vector.embeddings.dimension: must be positive, got %d", c.Embeddings.Dimension)
 	}

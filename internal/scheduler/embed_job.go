@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 
 	"github.com/wesm/msgvault/internal/vector"
 	"github.com/wesm/msgvault/internal/vector/embed"
@@ -20,15 +21,26 @@ type EmbedRunner interface {
 // the active generation (or the building generation during first
 // build), reclaims stale claims, and drains the queue via RunOnce.
 // Errors are logged, not propagated, so cron can keep firing.
+//
+// The zero value is usable; only Worker and Backend are required. Run
+// is safe to call from multiple goroutines: a run that starts while
+// another is already in flight returns immediately (drop-not-queue —
+// the next tick will pick up whatever was missed).
 type EmbedJob struct {
 	Worker  EmbedRunner
 	Backend vector.Backend
 	Log     *slog.Logger
+
+	// running guards against overlapping Run calls (cron fires while a
+	// post-sync hook is still draining, etc). sync.Mutex.TryLock gives
+	// us "skip if busy" without serializing a queue of waiters.
+	running sync.Mutex
 }
 
 // Run executes one embed cycle. Safe to call from cron or as a
 // post-sync hook. Returns immediately when vector search has no
-// pending work (no active and no building generation).
+// pending work (no active and no building generation), or when another
+// Run is already in flight.
 func (j *EmbedJob) Run(ctx context.Context) {
 	if j == nil || j.Worker == nil || j.Backend == nil {
 		return
@@ -37,6 +49,12 @@ func (j *EmbedJob) Run(ctx context.Context) {
 	if log == nil {
 		log = slog.Default()
 	}
+
+	if !j.running.TryLock() {
+		log.Debug("embed run skipped: previous run still in flight")
+		return
+	}
+	defer j.running.Unlock()
 
 	if _, err := j.Worker.ReclaimStale(ctx); err != nil {
 		log.Warn("embed reclaim failed", "error", err)

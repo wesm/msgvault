@@ -246,6 +246,10 @@ func TestCollectStats_BothGenerations(t *testing.T) {
 }
 
 func TestCollectStats_ActiveError(t *testing.T) {
+	// A non-sentinel error from ActiveGeneration is joined into the
+	// returned error, but the envelope (Enabled=true) is still returned
+	// so callers can log the failure and still render whatever partial
+	// stats came back (e.g. a building generation).
 	wantErr := errors.New("db connection refused")
 	b := &statsFakeBackend{activeErr: wantErr}
 
@@ -256,14 +260,20 @@ func TestCollectStats_ActiveError(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Errorf("CollectStats err = %v, want to wrap %v", err, wantErr)
 	}
-	if sv != nil {
-		t.Errorf("CollectStats sv = %+v, want nil on error", sv)
+	if sv == nil {
+		t.Fatal("CollectStats sv = nil, want non-nil envelope even on partial failure")
+	}
+	if !sv.Enabled {
+		t.Error("Enabled = false, want true (backend is non-nil)")
+	}
+	if sv.ActiveGeneration != nil {
+		t.Errorf("ActiveGeneration = %+v, want nil (lookup failed)", sv.ActiveGeneration)
 	}
 }
 
 func TestCollectStats_BuildingError(t *testing.T) {
-	// A non-sentinel error from BuildingGeneration is wrapped and
-	// returned, symmetric with the ActiveGeneration error path.
+	// A non-sentinel error from BuildingGeneration is joined into the
+	// returned error, symmetric with the ActiveGeneration error path.
 	wantErr := errors.New("db connection refused")
 	b := &statsFakeBackend{buildErr: wantErr}
 
@@ -274,28 +284,38 @@ func TestCollectStats_BuildingError(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Errorf("CollectStats err = %v, want to wrap %v", err, wantErr)
 	}
-	if sv != nil {
-		t.Errorf("CollectStats sv = %+v, want nil on error", sv)
+	if sv == nil {
+		t.Fatal("CollectStats sv = nil, want non-nil envelope even on partial failure")
+	}
+	if !sv.Enabled {
+		t.Error("Enabled = false, want true (backend is non-nil)")
+	}
+	if sv.BuildingGeneration != nil {
+		t.Errorf("BuildingGeneration = %+v, want nil (lookup failed)", sv.BuildingGeneration)
 	}
 }
 
 func TestCollectStats_BuildingStatsError_Tolerated(t *testing.T) {
-	// BuildingGeneration loads fine, but its Stats call fails. Mirrors
-	// the active-side StatsError_Tolerated case: BuildingGeneration in
-	// the result stays nil, the envelope is still returned, and the
-	// pending total excludes the unmeasured building generation.
+	// BuildingGeneration loads fine, but its Stats call fails. The
+	// envelope is still returned with BuildingGeneration=nil, and the
+	// stats failure is joined into the returned error so callers can log
+	// it. The pending total excludes the unmeasured building generation.
+	wantErr := errors.New("stats table locked")
 	b := &statsFakeBackend{
 		building: &Generation{
 			ID:        2,
 			Model:     "nomic-embed",
 			Dimension: 768,
 		},
-		statsErr: map[GenerationID]error{2: errors.New("stats table locked")},
+		statsErr: map[GenerationID]error{2: wantErr},
 	}
 
 	sv, err := CollectStats(context.Background(), b)
-	if err != nil {
-		t.Fatalf("CollectStats err = %v, want nil (tolerated)", err)
+	if err == nil {
+		t.Fatalf("CollectStats err = nil, want wrapping %v", wantErr)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("CollectStats err = %v, want to wrap %v", err, wantErr)
 	}
 	if sv == nil {
 		t.Fatal("CollectStats sv = nil, want non-nil envelope")
@@ -310,8 +330,9 @@ func TestCollectStats_BuildingStatsError_Tolerated(t *testing.T) {
 
 func TestCollectStats_StatsError_Tolerated(t *testing.T) {
 	// Active generation loads fine, but Stats(active.ID) fails. The
-	// helper should return a StatsView with ActiveGeneration=nil and
-	// no error.
+	// helper returns a StatsView with ActiveGeneration=nil and a joined
+	// error so callers can log the failure without losing the envelope.
+	wantErr := errors.New("stats table locked")
 	b := &statsFakeBackend{
 		active: &Generation{
 			ID:          5,
@@ -320,12 +341,15 @@ func TestCollectStats_StatsError_Tolerated(t *testing.T) {
 			Fingerprint: "nomic-embed:768",
 			State:       GenerationActive,
 		},
-		statsErr: map[GenerationID]error{5: errors.New("stats table locked")},
+		statsErr: map[GenerationID]error{5: wantErr},
 	}
 
 	sv, err := CollectStats(context.Background(), b)
-	if err != nil {
-		t.Fatalf("CollectStats err = %v, want nil (tolerated)", err)
+	if err == nil {
+		t.Fatalf("CollectStats err = nil, want wrapping %v", wantErr)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("CollectStats err = %v, want to wrap %v", err, wantErr)
 	}
 	if sv == nil {
 		t.Fatal("CollectStats sv = nil, want non-nil envelope")
