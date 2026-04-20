@@ -113,7 +113,8 @@ func ServeWithOptions(ctx context.Context, opts ServeOptions) error {
 		backend:        opts.Backend,
 	}
 
-	s.AddTool(searchMessagesTool(), h.searchMessages)
+	vectorAvailable := opts.HybridEngine != nil
+	s.AddTool(searchMessagesTool(vectorAvailable), h.searchMessages)
 	s.AddTool(getMessageTool(), h.getMessage)
 	s.AddTool(getAttachmentTool(), h.getAttachment)
 	s.AddTool(exportAttachmentTool(), h.exportAttachment)
@@ -121,19 +122,34 @@ func ServeWithOptions(ctx context.Context, opts ServeOptions) error {
 	s.AddTool(getStatsTool(), h.getStats)
 	s.AddTool(aggregateTool(), h.aggregate)
 	s.AddTool(stageDeletionTool(), h.stageDeletion)
-	s.AddTool(findSimilarMessagesTool(), h.findSimilarMessages)
+	if opts.Backend != nil {
+		s.AddTool(findSimilarMessagesTool(), h.findSimilarMessages)
+	}
 
 	stdio := server.NewStdioServer(s)
 	return stdio.Listen(ctx, os.Stdin, os.Stdout)
 }
 
-func searchMessagesTool() mcp.Tool {
+func searchMessagesTool(vectorAvailable bool) mcp.Tool {
+	if !vectorAvailable {
+		return mcp.NewTool(ToolSearchMessages,
+			mcp.WithDescription("Search emails using Gmail-like query syntax. Supports from:, to:, subject:, label:, has:attachment, before:, after:, and free text. (This server is not configured for vector search; only keyword FTS is available.)"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithString("query",
+				mcp.Required(),
+				mcp.Description("Gmail-style search query (e.g. 'from:alice subject:meeting after:2024-01-01')"),
+			),
+			withAccount(),
+			withLimit("20"),
+			withOffset(),
+		)
+	}
 	return mcp.NewTool(ToolSearchMessages,
-		mcp.WithDescription("Search emails using Gmail-like query syntax. Supports from:, to:, subject:, label:, has:attachment, before:, after:, and free text. When vector search is configured, set mode=vector for pure semantic search or mode=hybrid to fuse BM25 and vector ranking via RRF."),
+		mcp.WithDescription("Search emails using Gmail-like query syntax. Supports from:, to:, subject:, label:, has:attachment, before:, after:, and free text. Vector search is configured: set mode=vector for pure semantic search or mode=hybrid to fuse BM25 and vector ranking via RRF. Vector/hybrid modes require free-text terms in the query; filter-only queries must use mode=fts."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("query",
 			mcp.Required(),
-			mcp.Description("Gmail-style search query (e.g. 'from:alice subject:meeting after:2024-01-01')"),
+			mcp.Description("Gmail-style search query (e.g. 'from:alice subject:meeting after:2024-01-01'); mode=vector|hybrid require at least one free-text term"),
 		),
 		withAccount(),
 		withLimit("20"),

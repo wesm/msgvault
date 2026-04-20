@@ -296,6 +296,58 @@ func TestWorker_RuneCountUsedForSourceCharLen(t *testing.T) {
 	}
 }
 
+// TestWorker_FallsBackToHTMLWhenBodyTextEmpty guards the HTML-only
+// recall path: messages whose plaintext body is absent should still
+// be embedded using HTML-stripped text rather than silently degrading
+// to subject-only embeddings.
+func TestWorker_FallsBackToHTMLWhenBodyTextEmpty(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkerFixture(t, 0)
+
+	const html = `<html><body><p>planning offsite agenda</p><p>Thursday afternoon</p></body></html>`
+	if _, err := f.MainDB.ExecContext(ctx,
+		`INSERT INTO messages (id, subject) VALUES (1, ?)`, "meeting"); err != nil {
+		t.Fatalf("insert message: %v", err)
+	}
+	if _, err := f.MainDB.ExecContext(ctx,
+		`INSERT INTO message_bodies (message_id, body_text, body_html) VALUES (1, '', ?)`, html); err != nil {
+		t.Fatalf("insert body: %v", err)
+	}
+	if _, err := f.VectorsDB.ExecContext(ctx,
+		`INSERT INTO pending_embeddings (generation_id, message_id, enqueued_at) VALUES (?, 1, 0)`,
+		int64(f.BuildingGen)); err != nil {
+		t.Fatalf("seed pending: %v", err)
+	}
+
+	w := NewWorker(WorkerDeps{
+		Backend:       f.Backend,
+		VectorsDB:     f.VectorsDB,
+		MainDB:        f.MainDB,
+		Client:        f.FakeClient,
+		MaxInputChars: 8000,
+		BatchSize:     1,
+	})
+	if _, err := w.RunOnce(ctx, f.BuildingGen); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	if len(f.FakeClient.LastInputs) != 1 {
+		t.Fatalf("captured %d inputs, want 1", len(f.FakeClient.LastInputs))
+	}
+	got := f.FakeClient.LastInputs[0]
+	// The preprocessed text should contain the HTML paragraph text,
+	// not just the subject — that's the whole point of the fallback.
+	if !strings.Contains(got, "planning offsite agenda") {
+		t.Errorf("embed input missing HTML body text: %q", got)
+	}
+	if !strings.Contains(got, "Thursday afternoon") {
+		t.Errorf("embed input missing second paragraph: %q", got)
+	}
+	if strings.Contains(got, "<p>") || strings.Contains(got, "</body>") {
+		t.Errorf("embed input still contains HTML tags: %q", got)
+	}
+}
+
 // TestWorker_CompleteFailureCountsAsBatchFailure regresses the bug
 // where Queue.Complete failures were log-only: the embedded rows
 // stayed claimed, the next Claim returned empty, and RunOnce

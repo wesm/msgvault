@@ -234,6 +234,12 @@ fallback). When the server is configured for vector search, `mode=vector`
 runs semantic-only search and `mode=hybrid` fuses BM25 and vector
 ranking via Reciprocal Rank Fusion.
 
+`mode=vector` and `mode=hybrid` both require at least one free-text term
+in `q` — the free text is what gets embedded as the query vector.
+Operator-only queries such as `q=from:alice` have nothing to embed and
+return `400 missing_free_text`; route filter-only requests to `mode=fts`
+instead.
+
 **Query Parameters:**
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -633,6 +639,7 @@ All errors return a consistent JSON format:
 | `invalid_id` | 400 | Invalid message/resource ID |
 | `invalid_mode` | 400 | `mode=` must be `fts`, `vector`, or `hybrid` |
 | `missing_query` | 400 | Required query parameter missing |
+| `missing_free_text` | 400 | `mode=vector` and `mode=hybrid` require free-text terms (not just filter operators); use `mode=fts` for filter-only queries |
 | `missing_account` | 400 | Account email is required |
 | `pagination_unsupported` | 400 | `mode=vector|hybrid` only supports `page=1` |
 | `not_found` | 404 | Resource not found |

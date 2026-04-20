@@ -96,7 +96,8 @@ CREATE TABLE messages (
 );
 CREATE TABLE message_bodies (
     message_id INTEGER PRIMARY KEY,
-    body_text TEXT
+    body_text TEXT,
+    body_html TEXT
 );`
 	if _, err := mainDB.Exec(schema); err != nil {
 		t.Fatalf("schema: %v", err)
@@ -200,6 +201,10 @@ type fakeEmbeddingClient struct {
 	failN     int
 	calls     int
 	preReturn func() // optional callback fired right before Embed returns success
+	// LastInputs captures the most recent batch of inputs passed to Embed,
+	// letting tests assert what text the worker actually sent to the
+	// embedder (e.g. body_text vs HTML-stripped body_html).
+	LastInputs []string
 }
 
 // FailNext forces the next n Embed calls to return an error.
@@ -212,6 +217,7 @@ func (c *fakeEmbeddingClient) Embed(_ context.Context, inputs []string) ([][]flo
 		c.failN--
 		return nil, fmt.Errorf("simulated embed failure (call %d)", c.calls)
 	}
+	c.LastInputs = append(c.LastInputs[:0], inputs...)
 	out := make([][]float32, len(inputs))
 	for i := range inputs {
 		v := make([]float32, c.dim)

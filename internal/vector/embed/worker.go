@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/wesm/msgvault/internal/mime"
 	"github.com/wesm/msgvault/internal/vector"
 )
 
@@ -276,7 +277,7 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 		args[i] = id
 	}
 	query := fmt.Sprintf(`
-        SELECT m.id, COALESCE(m.subject, ''), COALESCE(mb.body_text, '')
+        SELECT m.id, COALESCE(m.subject, ''), COALESCE(mb.body_text, ''), COALESCE(mb.body_html, '')
           FROM messages m
           LEFT JOIN message_bodies mb ON mb.message_id = m.id
          WHERE m.id IN (%s)`, strings.Join(placeholders, ","))
@@ -292,9 +293,16 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 	fetched := make(map[int64]struct{}, len(ids))
 	for rows.Next() {
 		var id int64
-		var subject, body string
-		if err := rows.Scan(&id, &subject, &body); err != nil {
+		var subject, bodyText, bodyHTML string
+		if err := rows.Scan(&id, &subject, &bodyText, &bodyHTML); err != nil {
 			return embedBatchResult{}, fmt.Errorf("scan message row: %w", err)
+		}
+		// Fall back to HTML-to-text when the plaintext body is empty —
+		// HTML-only messages would otherwise get subject-only embeddings
+		// and have materially worse semantic recall.
+		body := bodyText
+		if body == "" && bodyHTML != "" {
+			body = mime.StripHTML(bodyHTML)
 		}
 		txt, trunc := Preprocess(subject, body, w.deps.MaxInputChars, w.deps.Preprocess)
 		// Preprocess truncates by runes, so the recorded length must

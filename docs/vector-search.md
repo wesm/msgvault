@@ -102,6 +102,11 @@ Response shape differs from the FTS path — see `docs/api.md` for
 details. Pagination is not supported for vector/hybrid responses;
 bump `page_size` (capped at `max_page_size_hybrid`) instead.
 
+`mode=vector` and `mode=hybrid` require at least one free-text term —
+the free text is what gets embedded as the query vector. A query that
+is purely operators (e.g. `from:alice label:IMPORTANT`) returns
+`missing_free_text`; use `mode=fts` for those.
+
 **MCP tools:**
 - `search_messages` accepts `mode` (`fts`/`vector`/`hybrid`) and
   `explain` arguments.
@@ -136,6 +141,7 @@ Common error codes and fixes:
 | `vector_not_enabled` | `[vector] enabled = false`, or server wasn't started with the binary built with `sqlite_vec`. | Set `enabled = true` and rebuild with `make build`. |
 | `index_stale` | Active generation's model/dimension doesn't match the configured `[vector.embeddings]` fingerprint. | Run `msgvault embed --full-rebuild --yes`. |
 | `index_building` | No active generation yet; one is being built. | Finish running `msgvault embed` or wait for the scheduler. Use `mode=fts` for the interim. |
+| `missing_free_text` | `mode=vector` or `mode=hybrid` used with a filter-only query (no free text to embed). | Add free-text terms to `q`, or switch to `mode=fts`. |
 | `pagination_unsupported` | Request asked for `page>1` with `mode=vector|hybrid`. | Use `page=1` with a larger `page_size` instead. |
 | `invalid_mode` | `mode=` value other than `fts`, `vector`, `hybrid`. | Pick one of those. |
 
@@ -174,10 +180,10 @@ assembled from `subject` and `body_text` after preprocessing
 
 Messages deleted at the source (`deleted_from_source_at IS NOT NULL`)
 are skipped entirely. Messages without a `body_text` fall back to
+HTML-to-text conversion of `body_html` so HTML-only messages still
+contribute full-body embeddings. Messages with neither fall back to
 subject-only embeddings.
 
 ## See also
 
 - [`docs/api.md`](api.md) — HTTP API reference (search, stats).
-- [`docs/superpowers/specs/2026-04-19-vector-search-design.md`](superpowers/specs/2026-04-19-vector-search-design.md) —
-  design document behind this feature.

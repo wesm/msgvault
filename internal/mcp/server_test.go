@@ -1427,6 +1427,34 @@ func TestFindSimilarMessages_VectorNotEnabled(t *testing.T) {
 	}
 }
 
+// TestSearchMessagesTool_AdvertisesVectorModesOnlyWhenAvailable guards the
+// capability-discovery contract: when the server has no hybrid engine,
+// the search_messages tool omits the "mode" and "explain" parameters so
+// clients don't build vector requests that will fail at runtime.
+func TestSearchMessagesTool_AdvertisesVectorModesOnlyWhenAvailable(t *testing.T) {
+	disabled := searchMessagesTool(false)
+	if _, ok := disabled.InputSchema.Properties["mode"]; ok {
+		t.Errorf("vectorAvailable=false: tool advertises 'mode' but vector modes are unsupported")
+	}
+	if _, ok := disabled.InputSchema.Properties["explain"]; ok {
+		t.Errorf("vectorAvailable=false: tool advertises 'explain' but vector modes are unsupported")
+	}
+	if strings.Contains(disabled.Description, "mode=vector") || strings.Contains(disabled.Description, "mode=hybrid") {
+		t.Errorf("vectorAvailable=false: tool description mentions vector modes: %q", disabled.Description)
+	}
+
+	enabled := searchMessagesTool(true)
+	if _, ok := enabled.InputSchema.Properties["mode"]; !ok {
+		t.Errorf("vectorAvailable=true: tool is missing 'mode' parameter")
+	}
+	if _, ok := enabled.InputSchema.Properties["explain"]; !ok {
+		t.Errorf("vectorAvailable=true: tool is missing 'explain' parameter")
+	}
+	if !strings.Contains(enabled.Description, "free-text") {
+		t.Errorf("vectorAvailable=true: tool description should call out the free-text requirement, got: %q", enabled.Description)
+	}
+}
+
 func TestFindSimilarMessages_MissingID(t *testing.T) {
 	h := &handlers{
 		engine:  &querytest.MockEngine{},
