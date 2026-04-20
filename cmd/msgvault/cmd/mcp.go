@@ -95,7 +95,9 @@ Add to Claude Desktop config:
 		}
 		defer func() {
 			if vf != nil && vf.Close != nil {
-				_ = vf.Close()
+				if closeErr := vf.Close(); closeErr != nil {
+					logger.Warn("closing vectors.db failed", "error", closeErr)
+				}
 			}
 		}()
 

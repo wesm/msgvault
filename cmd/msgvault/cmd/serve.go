@@ -365,7 +365,7 @@ func runScheduledSync(ctx context.Context, email string, s *store.Store, getOAut
 
 	// Create syncer (no CLI progress for daemon mode)
 	syncer := sync.New(client, s, opts).WithLogger(logger)
-	if vf != nil && vf.Enqueuer != nil {
+	if vf != nil {
 		syncer.SetEmbedEnqueuer(vf.Enqueuer)
 	}
 

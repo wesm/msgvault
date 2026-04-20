@@ -172,7 +172,9 @@ Examples:
 		}
 		defer func() {
 			if vf != nil && vf.Close != nil {
-				_ = vf.Close()
+				if closeErr := vf.Close(); closeErr != nil {
+					logger.Warn("closing vectors.db failed", "error", closeErr)
+				}
 			}
 		}()
 
@@ -333,7 +335,7 @@ func runFullSync(ctx context.Context, s *store.Store, getOAuthMgr func(string) (
 	syncer := sync.New(apiClient, s, opts).
 		WithLogger(logger).
 		WithProgress(&CLIProgress{})
-	if vf != nil && vf.Enqueuer != nil {
+	if vf != nil {
 		syncer.SetEmbedEnqueuer(vf.Enqueuer)
 	}
 
