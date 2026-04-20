@@ -14,15 +14,15 @@ var schemaSQL string
 
 // Migrate runs the baseline schema and ensures a vec0 virtual table
 // for `defaultDim` exists. Safe to run on every startup.
+//
+// PRAGMA foreign_keys is applied per-connection by the ConnectHook
+// registered in RegisterExtension; it is intentionally not run here.
 func Migrate(ctx context.Context, db *sql.DB, defaultDim int) error {
 	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode = WAL`); err != nil {
 		return fmt.Errorf("enable WAL: %w", err)
-	}
-	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
-		return fmt.Errorf("enable foreign_keys: %w", err)
 	}
 	return EnsureVectorTable(ctx, db, defaultDim)
 }

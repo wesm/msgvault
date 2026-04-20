@@ -8,6 +8,7 @@ package sqlitevec
 
 import (
 	"database/sql"
+	"fmt"
 	"sync"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
@@ -33,12 +34,24 @@ var (
 // "sqlite3" driver (already registered by mattn/go-sqlite3's init) and
 // our "sqlite3_vec" driver observe the extension on every new conn.
 //
+// The driver variant installs a ConnectHook that runs `PRAGMA
+// foreign_keys = ON` on every new connection, because that PRAGMA is
+// per-connection in SQLite — applying it once on a pooled *sql.DB
+// leaves later connections in the pool with FK enforcement off.
+//
 // It is safe to call multiple times; the underlying registrations must
 // only run once per process, which this function guarantees via sync.Once.
 func RegisterExtension() error {
 	registerOnce.Do(func() {
 		sqlite_vec.Auto()
-		sql.Register(driverName, &sqlite3.SQLiteDriver{})
+		sql.Register(driverName, &sqlite3.SQLiteDriver{
+			ConnectHook: func(conn *sqlite3.SQLiteConn) error {
+				if _, err := conn.Exec(`PRAGMA foreign_keys = ON`, nil); err != nil {
+					return fmt.Errorf("enable foreign_keys: %w", err)
+				}
+				return nil
+			},
+		})
 	})
 	return registerErr
 }
