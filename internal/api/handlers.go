@@ -3,8 +3,10 @@ package api
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,6 +21,8 @@ import (
 	"github.com/wesm/msgvault/internal/scheduler"
 	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/store"
+	"github.com/wesm/msgvault/internal/vector"
+	"github.com/wesm/msgvault/internal/vector/hybrid"
 	"golang.org/x/oauth2"
 )
 
@@ -103,6 +107,45 @@ type SearchResult struct {
 	Page     int              `json:"page"`
 	PageSize int              `json:"page_size"`
 	Messages []MessageSummary `json:"messages"`
+}
+
+// hybridSearchResponse represents results from vector or hybrid search.
+type hybridSearchResponse struct {
+	Query         string             `json:"query"`
+	Mode          string             `json:"mode"`
+	Returned      int                `json:"returned"`
+	PoolSaturated bool               `json:"pool_saturated,omitempty"`
+	Generation    generationSummary  `json:"generation"`
+	TookMS        int64              `json:"took_ms"`
+	Results       []hybridSearchItem `json:"results"`
+}
+
+// generationSummary describes the active vector-index generation used to
+// answer a hybrid/vector query.
+type generationSummary struct {
+	ID          int64  `json:"id"`
+	Model       string `json:"model"`
+	Dimension   int    `json:"dimension"`
+	Fingerprint string `json:"fingerprint"`
+	State       string `json:"state"`
+}
+
+// hybridSearchItem is a single hit in a vector/hybrid response. The
+// embedded APIMessage carries the standard message fields; Score is
+// present only when explain=1 was requested.
+type hybridSearchItem struct {
+	APIMessage
+	Score *scoreBreakdown `json:"score,omitempty"`
+}
+
+// scoreBreakdown exposes fused-score components for debugging. BM25 and
+// Vector are pointer-typed so that "not present in this signal" can be
+// distinguished from a legitimate score of 0.0 in the JSON output.
+type scoreBreakdown struct {
+	RRF            float64  `json:"rrf"`
+	BM25           *float64 `json:"bm25,omitempty"`
+	Vector         *float64 `json:"vector,omitempty"`
+	SubjectBoosted bool     `json:"subject_boosted,omitempty"`
 }
 
 // writeJSON writes a JSON response.
@@ -260,6 +303,36 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mode := r.URL.Query().Get("mode")
+	if mode == "" {
+		mode = "fts"
+	}
+	explain := r.URL.Query().Get("explain") == "1"
+
+	if mode == "vector" || mode == "hybrid" {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if page > 1 {
+			writeError(w, http.StatusBadRequest, "pagination_unsupported",
+				"mode=vector|hybrid only supports page=1")
+			return
+		}
+		pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+		if pageSize < 1 {
+			pageSize = 20
+		}
+		if maxPage := s.vectorCfg.Search.MaxPageSizeHybrid; maxPage > 0 && pageSize > maxPage {
+			pageSize = maxPage
+		}
+		s.handleHybridSearch(w, r, query, mode, explain, pageSize)
+		return
+	}
+
+	if mode != "fts" {
+		writeError(w, http.StatusBadRequest, "invalid_mode",
+			fmt.Sprintf("mode must be one of fts|vector|hybrid, got %q", mode))
+		return
+	}
+
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	if page < 1 {
 		page = 1
@@ -301,6 +374,102 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Page:     page,
 		PageSize: pageSize,
 		Messages: summaries,
+	})
+}
+
+// handleHybridSearch runs vector or hybrid search via the configured
+// hybrid engine. Returns 503 when the engine is not configured or the
+// index is stale/building; otherwise returns RRF-ranked hits hydrated
+// through the message store.
+func (s *Server) handleHybridSearch(
+	w http.ResponseWriter, r *http.Request,
+	q, mode string, explain bool, pageSize int,
+) {
+	if s.hybridEngine == nil {
+		writeError(w, http.StatusServiceUnavailable, "vector_not_enabled",
+			"vector search is not configured on this server")
+		return
+	}
+	ctx := r.Context()
+	start := time.Now()
+
+	parsed := search.Parse(q)
+	subjectTerms := make([]string, 0, len(parsed.TextTerms))
+	for _, t := range parsed.TextTerms {
+		subjectTerms = append(subjectTerms, strings.ToLower(t))
+	}
+
+	req := hybrid.SearchRequest{
+		Mode:         hybrid.Mode(mode),
+		FreeText:     strings.Join(parsed.TextTerms, " "),
+		Limit:        pageSize,
+		SubjectTerms: subjectTerms,
+		Explain:      explain,
+	}
+
+	hits, meta, err := s.hybridEngine.Search(ctx, req)
+	if err != nil {
+		switch {
+		case errors.Is(err, vector.ErrNotEnabled):
+			writeError(w, http.StatusServiceUnavailable, "vector_not_enabled",
+				"vector search is not configured")
+		case errors.Is(err, vector.ErrIndexStale):
+			writeError(w, http.StatusServiceUnavailable, "index_stale",
+				"the vector index does not match the configured model; run `msgvault embed --full-rebuild`")
+		case errors.Is(err, vector.ErrIndexBuilding):
+			writeError(w, http.StatusServiceUnavailable, "index_building",
+				"the initial vector index is still being built")
+		default:
+			s.logger.Error("hybrid search failed", "query", q, "mode", mode, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "search failed")
+		}
+		return
+	}
+
+	items := make([]hybridSearchItem, 0, len(hits))
+	for _, h := range hits {
+		msg, err := s.store.GetMessage(h.MessageID)
+		if err != nil {
+			s.logger.Warn("hydrate hybrid hit failed",
+				"message_id", h.MessageID, "error", err)
+			continue
+		}
+		if msg == nil {
+			continue
+		}
+		item := hybridSearchItem{APIMessage: *msg}
+		if explain {
+			sb := &scoreBreakdown{
+				RRF:            h.RRFScore,
+				SubjectBoosted: h.SubjectBoosted,
+			}
+			if !math.IsNaN(h.BM25Score) {
+				v := h.BM25Score
+				sb.BM25 = &v
+			}
+			if !math.IsNaN(h.VectorScore) {
+				v := h.VectorScore
+				sb.Vector = &v
+			}
+			item.Score = sb
+		}
+		items = append(items, item)
+	}
+
+	writeJSON(w, http.StatusOK, hybridSearchResponse{
+		Query:         q,
+		Mode:          mode,
+		Returned:      len(items),
+		PoolSaturated: meta.PoolSaturated,
+		Generation: generationSummary{
+			ID:          int64(meta.Generation.ID),
+			Model:       meta.Generation.Model,
+			Dimension:   meta.Generation.Dimension,
+			Fingerprint: meta.Generation.Fingerprint,
+			State:       string(meta.Generation.State),
+		},
+		TookMS:  time.Since(start).Milliseconds(),
+		Results: items,
 	})
 }
 

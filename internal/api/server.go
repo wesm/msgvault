@@ -18,6 +18,8 @@ import (
 	"github.com/wesm/msgvault/internal/scheduler"
 	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/store"
+	"github.com/wesm/msgvault/internal/vector"
+	"github.com/wesm/msgvault/internal/vector/hybrid"
 )
 
 // MessageStore defines the store operations the API needs.
@@ -46,24 +48,28 @@ type AccountStatus = scheduler.AccountStatus
 
 // Server represents the HTTP API server.
 type Server struct {
-	cfg         *config.Config
-	store       MessageStore
-	engine      query.Engine // Query engine for aggregates and TUI support
-	scheduler   SyncScheduler
-	logger      *slog.Logger
-	router      chi.Router
-	server      *http.Server
-	rateLimiter *RateLimiter
-	cfgMu       sync.RWMutex // protects cfg.Accounts
+	cfg          *config.Config
+	store        MessageStore
+	engine       query.Engine // Query engine for aggregates and TUI support
+	hybridEngine *hybrid.Engine
+	vectorCfg    vector.Config
+	scheduler    SyncScheduler
+	logger       *slog.Logger
+	router       chi.Router
+	server       *http.Server
+	rateLimiter  *RateLimiter
+	cfgMu        sync.RWMutex // protects cfg.Accounts
 }
 
 // ServerOptions configures the API server.
 type ServerOptions struct {
-	Config    *config.Config
-	Store     MessageStore
-	Engine    query.Engine // Optional: query engine for aggregates and TUI support
-	Scheduler SyncScheduler
-	Logger    *slog.Logger
+	Config       *config.Config
+	Store        MessageStore
+	Engine       query.Engine // Optional: query engine for aggregates and TUI support
+	HybridEngine *hybrid.Engine
+	VectorCfg    vector.Config
+	Scheduler    SyncScheduler
+	Logger       *slog.Logger
 }
 
 // NewServer creates a new API server.
@@ -79,11 +85,13 @@ func NewServer(cfg *config.Config, store MessageStore, sched SyncScheduler, logg
 // NewServerWithOptions creates a new API server with full options including query engine.
 func NewServerWithOptions(opts ServerOptions) *Server {
 	s := &Server{
-		cfg:       opts.Config,
-		store:     opts.Store,
-		engine:    opts.Engine,
-		scheduler: opts.Scheduler,
-		logger:    opts.Logger,
+		cfg:          opts.Config,
+		store:        opts.Store,
+		engine:       opts.Engine,
+		hybridEngine: opts.HybridEngine,
+		vectorCfg:    opts.VectorCfg,
+		scheduler:    opts.Scheduler,
+		logger:       opts.Logger,
 	}
 	s.router = s.setupRouter()
 	return s

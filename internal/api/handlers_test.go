@@ -1329,6 +1329,100 @@ func TestHandleQuery(t *testing.T) {
 	}
 }
 
+func TestHandleSearch_FTSModeUnchanged(t *testing.T) {
+	srv, _ := newTestServerWithMockStore(t)
+
+	// mode=fts (or unset) should still return the legacy SearchResult shape.
+	req := httptest.NewRequest("GET", "/api/v1/search?q=Test&mode=fts", nil)
+	w := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp SearchResult
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Query != "Test" {
+		t.Errorf("query = %q, want 'Test'", resp.Query)
+	}
+	// Legacy shape exposes page + page_size; hybrid shape would not.
+	if resp.Page == 0 {
+		t.Errorf("expected page field in FTS response, got 0")
+	}
+}
+
+func TestHandleSearch_HybridModeNotConfigured(t *testing.T) {
+	// newTestServerWithMockStore does not inject a HybridEngine, so
+	// the server must return 503 for any vector/hybrid query.
+	srv, _ := newTestServerWithMockStore(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/search?q=test&mode=hybrid", nil)
+	w := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d, body: %s",
+			w.Code, http.StatusServiceUnavailable, w.Body.String())
+	}
+
+	var errResp ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if errResp.Error != "vector_not_enabled" {
+		t.Errorf("error = %q, want 'vector_not_enabled'", errResp.Error)
+	}
+}
+
+func TestHandleSearch_HybridModePaginationUnsupported(t *testing.T) {
+	srv, _ := newTestServerWithMockStore(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/search?q=test&mode=vector&page=2", nil)
+	w := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body: %s",
+			w.Code, http.StatusBadRequest, w.Body.String())
+	}
+
+	var errResp ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if errResp.Error != "pagination_unsupported" {
+		t.Errorf("error = %q, want 'pagination_unsupported'", errResp.Error)
+	}
+}
+
+func TestHandleSearch_UnknownMode(t *testing.T) {
+	srv, _ := newTestServerWithMockStore(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/search?q=test&mode=bogus", nil)
+	w := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body: %s",
+			w.Code, http.StatusBadRequest, w.Body.String())
+	}
+
+	var errResp ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if errResp.Error != "invalid_mode" {
+		t.Errorf("error = %q, want 'invalid_mode'", errResp.Error)
+	}
+}
+
 func TestHandleQuery_SQLiteEngine503(t *testing.T) {
 	engine := query.NewSQLiteEngine(nil)
 
