@@ -101,6 +101,10 @@ msgvault tui
 
 See the [CLI Reference](https://msgvault.io/cli-reference/) for full details.
 
+## Vector Search
+
+msgvault can search your archive semantically using vector embeddings in addition to the default FTS5 keyword search. Point it at a self-hosted OpenAI-compatible embedding endpoint (Ollama, llama.cpp, LM Studio) and the `search` command, the HTTP `/api/v1/search` endpoint, and the MCP `search_messages` tool accept `--mode vector` (pure semantic) and `--mode hybrid` (BM25 + vector fused with Reciprocal Rank Fusion). A separate MCP tool, `find_similar_messages`, returns nearest neighbors for a seed message. See [docs/vector-search.md](docs/vector-search.md) for setup, backfill, and troubleshooting.
+
 ## Importing from MBOX or Apple Mail
 
 Import email from providers that offer MBOX exports or from a local Apple Mail data directory:
