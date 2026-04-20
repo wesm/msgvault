@@ -234,6 +234,87 @@ func TestPickEmbedGeneration_RejectsBuildingWithMismatchedFingerprint(t *testing
 	}
 }
 
+// TestPickEmbedGeneration_StaleActivePlusMatchingBuilding covers the
+// "stale active + matching building" combination R51a calls out: an
+// older active generation exists with a fingerprint that no longer
+// matches the configured model, and a newer building generation
+// matches. The configured-model build must be drained instead of the
+// stale active one being topped up — otherwise the new build stays
+// stuck in `building` indefinitely.
+func TestPickEmbedGeneration_StaleActivePlusMatchingBuilding(t *testing.T) {
+	ctx := context.Background()
+	b := openTestBackend(t)
+
+	staleActive, err := b.CreateGeneration(ctx, "old-model", 4)
+	if err != nil {
+		t.Fatalf("CreateGeneration (stale active): %v", err)
+	}
+	if err := b.ActivateGeneration(ctx, staleActive); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+	matchingBuilding, err := b.CreateGeneration(ctx, "new-model", 4)
+	if err != nil {
+		t.Fatalf("CreateGeneration (matching building): %v", err)
+	}
+
+	gotGen, rebuildInProgress, err := pickEmbedGeneration(ctx, b, embedGenerationOpts{
+		FullRebuild: false,
+		Model:       "new-model",
+		Dimension:   4,
+		Fingerprint: "new-model:4",
+		Stderr:      openStderrSink(t),
+	})
+	if err != nil {
+		t.Fatalf("pickEmbedGeneration: %v (should resume matching build)", err)
+	}
+	if gotGen != matchingBuilding {
+		t.Errorf("gotGen=%d, want building=%d (stale active=%d must not steal precedence)",
+			gotGen, matchingBuilding, staleActive)
+	}
+	if !rebuildInProgress {
+		t.Errorf("rebuildInProgress=false, want true")
+	}
+}
+
+// TestPickEmbedGeneration_ActivePlusBuildingDifferentFingerprint covers
+// the inverse of TestPickEmbedGeneration_StaleActivePlusMatchingBuilding:
+// active matches the configured fingerprint, but a stale building from
+// a different model is also present. The active generation should be
+// targeted (incremental top-up) rather than the mismatched build.
+func TestPickEmbedGeneration_ActivePlusBuildingDifferentFingerprint(t *testing.T) {
+	ctx := context.Background()
+	b := openTestBackend(t)
+
+	matchingActive, err := b.CreateGeneration(ctx, "fake", 4)
+	if err != nil {
+		t.Fatalf("CreateGeneration (active): %v", err)
+	}
+	if err := b.ActivateGeneration(ctx, matchingActive); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+	if _, err := b.CreateGeneration(ctx, "old-model", 4); err != nil {
+		t.Fatalf("CreateGeneration (stale building): %v", err)
+	}
+
+	gotGen, rebuildInProgress, err := pickEmbedGeneration(ctx, b, embedGenerationOpts{
+		FullRebuild: false,
+		Model:       "fake",
+		Dimension:   4,
+		Fingerprint: "fake:4",
+		Stderr:      openStderrSink(t),
+	})
+	if err != nil {
+		t.Fatalf("pickEmbedGeneration: %v (should fall back to active)", err)
+	}
+	if gotGen != matchingActive {
+		t.Errorf("gotGen=%d, want active=%d (mismatched build must not be picked over matching active)",
+			gotGen, matchingActive)
+	}
+	if rebuildInProgress {
+		t.Errorf("rebuildInProgress=true, want false (we picked the active generation)")
+	}
+}
+
 // TestPickEmbedGeneration_FullRebuildAbortsWhenDeclined verifies the
 // Confirm hook short-circuits when the user declines a rebuild.
 func TestPickEmbedGeneration_FullRebuildAbortsWhenDeclined(t *testing.T) {

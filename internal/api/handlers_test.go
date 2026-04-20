@@ -1630,6 +1630,53 @@ func TestHandleSearch_HybridResponseItemShape(t *testing.T) {
 	}
 }
 
+// TestHandleSearch_HybridPoolSaturatedAlwaysEmitted regression-guards
+// the wire-level contract that pool_saturated is always present on a
+// successful hybrid response (never omitted, never null). Without an
+// explicit test, an `omitempty` slip on the response struct would
+// silently drop the field for false values — clients that read
+// "pool not saturated" as a positive signal would break.
+func TestHandleSearch_HybridPoolSaturatedAlwaysEmitted(t *testing.T) {
+	store := &mockStore{}
+	backend := &fakeVectorBackend{
+		active: &vector.Generation{
+			ID: 1, Model: "fake", Dimension: 4,
+			Fingerprint: "fake:4", State: vector.GenerationActive,
+		},
+		// No hits → pool_saturated will be false (len(hits) < limit).
+		searchHits: nil,
+	}
+	engine := hybrid.NewEngine(backend, nil, realEmbedder{dim: 4}, hybrid.Config{
+		ExpectedFingerprint: "fake:4", RRFK: 60, KPerSignal: 10,
+	})
+	srv := NewServerWithOptions(ServerOptions{
+		Config:       &config.Config{Server: config.ServerConfig{APIPort: 8080}},
+		Store:        store,
+		HybridEngine: engine,
+		Backend:      backend,
+		Logger:       testLogger(),
+	})
+
+	req := httptest.NewRequest("GET", "/api/v1/search?q=hello&mode=vector", nil)
+	w := httptest.NewRecorder()
+	srv.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw: %v", err)
+	}
+	val, exists := raw["pool_saturated"]
+	if !exists {
+		t.Fatalf("pool_saturated key missing from successful response; want present (raw=%s)", w.Body.String())
+	}
+	if string(val) != "false" {
+		t.Errorf("pool_saturated = %s, want false", string(val))
+	}
+}
+
 // mapKeys returns the keys of a map[string]interface{} for use in
 // assertion error messages.
 func mapKeys(m map[string]interface{}) []string {

@@ -4,6 +4,7 @@ package sqlitevec
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -167,6 +168,63 @@ func TestBackend_CreateGeneration_ResumeDoesNotReseedCompleted(t *testing.T) {
 	}
 	if pending != 0 {
 		t.Errorf("pending count for completed msg 1 = %d, want 0 (resume re-seeded a completed message)", pending)
+	}
+}
+
+// TestBackend_CreateGeneration_ResumeReseedsUnseededGeneration covers
+// the "crash between row insert and seed commit" path: a building row
+// exists but seeded_at is NULL because the previous attempt died
+// before the seed transaction committed. A naive resume would skip
+// seedPending, leave pending_embeddings empty, and let
+// `msgvault embed` activate the unseeded generation — silently
+// replacing the prior active index with an empty one. The fix is to
+// re-run seedPending whenever seeded_at IS NULL on resume.
+func TestBackend_CreateGeneration_ResumeReseedsUnseededGeneration(t *testing.T) {
+	b, ctx := newBackendForTest(t)
+
+	gen, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	// Simulate the crash window: clear seeded_at AND wipe the seeded
+	// rows so the post-resume pending count is exactly what the resume
+	// re-seed would produce. Without this we couldn't distinguish
+	// "rows are present because resume re-seeded" from "rows are
+	// present because the original seed left them there".
+	if _, err := b.db.ExecContext(ctx,
+		`UPDATE index_generations SET seeded_at = NULL WHERE id = ?`, int64(gen)); err != nil {
+		t.Fatalf("clear seeded_at: %v", err)
+	}
+	if _, err := b.db.ExecContext(ctx,
+		`DELETE FROM pending_embeddings WHERE generation_id = ?`, int64(gen)); err != nil {
+		t.Fatalf("clear pending: %v", err)
+	}
+
+	resumed, err := b.CreateGeneration(ctx, "m", 768)
+	if err != nil {
+		t.Fatalf("resume Create: %v", err)
+	}
+	if resumed != gen {
+		t.Errorf("resumed gen = %d, want reused %d", resumed, gen)
+	}
+	var pending int
+	if err := b.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pending_embeddings WHERE generation_id = ?`,
+		int64(gen)).Scan(&pending); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	if pending != 1 {
+		t.Errorf("pending count after resume = %d, want 1 (resume must re-seed an unseeded build)", pending)
+	}
+	// And seeded_at should now be populated so a second resume
+	// would correctly skip re-seeding.
+	var seededAt sql.NullInt64
+	if err := b.db.QueryRowContext(ctx,
+		`SELECT seeded_at FROM index_generations WHERE id = ?`, int64(gen)).Scan(&seededAt); err != nil {
+		t.Fatalf("read seeded_at: %v", err)
+	}
+	if !seededAt.Valid {
+		t.Error("seeded_at still NULL after resume re-seed; second resume would re-seed again")
 	}
 }
 

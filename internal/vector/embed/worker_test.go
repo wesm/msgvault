@@ -4,6 +4,7 @@ package embed
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -299,20 +300,33 @@ func TestWorker_RuneCountUsedForSourceCharLen(t *testing.T) {
 // stayed claimed, the next Claim returned empty, and RunOnce
 // reported a clean drain. After this fix Complete failure must count
 // toward MaxConsecutiveFailures so the loop short-circuits instead of
-// silently spinning until ReclaimStale rescues the rows minutes
-// later. We force Complete to fail by dropping pending_embeddings
-// from inside the embedding client's Embed callback (after Claim has
-// run, before Complete).
+// silently spinning until ReclaimStale rescues the rows minutes later.
+//
+// The earlier version of this test dropped pending_embeddings to make
+// Complete fail, but that also broke the next Claim — the test then
+// passed because Claim errored out, not because Complete failure was
+// detected. To actually exercise the stuck-claim path we install a
+// BEFORE DELETE trigger that fires only on Complete (Claim does an
+// UPDATE, not a DELETE, so it still succeeds). After RunOnce errors,
+// we assert the pending row is still present AND claimed — proving
+// the loop noticed the stuck state instead of silently treating an
+// empty Claim as a clean drain.
 func TestWorker_CompleteFailureCountsAsBatchFailure(t *testing.T) {
 	ctx := context.Background()
+	// Need ≥ MaxConsecutiveFailures messages so successive claims pull
+	// fresh rows; otherwise a single failed Complete leaves one stuck-
+	// claimed row and the next Claim returns empty (which RunOnce
+	// rightly treats as a clean drain — the bug we're regressing
+	// against would never trip with a single-message fixture).
 	f := newWorkerFixture(t, 3)
 
-	// Drop the queue table mid-batch so the next Complete call fails.
-	// Embed runs after Claim succeeded but before Upsert and Complete;
-	// dropping here lets Upsert succeed (different table) and Complete
-	// fail.
-	f.FakeClient.preReturn = func() {
-		_, _ = f.VectorsDB.ExecContext(ctx, `DROP TABLE pending_embeddings`)
+	if _, err := f.VectorsDB.ExecContext(ctx, `
+        CREATE TRIGGER block_pending_delete
+        BEFORE DELETE ON pending_embeddings
+        BEGIN
+            SELECT RAISE(FAIL, 'simulated complete failure');
+        END`); err != nil {
+		t.Fatalf("install trigger: %v", err)
 	}
 
 	w := NewWorker(WorkerDeps{
@@ -333,6 +347,109 @@ func TestWorker_CompleteFailureCountsAsBatchFailure(t *testing.T) {
 	}
 	if res.Failed == 0 {
 		t.Errorf("Failed=%d, want > 0 (Complete failure should count as a batch failure)", res.Failed)
+	}
+
+	// Stuck-claim check: pending_embeddings row is still there (the
+	// trigger blocked Complete's DELETE) and is marked claimed (the
+	// previous Claim's UPDATE went through). A naive "log-only"
+	// Complete handler would silently report success; the failure
+	// counter is what makes RunOnce notice and abort.
+	var pending, claimed int
+	if err := f.VectorsDB.QueryRowContext(ctx,
+		`SELECT COUNT(*),
+                COALESCE(SUM(CASE WHEN claimed_at IS NOT NULL THEN 1 ELSE 0 END), 0)
+           FROM pending_embeddings WHERE generation_id = ?`,
+		int64(f.BuildingGen)).Scan(&pending, &claimed); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	if pending == 0 {
+		t.Errorf("pending=%d, want > 0 — Complete should have failed and left the row in place", pending)
+	}
+	if claimed == 0 {
+		t.Errorf("claimed=%d, want > 0 — Claim's UPDATE should have left the row marked claimed", claimed)
+	}
+}
+
+// TestWorker_OrphanCompleteFailureDoesNotStrandValidWork regresses
+// the bug where a failed Complete(missing) call (the orphan-drain step
+// that runs after embedBatch detects messages deleted from the main DB
+// between enqueue and claim) abandoned the valid messages in the same
+// batch. The original code ran orphan-drain BEFORE Upsert and used
+// `continue` on failure, leaving the still-valid claimed IDs claimed
+// but unembedded until ReclaimStale ran (10 min default). After the
+// fix, orphan-drain runs AFTER the embedded rows are upserted and
+// acknowledged, so an orphan-drain failure cannot strand valid work.
+func TestWorker_OrphanCompleteFailureDoesNotStrandValidWork(t *testing.T) {
+	ctx := context.Background()
+	// 2 messages enqueued; we'll delete one from the main DB so it
+	// reaches embedBatch as "missing".
+	f := newWorkerFixture(t, 2)
+
+	const orphanID = 2
+	if _, err := f.MainDB.ExecContext(ctx,
+		`DELETE FROM messages WHERE id = ?`, orphanID); err != nil {
+		t.Fatalf("delete orphan from main: %v", err)
+	}
+	if _, err := f.MainDB.ExecContext(ctx,
+		`DELETE FROM message_bodies WHERE message_id = ?`, orphanID); err != nil {
+		t.Fatalf("delete orphan body: %v", err)
+	}
+
+	// Selective trigger: only the orphan's Complete DELETE fails. The
+	// embedded row's Complete must still succeed so we can prove the
+	// valid work is durably finished even when the orphan drain fails.
+	if _, err := f.VectorsDB.ExecContext(ctx, fmt.Sprintf(`
+        CREATE TRIGGER block_orphan_drain
+        BEFORE DELETE ON pending_embeddings
+        WHEN OLD.message_id = %d
+        BEGIN
+            SELECT RAISE(FAIL, 'simulated orphan complete failure');
+        END`, orphanID)); err != nil {
+		t.Fatalf("install trigger: %v", err)
+	}
+
+	w := NewWorker(WorkerDeps{
+		Backend:                f.Backend,
+		VectorsDB:              f.VectorsDB,
+		MainDB:                 f.MainDB,
+		Client:                 f.FakeClient,
+		BatchSize:              2,
+		MaxConsecutiveFailures: 5, // generous so the orphan drain failure does not abort
+	})
+
+	res, err := w.RunOnce(ctx, f.BuildingGen)
+	if err != nil {
+		t.Fatalf("RunOnce: unexpected error %v (orphan drain failure should not poison the batch)", err)
+	}
+	if res.Succeeded != 1 {
+		t.Errorf("Succeeded=%d, want 1 (the valid message must be counted as completed)", res.Succeeded)
+	}
+	if res.Failed == 0 {
+		t.Errorf("Failed=%d, want > 0 (orphan drain failure should be reported)", res.Failed)
+	}
+
+	// The valid message's pending row must be GONE (Complete succeeded).
+	// The original bug left it claimed-but-not-completed because the
+	// orphan-drain failure short-circuited before Upsert.
+	var validPending int
+	if err := f.VectorsDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pending_embeddings WHERE generation_id = ? AND message_id = 1`,
+		int64(f.BuildingGen)).Scan(&validPending); err != nil {
+		t.Fatalf("count valid pending: %v", err)
+	}
+	if validPending != 0 {
+		t.Errorf("valid pending = %d, want 0 (R53a regression: valid row stranded by orphan drain failure)", validPending)
+	}
+
+	// And the embedded row should be in the embeddings table.
+	var embedded int
+	if err := f.VectorsDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM embeddings WHERE generation_id = ? AND message_id = 1`,
+		int64(f.BuildingGen)).Scan(&embedded); err != nil {
+		t.Fatalf("count embedded: %v", err)
+	}
+	if embedded != 1 {
+		t.Errorf("embedded count = %d, want 1 (Upsert should have run before orphan drain)", embedded)
 	}
 }
 

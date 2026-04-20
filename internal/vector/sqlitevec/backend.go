@@ -79,9 +79,15 @@ func (b *Backend) Path() string { return b.path }
 // spec) and seeds pending_embeddings with every currently-embeddable
 // message. If a building generation already exists with the same
 // fingerprint, returns its id so a crashed or interrupted rebuild can
-// resume; the seed pass is skipped on resume so messages that the
-// previous attempt already embedded (and that Queue.Complete therefore
-// already removed from pending_embeddings) are NOT re-enqueued.
+// resume; on resume the seed pass is skipped iff the previous attempt
+// recorded `seeded_at` (so messages that the previous attempt already
+// embedded — and Queue.Complete therefore already removed from
+// pending_embeddings — are NOT re-enqueued). When the previous attempt
+// crashed BEFORE the seed transaction committed, seeded_at is NULL
+// and we re-run seedPending so we don't activate an empty generation.
+// seedPending uses INSERT OR IGNORE, so rerunning it is safe regardless
+// of what the Enqueuer has dual-enqueued in the meantime.
+//
 // A mismatched fingerprint returns an error wrapping
 // vector.ErrBuildingInProgress so the caller can surface an actionable
 // message rather than a raw unique-index violation.
@@ -103,19 +109,56 @@ func (b *Backend) CreateGeneration(ctx context.Context, model string, dim int) (
 		return 0, err
 	}
 
-	// Resume: skip seeding entirely. The pending_embeddings queue
-	// already reflects exactly what's still owed for this generation
-	// (originally-seeded rows minus what Queue.Complete removed, plus
-	// anything the Enqueuer added via dual-enqueue since the previous
-	// attempt). Re-seeding here would re-enqueue every successfully
-	// embedded message and force them to be embedded again on retry.
 	if !isNew {
-		return gen, nil
+		// Resume path: only skip seedPending when the prior attempt's
+		// seed transaction committed. seeded_at IS NULL means the
+		// process died between the building-row insert and the seed
+		// commit; pending_embeddings is empty (or only contains
+		// dual-enqueued rows from concurrent Enqueuer activity), so
+		// activating now would silently replace a valid active index
+		// with an unseeded one. Re-run seedPending; the INSERT OR
+		// IGNORE statements de-duplicate against any dual-enqueued or
+		// already-completed rows.
+		seeded, err := b.isGenerationSeeded(ctx, gen)
+		if err != nil {
+			return 0, err
+		}
+		if seeded {
+			return gen, nil
+		}
+		// Fall through to seedPending + mark seeded.
 	}
 	if err := b.seedPending(ctx, gen, now); err != nil {
 		return 0, err
 	}
+	if err := b.markGenerationSeeded(ctx, gen, now); err != nil {
+		return 0, err
+	}
 	return gen, nil
+}
+
+// isGenerationSeeded reports whether the initial seedPending pass for
+// gen committed (seeded_at IS NOT NULL).
+func (b *Backend) isGenerationSeeded(ctx context.Context, gen vector.GenerationID) (bool, error) {
+	var seededAt sql.NullInt64
+	err := b.db.QueryRowContext(ctx,
+		`SELECT seeded_at FROM index_generations WHERE id = ?`, int64(gen)).Scan(&seededAt)
+	if err != nil {
+		return false, fmt.Errorf("read seeded_at: %w", err)
+	}
+	return seededAt.Valid, nil
+}
+
+// markGenerationSeeded stamps seeded_at on gen so future resume calls
+// know the initial seed pass committed. Idempotent: COALESCE preserves
+// the original timestamp when called more than once.
+func (b *Backend) markGenerationSeeded(ctx context.Context, gen vector.GenerationID, now int64) error {
+	if _, err := b.db.ExecContext(ctx,
+		`UPDATE index_generations SET seeded_at = COALESCE(seeded_at, ?) WHERE id = ?`,
+		now, int64(gen)); err != nil {
+		return fmt.Errorf("mark generation seeded: %w", err)
+	}
+	return nil
 }
 
 // claimOrInsertBuilding returns (id, isNew, err). isNew=true means

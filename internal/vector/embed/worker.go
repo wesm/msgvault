@@ -135,38 +135,27 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 		}
 		res.Truncated += eb.truncated
 
-		// Drop queue rows for messages that disappeared between
-		// enqueue and claim (e.g. sync deleted them after the
-		// generation was seeded). Using Complete with our claim
-		// token makes this a token-aware delete: we only remove
-		// rows we still own.
-		//
-		// Complete failure here is critical: the rows stay claimed
-		// until ReclaimStale runs (10 min default), so the loop would
-		// busy-spin on Claim returning empty and falsely report
-		// success. Treat it as a batch failure that counts toward
-		// MaxConsecutiveFailures.
-		if len(eb.missing) > 0 {
-			w.deps.Log.Warn("pending messages missing from main DB",
-				"gen", gen, "ids", eb.missing)
-			if cerr := w.q.Complete(ctx, gen, token, eb.missing); cerr != nil {
-				res.Failed += len(eb.missing)
-				w.deps.Log.Error("complete missing failed", "error", cerr,
-					"gen", gen, "ids", len(eb.missing))
-				consecutiveFailures++
-				lastErr = cerr
-				if consecutiveFailures >= w.deps.MaxConsecutiveFailures {
-					return res, fmt.Errorf("embed worker aborting after %d consecutive failures: %w",
-						consecutiveFailures, lastErr)
-				}
-				continue
-			}
-		}
-
 		if len(eb.chunks) == 0 {
-			// Nothing fetched (all ids missing) — no failure, no
-			// success. Move on without touching the failure counter
-			// so we don't spuriously abort on a batch of orphans.
+			// Nothing fetched (all ids in this batch were missing
+			// from main DB). Drop the orphans and move on; failure
+			// here counts toward MaxConsecutiveFailures because the
+			// loop would otherwise busy-spin on a stuck claim until
+			// ReclaimStale runs (10 min default).
+			if len(eb.missing) > 0 {
+				w.deps.Log.Warn("pending messages missing from main DB",
+					"gen", gen, "ids", eb.missing)
+				if cerr := w.q.Complete(ctx, gen, token, eb.missing); cerr != nil {
+					res.Failed += len(eb.missing)
+					w.deps.Log.Error("complete missing failed", "error", cerr,
+						"gen", gen, "ids", len(eb.missing))
+					consecutiveFailures++
+					lastErr = cerr
+					if consecutiveFailures >= w.deps.MaxConsecutiveFailures {
+						return res, fmt.Errorf("embed worker aborting after %d consecutive failures: %w",
+							consecutiveFailures, lastErr)
+					}
+				}
+			}
 			continue
 		}
 
@@ -202,6 +191,44 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 					consecutiveFailures, lastErr)
 			}
 			continue
+		}
+
+		// Drop queue rows for messages that disappeared between
+		// enqueue and claim. We do this AFTER embedded rows are
+		// safely upserted and acknowledged so a Complete failure on
+		// the orphans does not strand the valid embedded rows in a
+		// claimed-but-unembedded state. Using Complete with our claim
+		// token makes this a token-aware delete: we only remove rows
+		// we still own. Failure here still counts as a batch failure
+		// because the orphan rows would stay claimed until
+		// ReclaimStale runs and falsely block the queue.
+		if len(eb.missing) > 0 {
+			w.deps.Log.Warn("pending messages missing from main DB",
+				"gen", gen, "ids", eb.missing)
+			if cerr := w.q.Complete(ctx, gen, token, eb.missing); cerr != nil {
+				res.Failed += len(eb.missing)
+				w.deps.Log.Error("complete missing failed", "error", cerr,
+					"gen", gen, "ids", len(eb.missing))
+				consecutiveFailures++
+				lastErr = cerr
+				if consecutiveFailures >= w.deps.MaxConsecutiveFailures {
+					// Embedded rows were already counted into
+					// res.Succeeded above; record the orphan-drain
+					// failure and abort.
+					res.Succeeded += len(eb.embeddedIDs)
+					return res, fmt.Errorf("embed worker aborting after %d consecutive failures: %w",
+						consecutiveFailures, lastErr)
+				}
+				// Even though the orphan drain failed, the embedded
+				// rows ARE done — count them and reset the failure
+				// streak below would be wrong (orphan failure isn't a
+				// real batch failure for embedding). Leave
+				// consecutiveFailures incremented so persistent
+				// orphan-drain bugs still surface, but record the
+				// successful work.
+				res.Succeeded += len(eb.embeddedIDs)
+				continue
+			}
 		}
 		res.Succeeded += len(eb.embeddedIDs)
 		consecutiveFailures = 0

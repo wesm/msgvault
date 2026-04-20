@@ -217,6 +217,101 @@ func TestSearchMessages_HybridErrNotEnabled(t *testing.T) {
 	}
 }
 
+// realEmbedder returns a deterministic vector. Used for end-to-end
+// MCP hybrid tests that exercise the engine's embed → backend.Search
+// path; pickEmbedGeneration tests use stubEmbedder instead.
+type realEmbedder struct {
+	dim int
+}
+
+func (e realEmbedder) Embed(_ context.Context, inputs []string) ([][]float32, error) {
+	out := make([][]float32, len(inputs))
+	for i := range inputs {
+		v := make([]float32, e.dim)
+		v[0] = 1
+		out[i] = v
+	}
+	return out, nil
+}
+
+// TestSearchMessages_HybridFilterOnlyReturnsMissingFreeText
+// regression-guards the wire-level contract that mode=vector|hybrid
+// rejects filter-only queries (no free-text terms) with the
+// "missing_free_text" tool error rather than passing an empty string
+// into the embedder. Mirrors the API-side handler check so MCP and
+// HTTP clients see the same boundary.
+func TestSearchMessages_HybridFilterOnlyReturnsMissingFreeText(t *testing.T) {
+	// A real engine wired to a backend with an active generation —
+	// stubEmbedder keeps us safe if the handler ever forgets to
+	// short-circuit (Embed will return an error, exposing the bug).
+	backend := &fakeBackend{
+		active: vector.Generation{
+			ID: 1, Model: "fake", Dimension: 4,
+			Fingerprint: "fake:4", State: vector.GenerationActive,
+		},
+	}
+	engine := hybrid.NewEngine(backend, nil, stubEmbedder{}, hybrid.Config{
+		ExpectedFingerprint: "fake:4", RRFK: 60, KPerSignal: 10,
+	})
+	h := &handlers{
+		engine:       &querytest.MockEngine{},
+		hybridEngine: engine,
+		backend:      backend,
+	}
+
+	r := runToolExpectError(t, "search_messages", h.searchMessages, map[string]any{
+		"query": "from:alice@example.com",
+		"mode":  "vector",
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "missing_free_text") {
+		t.Fatalf("expected 'missing_free_text' error, got: %s", txt)
+	}
+}
+
+// TestSearchMessages_HybridPoolSaturatedAlwaysEmitted regression-guards
+// the wire-level contract that pool_saturated is always present (and
+// false on a successful, under-cap response). An `omitempty` slip
+// would silently drop the field when false; clients that key off
+// "saturated vs not" would break.
+func TestSearchMessages_HybridPoolSaturatedAlwaysEmitted(t *testing.T) {
+	backend := &fakeBackend{
+		active: vector.Generation{
+			ID: 1, Model: "fake", Dimension: 4,
+			Fingerprint: "fake:4", State: vector.GenerationActive,
+		},
+		// No hits → pool_saturated computes to false (len(hits) < limit).
+		searchHits: nil,
+	}
+	engine := hybrid.NewEngine(backend, nil, realEmbedder{dim: 4}, hybrid.Config{
+		ExpectedFingerprint: "fake:4", RRFK: 60, KPerSignal: 10,
+	})
+	h := &handlers{
+		engine:       &querytest.MockEngine{},
+		hybridEngine: engine,
+		backend:      backend,
+	}
+
+	r := callToolDirect(t, "search_messages", h.searchMessages, map[string]any{
+		"query": "hello world",
+		"mode":  "vector",
+	})
+	if r.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, r))
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(resultText(t, r)), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	val, exists := raw["pool_saturated"]
+	if !exists {
+		t.Fatalf("pool_saturated key missing from successful response (raw=%s)", resultText(t, r))
+	}
+	if string(val) != "false" {
+		t.Errorf("pool_saturated = %s, want false", string(val))
+	}
+}
+
 func TestSearchMessages_HybridModePaginationUnsupported(t *testing.T) {
 	// offset>0 must be rejected before any hybrid-engine lookup. The
 	// pagination check runs first, so a missing hybridEngine does not

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"fmt"
+	"strings"
 )
 
 //go:embed schema.sql
@@ -21,10 +22,35 @@ func Migrate(ctx context.Context, db *sql.DB, defaultDim int) error {
 	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
 	}
+	// Idempotent column additions for databases initialized before
+	// these columns existed. SQLite returns "duplicate column name"
+	// when re-applied; we treat that as success.
+	for _, m := range []struct {
+		sql  string
+		desc string
+	}{
+		{`ALTER TABLE index_generations ADD COLUMN seeded_at INTEGER`, "seeded_at"},
+	} {
+		if _, err := db.ExecContext(ctx, m.sql); err != nil &&
+			!isDuplicateColumnErr(err) {
+			return fmt.Errorf("migrate vectors.db (%s): %w", m.desc, err)
+		}
+	}
 	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode = WAL`); err != nil {
 		return fmt.Errorf("enable WAL: %w", err)
 	}
 	return EnsureVectorTable(ctx, db, defaultDim)
+}
+
+// isDuplicateColumnErr matches SQLite's "duplicate column name" error
+// from ALTER TABLE … ADD COLUMN re-runs. Same approach as
+// internal/store/db_logger.go: substring match keeps the migration
+// path driver-agnostic.
+func isDuplicateColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "duplicate column name")
 }
 
 // EnsureVectorTable creates vectors_vec_dN for the given dimension if

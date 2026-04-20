@@ -11,6 +11,13 @@ CREATE TABLE IF NOT EXISTS index_generations (
     dimension     INTEGER NOT NULL,
     fingerprint   TEXT NOT NULL,
     started_at    INTEGER NOT NULL,
+    -- seeded_at marks when the initial pending_embeddings seed pass
+    -- finished. NULL means "row inserted but seed never committed"
+    -- (e.g. crash between insert and seed) — the resume path re-runs
+    -- seedPending in that case rather than activating an empty
+    -- generation. Columns added after release ship via the ALTER
+    -- TABLE migrations in migrate.go for already-initialized databases.
+    seeded_at     INTEGER,
     completed_at  INTEGER,
     activated_at  INTEGER,
     state         TEXT NOT NULL,
