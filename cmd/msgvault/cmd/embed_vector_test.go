@@ -414,3 +414,71 @@ func TestPickEmbedGeneration_ResumeReseedsUnseededBuilding(t *testing.T) {
 		t.Error("seeded_at still NULL after resume, want set")
 	}
 }
+
+// TestPickEmbedGeneration_ResumeRacesActivation regresses the case
+// where the `building` row flips to `active` between the
+// BuildingGeneration read and EnsureSeeded. Before the fix this
+// surfaced a fatal `ensure seeded: ... state="active"` error even
+// though a legitimate active generation (matching the configured
+// fingerprint) now existed. After the fix we fall through to the
+// active-generation lookup and top it up as a normal incremental
+// pass.
+func TestPickEmbedGeneration_ResumeRacesActivation(t *testing.T) {
+	ctx := context.Background()
+	b := openTestBackend(t)
+
+	// Create the building generation as if the operator had just run
+	// `msgvault embed --full-rebuild`. CreateGeneration seeds pending
+	// rows for id=1 via openTestBackend's seed message.
+	gen, err := b.CreateGeneration(ctx, "fake", 4)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	// Simulate the race: another actor (the daemon, or a concurrent
+	// `msgvault embed` run that finished first) activated the
+	// generation. From this actor's perspective BuildingGeneration
+	// returned non-nil a moment ago, but the state has since flipped.
+	if err := b.ActivateGeneration(ctx, gen); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+
+	// Intercepting the race is hard to do in a single-threaded test,
+	// but we can drive the same code path by calling
+	// pickEmbedGeneration with a backend that reports the now-active
+	// generation when BuildingGeneration is queried. We use a
+	// shim that wraps the real backend and overrides only
+	// BuildingGeneration.
+	shim := &buildingShim{Backend: b, forceBuilding: &vector.Generation{
+		ID: gen, Fingerprint: "fake:4", State: vector.GenerationBuilding,
+	}}
+
+	gotGen, rebuildInProgress, err := pickEmbedGeneration(ctx, shim, embedGenerationOpts{
+		FullRebuild: false,
+		Model:       "fake",
+		Dimension:   4,
+		Fingerprint: "fake:4",
+		Stderr:      openStderrSink(t),
+	})
+	if err != nil {
+		t.Fatalf("pickEmbedGeneration: %v (race must be retryable, not fatal)", err)
+	}
+	if gotGen != gen {
+		t.Errorf("gotGen=%d, want %d (same generation, but now active)", gotGen, gen)
+	}
+	if rebuildInProgress {
+		t.Errorf("rebuildInProgress=true, want false (now on the active path)")
+	}
+}
+
+// buildingShim wraps a real backend, overriding only BuildingGeneration
+// to return a forced value. Used by TestPickEmbedGeneration_ResumeRacesActivation
+// to simulate a stale read where the generation flipped to active
+// underneath us after BuildingGeneration returned.
+type buildingShim struct {
+	vector.Backend
+	forceBuilding *vector.Generation
+}
+
+func (s *buildingShim) BuildingGeneration(ctx context.Context) (*vector.Generation, error) {
+	return s.forceBuilding, nil
+}

@@ -653,22 +653,32 @@ func TestBackend_Search_FilterIDsExceedSQLiteParamCap(t *testing.T) {
 	b, ctx, _ := newFusedBackendForTest(t)
 
 	const total = 1200 // well past SQLite's 999-variable ceiling
-	// The helper seeds 3 FTS rows; insert `total` more messages with
-	// sender_id so a single sender filter matches all of them.
+	// The helper seeds 3 FTS rows; insert `total` more messages each
+	// with a `from` recipient row pointing at the same participant so
+	// a single sender filter matches all of them.
 	if _, err := b.mainDB.ExecContext(ctx,
-		`DELETE FROM messages; DELETE FROM messages_fts`); err != nil {
+		`DELETE FROM messages; DELETE FROM messages_fts; DELETE FROM message_recipients`); err != nil {
 		t.Fatalf("reset main: %v", err)
 	}
 	insertMsg, err := b.mainDB.PrepareContext(ctx,
-		`INSERT INTO messages (id, sender_id) VALUES (?, 42)`)
+		`INSERT INTO messages (id) VALUES (?)`)
 	if err != nil {
-		t.Fatalf("prepare: %v", err)
+		t.Fatalf("prepare msg: %v", err)
 	}
 	defer func() { _ = insertMsg.Close() }()
+	insertMR, err := b.mainDB.PrepareContext(ctx,
+		`INSERT INTO message_recipients (message_id, recipient_type, participant_id) VALUES (?, 'from', 42)`)
+	if err != nil {
+		t.Fatalf("prepare mr: %v", err)
+	}
+	defer func() { _ = insertMR.Close() }()
 	vecs := make(map[int64][]float32, total)
 	for i := int64(1); i <= total; i++ {
 		if _, err := insertMsg.ExecContext(ctx, i); err != nil {
 			t.Fatalf("insert %d: %v", i, err)
+		}
+		if _, err := insertMR.ExecContext(ctx, i); err != nil {
+			t.Fatalf("insert mr %d: %v", i, err)
 		}
 		vecs[i] = unitVec(768, 0)
 	}
@@ -925,11 +935,14 @@ func TestBackend_Search_RecipientGroupsAreANDed(t *testing.T) {
 	})
 }
 
-// TestBackend_Search_SenderFallback_ToMessageRecipients confirms that a
-// sender filter matches messages whose only record of the sender is an
-// entry in message_recipients with recipient_type='from' — i.e. legacy
-// rows where messages.sender_id is NULL.
-func TestBackend_Search_SenderFallback_ToMessageRecipients(t *testing.T) {
+// TestBackend_Search_SenderMatchesFromRecipientOnly confirms that
+// SenderGroups filters match strictly against `from` recipient rows
+// (matching internal/store/api.go:327-336). Messages whose only sender
+// record is `messages.sender_id` do NOT match, because letting
+// sender_id also satisfy sender filters would diverge from the SQLite
+// path and allow repeated `from:` tokens to be satisfied by a mix of
+// sender_id and recipient rows.
+func TestBackend_Search_SenderMatchesFromRecipientOnly(t *testing.T) {
 	b, ctx, _ := newFusedBackendForTest(t)
 
 	// Reset the fused helper's seed data so we control the rows.
@@ -938,13 +951,12 @@ func TestBackend_Search_SenderFallback_ToMessageRecipients(t *testing.T) {
 		t.Fatalf("reset main: %v", err)
 	}
 
-	// msg 1: sender_id set directly.
+	// msg 1: sender_id=100, NO `from` recipient row → must NOT match.
 	if _, err := b.mainDB.ExecContext(ctx,
 		`INSERT INTO messages (id, sender_id) VALUES (1, 100)`); err != nil {
 		t.Fatalf("insert msg 1: %v", err)
 	}
-	// msg 2: sender_id NULL, but a recipient_type='from' row points at
-	// the same participant id.
+	// msg 2: no sender_id, `from` recipient row with pid=100 → matches.
 	if _, err := b.mainDB.ExecContext(ctx,
 		`INSERT INTO messages (id) VALUES (2)`); err != nil {
 		t.Fatalf("insert msg 2: %v", err)
@@ -954,10 +966,15 @@ func TestBackend_Search_SenderFallback_ToMessageRecipients(t *testing.T) {
 		 VALUES (2, 'from', 100)`); err != nil {
 		t.Fatalf("insert mr: %v", err)
 	}
-	// msg 3: different sender, should not match.
+	// msg 3: different sender (`from` row for pid=999) → must NOT match.
 	if _, err := b.mainDB.ExecContext(ctx,
-		`INSERT INTO messages (id, sender_id) VALUES (3, 999)`); err != nil {
+		`INSERT INTO messages (id) VALUES (3)`); err != nil {
 		t.Fatalf("insert msg 3: %v", err)
+	}
+	if _, err := b.mainDB.ExecContext(ctx,
+		`INSERT INTO message_recipients (message_id, recipient_type, participant_id)
+		 VALUES (3, 'from', 999)`); err != nil {
+		t.Fatalf("insert mr 3: %v", err)
 	}
 
 	gid, err := b.CreateGeneration(ctx, "m", 768)
@@ -981,14 +998,14 @@ func TestBackend_Search_SenderFallback_ToMessageRecipients(t *testing.T) {
 	for _, h := range hits {
 		got[h.MessageID] = true
 	}
-	if !got[1] {
-		t.Errorf("hit missing: msg 1 (direct sender_id)")
+	if got[1] {
+		t.Errorf("unexpected hit: msg 1 (sender_id=100 without `from` recipient row must not match — sender filter uses recipient rows only)")
 	}
 	if !got[2] {
-		t.Errorf("hit missing: msg 2 (sender_id NULL, recipient_type='from' fallback)")
+		t.Errorf("hit missing: msg 2 (`from` recipient row pid=100)")
 	}
 	if got[3] {
-		t.Errorf("unexpected hit: msg 3 (different sender, should be filtered out)")
+		t.Errorf("unexpected hit: msg 3 (different `from` recipient)")
 	}
 }
 
@@ -1007,20 +1024,24 @@ func TestBackend_Search_SenderGroupsAreANDed_AtMessageLevel(t *testing.T) {
 		t.Fatalf("reset: %v", err)
 	}
 
-	// Three messages:
-	//   1: sender_id=100, no extra `from` row             — only matches group [100]
-	//   2: sender_id NULL, two `from` rows: pid=100, 200  — matches both groups
-	//   3: sender_id=200, one `from` row: pid=100         — matches both groups
+	// Three messages, each seeded with explicit `from` recipient rows.
+	// Sender-group filtering resolves against those rows only (matching
+	// the SQLite FTS path), so `from:100 from:200` requires two
+	// distinct `from` rows on the same message.
+	//   1: `from` rows {100}           — matches group [100] only
+	//   2: `from` rows {100, 200}      — matches both groups
+	//   3: `from` rows {100, 200}      — matches both groups
 	if _, err := b.mainDB.ExecContext(ctx,
-		`INSERT INTO messages (id, sender_id) VALUES (1, 100), (2, NULL), (3, 200)`); err != nil {
+		`INSERT INTO messages (id) VALUES (1), (2), (3)`); err != nil {
 		t.Fatalf("insert messages: %v", err)
 	}
 	for _, mr := range []struct {
 		mid int64
 		pid int64
 	}{
+		{1, 100},
 		{2, 100}, {2, 200},
-		{3, 100},
+		{3, 100}, {3, 200},
 	} {
 		if _, err := b.mainDB.ExecContext(ctx,
 			`INSERT INTO message_recipients (message_id, recipient_type, participant_id)
@@ -1057,9 +1078,9 @@ func TestBackend_Search_SenderGroupsAreANDed_AtMessageLevel(t *testing.T) {
 
 	t.Run("two_groups_AND_at_message_level", func(t *testing.T) {
 		// `from:100 from:200` ⇒ SenderGroups=[[100],[200]]:
-		//   msg 1: sender_id=100 ✓, but no `from` row with 200 ✗ → drop
-		//   msg 2: sender_id NULL, but `from` rows {100, 200} ✓✓ → keep
-		//   msg 3: sender_id=200 ✓, `from` row 100 ✓ → keep
+		//   msg 1: `from` rows {100} — no 200 row → drop
+		//   msg 2: `from` rows {100, 200} → keep
+		//   msg 3: `from` rows {100, 200} → keep
 		got := matched(t, vector.Filter{SenderGroups: [][]int64{{100}, {200}}})
 		if got[1] || !got[2] || !got[3] {
 			t.Errorf("SenderGroups=[[100],[200]]: got %v, want {2,3}", got)
@@ -1067,8 +1088,8 @@ func TestBackend_Search_SenderGroupsAreANDed_AtMessageLevel(t *testing.T) {
 	})
 
 	t.Run("single_group_OR_within", func(t *testing.T) {
-		// One group containing both ids ⇒ matches messages whose sender
-		// or any `from` row references either id.
+		// One group containing both ids ⇒ matches messages with any
+		// `from` row referencing either id (OR within group).
 		got := matched(t, vector.Filter{SenderGroups: [][]int64{{100, 200}}})
 		if !got[1] || !got[2] || !got[3] {
 			t.Errorf("SenderGroups=[[100,200]]: got %v, want {1,2,3}", got)

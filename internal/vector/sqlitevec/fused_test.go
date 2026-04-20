@@ -547,21 +547,22 @@ func TestFusedSearch_AfterBeforeBoundaries_TextDate(t *testing.T) {
 	}
 }
 
-// TestFusedSearch_SenderFallback_ToMessageRecipients confirms the
-// sender filter matches messages whose only record of the sender is a
-// message_recipients row with recipient_type='from' — i.e. legacy rows
-// where messages.sender_id is NULL. This mirrors the same fallback in
-// Backend.Search; without coverage on the fused path, a future
-// refactor of the CTE could quietly drop legacy rows from hybrid
-// search.
-func TestFusedSearch_SenderFallback_ToMessageRecipients(t *testing.T) {
+// TestFusedSearch_SenderMatchesFromRecipientOnly confirms the sender
+// filter on the fused (hybrid) path matches strictly against `from`
+// recipient rows, mirroring internal/store/api.go:327-336. Messages
+// whose only sender record is `messages.sender_id` do NOT match —
+// allowing the sender_id shortcut would let repeated `from:` tokens
+// be satisfied by a mix of sender_id and recipient rows, diverging
+// from the SQLite FTS path.
+func TestFusedSearch_SenderMatchesFromRecipientOnly(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	mainPath := filepath.Join(dir, "main.db")
 	main := openFusedMainWithSchema(t, mainPath)
 
-	// msg 1: direct sender_id=100. msg 2: sender_id NULL but a 'from'
-	// recipient row points at participant 100. msg 3: different sender.
+	// msg 1: sender_id=100 but NO `from` recipient row → must NOT match.
+	// msg 2: no sender_id, `from` recipient row pid=100 → matches.
+	// msg 3: different `from` recipient (pid=999)       → must NOT match.
 	if _, err := main.ExecContext(ctx,
 		`INSERT INTO messages (id, sender_id) VALUES (1, 100)`); err != nil {
 		t.Fatalf("insert msg 1: %v", err)
@@ -576,8 +577,13 @@ func TestFusedSearch_SenderFallback_ToMessageRecipients(t *testing.T) {
 		t.Fatalf("insert mr: %v", err)
 	}
 	if _, err := main.ExecContext(ctx,
-		`INSERT INTO messages (id, sender_id) VALUES (3, 999)`); err != nil {
+		`INSERT INTO messages (id) VALUES (3)`); err != nil {
 		t.Fatalf("insert msg 3: %v", err)
+	}
+	if _, err := main.ExecContext(ctx,
+		`INSERT INTO message_recipients (message_id, recipient_type, participant_id)
+		 VALUES (3, 'from', 999)`); err != nil {
+		t.Fatalf("insert mr 3: %v", err)
 	}
 	for _, id := range []int64{1, 2, 3} {
 		if _, err := main.ExecContext(ctx,
@@ -622,14 +628,14 @@ func TestFusedSearch_SenderFallback_ToMessageRecipients(t *testing.T) {
 	for _, h := range hits {
 		got[h.MessageID] = true
 	}
-	if !got[1] {
-		t.Errorf("missing msg 1 (direct sender_id=100)")
+	if got[1] {
+		t.Errorf("unexpected msg 1 (sender_id=100 without `from` recipient row — must NOT match)")
 	}
 	if !got[2] {
-		t.Errorf("missing msg 2 (sender_id NULL, recipient_type='from' fallback)")
+		t.Errorf("missing msg 2 (`from` recipient row pid=100)")
 	}
 	if got[3] {
-		t.Errorf("unexpected msg 3 (different sender, should be filtered out)")
+		t.Errorf("unexpected msg 3 (`from` recipient pid=999, should be filtered out)")
 	}
 }
 

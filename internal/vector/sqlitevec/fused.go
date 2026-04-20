@@ -322,14 +322,18 @@ func senderGroupClauses(groups [][]int64) (string, []any, error) {
 			continue
 		}
 		paramName := fmt.Sprintf("sender_grp_%d", i)
+		// Match solely against the 'from' recipient rows so repeated
+		// from: groups stay coherent and align with the SQLite FTS
+		// path (internal/store/api.go:327-336). Mixing sender_id with
+		// recipient-row matches across different tokens would let the
+		// vector path satisfy queries the SQLite path rejects.
 		fmt.Fprintf(&sb, `
-       AND (m.sender_id IN (SELECT value FROM json_each(:%s))
-            OR EXISTS (
-                 SELECT 1 FROM message_recipients mr
-                  WHERE mr.message_id = m.id
-                    AND mr.recipient_type = 'from'
-                    AND mr.participant_id IN (SELECT value FROM json_each(:%s))))`,
-			paramName, paramName)
+       AND EXISTS (
+            SELECT 1 FROM message_recipients mr
+             WHERE mr.message_id = m.id
+               AND mr.recipient_type = 'from'
+               AND mr.participant_id IN (SELECT value FROM json_each(:%s)))`,
+			paramName)
 		args = append(args, sql.Named(paramName, js))
 	}
 	return sb.String(), args, nil

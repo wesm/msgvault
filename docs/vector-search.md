@@ -38,12 +38,12 @@ backend = "sqlite-vec"
 [vector.embeddings]
 endpoint = "http://tailnet-host:11434/v1"
 api_key_env = "OLLAMA_API_KEY"           # optional; omit for anonymous endpoints
-model = "nomic-embed-text-v1.5"
+model = "nomic-embed-text"
 dimension = 768
 batch_size = 32                          # embeddings per HTTP call
 timeout = "30s"
 max_retries = 3
-max_input_chars = 32768                  # messages longer than this are truncated (see note below about Ollama context limits)
+max_input_chars = 2000                   # Ollama nomic-embed-text caps context at 2048 tokens; see sizing guidance below for other models
 
 [vector.preprocess]
 strip_quotes = true                      # drop quoted reply blocks before embedding

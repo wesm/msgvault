@@ -82,6 +82,20 @@ func (j *EmbedJob) Run(ctx context.Context) {
 		return
 	}
 
+	// Guard against the CreateGeneration crash window: if a prior
+	// rebuild inserted the building row but died before committing
+	// the initial seed, the pending queue is empty and the daemon
+	// would happily "drain" it and activate an unseeded generation.
+	// EnsureSeeded is idempotent on already-seeded generations, so
+	// calling it on every resume is cheap and safe.
+	if isBuilding {
+		if err := j.Backend.EnsureSeeded(ctx, target); err != nil {
+			log.Warn("embed: ensure seeded failed; leaving building generation for CLI to resolve",
+				"gen", target, "error", err)
+			return
+		}
+	}
+
 	res, err := j.Worker.RunOnce(ctx, target)
 	if err != nil {
 		log.Warn("embed run failed", "gen", target, "error", err)

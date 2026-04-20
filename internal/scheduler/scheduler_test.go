@@ -459,8 +459,8 @@ func TestTriggerSyncAfterStop(t *testing.T) {
 // ---------- fakes for EmbedJob tests ----------
 
 // fakeBackend implements vector.Backend. Only ActiveGeneration,
-// BuildingGeneration, and ActivateGeneration are meaningfully
-// populated; the rest panic to catch accidental usage.
+// BuildingGeneration, ActivateGeneration, and EnsureSeeded are
+// meaningfully populated; the rest panic to catch accidental usage.
 type fakeBackend struct {
 	active    vector.Generation
 	activeErr error
@@ -471,6 +471,10 @@ type fakeBackend struct {
 	activateErr     error
 	mu              sync.Mutex
 	activateCallIDs []vector.GenerationID
+	// ensureSeededErr is what EnsureSeeded returns; ensureSeededIDs
+	// records the gen IDs the EmbedJob passed to EnsureSeeded.
+	ensureSeededErr error
+	ensureSeededIDs []vector.GenerationID
 
 	activeCalls   atomic.Int32
 	buildingCalls atomic.Int32
@@ -519,8 +523,16 @@ func (f *fakeBackend) LoadVector(ctx context.Context, messageID int64) ([]float3
 	panic("unexpected: LoadVector")
 }
 func (f *fakeBackend) Close() error { return nil }
-func (f *fakeBackend) EnsureSeeded(_ context.Context, _ vector.GenerationID) error {
-	panic("unexpected: EnsureSeeded")
+func (f *fakeBackend) EnsureSeeded(_ context.Context, gen vector.GenerationID) error {
+	f.mu.Lock()
+	f.ensureSeededIDs = append(f.ensureSeededIDs, gen)
+	f.mu.Unlock()
+	return f.ensureSeededErr
+}
+func (f *fakeBackend) ensureSeededCalls() []vector.GenerationID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]vector.GenerationID(nil), f.ensureSeededIDs...)
 }
 
 // fakeRunner records calls to satisfy EmbedRunner.
@@ -750,6 +762,60 @@ func TestEmbedJob_Run_LeavesMismatchedBuildingForCLI(t *testing.T) {
 	}
 	if got := backend.activations(); len(got) != 0 {
 		t.Errorf("activations = %v, want none", got)
+	}
+}
+
+// TestEmbedJob_Run_EnsuresSeededBeforeRunOnce regresses the crash
+// window where CreateGeneration inserted a `building` row but died
+// before committing the initial seed. Without EnsureSeeded on the
+// resume path, RunOnce would see an empty queue, pendingCount would
+// be 0, and the daemon would activate an unseeded generation — a
+// silent, catastrophic data loss for semantic search. EnsureSeeded
+// must be called BEFORE RunOnce so the seed commits first.
+func TestEmbedJob_Run_EnsuresSeededBeforeRunOnce(t *testing.T) {
+	db := newPendingDB(t)
+	building := &vector.Generation{ID: 99, State: vector.GenerationBuilding, Fingerprint: "m:768"}
+	backend := &fakeBackend{
+		activeErr: vector.ErrNoActiveGeneration,
+		building:  building,
+	}
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend, VectorsDB: db, Fingerprint: "m:768"}
+
+	job.Run(context.Background())
+
+	got := backend.ensureSeededCalls()
+	if len(got) != 1 || got[0] != 99 {
+		t.Errorf("EnsureSeeded calls = %v, want [99]", got)
+	}
+	if _, run, _ := runner.calls(); run != 1 {
+		t.Errorf("RunOnce calls = %d, want 1 (should run after seeding)", run)
+	}
+}
+
+// TestEmbedJob_Run_EnsureSeededErrorBailsOut guards the error path:
+// if EnsureSeeded returns an error (e.g. the generation was already
+// activated or retired between BuildingGeneration and EnsureSeeded),
+// the daemon must NOT call RunOnce or ActivateGeneration — the
+// generation is not in a state the daemon can safely drive.
+func TestEmbedJob_Run_EnsureSeededErrorBailsOut(t *testing.T) {
+	db := newPendingDB(t)
+	building := &vector.Generation{ID: 55, State: vector.GenerationBuilding, Fingerprint: "m:768"}
+	backend := &fakeBackend{
+		activeErr:       vector.ErrNoActiveGeneration,
+		building:        building,
+		ensureSeededErr: errors.New("generation state=active, want building"),
+	}
+	runner := &fakeRunner{}
+	job := &EmbedJob{Worker: runner, Backend: backend, VectorsDB: db, Fingerprint: "m:768"}
+
+	job.Run(context.Background())
+
+	if _, run, _ := runner.calls(); run != 0 {
+		t.Errorf("RunOnce calls = %d, want 0 (EnsureSeeded failed — must not proceed)", run)
+	}
+	if got := backend.activations(); len(got) != 0 {
+		t.Errorf("activations = %v, want none (EnsureSeeded failed)", got)
 	}
 }
 

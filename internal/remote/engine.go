@@ -542,7 +542,7 @@ func (e *Engine) GetMessageSummariesByIDs(ctx context.Context, ids []int64) ([]q
 		if md == nil {
 			continue
 		}
-		out = append(out, query.MessageSummary{
+		summary := query.MessageSummary{
 			ID:                   md.ID,
 			SourceMessageID:      md.SourceMessageID,
 			ConversationID:       md.ConversationID,
@@ -552,8 +552,19 @@ func (e *Engine) GetMessageSummariesByIDs(ctx context.Context, ids []int64) ([]q
 			SentAt:               md.SentAt,
 			SizeEstimate:         md.SizeEstimate,
 			HasAttachments:       md.HasAttachments,
+			AttachmentCount:      len(md.Attachments),
 			Labels:               md.Labels,
-		})
+		}
+		// Carry sender details from the first From address so remote
+		// MCP search_messages/find_similar_messages responses don't
+		// silently drop who sent each hit. FromPhone is omitted — the
+		// HTTP remote API does not expose it today; callers that need
+		// it must fall back to a local engine.
+		if len(md.From) > 0 {
+			summary.FromEmail = md.From[0].Email
+			summary.FromName = md.From[0].Name
+		}
+		out = append(out, summary)
 	}
 	return out, nil
 }

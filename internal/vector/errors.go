@@ -37,4 +37,13 @@ var (
 	// fingerprint, so the caller can surface an actionable message
 	// instead of a raw unique-index violation.
 	ErrBuildingInProgress = errors.New("a rebuild with a different fingerprint is already in progress")
+
+	// ErrGenerationNotBuilding is returned by EnsureSeeded when the
+	// target generation is no longer in state='building' — e.g. a
+	// concurrent activation flipped it to active, or a retire call
+	// moved it to retired, between the caller's BuildingGeneration
+	// read and EnsureSeeded. Callers performing a resume can treat
+	// this as a retryable race and re-resolve the active/building
+	// state instead of aborting.
+	ErrGenerationNotBuilding = errors.New("generation is not in state=building")
 )

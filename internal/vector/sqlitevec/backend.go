@@ -179,7 +179,7 @@ func (b *Backend) EnsureSeeded(ctx context.Context, gen vector.GenerationID) err
 		return fmt.Errorf("lookup generation %d: %w", gen, err)
 	}
 	if state != string(vector.GenerationBuilding) {
-		return fmt.Errorf("EnsureSeeded: generation %d state=%q, want building", gen, state)
+		return fmt.Errorf("%w: generation %d state=%q", vector.ErrGenerationNotBuilding, gen, state)
 	}
 	seeded, err := b.isGenerationSeeded(ctx, gen)
 	if err != nil {
@@ -636,6 +636,27 @@ func (b *Backend) Search(ctx context.Context, gen vector.GenerationID, queryVec 
 	}
 	vecTable := VectorTableName(dim)
 
+	// Fast path: when no structured filter is set, run the ANN query
+	// unconstrained and post-filter deletions against the small hit
+	// set. This avoids fetching every live message ID from main.db
+	// just to satisfy the deletion predicate, which is an O(total live
+	// messages) cost on every pure-vector search or find_similar call.
+	if filter.IsEmpty() {
+		q := fmt.Sprintf(`
+			SELECT message_id, distance
+			  FROM %s
+			 WHERE generation_id = ?
+			   AND embedding MATCH ?
+			   AND k = ?
+			 ORDER BY distance ASC
+		`, vecTable)
+		hits, err := b.scanHits(ctx, q, int64(gen), float32SliceBlob(queryVec), k)
+		if err != nil {
+			return nil, err
+		}
+		return b.dropDeletedFromSource(ctx, hits)
+	}
+
 	idClause, filterArgs, err := b.resolveFilter(ctx, filter)
 	if err != nil {
 		return nil, err
@@ -655,7 +676,14 @@ func (b *Backend) Search(ctx context.Context, gen vector.GenerationID, queryVec 
 	allArgs = append(allArgs, int64(gen), float32SliceBlob(queryVec), k)
 	allArgs = append(allArgs, filterArgs...)
 
-	rows, err := b.db.QueryContext(ctx, q, allArgs...)
+	return b.scanHits(ctx, q, allArgs...)
+}
+
+// scanHits runs an ANN query and materializes hits in distance order
+// (higher score = better). Extracted so Search can share the scan
+// logic between its empty-filter fast path and the filtered path.
+func (b *Backend) scanHits(ctx context.Context, query string, args ...any) ([]vector.Hit, error) {
+	rows, err := b.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("ann query: %w", err)
 	}
@@ -670,7 +698,7 @@ func (b *Backend) Search(ctx context.Context, gen vector.GenerationID, queryVec 
 		}
 		hits = append(hits, vector.Hit{
 			MessageID: id,
-			Score:     1.0 - dist, // native distance → monotonic score (higher is better)
+			Score:     1.0 - dist,
 			Rank:      i,
 		})
 	}
@@ -682,13 +710,10 @@ func (b *Backend) Search(ctx context.Context, gen vector.GenerationID, queryVec 
 
 // resolveFilter returns a SQL fragment constraining message_id to the
 // set of messages that pass the structured filter, along with the args
-// to bind. Always emits at least the deletion-state filter — even an
-// empty Filter must exclude messages whose deleted_from_source_at is
-// set, since vectors.db retains embeddings for messages soft-deleted
-// from main DB until a backend.Delete call physically removes them.
-// Without this guard, mode=vector and find_similar_messages can
-// return hits for archive-deleted messages (the hybrid path's
-// FusedSearch already hardcodes the same check inside its CTE).
+// to bind. For a populated filter this also enforces the deletion check
+// inline via filteredMessageIDs; empty filters take the fast path in
+// Search and post-filter deletions on the smaller hit set instead of
+// materializing the entire corpus ID list here.
 //
 // The fragment uses json_each over a single JSON-encoded id list, so
 // the bind-parameter count is O(1) no matter how many messages match
@@ -709,6 +734,52 @@ func (b *Backend) resolveFilter(ctx context.Context, filter vector.Filter) (stri
 	return "AND message_id IN (SELECT value FROM json_each(?))", []any{string(blob)}, nil
 }
 
+// dropDeletedFromSource takes ANN hits and returns the subset whose
+// message rows are still live (deleted_from_source_at IS NULL) in
+// main.db, preserving the input order. Used by Search on the empty-
+// filter fast path so that pure-vector/find_similar callers don't pay
+// the cost of materializing the full live-corpus id list just to
+// enforce the deletion check.
+func (b *Backend) dropDeletedFromSource(ctx context.Context, hits []vector.Hit) ([]vector.Hit, error) {
+	if len(hits) == 0 {
+		return hits, nil
+	}
+	ids := make([]int64, len(hits))
+	for i, h := range hits {
+		ids[i] = h.MessageID
+	}
+	blob, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("encode hit ids: %w", err)
+	}
+	q := `SELECT id FROM messages
+	       WHERE id IN (SELECT value FROM json_each(?))
+	         AND deleted_from_source_at IS NULL`
+	rows, err := b.mainDB.QueryContext(ctx, q, string(blob))
+	if err != nil {
+		return nil, fmt.Errorf("live-hit filter: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	live := make(map[int64]struct{}, len(hits))
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan live id: %w", err)
+		}
+		live[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate live ids: %w", err)
+	}
+	out := hits[:0]
+	for _, h := range hits {
+		if _, ok := live[h.MessageID]; ok {
+			out = append(out, h)
+		}
+	}
+	return out, nil
+}
+
 // filteredMessageIDs runs the filter against the main DB and returns
 // matching message IDs. See spec §5.3.
 func (b *Backend) filteredMessageIDs(ctx context.Context, f vector.Filter) ([]int64, error) {
@@ -723,28 +794,25 @@ func (b *Backend) filteredMessageIDs(ctx context.Context, f vector.Filter) ([]in
 	}
 	// Sender filters: one EXISTS per group, AND'd across groups so
 	// repeated `from:` operators each become an independent
-	// message-level requirement. Within a group, the message's
-	// sender_id OR any of its `from` recipient rows can satisfy the
-	// group — the recipient fallback covers legacy rows where
-	// messages.sender_id is NULL (matches internal/store/api.go).
+	// message-level requirement. Each group matches solely against
+	// the message's `from` recipient rows — the same source the
+	// SQLite FTS path uses (internal/store/api.go:327-336). Using a
+	// single source keeps repeated `from:` tokens coherent: mixed
+	// satisfaction (one token via sender_id, another via recipient
+	// row) cannot create matches the SQLite path would not also
+	// produce.
 	for _, group := range f.SenderGroups {
 		if len(group) == 0 {
 			continue
 		}
-		inDirect := inClause("m.sender_id", group)
 		inRecipient := inClause("mr.participant_id", group)
 		clauses = append(clauses, fmt.Sprintf(
-			`(%s OR EXISTS (
+			`EXISTS (
 				SELECT 1 FROM message_recipients mr
 				 WHERE mr.message_id = m.id
 				   AND mr.recipient_type = 'from'
 				   AND %s
-			))`, inDirect, inRecipient))
-		// Two copies of the ids: one for the direct match, one for
-		// the message_recipients fallback.
-		for _, id := range group {
-			args = append(args, id)
-		}
+			)`, inRecipient))
 		for _, id := range group {
 			args = append(args, id)
 		}
