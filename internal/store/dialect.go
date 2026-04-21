@@ -30,8 +30,18 @@ type Dialect interface {
 	// InsertOrIgnore rewrites a complete INSERT statement to silently ignore conflicts.
 	// SQLite: INSERT OR IGNORE INTO ...  PostgreSQL: INSERT INTO ... ON CONFLICT DO NOTHING
 	// The input sql must be a complete statement in SQLite form
-	// (starting with "INSERT OR IGNORE INTO").
+	// (starting with "INSERT OR IGNORE INTO"). For chunked inserts that
+	// build the VALUES list incrementally, use InsertOrIgnorePrefix +
+	// InsertOrIgnoreSuffix instead.
 	InsertOrIgnore(sql string) string
+
+	// InsertOrIgnorePrefix rewrites the prefix portion of a chunked
+	// INSERT OR IGNORE whose VALUES tuples are appended separately.
+	// The input must be a SQLite-form prefix ending in "VALUES ".
+	// SQLite returns the prefix unchanged (OR IGNORE stays); PostgreSQL
+	// strips "OR IGNORE" so conflict handling can come from the suffix.
+	// Always pair this with InsertOrIgnoreSuffix at the end of the statement.
+	InsertOrIgnorePrefix(sql string) string
 
 	// InsertOrIgnoreSuffix returns a SQL suffix to append after VALUES for
 	// conflict-ignoring inserts built incrementally (e.g., by insertInChunks).

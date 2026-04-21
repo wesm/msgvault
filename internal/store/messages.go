@@ -737,7 +737,7 @@ func (s *Store) AddMessageLabels(messageID int64, labelIDs []int64) error {
 		return insertInChunks(tx, chunkInsert{
 			totalRows:    len(labelIDs),
 			valuesPerRow: 2,
-			prefix:       s.dialect.InsertOrIgnore("INSERT OR IGNORE INTO message_labels (message_id, label_id) VALUES "),
+			prefix:       s.dialect.InsertOrIgnorePrefix("INSERT OR IGNORE INTO message_labels (message_id, label_id) VALUES "),
 			suffix:       s.dialect.InsertOrIgnoreSuffix(),
 		}, func(start, end int) ([]string, []interface{}) {
 			values := make([]string, end-start)

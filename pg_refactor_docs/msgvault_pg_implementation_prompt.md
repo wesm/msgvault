@@ -1,10 +1,10 @@
-# msgvault PostgreSQL Dialect: Unattended Implementation Prompt
+# msgvault PostgreSQL Dialect: Implementation Prompt
 
-> Feed this to Claude Code CLI in the sandbox:
-> ```bash
-> cd /path/to/msgvault
-> claude -p "$(cat pg_refactor_docs/msgvault_pg_implementation_prompt.md)" --dangerously-skip-permissions
-> ```
+> This document is a reference playbook for the PostgreSQL backend work.
+> Review it and the companion files in `pg_refactor_docs/` before handing
+> any of it to an agent, and run agents with normal sandbox/approval
+> gates enabled — do not bypass permission prompts when the prompt is
+> sourced from repository-controlled text.
 
 ---
 

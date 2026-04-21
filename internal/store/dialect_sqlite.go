@@ -19,6 +19,9 @@ func (d *SQLiteDialect) Now() string { return "datetime('now')" }
 // InsertOrIgnore is a no-op for SQLite — the syntax is native.
 func (d *SQLiteDialect) InsertOrIgnore(sql string) string { return sql }
 
+// InsertOrIgnorePrefix is a no-op for SQLite — OR IGNORE stays in the prefix.
+func (d *SQLiteDialect) InsertOrIgnorePrefix(sql string) string { return sql }
+
 // InsertOrIgnoreSuffix returns "" for SQLite — OR IGNORE is in the statement prefix.
 func (d *SQLiteDialect) InsertOrIgnoreSuffix() string { return "" }
 
