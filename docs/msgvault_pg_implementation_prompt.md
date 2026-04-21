@@ -1,7 +1,7 @@
 # msgvault PostgreSQL Dialect: Implementation Prompt
 
 > This document is a reference playbook for the PostgreSQL backend work.
-> Review it and the companion files in `pg_refactor_docs/` before handing
+> Review it and the companion files in `docs/` before handing
 > any of it to an agent, and run agents with normal sandbox/approval
 > gates enabled — do not bypass permission prompts when the prompt is
 > sourced from repository-controlled text.
@@ -16,13 +16,13 @@ each phase — do NOT tag until the review passes.
 
 ## Required Reading Before Writing Any Code
 
-Before starting implementation, read these companion documents in `pg_refactor_docs/`:
+Before starting implementation, read these companion documents in `docs/`:
 
-1. **`pg_refactor_docs/msgvault_integration.md`** — Codebase reference:
+1. **`docs/msgvault_integration.md`** — Codebase reference:
    what msgvault does, tech stack, the SQLite problem (inventory of all
    SQLite-specific constructs), which components are not affected.
 
-2. **`pg_refactor_docs/msgvault_pg_issue_draft.md`** — Detailed design: the
+2. **`docs/msgvault_pg_issue_draft.md`** — Detailed design: the
    `Dialect` interface rationale, SQLite construct inventory with counts and
    locations, the FTS5 → tsvector migration strategy with full SQL examples,
    scope boundary.
@@ -174,8 +174,8 @@ functional change. All existing tests pass unmodified.
 ### Step 1: Read the codebase
 
 Before writing any code, read the companion docs and these files completely:
-- `pg_refactor_docs/msgvault_integration.md`
-- `pg_refactor_docs/msgvault_pg_issue_draft.md`
+- `docs/msgvault_integration.md`
+- `docs/msgvault_pg_issue_draft.md`
 - `internal/store/store.go`
 - `internal/store/messages.go`
 - `internal/store/api.go`
