@@ -112,7 +112,7 @@ func (s *Store) UpdateMessageOnDedup(
 	messageID int64, newSourceMessageID string,
 	labelIDs []int64,
 ) error {
-	return s.withTx(func(tx *sql.Tx) error {
+	return s.withTx(func(tx *loggedTx) error {
 		if _, err := tx.Exec(
 			`UPDATE messages SET source_message_id = ?
 			 WHERE id = ?`,
@@ -120,7 +120,7 @@ func (s *Store) UpdateMessageOnDedup(
 		); err != nil {
 			return fmt.Errorf("update source_message_id: %w", err)
 		}
-		return replaceMessageLabelsTx(tx, s.dialect, messageID, labelIDs)
+		return replaceMessageLabelsTx(tx, messageID, labelIDs)
 	})
 }
 
@@ -316,7 +316,7 @@ func (s *Store) GetMessageRaw(messageID int64) ([]byte, error) {
 // recipients, and labels in a single transaction. Returns the message ID.
 func (s *Store) PersistMessage(data *MessagePersistData) (int64, error) {
 	var messageID int64
-	err := s.withTx(func(tx *sql.Tx) error {
+	err := s.withTx(func(tx *loggedTx) error {
 		id, err := upsertMessageWith(tx, s.dialect, data.Message)
 		if err != nil {
 			return fmt.Errorf("upsert message: %w", err)
@@ -334,12 +334,12 @@ func (s *Store) PersistMessage(data *MessagePersistData) (int64, error) {
 		}
 
 		for _, rs := range data.Recipients {
-			if err := replaceMessageRecipientsTx(tx, s.dialect, messageID, rs); err != nil {
+			if err := replaceMessageRecipientsTx(tx, messageID, rs); err != nil {
 				return fmt.Errorf("store %s recipients: %w", rs.Type, err)
 			}
 		}
 
-		if err := replaceMessageLabelsTx(tx, s.dialect, messageID, data.LabelIDs); err != nil {
+		if err := replaceMessageLabelsTx(tx, messageID, data.LabelIDs); err != nil {
 			return fmt.Errorf("store labels: %w", err)
 		}
 
@@ -435,8 +435,8 @@ func (s *Store) EnsureParticipantsBatch(addresses []mime.Address) (map[string]in
 
 // ReplaceMessageRecipients replaces all recipients for a message atomically.
 func (s *Store) ReplaceMessageRecipients(messageID int64, recipientType string, participantIDs []int64, displayNames []string) error {
-	return s.withTx(func(tx *sql.Tx) error {
-		return replaceMessageRecipientsTx(tx, s.dialect, messageID, RecipientSet{
+	return s.withTx(func(tx *loggedTx) error {
+		return replaceMessageRecipientsTx(tx, messageID, RecipientSet{
 			Type:           recipientType,
 			ParticipantIDs: participantIDs,
 			DisplayNames:   displayNames,
@@ -444,10 +444,10 @@ func (s *Store) ReplaceMessageRecipients(messageID int64, recipientType string, 
 	})
 }
 
-func replaceMessageRecipientsTx(tx *sql.Tx, d Dialect, messageID int64, rs RecipientSet) error {
-	_, err := tx.Exec(d.Rebind(`
+func replaceMessageRecipientsTx(tx *loggedTx, messageID int64, rs RecipientSet) error {
+	_, err := tx.Exec(`
 		DELETE FROM message_recipients WHERE message_id = ? AND recipient_type = ?
-	`), messageID, rs.Type)
+	`, messageID, rs.Type)
 	if err != nil {
 		return err
 	}
@@ -460,7 +460,6 @@ func replaceMessageRecipientsTx(tx *sql.Tx, d Dialect, messageID int64, rs Recip
 		totalRows:    len(rs.ParticipantIDs),
 		valuesPerRow: 4,
 		prefix:       "INSERT INTO message_recipients (message_id, participant_id, recipient_type, display_name) VALUES ",
-		rebind:       d.Rebind,
 	}, func(start, end int) ([]string, []interface{}) {
 		values := make([]string, end-start)
 		args := make([]interface{}, 0, (end-start)*4)
@@ -500,10 +499,10 @@ func (s *Store) EnsureLabel(
 	sourceLabelID, name, labelType string,
 ) (int64, error) {
 	var id int64
-	err := s.withTx(func(tx *sql.Tx) error {
+	err := s.withTx(func(tx *loggedTx) error {
 		var txErr error
 		id, txErr = ensureLabelWith(
-			tx, s.dialect, sourceID, sourceLabelID, name, labelType,
+			tx, sourceID, sourceLabelID, name, labelType,
 		)
 		return txErr
 	})
@@ -512,7 +511,8 @@ func (s *Store) EnsureLabel(
 
 // ensureLabelWith is the core label-upsert logic, parameterised on the
 // database handle so it works both standalone and inside a transaction.
-// The dialect is used to rebind ? placeholders for non-SQLite backends.
+// The handle is expected to be *loggedDB or *loggedTx so placeholder
+// rebinding is applied automatically.
 //
 // Labels are identified by source_label_id (Gmail label ID) but have a
 // UNIQUE constraint on (source_id, name). This function handles:
@@ -520,17 +520,17 @@ func (s *Store) EnsureLabel(
 //   - Name conflict with different source_label_id: upserts, adopting
 //     the new source_label_id (handles deleted+recreated labels, imports)
 func ensureLabelWith(
-	q dbQuerier, d Dialect,
+	q dbQuerier,
 	sourceID int64,
 	sourceLabelID, name, labelType string,
 ) (int64, error) {
 	// Look up by canonical identifier (Gmail label ID).
 	var id int64
 	var existingName string
-	err := q.QueryRow(d.Rebind(`
+	err := q.QueryRow(`
 		SELECT id, name FROM labels
 		WHERE source_id = ? AND source_label_id = ?
-	`), sourceID, sourceLabelID).Scan(&id, &existingName)
+	`, sourceID, sourceLabelID).Scan(&id, &existingName)
 
 	if err == nil {
 		if existingName == name {
@@ -539,13 +539,13 @@ func ensureLabelWith(
 		// Label was renamed — update the name. If another row already
 		// claims the target name, merge it: move its message-label
 		// associations to the canonical row and delete the stale one.
-		if err = mergeLabelByName(q, d, sourceID, name, id); err != nil {
+		if err = mergeLabelByName(q, sourceID, name, id); err != nil {
 			return 0, err
 		}
-		if _, err = q.Exec(d.Rebind(`
+		if _, err = q.Exec(`
 			UPDATE labels SET name = ?, label_type = ?
 			WHERE id = ?
-		`), name, labelType, id); err != nil {
+		`, name, labelType, id); err != nil {
 			return 0, fmt.Errorf("update label name: %w", err)
 		}
 		return id, nil
@@ -557,19 +557,19 @@ func ensureLabelWith(
 	// Not found by source_label_id — upsert by name. Handles the case
 	// where a label with this name exists from a previous import or
 	// with a stale/NULL source_label_id.
-	if _, err = q.Exec(d.Rebind(`
+	if _, err = q.Exec(`
 		INSERT INTO labels (source_id, source_label_id, name, label_type)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(source_id, name) DO UPDATE SET
 			source_label_id = excluded.source_label_id,
 			label_type = excluded.label_type
-	`), sourceID, sourceLabelID, name, labelType); err != nil {
+	`, sourceID, sourceLabelID, name, labelType); err != nil {
 		return 0, err
 	}
 
-	err = q.QueryRow(d.Rebind(`
+	err = q.QueryRow(`
 		SELECT id FROM labels WHERE source_id = ? AND name = ?
-	`), sourceID, name).Scan(&id)
+	`, sourceID, name).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -580,13 +580,13 @@ func ensureLabelWith(
 // and merges it into keepID: message-label associations are reassigned
 // and the stale row is deleted. No-op if no conflicting label exists.
 func mergeLabelByName(
-	q dbQuerier, d Dialect, sourceID int64, name string, keepID int64,
+	q dbQuerier, sourceID int64, name string, keepID int64,
 ) error {
 	var conflictID int64
-	err := q.QueryRow(d.Rebind(`
+	err := q.QueryRow(`
 		SELECT id FROM labels
 		WHERE source_id = ? AND name = ? AND id != ?
-	`), sourceID, name, keepID).Scan(&conflictID)
+	`, sourceID, name, keepID).Scan(&conflictID)
 	if err == sql.ErrNoRows {
 		return nil
 	}
@@ -597,24 +597,24 @@ func mergeLabelByName(
 	// already linked to keepID). This is the portable equivalent of
 	// SQLite's UPDATE OR IGNORE — done explicitly so PostgreSQL works the
 	// same way.
-	if _, err = q.Exec(d.Rebind(`
+	if _, err = q.Exec(`
 		DELETE FROM message_labels
 		WHERE label_id = ?
 		AND message_id IN (
 			SELECT message_id FROM message_labels WHERE label_id = ?
 		)
-	`), conflictID, keepID); err != nil {
+	`, conflictID, keepID); err != nil {
 		return fmt.Errorf("drop conflicting associations: %w", err)
 	}
 	// Reassign the remaining associations (no PK violations possible now).
-	if _, err = q.Exec(d.Rebind(`
+	if _, err = q.Exec(`
 		UPDATE message_labels SET label_id = ? WHERE label_id = ?
-	`), keepID, conflictID); err != nil {
+	`, keepID, conflictID); err != nil {
 		return fmt.Errorf("reassign label associations: %w", err)
 	}
-	if _, err = q.Exec(d.Rebind(`
+	if _, err = q.Exec(`
 		DELETE FROM labels WHERE id = ?
-	`), conflictID); err != nil {
+	`, conflictID); err != nil {
 		return fmt.Errorf("delete conflicting label: %w", err)
 	}
 	return nil
@@ -643,7 +643,7 @@ func (s *Store) EnsureLabelsBatch(
 	sourceID int64, labels map[string]LabelInfo,
 ) (map[string]int64, error) {
 	result := make(map[string]int64, len(labels))
-	err := s.withTx(func(tx *sql.Tx) error {
+	err := s.withTx(func(tx *loggedTx) error {
 		// Phase 1: Move all renamed labels to temporary names so
 		// that cross-renames don't cause one label to incorrectly
 		// merge the other. Temp names use the row PK (unique by
@@ -651,10 +651,10 @@ func (s *Store) EnsureLabelsBatch(
 		for sourceLabelID, info := range labels {
 			var id int64
 			var curName string
-			err := tx.QueryRow(s.dialect.Rebind(`
+			err := tx.QueryRow(`
 				SELECT id, name FROM labels
 				WHERE source_id = ? AND source_label_id = ?
-			`), sourceID, sourceLabelID).Scan(&id, &curName)
+			`, sourceID, sourceLabelID).Scan(&id, &curName)
 			if err == sql.ErrNoRows || curName == info.Name {
 				continue
 			}
@@ -663,10 +663,10 @@ func (s *Store) EnsureLabelsBatch(
 					"check label %s: %w", sourceLabelID, err,
 				)
 			}
-			if _, err = tx.Exec(s.dialect.Rebind(`
+			if _, err = tx.Exec(`
 				UPDATE labels SET name = CAST(id AS TEXT) || X'00'
 				WHERE id = ?
-			`), id); err != nil {
+			`, id); err != nil {
 				return fmt.Errorf(
 					"clear name for label %s: %w", sourceLabelID, err,
 				)
@@ -678,7 +678,7 @@ func (s *Store) EnsureLabelsBatch(
 		// is safe to merge (dead/imported label).
 		for sourceLabelID, info := range labels {
 			id, err := ensureLabelWith(
-				tx, s.dialect, sourceID, sourceLabelID, info.Name, info.Type,
+				tx, sourceID, sourceLabelID, info.Name, info.Type,
 			)
 			if err != nil {
 				return err
@@ -695,15 +695,15 @@ func (s *Store) EnsureLabelsBatch(
 
 // ReplaceMessageLabels replaces all labels for a message atomically.
 func (s *Store) ReplaceMessageLabels(messageID int64, labelIDs []int64) error {
-	return s.withTx(func(tx *sql.Tx) error {
-		return replaceMessageLabelsTx(tx, s.dialect, messageID, labelIDs)
+	return s.withTx(func(tx *loggedTx) error {
+		return replaceMessageLabelsTx(tx, messageID, labelIDs)
 	})
 }
 
-func replaceMessageLabelsTx(tx *sql.Tx, d Dialect, messageID int64, labelIDs []int64) error {
-	_, err := tx.Exec(d.Rebind(`
+func replaceMessageLabelsTx(tx *loggedTx, messageID int64, labelIDs []int64) error {
+	_, err := tx.Exec(`
 		DELETE FROM message_labels WHERE message_id = ?
-	`), messageID)
+	`, messageID)
 	if err != nil {
 		return err
 	}
@@ -716,7 +716,6 @@ func replaceMessageLabelsTx(tx *sql.Tx, d Dialect, messageID int64, labelIDs []i
 		totalRows:    len(labelIDs),
 		valuesPerRow: 2,
 		prefix:       "INSERT INTO message_labels (message_id, label_id) VALUES ",
-		rebind:       d.Rebind,
 	}, func(start, end int) ([]string, []interface{}) {
 		values := make([]string, end-start)
 		args := make([]interface{}, 0, (end-start)*2)
@@ -734,13 +733,12 @@ func (s *Store) AddMessageLabels(messageID int64, labelIDs []int64) error {
 	if len(labelIDs) == 0 {
 		return nil
 	}
-	return s.withTx(func(tx *sql.Tx) error {
+	return s.withTx(func(tx *loggedTx) error {
 		return insertInChunks(tx, chunkInsert{
 			totalRows:    len(labelIDs),
 			valuesPerRow: 2,
 			prefix:       s.dialect.InsertOrIgnore("INSERT OR IGNORE INTO message_labels (message_id, label_id) VALUES "),
 			suffix:       s.dialect.InsertOrIgnoreSuffix(),
-			rebind:       s.dialect.Rebind,
 		}, func(start, end int) ([]string, []interface{}) {
 			values := make([]string, end-start)
 			args := make([]interface{}, 0, (end-start)*2)
@@ -877,10 +875,10 @@ func (s *Store) CountMessagesWithRaw(sourceID int64) (int64, error) {
 func (s *Store) GetRandomMessageIDs(sourceID int64, limit int) ([]int64, error) {
 	// Get total count first
 	var total int64
-	err := s.db.QueryRow(s.Rebind(`
+	err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM messages
 		WHERE source_id = ? AND deleted_from_source_at IS NULL
-	`), sourceID).Scan(&total)
+	`, sourceID).Scan(&total)
 	if err != nil {
 		return nil, err
 	}
@@ -892,12 +890,12 @@ func (s *Store) GetRandomMessageIDs(sourceID int64, limit int) ([]int64, error) 
 	// For small tables or when limit >= total, use simple ORDER BY RANDOM()
 	// The threshold of 10000 balances query overhead vs. scan cost
 	if total < 10000 || int64(limit) >= total {
-		rows, err := s.db.Query(s.Rebind(`
+		rows, err := s.db.Query(`
 			SELECT id FROM messages
 			WHERE source_id = ? AND deleted_from_source_at IS NULL
 			ORDER BY RANDOM()
 			LIMIT ?
-		`), sourceID, limit)
+		`, sourceID, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -927,12 +925,12 @@ func (s *Store) GetRandomMessageIDs(sourceID int64, limit int) ([]int64, error) 
 		offset := rng.Int63n(total)
 
 		var id int64
-		err := s.db.QueryRow(s.Rebind(`
+		err := s.db.QueryRow(`
 			SELECT id FROM messages
 			WHERE source_id = ? AND deleted_from_source_at IS NULL
 			ORDER BY id
 			LIMIT 1 OFFSET ?
-		`), sourceID, offset).Scan(&id)
+		`, sourceID, offset).Scan(&id)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				continue // Race condition with deletions, retry

@@ -248,7 +248,7 @@ func (s *Store) GetMessagesSummariesByIDs(ids []int64) ([]APIMessage, error) {
 func (s *Store) SearchMessages(query string, offset, limit int) ([]APIMessage, int64, error) {
 	ftsJoin, ftsWhere, ftsOrder, orderArgCount := s.dialect.FTSSearchClause()
 
-	ftsQuery := s.Rebind(fmt.Sprintf(`
+	ftsQuery := fmt.Sprintf(`
 		SELECT
 			m.id,
 			COALESCE(m.conversation_id, 0) as conversation_id,
@@ -265,7 +265,7 @@ func (s *Store) SearchMessages(query string, offset, limit int) ([]APIMessage, i
 		WHERE %s AND m.deleted_from_source_at IS NULL
 		ORDER BY %s
 		LIMIT ? OFFSET ?
-	`, ftsJoin, ftsWhere, ftsOrder))
+	`, ftsJoin, ftsWhere, ftsOrder)
 
 	// Bind the search term once for WHERE, plus orderArgCount more times
 	// for any ? placeholders the dialect put in the order-by fragment.
@@ -294,12 +294,12 @@ func (s *Store) SearchMessages(query string, offset, limit int) ([]APIMessage, i
 
 	// Get total count
 	var total int64
-	countQuery := s.Rebind(fmt.Sprintf(`
+	countQuery := fmt.Sprintf(`
 		SELECT COUNT(*)
 		FROM messages m
 		%s
 		WHERE %s AND m.deleted_from_source_at IS NULL
-	`, ftsJoin, ftsWhere))
+	`, ftsJoin, ftsWhere)
 	if err := s.db.QueryRow(countQuery, query).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count FTS results: %w", err)
 	}
@@ -441,12 +441,12 @@ func (s *Store) SearchMessagesQuery(
 	whereClause := strings.Join(conditions, " AND ")
 
 	// Count query.
-	countSQL := s.Rebind(fmt.Sprintf(`
+	countSQL := fmt.Sprintf(`
 		SELECT COUNT(*)
 		FROM messages m
 		%s
 		WHERE %s
-	`, ftsJoin, whereClause))
+	`, ftsJoin, whereClause)
 
 	var total int64
 	if err := s.db.QueryRow(countSQL, args...).Scan(&total); err != nil {
@@ -461,7 +461,7 @@ func (s *Store) SearchMessagesQuery(
 	if ftsEnabled {
 		orderBy = ftsOrder + ", " + orderBy
 	}
-	searchSQL := s.Rebind(fmt.Sprintf(`
+	searchSQL := fmt.Sprintf(`
 		SELECT
 			m.id,
 			COALESCE(m.conversation_id, 0) as conversation_id,
@@ -479,7 +479,7 @@ func (s *Store) SearchMessagesQuery(
 		WHERE %s
 		ORDER BY %s
 		LIMIT ? OFFSET ?
-	`, ftsJoin, whereClause, orderBy))
+	`, ftsJoin, whereClause, orderBy)
 
 	// If the dialect's order-by fragment has ? placeholders, bind the FTS
 	// expression that many extra times — right after the WHERE args and

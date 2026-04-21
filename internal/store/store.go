@@ -100,7 +100,7 @@ func Open(dbPath string) (*Store, error) {
 	}
 
 	return &Store{
-		db:      newLoggedDB(db),
+		db:      newLoggedDB(db, dialect.Rebind),
 		dbPath:  dbPath,
 		dialect: dialect,
 	}, nil
@@ -142,7 +142,7 @@ func OpenReadOnly(dbPath string) (*Store, error) {
 	}
 
 	s := &Store{
-		db:       newLoggedDB(db),
+		db:       newLoggedDB(db, dialect.Rebind),
 		dbPath:   dbPath,
 		dialect:  dialect,
 		readOnly: true,
@@ -182,8 +182,10 @@ func (s *Store) DB() *sql.DB {
 }
 
 // withTx executes fn within a database transaction. If fn returns an error,
-// the transaction is rolled back; otherwise it is committed.
-func (s *Store) withTx(fn func(tx *sql.Tx) error) error {
+// the transaction is rolled back; otherwise it is committed. The callback
+// receives *loggedTx so every statement inside the transaction goes through
+// the dialect's Rebind automatically.
+func (s *Store) withTx(fn func(tx *loggedTx) error) error {
 	start := time.Now()
 	slog.Debug("sql tx begin")
 	tx, err := s.db.Begin()
@@ -272,21 +274,19 @@ func queryInChunks[T any](db chunkQuerier, ids []T, prefixArgs []interface{}, qu
 // Prefix is everything up to "VALUES ", suffix is anything after the values
 // (e.g. " ON CONFLICT DO NOTHING" for PostgreSQL). ValuesPerRow counts the
 // parameters in one row's tuple (used to stay under the driver's parameter
-// limit). Rebind is the dialect's placeholder rewriter; it is applied to
-// each composed chunk query before execution. Required.
+// limit).
 type chunkInsert struct {
 	totalRows    int
 	valuesPerRow int
 	prefix       string
 	suffix       string
-	rebind       func(string) string
 }
 
 // insertInChunks executes a multi-value INSERT in chunks to stay within SQLite's
 // parameter limit (999). valueBuilder generates the VALUES placeholders and
-// args for each chunk of row indices. Each composed chunk query is run through
-// c.rebind so non-SQLite dialects get correctly-numbered placeholders.
-func insertInChunks(tx *sql.Tx, c chunkInsert, valueBuilder func(start, end int) ([]string, []interface{})) error {
+// args for each chunk of row indices. Rebinding to the dialect's placeholder
+// form happens inside tx.Exec (loggedTx wraps the dialect's Rebind).
+func insertInChunks(tx *loggedTx, c chunkInsert, valueBuilder func(start, end int) ([]string, []interface{})) error {
 	// SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999
 	// Leave some margin for safety
 	const maxParams = 900
@@ -302,7 +302,7 @@ func insertInChunks(tx *sql.Tx, c chunkInsert, valueBuilder func(start, end int)
 		}
 
 		values, args := valueBuilder(i, end)
-		query := c.rebind(c.prefix + strings.Join(values, ",") + c.suffix)
+		query := c.prefix + strings.Join(values, ",") + c.suffix
 		if _, err := tx.Exec(query, args...); err != nil {
 			return err
 		}

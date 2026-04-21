@@ -1,7 +1,6 @@
 package store
 
 import (
-	"database/sql"
 	"fmt"
 )
 
@@ -98,7 +97,7 @@ func (s *Store) GetSourcesByDisplayName(displayName string) ([]*Source, error) {
 // CASCADE handles conversations, messages, labels, attachments, sync state.
 // Orphaned participants are left for a future `gc` command.
 func (s *Store) RemoveSource(sourceID int64) error {
-	return s.withTx(func(tx *sql.Tx) error {
+	return s.withTx(func(tx *loggedTx) error {
 		if s.fts5Available {
 			_, err := tx.Exec(s.dialect.FTSDeleteSQL(), sourceID)
 			if err != nil {

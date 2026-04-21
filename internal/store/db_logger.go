@@ -64,13 +64,25 @@ func ConfigureSQLLogging(opts SQLLogOptions) {
 // it executes. It embeds *sql.DB so store methods continue to
 // compile against the sql.DB method surface — the Query/Exec
 // overrides below shadow the embedded ones.
+//
+// loggedDB also owns the dialect's placeholder-rebind step: every
+// SQL string passed to Query/Exec/QueryRow is run through rebind
+// before reaching the driver. Call sites in the store package can
+// emit portable `?` placeholders and get the correct `$N` form on
+// PostgreSQL without any per-call wrapping.
 type loggedDB struct {
 	*sql.DB
+	rebind func(string) string
 }
 
-func newLoggedDB(db *sql.DB) *loggedDB {
-	return &loggedDB{DB: db}
+func newLoggedDB(db *sql.DB, rebind func(string) string) *loggedDB {
+	if rebind == nil {
+		rebind = identityRebind
+	}
+	return &loggedDB{DB: db, rebind: rebind}
 }
+
+func identityRebind(q string) string { return q }
 
 // Query logs the statement via logStmt and delegates to the
 // embedded sql.DB. Uses a background context to match the
@@ -85,6 +97,7 @@ func (d *loggedDB) Query(
 func (d *loggedDB) QueryContext(
 	ctx context.Context, query string, args ...any,
 ) (*sql.Rows, error) {
+	query = d.rebind(query)
 	start := time.Now()
 	rows, err := d.DB.QueryContext(ctx, query, args...)
 	logStmt("query", query, len(args), err, time.Since(start))
@@ -103,6 +116,7 @@ func (d *loggedDB) QueryRow(
 func (d *loggedDB) QueryRowContext(
 	ctx context.Context, query string, args ...any,
 ) *sql.Row {
+	query = d.rebind(query)
 	start := time.Now()
 	row := d.DB.QueryRowContext(ctx, query, args...)
 	logStmt("queryrow", query, len(args), nil, time.Since(start))
@@ -121,6 +135,7 @@ func (d *loggedDB) Exec(
 func (d *loggedDB) ExecContext(
 	ctx context.Context, query string, args ...any,
 ) (sql.Result, error) {
+	query = d.rebind(query)
 	start := time.Now()
 	res, err := d.DB.ExecContext(ctx, query, args...)
 	elapsed := time.Since(start)
@@ -136,20 +151,79 @@ func (d *loggedDB) ExecContext(
 	return res, err
 }
 
-// Begin logs and delegates. The returned *sql.Tx is NOT wrapped —
-// queries issued inside the transaction are not individually
-// logged. Transaction lifecycle (begin / commit / rollback) is
-// logged from Store.withTx, which is the single entry point for
-// transactional work.
-func (d *loggedDB) Begin() (*sql.Tx, error) {
-	return d.DB.Begin()
+// Begin returns a *loggedTx that inherits the rebind function, so
+// statements issued inside the transaction are also rebound before
+// reaching the driver. Wrapping Begin (not just Exec/Query) is what
+// keeps the auto-rebind promise intact across transactional code.
+func (d *loggedDB) Begin() (*loggedTx, error) {
+	tx, err := d.DB.Begin()
+	if err != nil {
+		return nil, err
+	}
+	return &loggedTx{Tx: tx, rebind: d.rebind}, nil
 }
 
-// BeginTx matches the sql.DB signature.
+// BeginTx matches the sql.DB signature but returns *loggedTx.
 func (d *loggedDB) BeginTx(
 	ctx context.Context, opts *sql.TxOptions,
-) (*sql.Tx, error) {
-	return d.DB.BeginTx(ctx, opts)
+) (*loggedTx, error) {
+	tx, err := d.DB.BeginTx(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &loggedTx{Tx: tx, rebind: d.rebind}, nil
+}
+
+// loggedTx mirrors loggedDB for *sql.Tx: it embeds the raw
+// transaction and rebinds every query before dispatching. Store
+// code that previously took *sql.Tx takes *loggedTx instead.
+type loggedTx struct {
+	*sql.Tx
+	rebind func(string) string
+}
+
+// Exec rebinds before delegating. Transaction-scoped queries are
+// not individually logged — the per-tx duration from Store.withTx
+// gives enough signal.
+func (t *loggedTx) Exec(
+	query string, args ...any,
+) (sql.Result, error) {
+	return t.Tx.Exec(t.rebind(query), args...)
+}
+
+// ExecContext rebinds before delegating.
+func (t *loggedTx) ExecContext(
+	ctx context.Context, query string, args ...any,
+) (sql.Result, error) {
+	return t.Tx.ExecContext(ctx, t.rebind(query), args...)
+}
+
+// Query rebinds before delegating.
+func (t *loggedTx) Query(
+	query string, args ...any,
+) (*sql.Rows, error) {
+	return t.Tx.Query(t.rebind(query), args...)
+}
+
+// QueryContext rebinds before delegating.
+func (t *loggedTx) QueryContext(
+	ctx context.Context, query string, args ...any,
+) (*sql.Rows, error) {
+	return t.Tx.QueryContext(ctx, t.rebind(query), args...)
+}
+
+// QueryRow rebinds before delegating.
+func (t *loggedTx) QueryRow(
+	query string, args ...any,
+) *sql.Row {
+	return t.Tx.QueryRow(t.rebind(query), args...)
+}
+
+// QueryRowContext rebinds before delegating.
+func (t *loggedTx) QueryRowContext(
+	ctx context.Context, query string, args ...any,
+) *sql.Row {
+	return t.Tx.QueryRowContext(ctx, t.rebind(query), args...)
 }
 
 // logStmt is the common emitter used by Query / Exec / QueryRow.
