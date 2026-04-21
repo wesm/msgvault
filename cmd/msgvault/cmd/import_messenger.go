@@ -45,9 +45,9 @@ UTC. JSON exports have millisecond-precision timestamps that are preserved
 verbatim.
 
 Examples:
-  msgvault import-messenger --me wes@facebook.messenger ~/downloads/facebook-export
-  msgvault import-messenger --me wes@facebook.messenger --format both ./dyi
-  msgvault import-messenger --me wes@facebook.messenger --limit 100 ./dyi
+  msgvault import-messenger --me test.user@facebook.messenger ~/downloads/facebook-export
+  msgvault import-messenger --me test.user@facebook.messenger --format both ./dyi
+  msgvault import-messenger --me test.user@facebook.messenger --limit 100 ./dyi
 `,
 	Args:         cobra.ExactArgs(1),
 	SilenceUsage: true,

@@ -57,7 +57,7 @@ func TestImportMessenger_JSON_EndToEnd(t *testing.T) {
 	rootCmd.SetArgs([]string{
 		"--home", tmp,
 		"import-messenger",
-		"--me", "wes@facebook.messenger",
+		"--me", "test.user@facebook.messenger",
 		fixture,
 	})
 	if err := rootCmd.ExecuteContext(context.Background()); err != nil {
@@ -80,7 +80,7 @@ func TestImportMessenger_JSON_EndToEnd(t *testing.T) {
 	if n != 4 {
 		t.Errorf("messages=%d want 4", n)
 	}
-	if err := st.DB().QueryRow("SELECT COUNT(*) FROM participants WHERE email_address='wes@facebook.messenger'").Scan(&n); err != nil {
+	if err := st.DB().QueryRow("SELECT COUNT(*) FROM participants WHERE email_address='test.user@facebook.messenger'").Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
@@ -103,7 +103,7 @@ func TestImportMessenger_HTML_EndToEnd(t *testing.T) {
 	rootCmd.SetArgs([]string{
 		"--home", tmp,
 		"import-messenger",
-		"--me", "wes@facebook.messenger",
+		"--me", "test.user@facebook.messenger",
 		fixture,
 	})
 	if err := rootCmd.ExecuteContext(context.Background()); err != nil {
@@ -143,7 +143,7 @@ func TestImportMessenger_MissingDir(t *testing.T) {
 	rootCmd.SetArgs([]string{
 		"--home", tmp,
 		"import-messenger",
-		"--me", "wes@facebook.messenger",
+		"--me", "test.user@facebook.messenger",
 		filepath.Join(tmp, "does", "not", "exist"),
 	})
 	err := rootCmd.ExecuteContext(context.Background())

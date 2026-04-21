@@ -1,6 +1,6 @@
 {
   "participants": [
-    {"name": "Wes McKinney"},
+    {"name": "Test User"},
     {"name": "Eve Mixer"}
   ],
   "messages": [
@@ -11,7 +11,7 @@
       "type": "Generic"
     },
     {
-      "sender_name": "Wes McKinney",
+      "sender_name": "Test User",
       "timestamp_ms": 1600000000000,
       "content": "Mixed hello",
       "type": "Generic"

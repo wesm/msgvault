@@ -1,11 +1,11 @@
 {
   "participants": [
-    {"name": "Wes McKinney"},
+    {"name": "Test User"},
     {"name": "Dave Multi"}
   ],
   "messages": [
     {
-      "sender_name": "Wes McKinney",
+      "sender_name": "Test User",
       "timestamp_ms": 1700000060000,
       "content": "Message B (from file 1, newer)",
       "type": "Generic"

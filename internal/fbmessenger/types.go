@@ -11,7 +11,7 @@ var ErrCorruptJSON = errors.New("fbmessenger: corrupt json")
 
 // Thread is the parsed form of one DYI thread directory, ready for import.
 type Thread struct {
-	// DirName is the directory name (e.g. "wesmckinney_ABC123XYZ"). This
+	// DirName is the directory name (e.g. "testuser_ABC123XYZ"). This
 	// is used verbatim as source_conversation_id.
 	DirName string
 	// Section is the DYI section ("inbox", "archived_threads", ...).

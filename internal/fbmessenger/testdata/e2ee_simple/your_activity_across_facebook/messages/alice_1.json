@@ -1,9 +1,9 @@
 {
-  "participants": ["Wes McKinney", "Alice Example"],
+  "participants": ["Test User", "Alice Example"],
   "threadName": "Alice Example",
   "messages": [
     {
-      "senderName": "Wes McKinney",
+      "senderName": "Test User",
       "text": "Hello",
       "timestamp": 1600000000000,
       "type": "Generic",
@@ -19,11 +19,11 @@
       "isUnsent": false,
       "media": [],
       "reactions": [
-        {"actor": "Wes McKinney", "reaction": "\u00e2\u009d\u00a4"}
+        {"actor": "Test User", "reaction": "\u00e2\u009d\u00a4"}
       ]
     },
     {
-      "senderName": "Wes McKinney",
+      "senderName": "Test User",
       "text": "See you soon",
       "timestamp": 1600000120000,
       "type": "Generic",
@@ -32,7 +32,7 @@
       "reactions": []
     },
     {
-      "senderName": "Wes McKinney",
+      "senderName": "Test User",
       "text": "oops",
       "timestamp": 1600000180000,
       "type": "Generic",

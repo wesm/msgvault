@@ -1,11 +1,11 @@
 {
   "participants": [
-    {"name": "Wes McKinney"},
+    {"name": "Test User"},
     {"name": "Sam NonText"}
   ],
   "messages": [
     {
-      "sender_name": "Wes McKinney",
+      "sender_name": "Test User",
       "timestamp_ms": 1600000600000,
       "type": "Generic",
       "sticker": {"uri": "messages/stickers_used/1.png"}
@@ -19,7 +19,7 @@
       ]
     },
     {
-      "sender_name": "Wes McKinney",
+      "sender_name": "Test User",
       "timestamp_ms": 1600000400000,
       "type": "Call",
       "call_duration": 192
@@ -32,7 +32,7 @@
       "missed": true
     },
     {
-      "sender_name": "Wes McKinney",
+      "sender_name": "Test User",
       "timestamp_ms": 1600000200000,
       "type": "Share",
       "share": {

@@ -1,12 +1,12 @@
 {
   "participants": [
-    {"name": "Wes McKinney"},
+    {"name": "Test User"},
     {"name": "Alice Example"},
     {"name": "Bob Example"}
   ],
   "messages": [
     {
-      "sender_name": "Wes McKinney",
+      "sender_name": "Test User",
       "timestamp_ms": 1600000000000,
       "content": "Hey crew",
       "type": "Generic"

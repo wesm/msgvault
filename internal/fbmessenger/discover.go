@@ -19,7 +19,7 @@ type ThreadDir struct {
 	FilePath string
 	// Section is the DYI section name (e.g. "inbox", "archived_threads").
 	Section string
-	// Name is the thread directory basename (e.g. "wesmckinney_ABC123XYZ").
+	// Name is the thread directory basename (e.g. "testuser_ABC123XYZ").
 	// For E2EE exports, this is the filename without extension.
 	Name string
 	// Format is "json", "html", "both", or "e2ee_json".

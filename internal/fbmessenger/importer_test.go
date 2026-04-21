@@ -19,7 +19,7 @@ import (
 func importFixture(t *testing.T, st *store.Store, rootDir string, extra ...func(*ImportOptions)) *ImportSummary {
 	t.Helper()
 	opts := ImportOptions{
-		Me:             "wes@facebook.messenger",
+		Me:             "test.user@facebook.messenger",
 		RootDir:        rootDir,
 		Format:         "auto",
 		AttachmentsDir: t.TempDir(),
@@ -123,11 +123,9 @@ func TestImportDYI_GroupChat(t *testing.T) {
 	if ct != "group_chat" {
 		t.Errorf("conv type=%q want group_chat", ct)
 	}
-	// Three facebook.messenger participants (Wes/Alice/Bob) plus the
-	// self seed — but the self seed is also "wes@facebook.messenger"
-	// which is the same email as the slug-derived "wes.mckinney"?
-	// No: the slugs differ (self is literal "wes", sender is
-	// "wes.mckinney"), so both coexist in participants.
+	// Three facebook.messenger participants (Taylor/Alice/Bob) plus the
+	// self seed. The self seed and the slug-derived sender address match
+	// ("test.user@facebook.messenger"), so they collapse to one row.
 	var n int
 	if err := st.DB().QueryRow(
 		"SELECT COUNT(*) FROM participants WHERE domain='facebook.messenger'",
@@ -294,7 +292,7 @@ func TestImportDYI_AttachmentStorage(t *testing.T) {
 	st := testutil.NewTestStore(t)
 	attachDir := t.TempDir()
 	opts := ImportOptions{
-		Me:             "wes@facebook.messenger",
+		Me:             "test.user@facebook.messenger",
 		RootDir:        "testdata/json_with_media",
 		Format:         "auto",
 		AttachmentsDir: attachDir,
@@ -351,7 +349,7 @@ func TestImportDYI_AttachmentPathEscapeRejected(t *testing.T) {
 	}
 
 	summary, err := ImportDYI(context.Background(), st, ImportOptions{
-		Me:             "wes@facebook.messenger",
+		Me:             "test.user@facebook.messenger",
 		RootDir:        tmp,
 		AttachmentsDir: t.TempDir(),
 	})
@@ -385,7 +383,7 @@ func TestImportDYI_MissingAttachment(t *testing.T) {
 		t.Fatal(err)
 	}
 	summary, err := ImportDYI(context.Background(), st, ImportOptions{
-		Me:             "wes@facebook.messenger",
+		Me:             "test.user@facebook.messenger",
 		RootDir:        tmp,
 		AttachmentsDir: t.TempDir(),
 	})
@@ -487,7 +485,7 @@ func TestImportDYI_MixedFormatJSONWins(t *testing.T) {
 func TestImportDYI_FormatBoth(t *testing.T) {
 	st := testutil.NewTestStore(t)
 	summary, err := ImportDYI(context.Background(), st, ImportOptions{
-		Me:             "wes@facebook.messenger",
+		Me:             "test.user@facebook.messenger",
 		RootDir:        "testdata/mixed",
 		Format:         "both",
 		AttachmentsDir: t.TempDir(),
@@ -523,7 +521,7 @@ func TestImportDYI_FormatBoth(t *testing.T) {
 func TestImportDYI_IsFromMe(t *testing.T) {
 	st := testutil.NewTestStore(t)
 	_, err := ImportDYI(context.Background(), st, ImportOptions{
-		Me:             "wes.mckinney@facebook.messenger",
+		Me:             "test.user@facebook.messenger",
 		RootDir:        "testdata/json_simple",
 		Format:         "auto",
 		AttachmentsDir: t.TempDir(),
@@ -537,10 +535,10 @@ func TestImportDYI_IsFromMe(t *testing.T) {
 	).Scan(&ident); err != nil {
 		t.Fatal(err)
 	}
-	if ident != "wes.mckinney@facebook.messenger" {
+	if ident != "test.user@facebook.messenger" {
 		t.Errorf("identifier=%q", ident)
 	}
-	// Messages authored by Wes McKinney should have is_from_me=1.
+	// Messages authored by Test User should have is_from_me=1.
 	var wesFromMe, aliceFromMe int
 	if err := st.DB().QueryRow(`
 		SELECT COUNT(*) FROM messages m
@@ -611,7 +609,7 @@ func TestImportDYI_SelfParticipantSeeded(t *testing.T) {
 		t.Fatal(err)
 	}
 	summary, err := ImportDYI(context.Background(), st, ImportOptions{
-		Me:             "wes@facebook.messenger",
+		Me:             "test.user@facebook.messenger",
 		RootDir:        tmp,
 		AttachmentsDir: t.TempDir(),
 	})
@@ -627,7 +625,7 @@ func TestImportDYI_SelfParticipantSeeded(t *testing.T) {
 	var n int
 	if err := st.DB().QueryRow(
 		"SELECT COUNT(*) FROM participants WHERE email_address = ? AND domain = 'facebook.messenger'",
-		"wes@facebook.messenger",
+		"test.user@facebook.messenger",
 	).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
@@ -688,11 +686,11 @@ func writeLargeFixture(t *testing.T) string {
 		Title        string    `json:"title"`
 	}
 	exp := rawExport{
-		Participants: []rawPart{{Name: "Wes McKinney"}, {Name: "Big Friend"}},
+		Participants: []rawPart{{Name: "Test User"}, {Name: "Big Friend"}},
 		Title:        "Big Friend",
 	}
 	for i := 0; i < largeFixtureSize; i++ {
-		sender := "Wes McKinney"
+		sender := "Test User"
 		if i%2 == 1 {
 			sender = "Big Friend"
 		}
@@ -726,7 +724,7 @@ func writeMultiThreadFixture(t *testing.T, n int) string {
 			t.Fatal(err)
 		}
 		body := fmt.Sprintf(
-			`{"participants":[{"name":"Wes McKinney"},{"name":"Friend %d"}],"messages":[`+
+			`{"participants":[{"name":"Test User"},{"name":"Friend %d"}],"messages":[`+
 				`{"sender_name":"Friend %d","timestamp_ms":%d,"type":"Generic","content":"hello from %d"}`+
 				`],"title":"Friend %d"}`,
 			i, i, 1600000000000+int64(i)*60000, i, i,
@@ -765,7 +763,7 @@ func TestImportDYI_ResumeFromCheckpoint(t *testing.T) {
 	// Simulate an in-progress run: create a new running sync_run for
 	// the facebook_messenger source and write a fbmessengerCheckpoint
 	// whose ThreadIndex == 2 (two threads already done).
-	src, err := st.GetOrCreateSource("facebook_messenger", "wes@facebook.messenger")
+	src, err := st.GetOrCreateSource("facebook_messenger", "test.user@facebook.messenger")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -831,7 +829,7 @@ func TestImportDYI_ResumeWrongRootRejected(t *testing.T) {
 	st := testutil.NewTestStore(t)
 	root := writeMultiThreadFixture(t, 2)
 
-	src, err := st.GetOrCreateSource("facebook_messenger", "wes@facebook.messenger")
+	src, err := st.GetOrCreateSource("facebook_messenger", "test.user@facebook.messenger")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -853,7 +851,7 @@ func TestImportDYI_ResumeWrongRootRejected(t *testing.T) {
 	}
 
 	_, err = ImportDYI(context.Background(), st, ImportOptions{
-		Me:             "wes@facebook.messenger",
+		Me:             "test.user@facebook.messenger",
 		RootDir:        root,
 		AttachmentsDir: t.TempDir(),
 	})
@@ -870,7 +868,7 @@ func TestImportDYI_TimingTripwire(t *testing.T) {
 	root := writeLargeFixture(t)
 	start := time.Now()
 	summary, err := ImportDYI(context.Background(), st, ImportOptions{
-		Me:             "wes@facebook.messenger",
+		Me:             "test.user@facebook.messenger",
 		RootDir:        root,
 		AttachmentsDir: t.TempDir(),
 	})

@@ -9,7 +9,7 @@ func TestSlug(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
-		{"Wes McKinney", "wes.mckinney"},
+		{"Test User", "test.user"},
 		{"Marie-Ève Côté", "marie.eve.cote"},
 		{"  Alice  ", "alice"},
 		{"alice@example.com", "alice.example.com"},
@@ -40,11 +40,11 @@ func TestAddressFallbackForEmptySlug(t *testing.T) {
 }
 
 func TestAddressRegular(t *testing.T) {
-	a := Address("Wes McKinney")
-	if a.Email != "wes.mckinney@facebook.messenger" {
+	a := Address("Test User")
+	if a.Email != "test.user@facebook.messenger" {
 		t.Fatalf("email=%q", a.Email)
 	}
-	if a.Name != "Wes McKinney" {
+	if a.Name != "Test User" {
 		t.Fatalf("name=%q", a.Name)
 	}
 	if a.Domain != "facebook.messenger" {
@@ -87,10 +87,10 @@ func TestDecodeMojibake(t *testing.T) {
 }
 
 func TestStripDomain(t *testing.T) {
-	if got := StripDomain("wes@facebook.messenger"); got != "wes" {
+	if got := StripDomain("test.user@facebook.messenger"); got != "test.user" {
 		t.Fatalf("got %q", got)
 	}
-	if got := StripDomain("wes"); got != "wes" {
+	if got := StripDomain("test.user"); got != "test.user" {
 		t.Fatalf("got %q", got)
 	}
 }
