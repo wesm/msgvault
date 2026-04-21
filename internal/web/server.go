@@ -10,26 +10,35 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/wesm/msgvault/internal/deletion"
 	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/scheduler"
 )
 
 //go:embed static
 var staticFS embed.FS
 
+// SyncScheduler triggers syncs for scheduled accounts.
+type SyncScheduler interface {
+	IsScheduled(email string) bool
+	TriggerSync(email string) error
+	Status() []scheduler.AccountStatus
+}
+
 // Handler serves the web UI.
 type Handler struct {
 	engine         query.Engine
 	deletions      *deletion.Manager
+	scheduler      SyncScheduler
 	staticFS       fs.FS
 	attachmentsDir string
 }
 
 // NewHandler creates a new web UI handler.
-func NewHandler(engine query.Engine, deletions *deletion.Manager, attachmentsDir string) *Handler {
+func NewHandler(engine query.Engine, deletions *deletion.Manager, attachmentsDir string, scheduler SyncScheduler) *Handler {
 	staticSub, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		panic(fmt.Sprintf("web: failed to sub static FS: %v", err))
 	}
-	return &Handler{engine: engine, deletions: deletions, staticFS: staticSub, attachmentsDir: attachmentsDir}
+	return &Handler{engine: engine, deletions: deletions, scheduler: scheduler, staticFS: staticSub, attachmentsDir: attachmentsDir}
 }
 
 // Routes returns a chi.Router with all web UI routes mounted.
@@ -48,6 +57,10 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/messages/{id}", h.handleMessageDetail)
 	r.Get("/attachments/{id}/download", h.handleAttachmentDownload)
 	r.Get("/search", h.handleSearch)
+
+	// Sync trigger and status
+	r.Post("/sync/{identifier}", h.handleTriggerSync)
+	r.Get("/sync/{identifier}/status", h.handleSyncStatus)
 
 	// Deletion staging
 	r.Get("/deletions", h.handleDeletions)

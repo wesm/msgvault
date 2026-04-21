@@ -202,7 +202,7 @@ func (s *Server) setupRouter() chi.Router {
 		} else {
 			delMgr = mgr
 		}
-		webHandler := web.NewHandler(s.engine, delMgr, s.cfg.AttachmentsDir())
+		webHandler := web.NewHandler(s.engine, delMgr, s.cfg.AttachmentsDir(), s.scheduler)
 		r.Group(func(r chi.Router) {
 			r.Use(s.authMiddleware)
 			r.Mount("/", webHandler.Routes())

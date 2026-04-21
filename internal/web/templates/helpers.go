@@ -5,6 +5,7 @@ import (
 	"html"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -86,8 +87,8 @@ func formatMessageDate(t time.Time) string {
 	return t.Format("Jan 02, 2006")
 }
 
-// formatSyncTime formats a sync timestamp as a relative time string (e.g., "3h ago", "2d ago").
-func formatSyncTime(t *time.Time) string {
+// FormatSyncTime formats a sync timestamp as a relative time string (e.g., "3h ago", "2d ago").
+func FormatSyncTime(t *time.Time) string {
 	if t == nil {
 		return "never"
 	}
@@ -116,6 +117,17 @@ func formatSyncTime(t *time.Time) string {
 	default:
 		return t.Format("Jan 02, 2006")
 	}
+}
+
+// SafeID converts a string (e.g. email) into a valid HTML id attribute value.
+func SafeID(s string) string {
+	r := strings.NewReplacer("@", "-at-", ".", "-", "+", "-plus-")
+	return r.Replace(s)
+}
+
+// PathEscape URL-encodes a string for use in URL path segments.
+func PathEscape(s string) string {
+	return url.PathEscape(s)
 }
 
 // Regexes for HTML-to-text conversion.

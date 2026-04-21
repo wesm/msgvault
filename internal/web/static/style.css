@@ -217,6 +217,34 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
   margin-left: auto;
   padding-left: 12px;
 }
+.btn-sync {
+  font-family: var(--font);
+  font-size: 11px;
+  padding: 2px 10px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  border-radius: var(--radius);
+  cursor: pointer;
+  margin-left: 8px;
+}
+.btn-sync:hover { background: var(--accent); color: var(--bg); }
+.btn-sync:disabled, .btn-sync.htmx-request { opacity: 0.5; cursor: not-allowed; }
+.account-sync-group { margin-left: auto; padding-left: 12px; display: flex; align-items: center; gap: 8px; }
+.account-sync-group .account-sync { margin-left: 0; padding-left: 0; }
+.sync-running { color: var(--accent); font-size: 11px; }
+.sync-error { color: var(--danger); font-size: 11px; margin-left: 8px; }
+.sync-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: middle;
+  margin-right: 4px;
+}
 
 /* Tables */
 .data-table {

@@ -3,8 +3,9 @@ package templates
 import "github.com/wesm/msgvault/internal/query"
 
 type DashboardData struct {
-	Stats    *query.TotalStats
-	Accounts []query.AccountInfo
+	Stats        *query.TotalStats
+	Accounts     []query.AccountInfo
+	HasScheduler bool
 }
 
 templ Dashboard(data DashboardData) {
@@ -33,7 +34,19 @@ templ Dashboard(data DashboardData) {
 						<li class="account-item">
 							<span class="account-email">{ acct.Identifier }</span>
 							<span class="account-meta">{ acct.SourceType }</span>
-							<span class="account-sync">last sync: { formatSyncTime(acct.LastSyncWithData) }</span>
+							<span id={ "sync-status-" + SafeID(acct.Identifier) } class="account-sync-group">
+								<span class="account-sync">last sync: { FormatSyncTime(acct.LastSyncWithData) }</span>
+								if data.HasScheduler {
+									<button
+										class="btn-sync"
+										hx-post={ "/sync/" + PathEscape(acct.Identifier) }
+										hx-target={ "#sync-status-" + SafeID(acct.Identifier) }
+										hx-swap="innerHTML"
+									>
+										sync
+									</button>
+								}
+							</span>
 						</li>
 					}
 				</ul>

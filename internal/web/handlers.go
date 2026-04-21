@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -36,8 +37,9 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := templates.DashboardData{
-		Stats:    stats,
-		Accounts: accounts,
+		Stats:        stats,
+		Accounts:     accounts,
+		HasScheduler: h.scheduler != nil,
 	}
 
 	var buf bytes.Buffer
@@ -48,6 +50,105 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = buf.WriteTo(w)
+}
+
+// resolveSchedulerKey maps an account identifier to the scheduler key,
+// checking both bare email (Gmail) and "import:" prefix (Apple Mail).
+func (h *Handler) resolveSchedulerKey(identifier string) (string, bool) {
+	if h.scheduler == nil {
+		return "", false
+	}
+	if h.scheduler.IsScheduled(identifier) {
+		return identifier, true
+	}
+	key := "import:" + identifier
+	if h.scheduler.IsScheduled(key) {
+		return key, true
+	}
+	return "", false
+}
+
+func (h *Handler) handleTriggerSync(w http.ResponseWriter, r *http.Request) {
+	identifier := chi.URLParam(r, "identifier")
+	if identifier == "" {
+		http.Error(w, "missing identifier", http.StatusBadRequest)
+		return
+	}
+
+	key, ok := h.resolveSchedulerKey(identifier)
+	if !ok {
+		http.Error(w, "account not scheduled", http.StatusNotFound)
+		return
+	}
+
+	if err := h.scheduler.TriggerSync(key); err != nil {
+		slog.Error("failed to trigger sync", "identifier", identifier, "error", err)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = fmt.Fprintf(w, `<span class="sync-error">%s</span>`, html.EscapeString(err.Error()))
+		return
+	}
+
+	slog.Info("sync triggered via web UI", "identifier", identifier, "key", key)
+	h.writeSyncPolling(w, identifier)
+}
+
+func (h *Handler) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
+	identifier := chi.URLParam(r, "identifier")
+	if identifier == "" {
+		http.Error(w, "missing identifier", http.StatusBadRequest)
+		return
+	}
+
+	key, ok := h.resolveSchedulerKey(identifier)
+	if !ok {
+		http.Error(w, "account not scheduled", http.StatusNotFound)
+		return
+	}
+
+	// Check if sync is still running.
+	running := false
+	for _, st := range h.scheduler.Status() {
+		if st.Email == key {
+			running = st.Running
+			break
+		}
+	}
+
+	if running {
+		h.writeSyncPolling(w, identifier)
+		return
+	}
+
+	// Sync finished — fetch updated timestamp.
+	ctx := r.Context()
+	syncTime := "just now"
+	accounts, err := h.engine.ListAccounts(ctx)
+	if err == nil {
+		for _, a := range accounts {
+			if a.Identifier == identifier {
+				syncTime = templates.FormatSyncTime(a.LastSyncWithData)
+				break
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = fmt.Fprintf(w,
+		`<span class="account-sync">last sync: %s</span>`+
+			`<button class="btn-sync" hx-post="/sync/%s" hx-target="#sync-status-%s" hx-swap="innerHTML">sync</button>`,
+		html.EscapeString(syncTime), url.PathEscape(identifier), templates.SafeID(identifier))
+}
+
+// writeSyncPolling writes an HTML fragment with an animated indicator
+// that polls GET /sync/{id}/status every 2s until the sync completes.
+func (h *Handler) writeSyncPolling(w http.ResponseWriter, identifier string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = fmt.Fprintf(w,
+		`<span class="sync-running" hx-get="/sync/%s/status" hx-target="#sync-status-%s" hx-swap="innerHTML" hx-trigger="every 2s">`+
+			`<span class="sync-spinner"></span> syncing`+
+			`</span>`,
+		url.PathEscape(identifier), templates.SafeID(identifier))
 }
 
 func (h *Handler) handleBrowse(w http.ResponseWriter, r *http.Request) {
