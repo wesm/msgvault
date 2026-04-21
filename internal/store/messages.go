@@ -120,7 +120,7 @@ func (s *Store) UpdateMessageOnDedup(
 		); err != nil {
 			return fmt.Errorf("update source_message_id: %w", err)
 		}
-		return replaceMessageLabelsTx(tx, messageID, labelIDs)
+		return replaceMessageLabelsTx(tx, s.dialect, messageID, labelIDs)
 	})
 }
 
@@ -334,12 +334,12 @@ func (s *Store) PersistMessage(data *MessagePersistData) (int64, error) {
 		}
 
 		for _, rs := range data.Recipients {
-			if err := replaceMessageRecipientsTx(tx, messageID, rs.Type, rs.ParticipantIDs, rs.DisplayNames); err != nil {
+			if err := replaceMessageRecipientsTx(tx, s.dialect, messageID, rs); err != nil {
 				return fmt.Errorf("store %s recipients: %w", rs.Type, err)
 			}
 		}
 
-		if err := replaceMessageLabelsTx(tx, messageID, data.LabelIDs); err != nil {
+		if err := replaceMessageLabelsTx(tx, s.dialect, messageID, data.LabelIDs); err != nil {
 			return fmt.Errorf("store labels: %w", err)
 		}
 
@@ -436,36 +436,41 @@ func (s *Store) EnsureParticipantsBatch(addresses []mime.Address) (map[string]in
 // ReplaceMessageRecipients replaces all recipients for a message atomically.
 func (s *Store) ReplaceMessageRecipients(messageID int64, recipientType string, participantIDs []int64, displayNames []string) error {
 	return s.withTx(func(tx *sql.Tx) error {
-		return replaceMessageRecipientsTx(tx, messageID, recipientType, participantIDs, displayNames)
+		return replaceMessageRecipientsTx(tx, s.dialect, messageID, RecipientSet{
+			Type:           recipientType,
+			ParticipantIDs: participantIDs,
+			DisplayNames:   displayNames,
+		})
 	})
 }
 
-func replaceMessageRecipientsTx(tx *sql.Tx, messageID int64, recipientType string, participantIDs []int64, displayNames []string) error {
-	_, err := tx.Exec(`
+func replaceMessageRecipientsTx(tx *sql.Tx, d Dialect, messageID int64, rs RecipientSet) error {
+	_, err := tx.Exec(d.Rebind(`
 		DELETE FROM message_recipients WHERE message_id = ? AND recipient_type = ?
-	`, messageID, recipientType)
+	`), messageID, rs.Type)
 	if err != nil {
 		return err
 	}
 
-	if len(participantIDs) == 0 {
+	if len(rs.ParticipantIDs) == 0 {
 		return nil
 	}
 
 	return insertInChunks(tx, chunkInsert{
-		totalRows:    len(participantIDs),
+		totalRows:    len(rs.ParticipantIDs),
 		valuesPerRow: 4,
 		prefix:       "INSERT INTO message_recipients (message_id, participant_id, recipient_type, display_name) VALUES ",
+		rebind:       d.Rebind,
 	}, func(start, end int) ([]string, []interface{}) {
 		values := make([]string, end-start)
 		args := make([]interface{}, 0, (end-start)*4)
 		for i := start; i < end; i++ {
 			values[i-start] = "(?, ?, ?, ?)"
 			displayName := ""
-			if i < len(displayNames) {
-				displayName = displayNames[i]
+			if i < len(rs.DisplayNames) {
+				displayName = rs.DisplayNames[i]
 			}
-			args = append(args, messageID, participantIDs[i], recipientType, displayName)
+			args = append(args, messageID, rs.ParticipantIDs[i], rs.Type, displayName)
 		}
 		return values, args
 	})
@@ -498,7 +503,7 @@ func (s *Store) EnsureLabel(
 	err := s.withTx(func(tx *sql.Tx) error {
 		var txErr error
 		id, txErr = ensureLabelWith(
-			tx, s.dialect, sourceID, sourceLabelID, name, labelType,
+			tx, sourceID, sourceLabelID, name, labelType,
 		)
 		return txErr
 	})
@@ -514,7 +519,7 @@ func (s *Store) EnsureLabel(
 //   - Name conflict with different source_label_id: upserts, adopting
 //     the new source_label_id (handles deleted+recreated labels, imports)
 func ensureLabelWith(
-	q dbQuerier, d Dialect,
+	q dbQuerier,
 	sourceID int64,
 	sourceLabelID, name, labelType string,
 ) (int64, error) {
@@ -533,7 +538,7 @@ func ensureLabelWith(
 		// Label was renamed — update the name. If another row already
 		// claims the target name, merge it: move its message-label
 		// associations to the canonical row and delete the stale one.
-		if err = mergeLabelByName(q, d, sourceID, name, id); err != nil {
+		if err = mergeLabelByName(q, sourceID, name, id); err != nil {
 			return 0, err
 		}
 		if _, err = q.Exec(`
@@ -574,7 +579,7 @@ func ensureLabelWith(
 // and merges it into keepID: message-label associations are reassigned
 // and the stale row is deleted. No-op if no conflicting label exists.
 func mergeLabelByName(
-	q dbQuerier, d Dialect, sourceID int64, name string, keepID int64,
+	q dbQuerier, sourceID int64, name string, keepID int64,
 ) error {
 	var conflictID int64
 	err := q.QueryRow(`
@@ -587,19 +592,24 @@ func mergeLabelByName(
 	if err != nil {
 		return fmt.Errorf("find conflicting label: %w", err)
 	}
-	// Reassign message-label associations. OR IGNORE skips rows
-	// where the message already has keepID (avoids PK violation).
-	if _, err = q.Exec(d.UpdateOrIgnore(`UPDATE OR IGNORE message_labels
-		SET label_id = ? WHERE label_id = ?`),
-		keepID, conflictID); err != nil {
-		return fmt.Errorf("reassign label associations: %w", err)
-	}
-	// Remove any remaining rows that couldn't be reassigned
-	// (duplicates skipped by OR IGNORE above).
+	// Drop associations that would conflict after reassignment (message
+	// already linked to keepID). This is the portable equivalent of
+	// SQLite's UPDATE OR IGNORE — done explicitly so PostgreSQL works the
+	// same way.
 	if _, err = q.Exec(`
-		DELETE FROM message_labels WHERE label_id = ?
-	`, conflictID); err != nil {
-		return fmt.Errorf("clean up duplicate associations: %w", err)
+		DELETE FROM message_labels
+		WHERE label_id = ?
+		AND message_id IN (
+			SELECT message_id FROM message_labels WHERE label_id = ?
+		)
+	`, conflictID, keepID); err != nil {
+		return fmt.Errorf("drop conflicting associations: %w", err)
+	}
+	// Reassign the remaining associations (no PK violations possible now).
+	if _, err = q.Exec(`
+		UPDATE message_labels SET label_id = ? WHERE label_id = ?
+	`, keepID, conflictID); err != nil {
+		return fmt.Errorf("reassign label associations: %w", err)
 	}
 	if _, err = q.Exec(`
 		DELETE FROM labels WHERE id = ?
@@ -667,7 +677,7 @@ func (s *Store) EnsureLabelsBatch(
 		// is safe to merge (dead/imported label).
 		for sourceLabelID, info := range labels {
 			id, err := ensureLabelWith(
-				tx, s.dialect, sourceID, sourceLabelID, info.Name, info.Type,
+				tx, sourceID, sourceLabelID, info.Name, info.Type,
 			)
 			if err != nil {
 				return err
@@ -685,14 +695,14 @@ func (s *Store) EnsureLabelsBatch(
 // ReplaceMessageLabels replaces all labels for a message atomically.
 func (s *Store) ReplaceMessageLabels(messageID int64, labelIDs []int64) error {
 	return s.withTx(func(tx *sql.Tx) error {
-		return replaceMessageLabelsTx(tx, messageID, labelIDs)
+		return replaceMessageLabelsTx(tx, s.dialect, messageID, labelIDs)
 	})
 }
 
-func replaceMessageLabelsTx(tx *sql.Tx, messageID int64, labelIDs []int64) error {
-	_, err := tx.Exec(`
+func replaceMessageLabelsTx(tx *sql.Tx, d Dialect, messageID int64, labelIDs []int64) error {
+	_, err := tx.Exec(d.Rebind(`
 		DELETE FROM message_labels WHERE message_id = ?
-	`, messageID)
+	`), messageID)
 	if err != nil {
 		return err
 	}
@@ -705,6 +715,7 @@ func replaceMessageLabelsTx(tx *sql.Tx, messageID int64, labelIDs []int64) error
 		totalRows:    len(labelIDs),
 		valuesPerRow: 2,
 		prefix:       "INSERT INTO message_labels (message_id, label_id) VALUES ",
+		rebind:       d.Rebind,
 	}, func(start, end int) ([]string, []interface{}) {
 		values := make([]string, end-start)
 		args := make([]interface{}, 0, (end-start)*2)
@@ -728,6 +739,7 @@ func (s *Store) AddMessageLabels(messageID int64, labelIDs []int64) error {
 			valuesPerRow: 2,
 			prefix:       s.dialect.InsertOrIgnore("INSERT OR IGNORE INTO message_labels (message_id, label_id) VALUES "),
 			suffix:       s.dialect.InsertOrIgnoreSuffix(),
+			rebind:       s.dialect.Rebind,
 		}, func(start, end int) ([]string, []interface{}) {
 			values := make([]string, end-start)
 			args := make([]interface{}, 0, (end-start)*2)
@@ -942,9 +954,14 @@ func (s *Store) UpsertFTS(messageID int64, subject, bodyText, fromAddr, toAddrs,
 	if !s.fts5Available {
 		return nil
 	}
-	_, err := s.db.Exec(s.dialect.FTSUpsertSQL(),
-		messageID, messageID, subject, bodyText, fromAddr, toAddrs, ccAddrs)
-	return err
+	return s.dialect.FTSUpsert(s.db, FTSDoc{
+		MessageID: messageID,
+		Subject:   subject,
+		Body:      bodyText,
+		FromAddr:  fromAddr,
+		ToAddrs:   toAddrs,
+		CcAddrs:   ccAddrs,
+	})
 }
 
 // BackfillFTS populates the FTS table from existing message data.

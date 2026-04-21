@@ -22,24 +22,26 @@ func (d *SQLiteDialect) InsertOrIgnore(sql string) string { return sql }
 // InsertOrIgnoreSuffix returns "" for SQLite — OR IGNORE is in the statement prefix.
 func (d *SQLiteDialect) InsertOrIgnoreSuffix() string { return "" }
 
-// UpdateOrIgnore is a no-op for SQLite — the syntax is native.
-func (d *SQLiteDialect) UpdateOrIgnore(sql string) string { return sql }
-
-// FTSUpsertSQL returns the SQL to upsert an FTS5 row.
-// Takes 7 args: messageID (bound to rowid), messageID, subject, body,
-// fromAddr, toAddrs, ccAddrs. FTS5 requires rowid to be specified
-// explicitly so the virtual table's rowid matches messages.id — the
-// search path joins on this equality.
-func (d *SQLiteDialect) FTSUpsertSQL() string {
-	return `INSERT OR REPLACE INTO messages_fts(rowid, message_id, subject, body, from_addr, to_addr, cc_addr)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`
+// FTSUpsert inserts or replaces an FTS5 row. FTS5 requires rowid to be
+// specified explicitly so the virtual table's rowid matches messages.id;
+// the dialect owns this detail so callers don't pass messageID twice.
+func (d *SQLiteDialect) FTSUpsert(q querier, doc FTSDoc) error {
+	_, err := q.Exec(
+		`INSERT OR REPLACE INTO messages_fts(rowid, message_id, subject, body, from_addr, to_addr, cc_addr)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		doc.MessageID, doc.MessageID, doc.Subject, doc.Body,
+		doc.FromAddr, doc.ToAddrs, doc.CcAddrs,
+	)
+	return err
 }
 
 // FTSSearchClause returns SQL fragments for FTS5 full-text search.
-func (d *SQLiteDialect) FTSSearchClause() (join, where, orderBy string) {
+// "rank" is an implicit FTS5 column, so orderArgCount is 0.
+func (d *SQLiteDialect) FTSSearchClause() (join, where, orderBy string, orderArgCount int) {
 	return "JOIN messages_fts fts ON fts.rowid = m.id",
 		"messages_fts MATCH ?",
-		"rank"
+		"rank",
+		0
 }
 
 // FTSDeleteSQL returns the SQL to delete a message's FTS5 entry.

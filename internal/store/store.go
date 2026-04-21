@@ -271,17 +271,21 @@ func queryInChunks[T any](db chunkQuerier, ids []T, prefixArgs []interface{}, qu
 // chunkInsert describes a multi-row INSERT for insertInChunks.
 // Prefix is everything up to "VALUES ", suffix is anything after the values
 // (e.g. " ON CONFLICT DO NOTHING" for PostgreSQL). ValuesPerRow counts the
-// parameters in one row's tuple (used to stay under the driver's parameter limit).
+// parameters in one row's tuple (used to stay under the driver's parameter
+// limit). Rebind is the dialect's placeholder rewriter; it is applied to
+// each composed chunk query before execution. Required.
 type chunkInsert struct {
 	totalRows    int
 	valuesPerRow int
 	prefix       string
 	suffix       string
+	rebind       func(string) string
 }
 
 // insertInChunks executes a multi-value INSERT in chunks to stay within SQLite's
 // parameter limit (999). valueBuilder generates the VALUES placeholders and
-// args for each chunk of row indices.
+// args for each chunk of row indices. Each composed chunk query is run through
+// c.rebind so non-SQLite dialects get correctly-numbered placeholders.
 func insertInChunks(tx *sql.Tx, c chunkInsert, valueBuilder func(start, end int) ([]string, []interface{})) error {
 	// SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999
 	// Leave some margin for safety
@@ -298,7 +302,7 @@ func insertInChunks(tx *sql.Tx, c chunkInsert, valueBuilder func(start, end int)
 		}
 
 		values, args := valueBuilder(i, end)
-		query := c.prefix + strings.Join(values, ",") + c.suffix
+		query := c.rebind(c.prefix + strings.Join(values, ",") + c.suffix)
 		if _, err := tx.Exec(query, args...); err != nil {
 			return err
 		}

@@ -2,6 +2,17 @@ package store
 
 import "database/sql"
 
+// FTSDoc is the set of fields the dialect needs to upsert a message into
+// the full-text search index.
+type FTSDoc struct {
+	MessageID int64
+	Subject   string
+	Body      string
+	FromAddr  string
+	ToAddrs   string
+	CcAddrs   string
+}
+
 // Dialect abstracts database-specific SQL generation and behavior.
 // Implementations exist for SQLite (default) and PostgreSQL (opt-in).
 type Dialect interface {
@@ -28,27 +39,22 @@ type Dialect interface {
 	// PostgreSQL: " ON CONFLICT DO NOTHING"
 	InsertOrIgnoreSuffix() string
 
-	// UpdateOrIgnore rewrites an UPDATE statement to silently ignore constraint violations.
-	// SQLite: UPDATE OR IGNORE ...  PostgreSQL: requires a different approach.
-	// The input sql must start with "UPDATE OR IGNORE " (SQLite form).
-	UpdateOrIgnore(sql string) string
-
 	// Full-text search
 
-	// FTSUpsertSQL returns the SQL to insert or update the search index for one message.
-	// Callers pass the arg list that matches the SQL's placeholders exactly.
-	// SQLite (7 args): messageID (bound to rowid), messageID, subject, body,
-	// fromAddr, toAddrs, ccAddrs. PostgreSQL (6 args): subject, body, fromAddr,
-	// toAddrs, ccAddrs, messageID.
-	FTSUpsertSQL() string
+	// FTSUpsert inserts or updates the search index for a single message.
+	// The dialect owns both the SQL and the argument shape, so SQLite's
+	// FTS5 rowid duplication stays out of the caller and PostgreSQL is
+	// free to use a column-update on messages.
+	FTSUpsert(q querier, doc FTSDoc) error
 
 	// FTSSearchClause returns SQL fragments for full-text search using ?
-	// placeholders. Returns: join clause, where clause, order-by clause.
-	// For SQLite: uses messages_fts virtual table with JOIN/MATCH/rank.
-	// For PostgreSQL: uses tsvector column with @@/ts_rank (no extra join needed).
-	// Callers compose these with their own SQL and must run Rebind on the final
-	// query before execution.
-	FTSSearchClause() (join, where, orderBy string)
+	// placeholders. Returns: join clause, where clause, order-by clause,
+	// and the number of times the caller must re-bind the search term to
+	// satisfy ? placeholders that appear in orderBy (SQLite: 0, because
+	// "rank" is an implicit FTS5 column; PostgreSQL: 1 for ts_rank).
+	// Callers compose these with their own SQL and must run Rebind on the
+	// final query before execution.
+	FTSSearchClause() (join, where, orderBy string, orderArgCount int)
 
 	// FTSDeleteSQL returns the SQL to remove FTS entries for messages belonging to
 	// a given source. Takes one parameter: source_id.
