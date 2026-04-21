@@ -69,6 +69,21 @@ func TestDecodeMojibake(t *testing.T) {
 	if got := DecodeMojibake("hello"); got != "hello" {
 		t.Fatalf("ascii round-trip: got %q", got)
 	}
+	// Already-valid UTF-8 with Latin-1-range code points must be preserved.
+	// "café" has é = U+00E9, which is <= 0xFF, so the old code would
+	// convert it to the single byte 0xE9 (invalid UTF-8). The fix detects
+	// that the converted result is not valid UTF-8 and returns the original.
+	if got := DecodeMojibake("café"); got != "café" {
+		t.Fatalf("valid UTF-8 café corrupted: got %q", got)
+	}
+	// "naïve" has ï = U+00EF, same risk.
+	if got := DecodeMojibake("naïve"); got != "naïve" {
+		t.Fatalf("valid UTF-8 naïve corrupted: got %q", got)
+	}
+	// "über" has ü = U+00FC.
+	if got := DecodeMojibake("über"); got != "über" {
+		t.Fatalf("valid UTF-8 über corrupted: got %q", got)
+	}
 }
 
 func TestStripDomain(t *testing.T) {

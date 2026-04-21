@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/wesm/msgvault/internal/mime"
 	"golang.org/x/text/runes"
@@ -64,8 +65,12 @@ func Address(name string) mime.Address {
 }
 
 // DecodeMojibake reverses Facebook DYI JSON's well-known Latin-1-over-UTF-8
-// encoding. If the string contains any rune above U+00FF it is returned
-// unchanged, so already-correct inputs round-trip safely.
+// encoding. Facebook's JSON exporter writes UTF-8 bytes as if they were
+// Latin-1 code points, so "café" (UTF-8: 0x63 0x61 0x66 0xC3 0xA9) becomes
+// the JSON string "caf\u00c3\u00a9". This function re-interprets those
+// Latin-1 code points as raw bytes and checks whether the result is valid
+// UTF-8. If not (or if the input contains runes above U+00FF), the original
+// string is returned unchanged.
 func DecodeMojibake(s string) string {
 	buf := make([]byte, 0, len(s))
 	for _, r := range s {
@@ -74,7 +79,11 @@ func DecodeMojibake(s string) string {
 		}
 		buf = append(buf, byte(r))
 	}
-	return string(buf)
+	decoded := string(buf)
+	if !utf8.ValidString(decoded) {
+		return s
+	}
+	return decoded
 }
 
 // StripDomain returns the local part of a synthetic "<slug>@facebook.messenger"
