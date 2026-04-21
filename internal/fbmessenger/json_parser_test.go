@@ -129,6 +129,32 @@ func TestParseJSONThread_Attachments(t *testing.T) {
 	}
 }
 
+func TestParseJSONThread_Attachments_AltLayout(t *testing.T) {
+	root := "testdata/json_with_media_alt"
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	td := filepath.Join(absRoot, "your_facebook_activity", "messages", "inbox", "carol_ALT456")
+	th, err := ParseJSONThread(root, td)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(th.Messages) != 1 {
+		t.Fatalf("messages=%d want 1", len(th.Messages))
+	}
+	m := th.Messages[0]
+	if len(m.Attachments) != 1 {
+		t.Fatalf("attachments=%d want 1", len(m.Attachments))
+	}
+	if m.Attachments[0].Kind != "photo" {
+		t.Errorf("kind=%q want photo", m.Attachments[0].Kind)
+	}
+	if _, err := os.Stat(m.Attachments[0].AbsPath); err != nil {
+		t.Errorf("attachment file should exist on disk: %v", err)
+	}
+}
+
 func TestParseJSONThread_NonTextBodies(t *testing.T) {
 	root := "testdata/json_nontext"
 	th, err := ParseJSONThread(root, threadDir(t, root, "inbox", "sam_NONTXT"))

@@ -366,6 +366,7 @@ func resolveAttachmentURI(absRoot, uri string) string {
 	}
 	candidates := []string{
 		filepath.Join(absRoot, "your_activity_across_facebook", cleaned),
+		filepath.Join(absRoot, "your_facebook_activity", cleaned),
 		filepath.Join(absRoot, cleaned),
 	}
 	var firstInside string
