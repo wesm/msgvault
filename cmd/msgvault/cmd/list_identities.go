@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -161,9 +160,7 @@ func writeIdentitiesJSON(candidates []store.IdentityCandidate) error {
 		}
 		payload = append(payload, entry)
 	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(payload)
+	return printJSON(payload)
 }
 
 func splitSignals(s store.IdentitySignal) []string {

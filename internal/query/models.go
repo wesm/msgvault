@@ -282,6 +282,9 @@ func (f MessageFilter) Clone() MessageFilter {
 			clone.EmptyValueTargets[k] = v
 		}
 	}
+	if f.SourceIDs != nil {
+		clone.SourceIDs = append([]int64(nil), f.SourceIDs...)
+	}
 	return clone
 }
 
