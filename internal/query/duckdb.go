@@ -1493,7 +1493,8 @@ func (e *DuckDBEngine) Search(ctx context.Context, q *search.Query, limit, offse
 	var args []interface{}
 	var joins []string
 
-	// Include all messages (deleted messages shown with indicator in TUI)
+	// Exclude rows soft-deleted by deduplicate (sqlite_scan path).
+	conditions = append(conditions, "m.deleted_at IS NULL")
 
 	// From filter
 	if len(q.FromAddrs) > 0 {
