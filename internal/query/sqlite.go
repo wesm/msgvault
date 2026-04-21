@@ -192,10 +192,9 @@ func optsToFilterConditions(opts AggregateOptions, prefix string) ([]string, []i
 	// Always exclude rows soft-deleted by deduplicate.
 	conditions = append(conditions, prefix+"deleted_at IS NULL")
 
-	if opts.SourceID != nil {
-		conditions = append(conditions, prefix+"source_id = ?")
-		args = append(args, *opts.SourceID)
-	}
+	conditions, args = appendSourceFilter(
+		conditions, args, prefix, opts.SourceID, opts.SourceIDs,
+	)
 	if opts.After != nil {
 		conditions = append(conditions, prefix+"sent_at >= ?")
 		args = append(args, opts.After.Format("2006-01-02 15:04:05"))
@@ -267,10 +266,9 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 	// Always exclude rows soft-deleted by deduplicate.
 	conditions = append(conditions, prefix+"deleted_at IS NULL")
 
-	if filter.SourceID != nil {
-		conditions = append(conditions, prefix+"source_id = ?")
-		args = append(args, *filter.SourceID)
-	}
+	conditions, args = appendSourceFilter(
+		conditions, args, prefix, filter.SourceID, filter.SourceIDs,
+	)
 
 	if filter.ConversationID != nil {
 		conditions = append(conditions, prefix+"conversation_id = ?")
@@ -790,10 +788,9 @@ func (e *SQLiteEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 	conditions = append(conditions, emailOnlyFilterM)
 	// Exclude rows soft-deleted by deduplicate.
 	conditions = append(conditions, "m.deleted_at IS NULL")
-	if opts.SourceID != nil {
-		conditions = append(conditions, "m.source_id = ?")
-		args = append(args, *opts.SourceID)
-	}
+	conditions, args = appendSourceFilter(
+		conditions, args, "m.", opts.SourceID, opts.SourceIDs,
+	)
 	if opts.WithAttachmentsOnly {
 		conditions = append(conditions, "m.has_attachments = 1")
 	}
