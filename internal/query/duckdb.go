@@ -678,10 +678,6 @@ func (e *DuckDBEngine) buildWhereClause(opts AggregateOptions, keyColumns ...str
 	var conditions []string
 	var args []interface{}
 
-	// Exclude text messages from email-mode queries.
-	// message_type IS NULL and '' handle old data without the column.
-	conditions = append(conditions, "(msg.message_type = 'email' OR msg.message_type IS NULL OR msg.message_type = '')")
-
 	if opts.SourceID != nil {
 		conditions = append(conditions, "msg.source_id = ?")
 		args = append(args, *opts.SourceID)
@@ -883,10 +879,6 @@ func (e *DuckDBEngine) Aggregate(ctx context.Context, groupBy ViewType, opts Agg
 func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []interface{}) {
 	var conditions []string
 	var args []interface{}
-
-	// Exclude text messages from email-mode queries.
-	// message_type IS NULL and '' handle old data without the column.
-	conditions = append(conditions, "(msg.message_type = 'email' OR msg.message_type IS NULL OR msg.message_type = '')")
 
 	if filter.SourceID != nil {
 		conditions = append(conditions, "msg.source_id = ?")

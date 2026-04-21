@@ -62,6 +62,7 @@ make lint                     # Run linter
 ./msgvault stats                                      # Show archive stats
 
 # Apple Mail import
+./msgvault import-messenger --me you@facebook.messenger ~/facebook-dyi   # Import Facebook Messenger DYI
 ./msgvault import-emlx                                # Auto-discover accounts
 ./msgvault import-emlx ~/Library/Mail                 # Explicit mail directory
 ./msgvault import-emlx --account me@gmail.com         # Specific account(s)
