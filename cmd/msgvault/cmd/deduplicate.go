@@ -49,23 +49,13 @@ var (
 )
 
 func runDeduplicate(cmd *cobra.Command, _ []string) error {
-	dbPath := cfg.DatabaseDSN()
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		return fmt.Errorf(
-			"database not found: %s\nRun 'msgvault init-db' first",
-			dbPath,
-		)
-	}
-
-	st, err := store.Open(dbPath)
+	st, err := openStoreAndInit()
 	if err != nil {
-		return fmt.Errorf("open database: %w", err)
+		return err
 	}
 	defer func() { _ = st.Close() }()
 
-	if err := st.InitSchema(); err != nil {
-		return fmt.Errorf("init schema: %w", err)
-	}
+	dbPath := cfg.DatabaseDSN()
 
 	deletionsDir := filepath.Join(cfg.Data.DataDir, "deletions")
 
@@ -132,7 +122,7 @@ func runDeduplicate(cmd *cobra.Command, _ []string) error {
 		return runDeduplicatePerSource(cmd, st, config)
 	}
 
-	return runDeduplicateOnce(cmd, st, dbPath, config, engine)
+	return runDeduplicateOnce(cmd, dbPath, config, engine)
 }
 
 func runDeduplicatePerSource(
@@ -219,7 +209,6 @@ func runDeduplicatePerSource(
 
 func runDeduplicateOnce(
 	cmd *cobra.Command,
-	_ *store.Store,
 	dbPath string,
 	cfgScoped dedup.Config,
 	engine *dedup.Engine,

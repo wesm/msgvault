@@ -519,9 +519,12 @@ func normalizeRawMIME(raw []byte) []byte {
 	headerSection := raw[:headerEnd]
 	body := raw[headerEnd:]
 
-	reader := textproto.NewReader(bufio.NewReader(bytes.NewReader(
-		append(headerSection, '\r', '\n', '\r', '\n'),
-	)))
+	// Copy headerSection before appending to avoid mutating the
+	// underlying raw buffer (headerSection is a sub-slice of raw).
+	hdrBuf := make([]byte, len(headerSection)+4)
+	copy(hdrBuf, headerSection)
+	copy(hdrBuf[len(headerSection):], "\r\n\r\n")
+	reader := textproto.NewReader(bufio.NewReader(bytes.NewReader(hdrBuf)))
 	mimeHeader, err := reader.ReadMIMEHeader()
 	if err != nil {
 		return raw

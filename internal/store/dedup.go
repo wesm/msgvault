@@ -180,7 +180,7 @@ func (s *Store) MergeDuplicates(
 	}
 
 	result := &MergeResult{}
-	err := s.withTx(func(tx *sql.Tx) error {
+	err := s.withTx(func(tx *loggedTx) error {
 		for _, dupID := range duplicateIDs {
 			res, err := tx.Exec(`
 				INSERT OR IGNORE INTO message_labels (message_id, label_id)

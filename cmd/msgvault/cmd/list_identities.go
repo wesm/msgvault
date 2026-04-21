@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -38,22 +37,11 @@ deduplicate's sent-copy detection.`,
 }
 
 func runListIdentities(_ *cobra.Command, _ []string) error {
-	dbPath := cfg.DatabaseDSN()
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		return fmt.Errorf(
-			"database not found: %s\nRun 'msgvault init-db' first",
-			dbPath,
-		)
-	}
-
-	st, err := store.Open(dbPath)
+	st, err := openStoreAndInit()
 	if err != nil {
-		return fmt.Errorf("open database: %w", err)
+		return err
 	}
 	defer func() { _ = st.Close() }()
-	if err := st.InitSchema(); err != nil {
-		return fmt.Errorf("init schema: %w", err)
-	}
 
 	var scopeIDs []int64
 	scopeLabel := "all"
@@ -172,9 +160,7 @@ func writeIdentitiesJSON(candidates []store.IdentityCandidate) error {
 		}
 		payload = append(payload, entry)
 	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(payload)
+	return printJSON(payload)
 }
 
 func splitSignals(s store.IdentitySignal) []string {
