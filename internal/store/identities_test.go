@@ -220,3 +220,41 @@ func TestListLikelyIdentities_ExcludesSoftDeleted(t *testing.T) {
 		t.Error("deleted_at should be set")
 	}
 }
+
+func TestListLikelyIdentities_AllThreeSignals(t *testing.T) {
+	f := storetest.New(t)
+	mid := addMessageFromParticipant(
+		t, f, f.Source, "m1", "test@example.com", true,
+	)
+	lid, err := f.Store.EnsureLabel(f.Source.ID, "SENT", "Sent", "system")
+	testutil.MustNoErr(t, err, "EnsureLabel")
+	testutil.MustNoErr(t, f.Store.LinkMessageLabel(mid, lid), "LinkMessageLabel")
+
+	ids, err := f.Store.ListLikelyIdentities()
+	testutil.MustNoErr(t, err, "ListLikelyIdentities")
+	if len(ids) != 1 {
+		t.Fatalf("got %d candidates, want 1", len(ids))
+	}
+
+	got := ids[0]
+	want := store.SignalFromMe | store.SignalSentLabel | store.SignalAccountMatch
+	if got.Signals != want {
+		t.Errorf("signals = %v, want all three: %v", got.Signals, want)
+	}
+}
+
+func TestListLikelyIdentities_CaseInsensitive(t *testing.T) {
+	f := storetest.New(t)
+	addMessageFromParticipant(
+		t, f, f.Source, "m1", "Alice@Example.COM", true,
+	)
+
+	ids, err := f.Store.ListLikelyIdentities()
+	testutil.MustNoErr(t, err, "ListLikelyIdentities")
+	if len(ids) != 1 {
+		t.Fatalf("got %d candidates, want 1", len(ids))
+	}
+	if ids[0].Email != "alice@example.com" {
+		t.Errorf("email = %q, want lower-cased alice@example.com", ids[0].Email)
+	}
+}

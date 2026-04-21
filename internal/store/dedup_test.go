@@ -177,3 +177,74 @@ func TestStore_CountActiveMessages(t *testing.T) {
 		t.Errorf("active after merge = %d, want 2", total)
 	}
 }
+
+func TestStore_BackfillRFC822IDs_ParsesFromRawMIME(t *testing.T) {
+	f := storetest.New(t)
+
+	id := newRFC822Message(t, f, "needs-backfill", "")
+
+	rawMIME := []byte("From: alice@example.com\r\nTo: bob@example.com\r\nMessage-ID: <unique-123@example.com>\r\nSubject: Backfill test\r\n\r\nBody text")
+	testutil.MustNoErr(t,
+		f.Store.UpsertMessageRaw(id, rawMIME),
+		"UpsertMessageRaw",
+	)
+
+	count, err := f.Store.CountMessagesWithoutRFC822ID()
+	testutil.MustNoErr(t, err, "CountMessagesWithoutRFC822ID")
+	if count != 1 {
+		t.Fatalf("count without rfc822 = %d, want 1", count)
+	}
+
+	updated, err := f.Store.BackfillRFC822IDs(nil)
+	testutil.MustNoErr(t, err, "BackfillRFC822IDs")
+	if updated != 1 {
+		t.Fatalf("updated = %d, want 1", updated)
+	}
+
+	var rfc822ID string
+	err = f.Store.DB().QueryRow(
+		"SELECT rfc822_message_id FROM messages WHERE id = ?", id,
+	).Scan(&rfc822ID)
+	testutil.MustNoErr(t, err, "scan rfc822_message_id")
+	if rfc822ID != "unique-123@example.com" {
+		t.Errorf("rfc822_message_id = %q, want unique-123@example.com", rfc822ID)
+	}
+
+	count, err = f.Store.CountMessagesWithoutRFC822ID()
+	testutil.MustNoErr(t, err, "CountMessagesWithoutRFC822ID after backfill")
+	if count != 0 {
+		t.Errorf("count after backfill = %d, want 0", count)
+	}
+}
+
+func TestStore_MergeDuplicates_BackfillsRawMIME(t *testing.T) {
+	f := storetest.New(t)
+
+	idSurvivor := newRFC822Message(t, f, "survivor", "rfc822-mime-backfill")
+	idDuplicate := newRFC822Message(t, f, "duplicate", "rfc822-mime-backfill")
+
+	rawData := []byte("From: alice@example.com\r\nSubject: Test\r\n\r\nBody")
+	testutil.MustNoErr(t,
+		f.Store.UpsertMessageRaw(idDuplicate, rawData),
+		"UpsertMessageRaw on duplicate",
+	)
+
+	_, err := f.Store.GetMessageRaw(idSurvivor)
+	if err == nil {
+		t.Fatal("survivor should not have raw MIME before merge")
+	}
+
+	result, err := f.Store.MergeDuplicates(
+		idSurvivor, []int64{idDuplicate}, "batch-mime",
+	)
+	testutil.MustNoErr(t, err, "MergeDuplicates")
+	if result.RawMIMEBackfilled != 1 {
+		t.Errorf("RawMIMEBackfilled = %d, want 1", result.RawMIMEBackfilled)
+	}
+
+	got, err := f.Store.GetMessageRaw(idSurvivor)
+	testutil.MustNoErr(t, err, "GetMessageRaw survivor after merge")
+	if len(got) == 0 {
+		t.Error("survivor raw MIME should not be empty after backfill")
+	}
+}

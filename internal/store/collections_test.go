@@ -99,3 +99,81 @@ func TestCollections_DefaultAll(t *testing.T) {
 	err = st.EnsureDefaultCollection()
 	testutil.MustNoErr(t, err, "EnsureDefaultCollection (2nd call)")
 }
+
+func TestCollections_Validation(t *testing.T) {
+	f := storetest.New(t)
+	st := f.Store
+
+	t.Run("empty name rejected", func(t *testing.T) {
+		_, err := st.CreateCollection("", "", []int64{f.Source.ID})
+		if err == nil {
+			t.Fatal("expected error for empty name")
+		}
+	})
+
+	t.Run("zero sources rejected", func(t *testing.T) {
+		_, err := st.CreateCollection("empty", "", nil)
+		if err == nil {
+			t.Fatal("expected error for zero sources")
+		}
+	})
+
+	t.Run("nonexistent source rejected", func(t *testing.T) {
+		_, err := st.CreateCollection("bad", "", []int64{99999})
+		if err == nil {
+			t.Fatal("expected error for nonexistent source")
+		}
+	})
+
+	t.Run("delete nonexistent returns error", func(t *testing.T) {
+		err := st.DeleteCollection("nonexistent")
+		if err != store.ErrCollectionNotFound {
+			t.Fatalf("expected ErrCollectionNotFound, got %v", err)
+		}
+	})
+}
+
+func TestCollections_Idempotent(t *testing.T) {
+	f := storetest.New(t)
+	st := f.Store
+
+	_, err := st.CreateCollection("idem", "", []int64{f.Source.ID})
+	testutil.MustNoErr(t, err, "CreateCollection")
+
+	t.Run("add same source twice is no-op", func(t *testing.T) {
+		err := st.AddSourcesToCollection("idem", []int64{f.Source.ID})
+		testutil.MustNoErr(t, err, "AddSourcesToCollection (dupe)")
+		coll, err := st.GetCollectionByName("idem")
+		testutil.MustNoErr(t, err, "GetCollectionByName")
+		if len(coll.SourceIDs) != 1 {
+			t.Fatalf("sourceIDs = %d, want 1", len(coll.SourceIDs))
+		}
+	})
+
+	t.Run("remove absent source is no-op", func(t *testing.T) {
+		src2, err := st.GetOrCreateSource("mbox", "other@example.com")
+		testutil.MustNoErr(t, err, "GetOrCreateSource")
+		err = st.RemoveSourcesFromCollection("idem", []int64{src2.ID})
+		testutil.MustNoErr(t, err, "RemoveSourcesFromCollection (absent)")
+	})
+}
+
+func TestCollections_DefaultAllIncremental(t *testing.T) {
+	f := storetest.New(t)
+	st := f.Store
+
+	testutil.MustNoErr(t, st.EnsureDefaultCollection(), "EnsureDefaultCollection 1")
+	coll, err := st.GetCollectionByName("All")
+	testutil.MustNoErr(t, err, "GetCollectionByName")
+	initialCount := len(coll.SourceIDs)
+
+	_, err = st.GetOrCreateSource("mbox", "new@example.com")
+	testutil.MustNoErr(t, err, "GetOrCreateSource")
+
+	testutil.MustNoErr(t, st.EnsureDefaultCollection(), "EnsureDefaultCollection 2")
+	coll, err = st.GetCollectionByName("All")
+	testutil.MustNoErr(t, err, "GetCollectionByName after add")
+	if len(coll.SourceIDs) != initialCount+1 {
+		t.Errorf("sourceIDs = %d, want %d", len(coll.SourceIDs), initialCount+1)
+	}
+}
