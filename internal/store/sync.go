@@ -236,6 +236,20 @@ func (s *Store) GetActiveSync(sourceID int64) (*SyncRun, error) {
 	return run, err
 }
 
+// HasAnyActiveSync returns true if any source currently has a running sync.
+// Use this as a safety gate before performing destructive file operations that
+// could race with concurrent attachment ingestion.
+func (s *Store) HasAnyActiveSync() (bool, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM sync_runs WHERE status = 'running'`,
+	).Scan(&count)
+	if err != nil {
+		return true, err // fail safe
+	}
+	return count > 0, nil
+}
+
 // GetLastSuccessfulSync returns the most recent successful sync for a source.
 func (s *Store) GetLastSuccessfulSync(sourceID int64) (*SyncRun, error) {
 	row := s.db.QueryRow(`

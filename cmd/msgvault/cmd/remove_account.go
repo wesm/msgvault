@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -26,8 +27,8 @@ and mbox), use --type to specify which one to remove.
 The Parquet analytics cache is deleted because it is shared across accounts
 and must be rebuilt. Run 'msgvault build-cache' afterward to rebuild it.
 
-Orphaned participants and attachment files on disk are not cleaned up;
-use 'msgvault gc' (when available) to reclaim that space.
+Attachment files on disk that are not shared with another account are deleted.
+Shared attachments (same content hash across multiple accounts) are kept.
 
 Examples:
   msgvault remove-account you@gmail.com
@@ -114,8 +115,114 @@ func runRemoveAccount(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Collect attachment paths unique to this source before the cascade deletes them.
+	attachmentPaths, err := s.AttachmentPathsUniqueToSource(source.ID)
+	if err != nil {
+		return fmt.Errorf("collect attachment paths: %w", err)
+	}
+
 	if err := s.RemoveSource(source.ID); err != nil {
 		return fmt.Errorf("remove account: %w", err)
+	}
+
+	// Delete attachment files that are no longer referenced by any source.
+	// This runs under an exclusive DB lock to prevent races with concurrent
+	// syncs: the lock blocks StartSync() (a write), so no new sync can start
+	// and place a file on disk without a corresponding DB row while we're
+	// checking references and deleting files.
+	attachmentsDir := cfg.AttachmentsDir()
+	var deletedFiles int
+	if len(attachmentPaths) > 0 {
+		cleanDir, err := filepath.Abs(attachmentsDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"Warning: could not resolve attachments dir; "+
+					"skipping file deletion: %v\n"+
+					"Orphaned files may remain in %s\n",
+				err, attachmentsDir,
+			)
+		} else {
+			lockErr := s.WithExclusiveLock(func() error {
+				anySyncRunning, err := s.HasAnyActiveSync()
+				if err != nil {
+					fmt.Fprintf(os.Stderr,
+						"Warning: could not check for active syncs: %v; "+
+							"attachment files were not deleted.\n"+
+							"Orphaned files may remain in %s\n",
+						err, attachmentsDir,
+					)
+					return nil
+				}
+				if anySyncRunning {
+					fmt.Fprintf(os.Stderr,
+						"Warning: a sync is in progress; "+
+							"attachment files were not deleted.\n"+
+							"Orphaned files may remain in %s\n",
+						attachmentsDir,
+					)
+					return nil
+				}
+
+				var failedFiles int
+				for _, relPath := range attachmentPaths {
+					absPath := filepath.Join(cleanDir, relPath)
+
+					rel, err := filepath.Rel(cleanDir, absPath)
+					if err != nil ||
+						rel == ".." ||
+						strings.HasPrefix(
+							rel,
+							".."+string(filepath.Separator),
+						) {
+						fmt.Fprintf(os.Stderr,
+							"Warning: attachment path %q escapes "+
+								"attachments directory, skipping\n",
+							relPath,
+						)
+						failedFiles++
+						continue
+					}
+
+					referenced, err := s.IsAttachmentPathReferenced(
+						relPath,
+					)
+					if err != nil {
+						fmt.Fprintf(os.Stderr,
+							"Warning: could not verify attachment "+
+								"%s is unreferenced: %v\n",
+							relPath, err,
+						)
+						failedFiles++
+						continue
+					}
+					if referenced {
+						continue
+					}
+					if err := os.Remove(absPath); err != nil &&
+						!os.IsNotExist(err) {
+						failedFiles++
+					} else {
+						deletedFiles++
+					}
+				}
+				if failedFiles > 0 {
+					fmt.Fprintf(os.Stderr,
+						"Warning: could not remove %d attachment "+
+							"file(s) from disk.\n",
+						failedFiles,
+					)
+				}
+				return nil
+			})
+			if lockErr != nil {
+				fmt.Fprintf(os.Stderr,
+					"Warning: could not acquire exclusive lock; "+
+						"skipping file deletion: %v\n"+
+						"Orphaned files may remain in %s\n",
+					lockErr, attachmentsDir,
+				)
+			}
+		}
 	}
 
 	// Remove credentials for the source type.
@@ -183,12 +290,11 @@ func runRemoveAccount(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\nAccount %s removed.\n", email)
+	if deletedFiles > 0 {
+		fmt.Printf("Deleted %d attachment file(s) from disk.\n", deletedFiles)
+	}
 	fmt.Println(
 		"Run 'msgvault build-cache' to rebuild the analytics cache.",
-	)
-	fmt.Println(
-		"Note: attachment files on disk were not removed." +
-			" Use 'msgvault gc' (when available) to reclaim space.",
 	)
 
 	return nil

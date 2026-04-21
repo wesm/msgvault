@@ -1224,6 +1224,62 @@ func (s *Store) UpsertMessageRawWithFormat(messageID int64, rawData []byte, form
 	return err
 }
 
+// AttachmentPathsUniqueToSource returns storage_path values for attachments
+// belonging to sourceID whose content_hash is not shared with any other source.
+// Call this before RemoveSource so the cascade hasn't run yet.
+//
+// Note: thumbnail_path values are not included. No sync/import code currently
+// writes thumbnail files to disk, so there are no thumbnail files to clean up.
+// If thumbnail storage is added in the future, this function and the delete
+// loop in remove_account.go must be extended to cover thumbnail_path as well.
+func (s *Store) AttachmentPathsUniqueToSource(sourceID int64) ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT DISTINCT a.storage_path
+		FROM attachments a
+		JOIN messages m ON m.id = a.message_id
+		WHERE m.source_id = ?
+		  AND a.content_hash IS NOT NULL
+		  AND a.storage_path IS NOT NULL
+		  AND a.storage_path != ''
+		  AND NOT EXISTS (
+		      SELECT 1 FROM attachments a2
+		      JOIN messages m2 ON m2.id = a2.message_id
+		      WHERE a2.content_hash = a.content_hash
+		        AND m2.source_id != ?
+		  )
+	`, sourceID, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var paths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		paths = append(paths, p)
+	}
+	return paths, rows.Err()
+}
+
+// IsAttachmentPathReferenced returns true if any attachment record still
+// points to the given storage_path. Use this immediately before deleting a
+// file to guard against a concurrent sync that added a new reference after
+// the candidate list was collected.
+func (s *Store) IsAttachmentPathReferenced(storagePath string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM attachments WHERE storage_path = ?`,
+		storagePath,
+	).Scan(&count)
+	if err != nil {
+		return true, err // fail safe: treat error as referenced
+	}
+	return count > 0, nil
+}
+
 // UpsertAttachment stores an attachment record.
 func (s *Store) UpsertAttachment(messageID int64, filename, mimeType, storagePath, contentHash string, size int) error {
 	// Check if attachment already exists (by message_id and content_hash)
