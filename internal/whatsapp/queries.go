@@ -4,12 +4,72 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 )
+
+// hasColumn checks whether a table has a given column using PRAGMA table_info.
+// Results are cached per (db pointer, table) to avoid repeated PRAGMA queries
+// while correctly handling multiple databases with different schemas.
+var (
+	columnCache   = make(map[columnCacheKey]map[string]bool)
+	columnCacheMu sync.Mutex
+)
+
+type columnCacheKey struct {
+	db    *sql.DB
+	table string
+}
+
+func hasColumn(db *sql.DB, table, column string) bool {
+	columnCacheMu.Lock()
+	defer columnCacheMu.Unlock()
+
+	key := columnCacheKey{db: db, table: table}
+	cols, ok := columnCache[key]
+	if !ok {
+		cols = make(map[string]bool)
+		rows, err := db.Query(
+			fmt.Sprintf("PRAGMA table_info(%s)", table),
+		)
+		if err == nil {
+			defer func() { _ = rows.Close() }()
+			for rows.Next() {
+				var cid int
+				var name, colType string
+				var notNull, pk int
+				var dfltValue sql.NullString
+				if err := rows.Scan(
+					&cid, &name, &colType,
+					&notNull, &dfltValue, &pk,
+				); err == nil {
+					cols[name] = true
+				}
+			}
+		}
+		columnCache[key] = cols
+	}
+	return cols[column]
+}
+
+// resetColumnCache clears the cached column info (for testing).
+func resetColumnCache() {
+	columnCacheMu.Lock()
+	defer columnCacheMu.Unlock()
+	columnCache = make(map[columnCacheKey]map[string]bool)
+}
 
 // fetchChats returns all non-hidden chats from the WhatsApp database.
 // Joins with the jid table to get JID details for each chat.
+// Handles old WhatsApp schemas that lack the group_type column.
 func fetchChats(db *sql.DB) ([]waChat, error) {
-	rows, err := db.Query(`
+	hasGroupType := hasColumn(db, "chat", "group_type")
+
+	groupTypeExpr := "0"
+	if hasGroupType {
+		groupTypeExpr = "COALESCE(c.group_type, 0)"
+	}
+
+	rows, err := db.Query(fmt.Sprintf(`
 		SELECT
 			c._id,
 			c.jid_row_id,
@@ -17,14 +77,14 @@ func fetchChats(db *sql.DB) ([]waChat, error) {
 			COALESCE(j.user, ''),
 			COALESCE(j.server, ''),
 			c.subject,
-			COALESCE(c.group_type, 0),
+			%s,
 			COALESCE(c.hidden, 0),
 			COALESCE(c.sort_timestamp, 0)
 		FROM chat c
 		JOIN jid j ON c.jid_row_id = j._id
 		WHERE COALESCE(c.hidden, 0) = 0
 		ORDER BY c.sort_timestamp DESC
-	`)
+	`, groupTypeExpr))
 	if err != nil {
 		return nil, fmt.Errorf("fetch chats: %w", err)
 	}
@@ -94,10 +154,13 @@ func fetchMessages(db *sql.DB, chatRowID int64, afterID int64, limit int) ([]waM
 
 // fetchMedia returns media metadata for a batch of message row IDs.
 // Returns a map of message_row_id → waMedia.
+// Handles old WhatsApp schemas that lack the media_caption column.
 func fetchMedia(db *sql.DB, messageRowIDs []int64) (map[int64]waMedia, error) {
 	if len(messageRowIDs) == 0 {
 		return make(map[int64]waMedia), nil
 	}
+
+	hasCaption := hasColumn(db, "message_media", "media_caption")
 
 	result := make(map[int64]waMedia)
 
@@ -117,11 +180,16 @@ func fetchMedia(db *sql.DB, messageRowIDs []int64) (map[int64]waMedia, error) {
 			args[j] = id
 		}
 
+		captionExpr := "NULL"
+		if hasCaption {
+			captionExpr = "mm.media_caption"
+		}
+
 		query := fmt.Sprintf(`
 			SELECT
 				mm.message_row_id,
 				mm.mime_type,
-				mm.media_caption,
+				%s,
 				mm.file_size,
 				mm.file_path,
 				mm.width,
@@ -129,7 +197,7 @@ func fetchMedia(db *sql.DB, messageRowIDs []int64) (map[int64]waMedia, error) {
 				mm.media_duration
 			FROM message_media mm
 			WHERE mm.message_row_id IN (%s)
-		`, strings.Join(placeholders, ","))
+		`, captionExpr, strings.Join(placeholders, ","))
 
 		rows, err := db.Query(query, args...)
 		if err != nil {

@@ -9,10 +9,10 @@ import (
 	"github.com/wesm/msgvault/internal/textutil"
 )
 
-// Monochrome theme - adaptive for light and dark terminals
+// Monochrome theme - inherits terminal background where possible.
+// Only cursor, title bar, and alt rows use explicit backgrounds.
 var (
-	// Background colors - adaptive for light/dark terminals
-	bgBase   = lipgloss.AdaptiveColor{Light: "#ffffff", Dark: "#000000"}
+	// Explicit backgrounds only for elements that need contrast
 	bgAlt    = lipgloss.AdaptiveColor{Light: "#f0f0f0", Dark: "#181818"}
 	bgCursor = lipgloss.AdaptiveColor{Light: "#e0e0e0", Dark: "#282828"}
 
@@ -25,52 +25,43 @@ var (
 
 	statsStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.AdaptiveColor{Light: "#555555", Dark: "#999999"}).
-			Background(bgBase).
 			Padding(0, 1)
 
 	// Spinner style - NOT faint so it's visible
 	spinnerStyle = lipgloss.NewStyle().
-			Bold(true).
-			Background(bgBase)
+			Bold(true)
 
 	tableHeaderStyle = lipgloss.NewStyle().
-				Bold(true).
-				Background(bgBase)
+				Bold(true)
 
 	// Separator line style for under headers
 	separatorStyle = lipgloss.NewStyle().
-			Faint(true).
-			Background(bgBase)
+			Faint(true)
 
-	// Cursor row: subtle lighter background
+	// Cursor row: subtle background for visibility
 	cursorRowStyle = lipgloss.NewStyle().
 			Background(bgCursor)
 
-	// Selected (checked) rows: bold
+	// Selected (checked) rows: bold, inherits terminal background
 	selectedRowStyle = lipgloss.NewStyle().
-				Bold(true).
-				Background(bgBase)
+				Bold(true)
 
-	// Normal rows need background to clear old content
-	normalRowStyle = lipgloss.NewStyle().
-			Background(bgBase)
+	// Normal rows inherit terminal background
+	normalRowStyle = lipgloss.NewStyle()
 
-	// Alternating rows: very subtle gray background
+	// Alternating rows: very subtle shift from terminal default
 	altRowStyle = lipgloss.NewStyle().
 			Background(bgAlt)
 
 	footerStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.AdaptiveColor{Light: "#555555", Dark: "#999999"}).
-			Background(bgBase).
 			Padding(0, 1)
 
 	errorStyle = lipgloss.NewStyle().
-			Bold(true).
-			Background(bgBase)
+			Bold(true)
 
 	loadingStyle = lipgloss.NewStyle().
-			Italic(true).
-			Background(bgBase)
+			Italic(true)
 
 	selectedIndicatorStyle = lipgloss.NewStyle().
 				Bold(true)
@@ -78,15 +69,14 @@ var (
 	modalStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			Padding(1, 2).
-			Background(bgBase)
+			Background(lipgloss.AdaptiveColor{Light: "#ffffff", Dark: "#000000"})
 
 	modalTitleStyle = lipgloss.NewStyle().
 			Bold(true)
 
 	flashStyle = lipgloss.NewStyle().
 			Italic(true).
-			Foreground(lipgloss.AdaptiveColor{Light: "#996600", Dark: "#ffcc00"}). // Amber for visibility
-			Background(bgBase)
+			Foreground(lipgloss.AdaptiveColor{Light: "#996600", Dark: "#ffcc00"}) // Amber for visibility
 
 	highlightStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.AdaptiveColor{Light: "#000000", Dark: "#000000"}).

@@ -175,10 +175,29 @@ func (s *Store) GetMessage(id int64) (*APIMessage, error) {
 	return &m, nil
 }
 
-// SearchMessages searches messages using FTS5, with batch-loaded recipients and labels.
-func (s *Store) SearchMessages(query string, offset, limit int) ([]APIMessage, int64, error) {
-	// First try FTS5 search
-	ftsQuery := `
+// GetMessagesSummariesByIDs returns summary-level (no body, no
+// attachments) APIMessage rows for the supplied IDs in the same order
+// as ids. Missing IDs are silently dropped — callers are expected to
+// have already filtered for live messages, and a missing row in the
+// summary set is just "ignore this hit". Recipients and labels are
+// batch-loaded with the same shape as SearchMessages, so the worst
+// case is 5 SQL round-trips regardless of len(ids). This is the
+// designated hydration path for vector/hybrid search hits, where
+// callers loop over many MessageIDs and never need body or
+// attachments — calling GetMessage in that loop costs ~7 queries per
+// hit (body + attachments + 3 recipients + labels + base) and
+// dominates p50 search latency past a handful of results.
+func (s *Store) GetMessagesSummariesByIDs(ids []int64) ([]APIMessage, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	q := fmt.Sprintf(`
 		SELECT
 			m.id,
 			COALESCE(m.conversation_id, 0) as conversation_id,
@@ -188,18 +207,78 @@ func (s *Store) SearchMessages(query string, offset, limit int) ([]APIMessage, i
 			COALESCE(m.snippet, '') as snippet,
 			m.has_attachments,
 			m.size_estimate
-		FROM messages_fts fts
-		JOIN messages m ON m.id = fts.rowid
+		FROM messages m
 		LEFT JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
 		LEFT JOIN participants p ON p.id = mr.participant_id
-		WHERE messages_fts MATCH ? AND m.deleted_from_source_at IS NULL
-		ORDER BY rank
-		LIMIT ? OFFSET ?
-	`
-
-	rows, err := s.db.Query(ftsQuery, query, limit, offset)
+		WHERE m.id IN (%s) AND m.deleted_from_source_at IS NULL
+	`, strings.Join(placeholders, ","))
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
-		// FTS5 might not be available, fall back to LIKE search
+		return nil, fmt.Errorf("get message summaries: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	messages, foundIDs, err := scanMessageRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(messages) == 0 {
+		return nil, nil
+	}
+	if err := s.batchPopulate(messages, foundIDs); err != nil {
+		return nil, err
+	}
+
+	// Re-order to match the caller's id order so search rank is
+	// preserved end-to-end.
+	indexByID := make(map[int64]int, len(messages))
+	for i, m := range messages {
+		indexByID[m.ID] = i
+	}
+	ordered := make([]APIMessage, 0, len(ids))
+	for _, id := range ids {
+		if idx, ok := indexByID[id]; ok {
+			ordered = append(ordered, messages[idx])
+		}
+	}
+	return ordered, nil
+}
+
+// SearchMessages searches messages using full-text search, with batch-loaded recipients and labels.
+func (s *Store) SearchMessages(query string, offset, limit int) ([]APIMessage, int64, error) {
+	ftsJoin, ftsWhere, ftsOrder, orderArgCount := s.dialect.FTSSearchClause()
+
+	ftsQuery := fmt.Sprintf(`
+		SELECT
+			m.id,
+			COALESCE(m.conversation_id, 0) as conversation_id,
+			COALESCE(m.subject, '') as subject,
+			COALESCE(p.email_address, '') as from_email,
+			COALESCE(m.sent_at, m.received_at, m.internal_date) as sent_at,
+			COALESCE(m.snippet, '') as snippet,
+			m.has_attachments,
+			m.size_estimate
+		FROM messages m
+		%s
+		LEFT JOIN message_recipients mr ON mr.message_id = m.id AND mr.recipient_type = 'from'
+		LEFT JOIN participants p ON p.id = mr.participant_id
+		WHERE %s AND m.deleted_from_source_at IS NULL
+		ORDER BY %s
+		LIMIT ? OFFSET ?
+	`, ftsJoin, ftsWhere, ftsOrder)
+
+	// Bind the search term once for WHERE, plus orderArgCount more times
+	// for any ? placeholders the dialect put in the order-by fragment.
+	searchArgs := make([]interface{}, 0, 3+orderArgCount)
+	searchArgs = append(searchArgs, query)
+	for i := 0; i < orderArgCount; i++ {
+		searchArgs = append(searchArgs, query)
+	}
+	searchArgs = append(searchArgs, limit, offset)
+
+	rows, err := s.db.Query(ftsQuery, searchArgs...)
+	if err != nil {
+		// FTS might not be available, fall back to LIKE search
 		return s.searchMessagesLike(query, offset, limit)
 	}
 	defer func() { _ = rows.Close() }()
@@ -215,12 +294,12 @@ func (s *Store) SearchMessages(query string, offset, limit int) ([]APIMessage, i
 
 	// Get total count
 	var total int64
-	countQuery := `
+	countQuery := fmt.Sprintf(`
 		SELECT COUNT(*)
-		FROM messages_fts fts
-		JOIN messages m ON m.id = fts.rowid
-		WHERE messages_fts MATCH ? AND m.deleted_from_source_at IS NULL
-	`
+		FROM messages m
+		%s
+		WHERE %s AND m.deleted_from_source_at IS NULL
+	`, ftsJoin, ftsWhere)
 	if err := s.db.QueryRow(countQuery, query).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count FTS results: %w", err)
 	}
@@ -244,12 +323,19 @@ func (s *Store) SearchMessagesQuery(
 	conditions = append(conditions,
 		"m.deleted_from_source_at IS NULL")
 
-	// FTS5 text terms.
-	ftsJoin := ""
-	if len(q.TextTerms) > 0 {
-		ftsExpr := buildFTSExpression(q.TextTerms)
-		ftsJoin = "JOIN messages_fts fts ON fts.rowid = m.id"
-		conditions = append(conditions, "messages_fts MATCH ?")
+	// FTS text terms. ftsEnabled is the authoritative signal that FTS is
+	// active — ftsJoin may be empty on dialects (e.g. PostgreSQL) whose
+	// tsvector lives on the main table and needs no extra join.
+	ftsEnabled := len(q.TextTerms) > 0
+	var ftsJoin, ftsOrder, ftsExpr string
+	var ftsOrderArgCount int
+	if ftsEnabled {
+		ftsExpr = buildFTSExpression(q.TextTerms)
+		join, where, orderBy, orderArgCount := s.dialect.FTSSearchClause()
+		ftsJoin = join
+		ftsOrder = orderBy
+		ftsOrderArgCount = orderArgCount
+		conditions = append(conditions, where)
 		args = append(args, ftsExpr)
 	}
 
@@ -364,7 +450,7 @@ func (s *Store) SearchMessagesQuery(
 
 	var total int64
 	if err := s.db.QueryRow(countSQL, args...).Scan(&total); err != nil {
-		if ftsJoin != "" {
+		if ftsEnabled {
 			return s.searchMessagesQueryNoFTS(q, offset, limit)
 		}
 		return nil, 0, fmt.Errorf("count search results: %w", err)
@@ -372,8 +458,8 @@ func (s *Store) SearchMessagesQuery(
 
 	// Results query.
 	orderBy := "COALESCE(m.sent_at, m.received_at, m.internal_date) DESC"
-	if ftsJoin != "" {
-		orderBy = "rank, " + orderBy
+	if ftsEnabled {
+		orderBy = ftsOrder + ", " + orderBy
 	}
 	searchSQL := fmt.Sprintf(`
 		SELECT
@@ -395,13 +481,19 @@ func (s *Store) SearchMessagesQuery(
 		LIMIT ? OFFSET ?
 	`, ftsJoin, whereClause, orderBy)
 
-	resultArgs := make([]interface{}, len(args))
-	copy(resultArgs, args)
+	// If the dialect's order-by fragment has ? placeholders, bind the FTS
+	// expression that many extra times — right after the WHERE args and
+	// before LIMIT/OFFSET so Rebind assigns them the correct positions.
+	resultArgs := make([]interface{}, 0, len(args)+ftsOrderArgCount+2)
+	resultArgs = append(resultArgs, args...)
+	for i := 0; i < ftsOrderArgCount; i++ {
+		resultArgs = append(resultArgs, ftsExpr)
+	}
 	resultArgs = append(resultArgs, limit, offset)
 	rows, err := s.db.Query(searchSQL, resultArgs...)
 	if err != nil {
 		// FTS5 not available -- fall back if we used it.
-		if ftsJoin != "" {
+		if ftsEnabled {
 			return s.searchMessagesQueryNoFTS(q, offset, limit)
 		}
 		return nil, 0, err

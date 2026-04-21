@@ -418,38 +418,6 @@ func escapeILIKE(s string) string {
 	return s
 }
 
-// startsWithWordChar reports whether s begins with a regex word character
-// [a-zA-Z0-9_]. Used to decide whether \b is appropriate as a prefix.
-func startsWithWordChar(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-	c := s[0]
-	return (c >= 'a' && c <= 'z') ||
-		(c >= 'A' && c <= 'Z') ||
-		(c >= '0' && c <= '9') ||
-		c == '_'
-}
-
-// escapeRegex escapes special regex characters for use in DuckDB's regexp_matches function
-func escapeRegex(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, ".", "\\.")
-	s = strings.ReplaceAll(s, "*", "\\*")
-	s = strings.ReplaceAll(s, "+", "\\+")
-	s = strings.ReplaceAll(s, "?", "\\?")
-	s = strings.ReplaceAll(s, "[", "\\[")
-	s = strings.ReplaceAll(s, "]", "\\]")
-	s = strings.ReplaceAll(s, "(", "\\(")
-	s = strings.ReplaceAll(s, ")", "\\)")
-	s = strings.ReplaceAll(s, "{", "\\{")
-	s = strings.ReplaceAll(s, "}", "\\}")
-	s = strings.ReplaceAll(s, "|", "\\|")
-	s = strings.ReplaceAll(s, "^", "\\^")
-	s = strings.ReplaceAll(s, "$", "\\$")
-	return s
-}
-
 // buildWhereClause builds WHERE conditions for Parquet queries.
 // Column references use msg. prefix to be explicit since aggregate queries join multiple CTEs.
 // buildAggregateSearchConditions builds SQL conditions for a search query in aggregate views.
@@ -470,35 +438,46 @@ func (e *DuckDBEngine) buildAggregateSearchConditions(searchQuery string, keyCol
 
 	// Text terms: always search subject + sender, plus the view's grouping
 	// key columns when provided (e.g., label name in Labels view).
-	// Uses word-boundary regex (\b) for terms starting with word chars.
-	// Terms starting with non-word chars (e.g., +, @, #) skip \b
-	// since it requires a word/non-word transition that fails at
-	// string start or after whitespace.
+	// Uses ILIKE for performance on Parquet scans.
 	for _, term := range q.TextTerms {
-		escaped := escapeRegex(term)
-		regexPattern := "(?i)" + escaped
-		if startsWithWordChar(term) {
-			regexPattern = "(?i)\\b" + escaped
-		}
+		termPattern := "%" + escapeILIKE(term) + "%"
 		var parts []string
-		parts = append(parts, `regexp_matches(COALESCE(msg.subject, ''), ?)`)
-		args = append(args, regexPattern)
-		parts = append(parts, `regexp_matches(COALESCE(msg.snippet, ''), ?)`)
-		args = append(args, regexPattern)
+		parts = append(parts, `msg.subject ILIKE ? ESCAPE '\'`)
+		args = append(args, termPattern)
+		parts = append(parts, `COALESCE(msg.snippet, '') ILIKE ? ESCAPE '\'`)
+		args = append(args, termPattern)
 		parts = append(parts, `EXISTS (
 			SELECT 1 FROM mr mr_search
 			JOIN p p_search ON p_search.id = mr_search.participant_id
 			WHERE mr_search.message_id = msg.id
 			  AND mr_search.recipient_type = 'from'
-			  AND (regexp_matches(p_search.email_address, ?) OR regexp_matches(COALESCE(p_search.display_name, ''), ?))
+			  AND (p_search.email_address ILIKE ? ESCAPE '\' OR COALESCE(p_search.display_name, '') ILIKE ? ESCAPE '\')
 		)`)
-		args = append(args, regexPattern, regexPattern)
+		args = append(args, termPattern, termPattern)
 		for _, col := range keyColumns {
-			parts = append(parts, `regexp_matches(COALESCE(`+col+`, ''), ?)`)
-			args = append(args, regexPattern)
+			parts = append(parts, col+` ILIKE ? ESCAPE '\'`)
+			args = append(args, termPattern)
 		}
 		conditions = append(conditions, "("+strings.Join(parts, " OR ")+")")
 	}
+
+	// Append non-text filters (from:, to:, subject:, label:, has:, dates, sizes).
+	nonTextConds, nonTextArgs := e.buildNonTextSearchConditions(q, keyColumns...)
+	conditions = append(conditions, nonTextConds...)
+	args = append(args, nonTextArgs...)
+
+	return conditions, args
+}
+
+// buildNonTextSearchConditions builds WHERE conditions for the non-text
+// portion of a parsed search query (from:, to:, subject:, label:, has:,
+// date/size filters). Extracted from buildAggregateSearchConditions so
+// callers that handle text terms themselves (e.g. buildStatsSearchConditions)
+// can append non-text filters without having to compute how many args
+// the text-term portion produced.
+func (e *DuckDBEngine) buildNonTextSearchConditions(q *search.Query, keyColumns ...string) ([]string, []interface{}) {
+	var conditions []string
+	var args []interface{}
 
 	// from: filter - match sender email
 	for _, from := range q.FromAddrs {
@@ -650,26 +629,13 @@ func (e *DuckDBEngine) buildStatsSearchConditions(searchQuery string, groupBy Vi
 	}
 
 	// Non-text filters (from:, to:, subject:, label:, etc.) are the same
-	// regardless of view — delegate to the standard builder with no key columns.
-	nonTextConds, nonTextArgs := e.buildAggregateSearchConditions(searchQuery)
-	// Remove text-term conditions from the standard builder output (they are
-	// the first len(q.TextTerms) entries). We already handled text terms above.
-	if len(q.TextTerms) > 0 && len(nonTextConds) > len(q.TextTerms) {
-		conditions = append(conditions, nonTextConds[len(q.TextTerms):]...)
-		args = append(args, nonTextArgs[countArgsForTextTerms(len(q.TextTerms)):]...)
-	} else if len(q.TextTerms) == 0 {
-		conditions = append(conditions, nonTextConds...)
-		args = append(args, nonTextArgs...)
-	}
+	// regardless of view — delegate to the non-text helper directly so we
+	// don't have to track how many args the text-term portion emits.
+	nonTextConds, nonTextArgs := e.buildNonTextSearchConditions(q)
+	conditions = append(conditions, nonTextConds...)
+	args = append(args, nonTextArgs...)
 
 	return conditions, args
-}
-
-// countArgsForTextTerms returns the number of args used by N text terms in
-// buildAggregateSearchConditions with no keyColumns (4 args per term:
-// subject + snippet + 2 sender).
-func countArgsForTextTerms(n int) int {
-	return n * 4
 }
 
 // keyColumns are passed through to buildAggregateSearchConditions to control
@@ -1420,6 +1386,17 @@ func (e *DuckDBEngine) fetchLabelsForMessages(ctx context.Context, messages []Me
 	}
 
 	return fetchLabelsForMessageList(ctx, e.db, "sqlite_db.", messages)
+}
+
+// GetMessageSummariesByIDs delegates to the SQLite engine — the
+// summary lookup is a small handful of indexed queries that gain
+// nothing from going through Parquet, and SQLite's plan keeps the
+// caller-supplied id order intact.
+func (e *DuckDBEngine) GetMessageSummariesByIDs(ctx context.Context, ids []int64) ([]MessageSummary, error) {
+	if e.sqliteEngine == nil {
+		return nil, fmt.Errorf("GetMessageSummariesByIDs requires SQLite: pass sqlitePath to NewDuckDBEngine")
+	}
+	return e.sqliteEngine.GetMessageSummariesByIDs(ctx, ids)
 }
 
 // GetMessage retrieves a full message from SQLite.
@@ -2399,23 +2376,18 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 	}
 
 	// Text search terms - search subject, snippet, and from fields (fast path).
-	// Use word-boundary regex (\b) for terms starting with word chars.
-	// Terms starting with non-word chars skip \b (see startsWithWordChar).
+	// Uses ILIKE for performance on Parquet scans.
 	if len(q.TextTerms) > 0 {
 		for _, term := range q.TextTerms {
-			escaped := escapeRegex(term)
-			regexPattern := "(?i)" + escaped
-			if startsWithWordChar(term) {
-				regexPattern = "(?i)\\b" + escaped
-			}
+			termPattern := "%" + escapeILIKE(term) + "%"
 			conditions = append(conditions, `(
-				regexp_matches(COALESCE(msg.subject, ''), ?) OR
-				regexp_matches(COALESCE(msg.snippet, ''), ?) OR
-				regexp_matches(COALESCE(ms.from_email, ds.from_email, ''), ?) OR
-				regexp_matches(COALESCE(ms.from_name, ds.from_name, ''), ?) OR
-				regexp_matches(COALESCE(ms.from_phone, ds.from_phone, ''), ?)
+				msg.subject ILIKE ? ESCAPE '\' OR
+				COALESCE(msg.snippet, '') ILIKE ? ESCAPE '\' OR
+				COALESCE(ms.from_email, ds.from_email, '') ILIKE ? ESCAPE '\' OR
+				COALESCE(ms.from_name, ds.from_name, '') ILIKE ? ESCAPE '\' OR
+				COALESCE(ms.from_phone, ds.from_phone, '') ILIKE ? ESCAPE '\'
 			)`)
-			args = append(args, regexPattern, regexPattern, regexPattern, regexPattern, regexPattern)
+			args = append(args, termPattern, termPattern, termPattern, termPattern, termPattern)
 		}
 	}
 

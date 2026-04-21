@@ -12,23 +12,28 @@ LDFLAGS := -X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=$(VERSION) \
 
 LDFLAGS_RELEASE := $(LDFLAGS) -s -w
 
-.PHONY: build build-release install clean test test-v fmt lint lint-ci tidy shootout run-shootout install-hooks help
+# Default build tags applied to every go build/test/bench invocation.
+# - fts5: enable the SQLite FTS5 full-text search extension
+# - sqlite_vec: enable the sqlite-vec extension for vector search
+BUILD_TAGS := fts5 sqlite_vec
+
+.PHONY: build build-release install clean test test-v fmt lint lint-ci tidy shootout run-shootout install-hooks bench help
 
 # Build the binary (debug)
 build:
-	CGO_ENABLED=1 go build -tags fts5 -ldflags="$(LDFLAGS)" -o msgvault ./cmd/msgvault
+	CGO_ENABLED=1 go build -tags "$(BUILD_TAGS)" -ldflags="$(LDFLAGS)" -o msgvault ./cmd/msgvault
 	@chmod +x msgvault
 
 # Build with optimizations (release)
 build-release:
-	CGO_ENABLED=1 go build -tags fts5 -ldflags="$(LDFLAGS_RELEASE)" -trimpath -o msgvault ./cmd/msgvault
+	CGO_ENABLED=1 go build -tags "$(BUILD_TAGS)" -ldflags="$(LDFLAGS_RELEASE)" -trimpath -o msgvault ./cmd/msgvault
 	@chmod +x msgvault
 
 # Install to ~/.local/bin, $GOBIN, or $GOPATH/bin
 install:
 	@if [ -d "$(HOME)/.local/bin" ]; then \
 		echo "Installing to ~/.local/bin/msgvault"; \
-		CGO_ENABLED=1 go build -tags fts5 -ldflags="$(LDFLAGS)" -o "$(HOME)/.local/bin/msgvault" ./cmd/msgvault; \
+		CGO_ENABLED=1 go build -tags "$(BUILD_TAGS)" -ldflags="$(LDFLAGS)" -o "$(HOME)/.local/bin/msgvault" ./cmd/msgvault; \
 	else \
 		INSTALL_DIR="$${GOBIN:-$$(go env GOBIN)}"; \
 		if [ -z "$$INSTALL_DIR" ]; then \
@@ -37,7 +42,7 @@ install:
 		fi; \
 		mkdir -p "$$INSTALL_DIR"; \
 		echo "Installing to $$INSTALL_DIR/msgvault"; \
-		CGO_ENABLED=1 go build -tags fts5 -ldflags="$(LDFLAGS)" -o "$$INSTALL_DIR/msgvault" ./cmd/msgvault; \
+		CGO_ENABLED=1 go build -tags "$(BUILD_TAGS)" -ldflags="$(LDFLAGS)" -o "$$INSTALL_DIR/msgvault" ./cmd/msgvault; \
 	fi
 
 # Clean build artifacts
@@ -47,11 +52,11 @@ clean:
 
 # Run tests
 test:
-	go test -tags fts5 ./...
+	go test -tags "$(BUILD_TAGS)" ./...
 
 # Run tests with verbose output
 test-v:
-	go test -tags fts5 -v ./...
+	go test -tags "$(BUILD_TAGS)" -v ./...
 
 # Format code
 fmt:
@@ -92,6 +97,10 @@ install-hooks:
 tidy:
 	go mod tidy
 
+# Run benchmarks (query engine smoke test)
+bench:
+	go test -tags "$(BUILD_TAGS)" -run=^$$ -bench=. -benchtime=1s -count=1 ./internal/query/
+
 # Build the MIME shootout tool
 shootout:
 	CGO_ENABLED=1 go build -o mimeshootout ./scripts/mimeshootout
@@ -117,5 +126,6 @@ help:
 	@echo "  install-hooks  - Install pre-commit hook via prek"
 	@echo "  clean          - Remove build artifacts"
 	@echo ""
+	@echo "  bench          - Run query engine benchmarks"
 	@echo "  shootout       - Build MIME shootout tool"
 	@echo "  run-shootout   - Run MIME shootout"

@@ -30,7 +30,11 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update
-          apt-get install -y gcc g++ make git curl tar gzip file binutils
+          # libsqlite3-dev provides sqlite3.h, which sqlite-vec's CGo
+          # binding includes unconditionally with -DSQLITE_CORE. mattn's
+          # sqlite3 driver still links its own bundled amalgamation at
+          # runtime; the header is only needed at compile time.
+          apt-get install -y gcc g++ make git curl tar gzip file binutils libsqlite3-dev
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -54,7 +58,7 @@ jobs:
 
           mkdir -p dist
           LDFLAGS="-s -w -X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=v${VERSION} -X github.com/wesm/msgvault/cmd/msgvault/cmd.Commit=$(printf '%s' "$GITHUB_SHA" | cut -c1-8) -X github.com/wesm/msgvault/cmd/msgvault/cmd.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ) -extldflags '-lstdc++ -lm'"
-          go build -tags fts5 -trimpath -buildvcs=false -ldflags="$LDFLAGS" -o dist/msgvault ./cmd/msgvault
+          go build -tags "fts5 sqlite_vec" -trimpath -buildvcs=false -ldflags="$LDFLAGS" -o dist/msgvault ./cmd/msgvault
 
           echo "--- Binary info ---"
           file dist/msgvault
@@ -75,7 +79,7 @@ jobs:
           tar czf "$ARCHIVE" msgvault
           rm msgvault
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: msgvault-linux-${{ matrix.goarch }}
           path: dist/*.tar.gz
@@ -107,7 +111,7 @@ jobs:
 
           mkdir -p dist
           LDFLAGS="-s -w -X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=v${VERSION} -X github.com/wesm/msgvault/cmd/msgvault/cmd.Commit=$(printf '%s' "$GITHUB_SHA" | cut -c1-8) -X github.com/wesm/msgvault/cmd/msgvault/cmd.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          go build -tags fts5 -trimpath -ldflags="$LDFLAGS" -o dist/msgvault ./cmd/msgvault
+          go build -tags "fts5 sqlite_vec" -trimpath -ldflags="$LDFLAGS" -o dist/msgvault ./cmd/msgvault
 
           echo "--- Binary info ---"
           file dist/msgvault
@@ -136,7 +140,7 @@ jobs:
           tar czf "$ARCHIVE" msgvault
           rm msgvault
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: msgvault-darwin-${{ matrix.goarch }}
           path: dist/*.tar.gz
@@ -153,17 +157,27 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # sqlite-vec's CGo bindings need sqlite3.h at compile time and
+      # arrow-go/v18's cdata helpers need GNU89 inline semantics on
+      # MinGW; see .github/workflows/ci.yml for details.
+      - name: Install sqlite3 dev headers
+        shell: pwsh
+        run: |
+          C:\msys64\usr\bin\pacman.exe -S --noconfirm --needed mingw-w64-x86_64-sqlite3
+
       - name: Build
         env:
           GOOS: windows
           GOARCH: amd64
           CGO_ENABLED: '1'
+          CGO_CFLAGS: "-IC:/msys64/mingw64/include -fgnu89-inline"
+          CGO_LDFLAGS: "-Wl,--allow-multiple-definition"
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
 
           mkdir -p dist
           LDFLAGS="-s -w -X github.com/wesm/msgvault/cmd/msgvault/cmd.Version=v${VERSION} -X github.com/wesm/msgvault/cmd/msgvault/cmd.Commit=$(printf '%s' "$GITHUB_SHA" | cut -c1-8) -X github.com/wesm/msgvault/cmd/msgvault/cmd.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          go build -tags fts5 -trimpath -ldflags="$LDFLAGS" -o dist/msgvault.exe ./cmd/msgvault
+          go build -tags "fts5 sqlite_vec" -trimpath -ldflags="$LDFLAGS" -o dist/msgvault.exe ./cmd/msgvault
 
           # Smoke test
           echo "--- Smoke test ---"
@@ -177,7 +191,7 @@ jobs:
           powershell -Command "Compress-Archive -Path msgvault.exe -DestinationPath '$ARCHIVE'"
           rm msgvault.exe
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: msgvault-windows-amd64
           path: dist/*.zip
@@ -259,7 +273,7 @@ jobs:
           fi
 
       - name: Create Release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           files: |
             artifacts/*.tar.gz

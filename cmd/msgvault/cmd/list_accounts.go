@@ -113,6 +113,10 @@ func listLocalAccounts() error {
 		}
 	}
 
+	logger.Info("list-accounts",
+		"sources", len(stats),
+	)
+
 	if listAccountsJSON {
 		return outputAccountsJSON(stats)
 	}

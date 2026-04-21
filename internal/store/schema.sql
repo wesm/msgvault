@@ -357,6 +357,7 @@ CREATE INDEX IF NOT EXISTS idx_reactions_message ON reactions(message_id);
 -- Attachments
 CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_hash ON attachments(content_hash);
+CREATE INDEX IF NOT EXISTS idx_attachments_storage_path ON attachments(storage_path);
 
 -- Labels
 CREATE INDEX IF NOT EXISTS idx_labels_source ON labels(source_id);

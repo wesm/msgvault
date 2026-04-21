@@ -186,6 +186,10 @@ The TUI automatically builds/updates the Parquet cache on launch when new messag
 
 Sync is **read-only** - no modifications to Gmail.
 
+## Test Data
+
+Never use real people's names, email addresses, or identifiers in test fixtures. Use obviously synthetic names: `alice`, `bob`, `Test User`, `user@example.com`. Before committing test data, verify no real PII is present.
+
 ## Go Development
 
 After making any Go code changes, always run `go fmt ./...` and `go vet ./...` before committing. Stage ALL resulting changes, including formatting-only files.

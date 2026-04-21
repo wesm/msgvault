@@ -18,6 +18,8 @@ var (
 	searchOffset  int
 	searchJSON    bool
 	searchAccount string
+	searchMode    string
+	searchExplain bool
 )
 
 var searchCmd = &cobra.Command{
@@ -66,7 +68,20 @@ Examples:
 					"--account is not supported in remote mode",
 				)
 			}
+			if searchMode != "fts" {
+				return fmt.Errorf("--mode is not supported in remote mode")
+			}
 			return runRemoteSearch(queryStr)
+		}
+
+		if searchMode != "fts" {
+			if searchMode != "vector" && searchMode != "hybrid" {
+				return fmt.Errorf("invalid --mode: %q (want fts|vector|hybrid)", searchMode)
+			}
+			if searchOffset > 0 {
+				return fmt.Errorf("--offset is not supported with --mode=%s (pagination is single-page)", searchMode)
+			}
+			return runHybridSearch(cmd, queryStr, searchMode, searchExplain)
 		}
 
 		return runLocalSearch(cmd, queryStr)
@@ -146,13 +161,40 @@ func runLocalSearch(cmd *cobra.Command, queryStr string) error {
 		return err
 	}
 
+	// Log the search operation. Raw query text and account
+	// identifiers may contain PII — log coarse metadata at
+	// info and full values only at debug.
+	hasAccount := q.AccountID != nil
+	logger.Info("search start",
+		"query_len", len(queryStr),
+		"has_account", hasAccount,
+		"limit", searchLimit,
+		"offset", searchOffset,
+	)
+	logger.Debug("search start detail",
+		"query", queryStr,
+		"account", searchAccount,
+	)
+	started := time.Now()
+
 	// Create query engine and execute search
 	engine := query.NewSQLiteEngine(s.DB())
 	results, err := engine.Search(cmd.Context(), q, searchLimit, searchOffset)
 	fmt.Fprintf(os.Stderr, "\r            \r")
 	if err != nil {
+		logger.Warn("search failed",
+			"query_len", len(queryStr),
+			"duration_ms", time.Since(started).Milliseconds(),
+			"error", err.Error(),
+		)
 		return query.HintRepairEncoding(fmt.Errorf("search: %w", err))
 	}
+	logger.Info("search done",
+		"query_len", len(queryStr),
+		"has_account", hasAccount,
+		"results", len(results),
+		"duration_ms", time.Since(started).Milliseconds(),
+	)
 
 	if len(results) == 0 {
 		fmt.Println("No messages found.")
@@ -237,6 +279,8 @@ func init() {
 	searchCmd.Flags().IntVar(&searchOffset, "offset", 0, "Skip first N results")
 	searchCmd.Flags().BoolVar(&searchJSON, "json", false, "Output as JSON")
 	searchCmd.Flags().StringVar(&searchAccount, "account", "", "Limit results to a specific account (email address)")
+	searchCmd.Flags().StringVar(&searchMode, "mode", "fts", "Search mode: fts|vector|hybrid")
+	searchCmd.Flags().BoolVar(&searchExplain, "explain", false, "Include per-signal scores in output (hybrid/vector modes)")
 }
 
 // ensureFTSIndex checks if the FTS search index needs to be built and

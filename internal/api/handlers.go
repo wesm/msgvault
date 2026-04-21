@@ -3,8 +3,10 @@ package api
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,6 +21,8 @@ import (
 	"github.com/wesm/msgvault/internal/scheduler"
 	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/store"
+	"github.com/wesm/msgvault/internal/vector"
+	"github.com/wesm/msgvault/internal/vector/hybrid"
 	"golang.org/x/oauth2"
 )
 
@@ -27,12 +31,13 @@ const maxPageSize = 500
 
 // StatsResponse represents the archive statistics.
 type StatsResponse struct {
-	TotalMessages int64 `json:"total_messages"`
-	TotalThreads  int64 `json:"total_threads"`
-	TotalAccounts int64 `json:"total_accounts"`
-	TotalLabels   int64 `json:"total_labels"`
-	TotalAttach   int64 `json:"total_attachments"`
-	DatabaseSize  int64 `json:"database_size_bytes"`
+	TotalMessages int64             `json:"total_messages"`
+	TotalThreads  int64             `json:"total_threads"`
+	TotalAccounts int64             `json:"total_accounts"`
+	TotalLabels   int64             `json:"total_labels"`
+	TotalAttach   int64             `json:"total_attachments"`
+	DatabaseSize  int64             `json:"database_size_bytes"`
+	VectorSearch  *vector.StatsView `json:"vector_search,omitempty"`
 }
 
 // APIMessage is an alias for store.APIMessage — single source of truth for
@@ -105,6 +110,52 @@ type SearchResult struct {
 	Messages []MessageSummary `json:"messages"`
 }
 
+// hybridSearchResponse represents results from vector or hybrid search.
+// PoolSaturated is always emitted so clients can read "pool not
+// saturated" as a positive signal rather than an absent field.
+type hybridSearchResponse struct {
+	Query         string             `json:"query"`
+	Mode          string             `json:"mode"`
+	Returned      int                `json:"returned"`
+	PoolSaturated bool               `json:"pool_saturated"`
+	Generation    generationSummary  `json:"generation"`
+	TookMS        int64              `json:"took_ms"`
+	Results       []hybridSearchItem `json:"results"`
+}
+
+// generationSummary describes the active vector-index generation used to
+// answer a hybrid/vector query.
+type generationSummary struct {
+	ID          int64  `json:"id"`
+	Model       string `json:"model"`
+	Dimension   int    `json:"dimension"`
+	Fingerprint string `json:"fingerprint"`
+	State       string `json:"state"`
+}
+
+// hybridSearchItem is a single hit in a vector/hybrid response. It
+// embeds MessageSummary (not APIMessage) so the JSON schema matches
+// /api/v1/search's summary surface — callers get the same snake-case
+// fields, and we do not leak full message bodies, headers, or
+// attachment metadata in search results. Score is present only when
+// explain=1 was requested.
+type hybridSearchItem struct {
+	MessageSummary
+	Score *scoreBreakdown `json:"score,omitempty"`
+}
+
+// scoreBreakdown exposes fused-score components for debugging. BM25,
+// Vector, and RRF are pointer-typed so that "not present in this
+// signal" can be distinguished from a legitimate 0.0 score in JSON.
+// In particular, mode=vector reports vector with no rrf (RRF requires
+// two signals to fuse), and mode=fts reports bm25 with no rrf or vector.
+type scoreBreakdown struct {
+	RRF            *float64 `json:"rrf,omitempty"`
+	BM25           *float64 `json:"bm25,omitempty"`
+	Vector         *float64 `json:"vector,omitempty"`
+	SubjectBoosted bool     `json:"subject_boosted,omitempty"`
+}
+
 // writeJSON writes a JSON response.
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -158,6 +209,13 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Vector stats are best-effort: log errors but still include
+	// whatever partial stats came back.
+	vs, vsErr := vector.CollectStats(r.Context(), s.backend)
+	if vsErr != nil {
+		s.logger.Warn("vector stats", "error", vsErr)
+	}
+
 	resp := StatsResponse{
 		TotalMessages: stats.MessageCount,
 		TotalThreads:  stats.ThreadCount,
@@ -165,6 +223,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		TotalLabels:   stats.LabelCount,
 		TotalAttach:   stats.AttachmentCount,
 		DatabaseSize:  stats.DatabaseSize,
+		VectorSearch:  vs,
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -260,6 +319,36 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mode := r.URL.Query().Get("mode")
+	if mode == "" {
+		mode = "fts"
+	}
+	explain := r.URL.Query().Get("explain") == "1"
+
+	if mode == "vector" || mode == "hybrid" {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if page > 1 {
+			writeError(w, http.StatusBadRequest, "pagination_unsupported",
+				"mode=vector|hybrid only supports page=1")
+			return
+		}
+		pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+		if pageSize < 1 {
+			pageSize = 20
+		}
+		if maxPage := s.vectorCfg.Search.MaxPageSizeHybridClamp(); maxPage > 0 && pageSize > maxPage {
+			pageSize = maxPage
+		}
+		s.handleHybridSearch(w, r, query, mode, explain, pageSize)
+		return
+	}
+
+	if mode != "fts" {
+		writeError(w, http.StatusBadRequest, "invalid_mode",
+			fmt.Sprintf("mode must be one of fts|vector|hybrid, got %q", mode))
+		return
+	}
+
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	if page < 1 {
 		page = 1
@@ -301,6 +390,143 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Page:     page,
 		PageSize: pageSize,
 		Messages: summaries,
+	})
+}
+
+// handleHybridSearch runs vector or hybrid search via the configured
+// hybrid engine. Returns 503 when the engine is not configured or the
+// index is stale/building; otherwise returns RRF-ranked hits hydrated
+// through the message store.
+func (s *Server) handleHybridSearch(
+	w http.ResponseWriter, r *http.Request,
+	q, mode string, explain bool, pageSize int,
+) {
+	if s.hybridEngine == nil {
+		writeError(w, http.StatusServiceUnavailable, "vector_not_enabled",
+			"vector search is not configured on this server")
+		return
+	}
+	ctx := r.Context()
+	start := time.Now()
+
+	parsed := search.Parse(q)
+	freeText := strings.Join(parsed.TextTerms, " ")
+	// Vector/hybrid search requires text to embed; filter-only
+	// queries have no query vector to rank by. Callers that want
+	// pure structured filtering should use mode=fts instead of
+	// falling through to a 500 from the engine's "empty query"
+	// rejection.
+	if freeText == "" {
+		writeError(w, http.StatusBadRequest, "missing_free_text",
+			"mode=vector|hybrid requires at least one free-text term; use mode=fts for filter-only queries")
+		return
+	}
+
+	subjectTerms := make([]string, 0, len(parsed.TextTerms))
+	for _, t := range parsed.TextTerms {
+		subjectTerms = append(subjectTerms, strings.ToLower(t))
+	}
+
+	filter, err := s.hybridEngine.BuildFilter(ctx, parsed)
+	if err != nil {
+		s.logger.Error("build hybrid filter failed", "query", q, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "filter resolution failed")
+		return
+	}
+
+	req := hybrid.SearchRequest{
+		Mode:         hybrid.Mode(mode),
+		FreeText:     freeText,
+		Filter:       filter,
+		Limit:        pageSize,
+		SubjectTerms: subjectTerms,
+		Explain:      explain,
+	}
+
+	hits, meta, err := s.hybridEngine.Search(ctx, req)
+	if err != nil {
+		switch {
+		case errors.Is(err, vector.ErrNotEnabled):
+			writeError(w, http.StatusServiceUnavailable, "vector_not_enabled",
+				"vector search is not configured")
+		case errors.Is(err, vector.ErrIndexStale):
+			writeError(w, http.StatusServiceUnavailable, "index_stale",
+				"the vector index does not match the configured model; run `msgvault build-embeddings --full-rebuild`")
+		case errors.Is(err, vector.ErrIndexBuilding):
+			writeError(w, http.StatusServiceUnavailable, "index_building",
+				"the initial vector index is still being built")
+		case errors.Is(err, vector.ErrEmbeddingTimeout):
+			writeError(w, http.StatusServiceUnavailable, "embedding_timeout",
+				"the embedding endpoint did not respond in time; retry, or raise [vector.embeddings].timeout")
+		default:
+			s.logger.Error("hybrid search failed", "query", q, "mode", mode, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "search failed")
+		}
+		return
+	}
+
+	// Bulk-hydrate to avoid the per-hit GetMessage N+1: a single
+	// summary lookup pulls the base fields + recipients + labels for
+	// the whole hit set in 5 SQL round-trips, regardless of len(hits).
+	// Body and attachments are intentionally skipped — the search
+	// response only needs MessageSummary.
+	hitIDs := make([]int64, len(hits))
+	for i, h := range hits {
+		hitIDs[i] = h.MessageID
+	}
+	summaries, err := s.store.GetMessagesSummariesByIDs(hitIDs)
+	if err != nil {
+		s.logger.Warn("hydrate hybrid hits failed", "ids", len(hitIDs), "error", err)
+		summaries = nil
+	}
+	byID := make(map[int64]APIMessage, len(summaries))
+	for _, m := range summaries {
+		byID[m.ID] = m
+	}
+	items := make([]hybridSearchItem, 0, len(hits))
+	for _, h := range hits {
+		msg, ok := byID[h.MessageID]
+		if !ok {
+			// Hit referred to a row that disappeared between Search
+			// and hydration (just-deleted, retired generation, etc.).
+			// Drop it silently — same effect as the old per-hit
+			// GetMessage returning nil.
+			continue
+		}
+		item := hybridSearchItem{MessageSummary: toMessageSummary(msg)}
+		if explain {
+			sb := &scoreBreakdown{SubjectBoosted: h.SubjectBoosted}
+			if !math.IsNaN(h.RRFScore) {
+				v := h.RRFScore
+				sb.RRF = &v
+			}
+			if !math.IsNaN(h.BM25Score) {
+				v := h.BM25Score
+				sb.BM25 = &v
+			}
+			if !math.IsNaN(h.VectorScore) {
+				v := h.VectorScore
+				sb.Vector = &v
+			}
+			item.Score = sb
+		}
+		items = append(items, item)
+	}
+
+	writeJSON(w, http.StatusOK, hybridSearchResponse{
+		Query:         q,
+		Mode:          mode,
+		Returned:      len(items),
+		PoolSaturated: meta.PoolSaturated,
+		Generation: generationSummary{
+			ID:          int64(meta.Generation.ID),
+			Model:       meta.Generation.Model,
+			Dimension:   meta.Generation.Dimension,
+			Fingerprint: meta.Generation.Fingerprint,
+			State:       string(meta.Generation.State),
+		},
+		TookMS:  time.Since(start).Milliseconds(),
+		Results: items,
 	})
 }
 

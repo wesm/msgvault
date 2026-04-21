@@ -1839,7 +1839,7 @@ func TestBuildWhereClause_SearchOperators(t *testing.T) {
 		{
 			name:        "text terms",
 			searchQuery: "hello world",
-			wantClauses: []string{"regexp_matches(COALESCE(msg.subject"},
+			wantClauses: []string{"msg.subject ILIKE"},
 		},
 		{
 			name:        "from operator",
@@ -1899,39 +1899,36 @@ func TestBuildWhereClause_EscapedArgs(t *testing.T) {
 	opts := AggregateOptions{SearchQuery: "100%_off"}
 	_, args := engine.buildWhereClause(opts)
 
-	// With regex search, % and _ are not special so appear unescaped.
-	// Term starts with word char '1', so \b prefix is applied.
+	// With ILIKE search, % and _ are escaped with backslash.
 	found := false
 	for _, arg := range args {
-		if s, ok := arg.(string); ok && strings.Contains(s, "\\b100%_off") {
+		if s, ok := arg.(string); ok && strings.Contains(s, "100\\%\\_off") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected regex pattern containing '\\b100%%_off' in args, got: %v", args)
+		t.Errorf("expected ILIKE pattern containing '100\\%%\\_off' in args, got: %v", args)
 	}
 }
 
-// TestBuildWhereClause_WordBoundaryPrefix verifies that \b is only applied
-// when the search term starts with a word character [a-zA-Z0-9_]. Terms
-// starting with non-word characters (+, @, #, etc.) must not get \b, as it
-// requires a word/non-word transition that fails at string start.
-func TestBuildWhereClause_WordBoundaryPrefix(t *testing.T) {
+// TestBuildWhereClause_ILIKEEscape verifies that search terms are properly
+// escaped for ILIKE patterns in aggregate search conditions.
+func TestBuildWhereClause_ILIKEEscape(t *testing.T) {
 	engine := &DuckDBEngine{}
 
 	tests := []struct {
-		name       string
-		term       string
-		wantPrefix string // expected prefix in the regex arg
+		name    string
+		term    string
+		wantArg string // expected ILIKE arg pattern
 	}{
-		{"word_char_letter", "hello", "(?i)\\bhello"},
-		{"word_char_digit", "123", "(?i)\\b123"},
-		{"word_char_underscore", "_test", "(?i)\\b_test"},
-		{"non_word_plus", "+15551234567", "(?i)\\+15551234567"},
-		{"non_word_at", "@gmail.com", "(?i)@gmail\\.com"},
-		{"non_word_hash", "#bug", "(?i)#bug"},
-		{"non_word_paren", "(test)", "(?i)\\(test\\)"},
+		{"word_char_letter", "hello", "%hello%"},
+		{"word_char_digit", "123", "%123%"},
+		{"word_char_underscore", "_test", "%\\_test%"},
+		{"non_word_plus", "+15551234567", "%+15551234567%"},
+		{"non_word_at", "@gmail.com", "%@gmail.com%"},
+		{"non_word_hash", "#bug", "%#bug%"},
+		{"wildcard_percent", "100%off", "%100\\%off%"},
 	}
 
 	for _, tc := range tests {
@@ -1941,14 +1938,14 @@ func TestBuildWhereClause_WordBoundaryPrefix(t *testing.T) {
 
 			found := false
 			for _, arg := range args {
-				if s, ok := arg.(string); ok && s == tc.wantPrefix {
+				if s, ok := arg.(string); ok && s == tc.wantArg {
 					found = true
 					break
 				}
 			}
 			if !found {
 				t.Errorf("term %q: expected arg %q, got %v",
-					tc.term, tc.wantPrefix, args)
+					tc.term, tc.wantArg, args)
 			}
 		})
 	}
@@ -2049,7 +2046,7 @@ func TestAggregateByLabel_WithLabelSearch(t *testing.T) {
 }
 
 // TestBuildSearchConditions_EscapedWildcards verifies that buildSearchConditions
-// escapes wildcards: regex for TextTerms, ILIKE ESCAPE for operators.
+// escapes wildcards: ILIKE ESCAPE for TextTerms and operators.
 func TestBuildSearchConditions_EscapedWildcards(t *testing.T) {
 	engine := &DuckDBEngine{}
 
@@ -2064,8 +2061,8 @@ func TestBuildSearchConditions_EscapedWildcards(t *testing.T) {
 			query: &search.Query{
 				TextTerms: []string{"100%_off"},
 			},
-			wantClauses: []string{"regexp_matches(COALESCE(msg.subject"},
-			wantInArgs:  []string{"\\b100%_off"},
+			wantClauses: []string{"msg.subject ILIKE"},
+			wantInArgs:  []string{"100\\%\\_off"},
 		},
 		{
 			name: "from: with wildcards",
@@ -2119,6 +2116,53 @@ func TestBuildSearchConditions_EscapedWildcards(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestBuildSearchConditions_UsesILIKENotRegex verifies that the fast search
+// path uses ILIKE (fast on Parquet scans) instead of regexp_matches (slow).
+func TestBuildSearchConditions_UsesILIKENotRegex(t *testing.T) {
+	engine := &DuckDBEngine{}
+
+	q := &search.Query{TextTerms: []string{"hello"}}
+	conditions, args := engine.buildSearchConditions(q, MessageFilter{})
+	where := strings.Join(conditions, " AND ")
+
+	// Must use ILIKE, not regexp_matches
+	if strings.Contains(where, "regexp_matches") {
+		t.Errorf("fast search path should use ILIKE, not regexp_matches\ngot: %s", where)
+	}
+	if !strings.Contains(where, "ILIKE") {
+		t.Errorf("fast search path should contain ILIKE\ngot: %s", where)
+	}
+
+	// Args should be ILIKE patterns (%%term%%), not regex patterns
+	for _, arg := range args {
+		if s, ok := arg.(string); ok && strings.Contains(s, "(?i)") {
+			t.Errorf("fast search args should not contain regex patterns, got: %q", s)
+		}
+	}
+}
+
+// TestBuildAggregateSearchConditions_UsesILIKENotRegex verifies that the
+// aggregate search path also uses ILIKE instead of regexp_matches.
+func TestBuildAggregateSearchConditions_UsesILIKENotRegex(t *testing.T) {
+	engine := &DuckDBEngine{}
+
+	conditions, args := engine.buildAggregateSearchConditions("hello world")
+	where := strings.Join(conditions, " AND ")
+
+	if strings.Contains(where, "regexp_matches") {
+		t.Errorf("aggregate search should use ILIKE, not regexp_matches\ngot: %s", where)
+	}
+	if !strings.Contains(where, "ILIKE") {
+		t.Errorf("aggregate search should contain ILIKE\ngot: %s", where)
+	}
+
+	for _, arg := range args {
+		if s, ok := arg.(string); ok && strings.Contains(s, "(?i)") {
+			t.Errorf("aggregate search args should not contain regex patterns, got: %q", s)
+		}
 	}
 }
 
@@ -2344,6 +2388,89 @@ func TestDuckDBEngine_GetTotalStats_GroupByDefault(t *testing.T) {
 	}
 	if stats.MessageCount != 3 {
 		t.Errorf("expected 3 messages for sender search 'alice', got %d", stats.MessageCount)
+	}
+}
+
+// TestBuildStatsSearchConditions_PlaceholderArgCount is a regression test for
+// the mismatch between the number of "?" placeholders emitted and the number
+// of args appended when a stats search mixes text terms with non-text
+// operators (e.g. "hello from:bob@example.com"). Previously,
+// buildStatsSearchConditions called buildAggregateSearchConditions and sliced
+// off the text-term prefix using a hand-tracked arg count — any drift between
+// the count and the actual emit rate would cause aggregate stats queries to
+// fail with unmatched placeholders. The helper now delegates directly to
+// buildNonTextSearchConditions so there is nothing to slice; this test locks
+// the invariant in place by counting "?" placeholders.
+func TestBuildStatsSearchConditions_PlaceholderArgCount(t *testing.T) {
+	engine := &DuckDBEngine{}
+
+	cases := []struct {
+		name    string
+		query   string
+		groupBy ViewType
+	}{
+		{"text only (default)", "hello", ViewSenders},
+		{"text only (recipients)", "hello", ViewRecipients},
+		{"text only (labels)", "hello", ViewLabels},
+		{"text + from (default)", "hello from:bob@example.com", ViewSenders},
+		{"text + from (recipients)", "hello from:bob@example.com", ViewRecipients},
+		{"text + from (labels)", "hello from:bob@example.com", ViewLabels},
+		{"text + from + to", "hello from:a@b.com to:c@d.com", ViewSenders},
+		{"text + subject + label", "hello subject:report label:work", ViewSenders},
+		{"multi-text + from", "hello world from:bob@example.com", ViewSenders},
+		{"non-text only", "from:bob@example.com", ViewSenders},
+		{"empty query", "", ViewSenders},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			conditions, args := engine.buildStatsSearchConditions(tc.query, tc.groupBy)
+			where := strings.Join(conditions, " AND ")
+			placeholders := strings.Count(where, "?")
+			if placeholders != len(args) {
+				t.Errorf("placeholder/arg mismatch for query %q (groupBy=%v): %d placeholders vs %d args\nconditions: %s\nargs: %v",
+					tc.query, tc.groupBy, placeholders, len(args), where, args)
+			}
+		})
+	}
+}
+
+// TestBuildAggregateSearchConditions_PlaceholderArgCount locks the same
+// invariant on buildAggregateSearchConditions: the number of "?" placeholders
+// in the emitted WHERE conditions must match the number of args, for any
+// combination of text terms, non-text filters, and keyColumns.
+func TestBuildAggregateSearchConditions_PlaceholderArgCount(t *testing.T) {
+	engine := &DuckDBEngine{}
+
+	cases := []struct {
+		name       string
+		query      string
+		keyColumns []string
+	}{
+		{"text only, no keyColumns", "hello", nil},
+		{"text only, one keyColumn", "hello", []string{"p.email_address"}},
+		{"text only, label keyColumn", "hello", []string{"lbl.name"}},
+		{"text + from", "hello from:bob@example.com", nil},
+		{"text + from + to + subject", "hello from:a@b.com to:c@d.com subject:report", nil},
+		{"text + label (label view)", "hello label:work", []string{"lbl.name"}},
+		{"text + label (non-label view)", "hello label:work", nil},
+		{"multi-text + from + keyColumns", "foo bar from:x@y.com", []string{"p.email_address", "p.display_name"}},
+		{"has:attachment", "has:attachment", nil},
+		{"date filter", "after:2024-01-01 before:2024-12-31", nil},
+		{"size filter", "larger:1000 smaller:5000", nil},
+		{"empty query", "", nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			conditions, args := engine.buildAggregateSearchConditions(tc.query, tc.keyColumns...)
+			where := strings.Join(conditions, " AND ")
+			placeholders := strings.Count(where, "?")
+			if placeholders != len(args) {
+				t.Errorf("placeholder/arg mismatch for query %q (keyColumns=%v): %d placeholders vs %d args\nconditions: %s\nargs: %v",
+					tc.query, tc.keyColumns, placeholders, len(args), where, args)
+			}
+		})
 	}
 }
 

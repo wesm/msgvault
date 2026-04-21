@@ -28,7 +28,7 @@ jobs:
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
 
       - name: Vulnerability check
-        run: govulncheck -tags fts5 ./...
+        run: govulncheck -tags "fts5 sqlite_vec" ./...
 
   test-windows:
     runs-on: windows-latest
@@ -39,17 +39,39 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # sqlite-vec's CGo bindings #include <sqlite3.h>, which isn't on
+      # the default windows-latest include path. Install it from MSYS2
+      # (already present on the runner) and point CGO_CFLAGS at it.
+      #
+      # arrow-go/v18's cdata helpers.h declares its helpers as plain
+      # `inline` (not `static inline`). Under C99 that requires exactly
+      # one external definition somewhere, and no TU in arrow-go
+      # provides one. -fgnu89-inline forces every TU to emit the
+      # external copy, and --allow-multiple-definition lets MinGW's ld
+      # pick the first and continue instead of erroring on the
+      # duplicates that flag produces.
+      - name: Install sqlite3 dev headers
+        shell: pwsh
+        run: |
+          C:\msys64\usr\bin\pacman.exe -S --noconfirm --needed mingw-w64-x86_64-sqlite3
+
       - name: Build
+        shell: pwsh
         env:
           CGO_ENABLED: "1"
-        run: go build -tags fts5 -o msgvault.exe ./cmd/msgvault
+          CGO_CFLAGS: "-IC:/msys64/mingw64/include -fgnu89-inline"
+          CGO_LDFLAGS: "-Wl,--allow-multiple-definition"
+        run: go build -tags "fts5 sqlite_vec" -o msgvault.exe ./cmd/msgvault
 
       - name: Test
+        shell: pwsh
         env:
           CGO_ENABLED: "1"
-        run: go test -tags fts5 ./...
+          CGO_CFLAGS: "-IC:/msys64/mingw64/include -fgnu89-inline"
+          CGO_LDFLAGS: "-Wl,--allow-multiple-definition"
+        run: go test -tags "fts5 sqlite_vec" ./...
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: msgvault-windows-amd64
           path: msgvault.exe
