@@ -189,6 +189,9 @@ func optsToFilterConditions(opts AggregateOptions, prefix string) ([]string, []i
 	// message_type IS NULL and '' handle old data without the column.
 	conditions = append(conditions, "("+prefix+"message_type = 'email' OR "+prefix+"message_type IS NULL OR "+prefix+"message_type = '')")
 
+	// Always exclude rows soft-deleted by deduplicate.
+	conditions = append(conditions, prefix+"deleted_at IS NULL")
+
 	if opts.SourceID != nil {
 		conditions = append(conditions, prefix+"source_id = ?")
 		args = append(args, *opts.SourceID)
@@ -260,6 +263,9 @@ func buildFilterJoinsAndConditions(filter MessageFilter, tableAlias string) (str
 	// Exclude text messages from email-mode queries.
 	// message_type IS NULL and '' handle old data without the column.
 	conditions = append(conditions, "("+prefix+"message_type = 'email' OR "+prefix+"message_type IS NULL OR "+prefix+"message_type = '')")
+
+	// Always exclude rows soft-deleted by deduplicate.
+	conditions = append(conditions, prefix+"deleted_at IS NULL")
 
 	if filter.SourceID != nil {
 		conditions = append(conditions, prefix+"source_id = ?")
@@ -881,7 +887,8 @@ func (e *SQLiteEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 	var args []interface{}
 	// Restrict to email messages only; NULL and '' handle pre-message_type data.
 	conditions = append(conditions, emailOnlyFilterM)
-	// Include all messages (deleted messages shown with indicator in TUI)
+	// Exclude rows soft-deleted by deduplicate.
+	conditions = append(conditions, "m.deleted_at IS NULL")
 	if opts.SourceID != nil {
 		conditions = append(conditions, "m.source_id = ?")
 		args = append(args, *opts.SourceID)
@@ -999,8 +1006,9 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	var conditions []string
 	var args []interface{}
 
-	// Always exclude deleted messages
+	// Exclude remote-deleted and dedup-soft-deleted messages.
 	conditions = append(conditions, "m.deleted_from_source_at IS NULL")
+	conditions = append(conditions, "m.deleted_at IS NULL")
 
 	if filter.SourceID != nil {
 		conditions = append(conditions, "m.source_id = ?")
@@ -1139,6 +1147,8 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 func (e *SQLiteEngine) buildSearchQueryParts(ctx context.Context, q *search.Query) (conditions []string, args []interface{}, joins []string, ftsJoin string) {
 	// Restrict to email messages only; NULL and '' handle pre-message_type data.
 	conditions = append(conditions, emailOnlyFilterM)
+	// Exclude rows soft-deleted by deduplicate.
+	conditions = append(conditions, "m.deleted_at IS NULL")
 
 	// From filter - uses EXISTS to avoid join multiplication in aggregates.
 	// Handles both exact addresses and @domain patterns.

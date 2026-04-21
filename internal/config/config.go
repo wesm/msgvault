@@ -70,6 +70,11 @@ type RemoteConfig struct {
 }
 
 // Config represents the msgvault configuration.
+// IdentityConfig holds the user's curated identity addresses.
+type IdentityConfig struct {
+	Addresses []string `toml:"addresses"`
+}
+
 type Config struct {
 	Data      DataConfig        `toml:"data"`
 	Log       LogConfig         `toml:"log"`
@@ -80,6 +85,7 @@ type Config struct {
 	Server    ServerConfig      `toml:"server"`
 	Remote    RemoteConfig      `toml:"remote"`
 	Vector    vector.Config     `toml:"vector"`
+	Identity  IdentityConfig    `toml:"identity"`
 	Accounts  []AccountSchedule `toml:"accounts"`
 
 	// Computed paths (not from config file)
@@ -119,6 +125,17 @@ type LogConfig struct {
 	// is voluminous — leave off in normal use and flip it on
 	// (via config or --log-sql) only when debugging.
 	SQLTrace bool `toml:"sql_trace"`
+}
+
+// IdentityAddressSet returns the configured identity addresses as a
+// normalized (lower-cased) set for O(1) lookup. Returns an empty map
+// (not nil) when no addresses are configured.
+func (c *Config) IdentityAddressSet() map[string]bool {
+	out := make(map[string]bool, len(c.Identity.Addresses))
+	for _, addr := range c.Identity.Addresses {
+		out[strings.ToLower(strings.TrimSpace(addr))] = true
+	}
+	return out
 }
 
 // DataConfig holds data storage configuration.
