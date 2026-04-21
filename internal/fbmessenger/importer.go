@@ -98,6 +98,12 @@ func ImportDYI(ctx context.Context, st *store.Store, opts ImportOptions) (*Impor
 	if format == "" {
 		format = "auto"
 	}
+	switch format {
+	case "auto", "json", "html", "both":
+		// valid
+	default:
+		return nil, fmt.Errorf("fbmessenger: unknown --format %q (valid: auto, json, html, both)", format)
+	}
 
 	// Validate --me.
 	if opts.Me == "" {

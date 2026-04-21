@@ -920,6 +920,23 @@ func TestImportDYI_ResumeFromFailedSync(t *testing.T) {
 	}
 }
 
+func TestImportDYI_InvalidFormatRejected(t *testing.T) {
+	st := testutil.NewTestStore(t)
+	root := writeMultiThreadFixture(t, 1)
+	_, err := ImportDYI(context.Background(), st, ImportOptions{
+		Me:             "test.user@facebook.messenger",
+		RootDir:        root,
+		AttachmentsDir: t.TempDir(),
+		Format:         "jsno",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid format, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown --format") {
+		t.Errorf("error=%v want mention of 'unknown --format'", err)
+	}
+}
+
 func TestImportDYI_TimingTripwire(t *testing.T) {
 	st := testutil.NewTestStore(t)
 	root := writeLargeFixture(t)
