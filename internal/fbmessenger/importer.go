@@ -135,13 +135,22 @@ func ImportDYI(ctx context.Context, st *store.Store, opts ImportOptions) (*Impor
 		cp             store.Checkpoint
 	)
 	if !opts.NoResume {
-		active, err := st.GetActiveSync(source.ID)
+		// Look for a resumable sync run. Try active (running) first,
+		// then fall back to the latest checkpointed run (which includes
+		// failed/interrupted runs whose checkpoint is still valid).
+		prev, err := st.GetActiveSync(source.ID)
 		if err != nil {
 			return nil, fmt.Errorf("fbmessenger: check active sync: %w", err)
 		}
-		if active != nil && active.CursorBefore.Valid && active.CursorBefore.String != "" {
+		if prev == nil || !prev.CursorBefore.Valid || prev.CursorBefore.String == "" {
+			prev, err = st.GetLatestCheckpointedSync(source.ID)
+			if err != nil {
+				return nil, fmt.Errorf("fbmessenger: check checkpointed sync: %w", err)
+			}
+		}
+		if prev != nil && prev.CursorBefore.Valid && prev.CursorBefore.String != "" {
 			var prior fbmessengerCheckpoint
-			if err := json.Unmarshal([]byte(active.CursorBefore.String), &prior); err == nil {
+			if err := json.Unmarshal([]byte(prev.CursorBefore.String), &prior); err == nil {
 				if prior.RootDir != "" && prior.RootDir != absRoot {
 					return nil, fmt.Errorf(
 						"fbmessenger: active import is for a different root (%q), not %q; rerun with --no-resume to start fresh",
@@ -151,12 +160,12 @@ func ImportDYI(ctx context.Context, st *store.Store, opts ImportOptions) (*Impor
 				if prior.ThreadIndex > 0 {
 					startThreadIdx = prior.ThreadIndex
 					summary.WasResumed = true
-					cp.MessagesProcessed = active.MessagesProcessed
-					cp.MessagesAdded = active.MessagesAdded
-					cp.MessagesUpdated = active.MessagesUpdated
-					cp.ErrorsCount = active.ErrorsCount
-					summary.MessagesProcessed = active.MessagesProcessed
-					summary.MessagesAdded = active.MessagesAdded
+					cp.MessagesProcessed = prev.MessagesProcessed
+					cp.MessagesAdded = prev.MessagesAdded
+					cp.MessagesUpdated = prev.MessagesUpdated
+					cp.ErrorsCount = prev.ErrorsCount
+					summary.MessagesProcessed = prev.MessagesProcessed
+					summary.MessagesAdded = prev.MessagesAdded
 					logger.Info("fbmessenger: resuming import",
 						"root", absRoot,
 						"thread_index", startThreadIdx,

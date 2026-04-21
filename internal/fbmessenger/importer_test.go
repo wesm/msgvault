@@ -863,6 +863,63 @@ func TestImportDYI_ResumeWrongRootRejected(t *testing.T) {
 	}
 }
 
+// TestImportDYI_ResumeFromFailedSync verifies that a checkpoint saved
+// before FailSync is still found on the next run, so interrupted imports
+// can resume instead of restarting from scratch.
+func TestImportDYI_ResumeFromFailedSync(t *testing.T) {
+	st := testutil.NewTestStore(t)
+	root := writeMultiThreadFixture(t, 3)
+
+	// First run: import everything.
+	first := importFixture(t, st, root)
+	if first.MessagesAdded != 3 {
+		t.Fatalf("first run MessagesAdded=%d want 3", first.MessagesAdded)
+	}
+
+	// Simulate a failed (interrupted) sync: create a sync run, save a
+	// checkpoint, then mark it failed — mimicking what happens when the
+	// user hits Ctrl-C.
+	src, err := st.GetOrCreateSource("facebook_messenger", "test.user@facebook.messenger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncID, err := st.StartSync(src.ID, "import-messenger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cpJSON, err := json.Marshal(fbmessengerCheckpoint{
+		RootDir:     absRoot,
+		ThreadIndex: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateSyncCheckpoint(syncID, &store.Checkpoint{
+		PageToken:         string(cpJSON),
+		MessagesProcessed: 2,
+		MessagesAdded:     2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Mark the sync as failed, simulating a graceful interrupt.
+	if err := st.FailSync(syncID, "context canceled"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The next run must find the failed sync's checkpoint and resume.
+	second := importFixture(t, st, root)
+	if !second.WasResumed {
+		t.Errorf("second run WasResumed=false, want true")
+	}
+	if second.ThreadsProcessed != 1 {
+		t.Errorf("second run ThreadsProcessed=%d want 1 (only last thread)", second.ThreadsProcessed)
+	}
+}
+
 func TestImportDYI_TimingTripwire(t *testing.T) {
 	st := testutil.NewTestStore(t)
 	root := writeLargeFixture(t)

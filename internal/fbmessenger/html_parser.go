@@ -126,13 +126,25 @@ func extractHTMLTitle(n *html.Node) string {
 	return ""
 }
 
+// htmlImageRef records an <img> src and the index in the lines array
+// where it appears, so parseHTMLLines can associate images with the
+// correct message block.
+type htmlImageRef struct {
+	Src     string
+	LineIdx int // index into the lines slice at point of encounter
+}
+
 // collectHTMLLines walks the body of the document and returns a flat list
-// of logical text lines plus the ordered list of <img> src attributes.
+// of logical text lines plus positioned image references.
 //
 // A "line" is the concatenated text content of a leaf block-level element
 // (div/p/span when it contains no block-level descendants). Whitespace
 // runs inside a line are collapsed.
-func collectHTMLLines(doc *html.Node) ([]string, []string) {
+//
+// Images are recorded with the line index at the time they are encountered
+// in document order, so callers can associate each image with the message
+// block whose line range contains it.
+func collectHTMLLines(doc *html.Node) ([]string, []htmlImageRef) {
 	var body *html.Node
 	var find func(n *html.Node)
 	find = func(n *html.Node) {
@@ -153,10 +165,39 @@ func collectHTMLLines(doc *html.Node) ([]string, []string) {
 	}
 
 	var lines []string
+	var images []htmlImageRef
+
+	// collectImgs records all <img> elements under n at the current line index.
+	var collectImgs func(n *html.Node)
+	collectImgs = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "img" {
+			for _, a := range n.Attr {
+				if a.Key == "src" {
+					images = append(images, htmlImageRef{Src: a.Val, LineIdx: len(lines)})
+					break
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			collectImgs(c)
+		}
+	}
 
 	var walk func(n *html.Node)
 	walk = func(n *html.Node) {
+		// Pick up images that live outside leaf blocks (e.g. between divs).
+		if n.Type == html.ElementNode && n.Data == "img" {
+			for _, a := range n.Attr {
+				if a.Key == "src" {
+					images = append(images, htmlImageRef{Src: a.Val, LineIdx: len(lines)})
+					break
+				}
+			}
+			return
+		}
 		if n.Type == html.ElementNode && isLeafBlock(n) {
+			// Collect images inside the leaf block at the current line position.
+			collectImgs(n)
 			text := collapseWhitespace(textContent(n))
 			if text != "" {
 				lines = append(lines, text)
@@ -168,24 +209,6 @@ func collectHTMLLines(doc *html.Node) ([]string, []string) {
 		}
 	}
 	walk(body)
-
-	// Collect images separately so imgs inside leaf blocks are not missed.
-	var images []string
-	var imgWalk func(n *html.Node)
-	imgWalk = func(n *html.Node) {
-		if n.Type == html.ElementNode && n.Data == "img" {
-			for _, a := range n.Attr {
-				if a.Key == "src" {
-					images = append(images, a.Val)
-					break
-				}
-			}
-		}
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			imgWalk(c)
-		}
-	}
-	imgWalk(body)
 	return lines, images
 }
 
@@ -261,10 +284,15 @@ func collapseWhitespace(s string) string {
 
 // parseHTMLLines scans the flat text-line output of collectHTMLLines,
 // extracts the participants header, and walks the remaining lines
-// collecting (sender, body, timestamp) triples.
-func parseHTMLLines(lines, images []string, absRoot, htmlDir string) ([]Participant, []Message) {
+// collecting (sender, body, timestamp) triples. Images are assigned to
+// the message block whose line range contains the image's DOM position.
+func parseHTMLLines(lines []string, images []htmlImageRef, absRoot, htmlDir string) ([]Participant, []Message) {
 	var participants []Participant
 	participantNames := make(map[string]bool)
+	// remainingStart is the offset into lines where message blocks begin
+	// (after the Participants: header). Image LineIdx values are relative
+	// to the original lines slice, so we track this offset.
+	remainingStart := 0
 	remaining := lines
 	for i, ln := range lines {
 		if strings.HasPrefix(ln, "Participants:") {
@@ -280,13 +308,24 @@ func parseHTMLLines(lines, images []string, absRoot, htmlDir string) ([]Particip
 				}
 			}
 			remaining = lines[i+1:]
+			remainingStart = i + 1
 			break
 		}
 	}
 
+	// imagesInRange returns images whose LineIdx falls in [loLine, hiLine).
+	// LineIdx values are in the original lines coordinate space.
+	imagesInRange := func(loLine, hiLine int) []htmlImageRef {
+		var out []htmlImageRef
+		for _, img := range images {
+			if img.LineIdx >= loLine && img.LineIdx < hiLine {
+				out = append(out, img)
+			}
+		}
+		return out
+	}
+
 	var messages []Message
-	// Track which images have been assigned.
-	imgIdx := 0
 	// Scan for message blocks. A message is a window that starts with a
 	// participant name line, ends with a timestamp line, and has zero or
 	// more body lines in between.
@@ -323,33 +362,19 @@ func parseHTMLLines(lines, images []string, absRoot, htmlDir string) ([]Particip
 			SentAt:     ts,
 			Body:       body,
 		}
-		// Associate one image per photo-like body, best effort. A more
-		// robust approach would track image DOM positions relative to
-		// message divs; for fixtures this simple assignment suffices.
-		if imgIdx < len(images) && body == "" {
-			msg.Attachments = append(msg.Attachments, makeHTMLAttachment(absRoot, htmlDir, images[imgIdx]))
-			imgIdx++
+
+		// Attach images whose DOM position falls within this message
+		// block's line range [sender line .. timestamp line].
+		blockImages := imagesInRange(remainingStart+i, remainingStart+end+1)
+		for _, img := range blockImages {
+			msg.Attachments = append(msg.Attachments, makeHTMLAttachment(absRoot, htmlDir, img.Src))
+		}
+		if len(blockImages) > 0 && body == "" {
 			msg.Body = "[photo]"
 		}
+
 		messages = append(messages, msg)
 		i = end + 1
-	}
-	// Fallback: assign any remaining images to the first message that
-	// has no attachment yet, so html_with_media tests find them even
-	// when the body is non-empty.
-	for imgIdx < len(images) && len(messages) > 0 {
-		assigned := false
-		for k := range messages {
-			if len(messages[k].Attachments) == 0 {
-				messages[k].Attachments = append(messages[k].Attachments, makeHTMLAttachment(absRoot, htmlDir, images[imgIdx]))
-				imgIdx++
-				assigned = true
-				break
-			}
-		}
-		if !assigned {
-			break
-		}
 	}
 	return participants, messages
 }

@@ -92,6 +92,32 @@ func TestParseHTMLThread_TimestampLayouts(t *testing.T) {
 	}
 }
 
+// TestParseHTMLThread_ImagePositioning verifies that images are attached to
+// the message block where they appear in the DOM, not to the first empty or
+// attachment-less message.
+func TestParseHTMLThread_ImagePositioning(t *testing.T) {
+	root := "testdata/html_multi_media"
+	th, err := ParseHTMLThread(root, threadDir(t, root, "inbox", "carol_IMG456"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(th.Messages) != 3 {
+		t.Fatalf("messages=%d want 3", len(th.Messages))
+	}
+	// Message 0: "Hello Carol" — no image, no attachments.
+	if len(th.Messages[0].Attachments) != 0 {
+		t.Errorf("messages[0].Attachments=%d want 0 (image should NOT land here)", len(th.Messages[0].Attachments))
+	}
+	// Message 1: "Check out this photo" — the image belongs here.
+	if len(th.Messages[1].Attachments) != 1 {
+		t.Errorf("messages[1].Attachments=%d want 1", len(th.Messages[1].Attachments))
+	}
+	// Message 2: "Nice picture" — no attachments.
+	if len(th.Messages[2].Attachments) != 0 {
+		t.Errorf("messages[2].Attachments=%d want 0", len(th.Messages[2].Attachments))
+	}
+}
+
 func TestParseHTMLThread_StructuralParsing(t *testing.T) {
 	// Replace known class names with random strings; the parser must
 	// still find participants, bodies, and timestamps.

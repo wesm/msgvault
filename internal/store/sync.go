@@ -234,6 +234,26 @@ func (s *Store) GetActiveSync(sourceID int64) (*SyncRun, error) {
 	return run, err
 }
 
+// GetLatestCheckpointedSync returns the most recent sync run (any status)
+// that has a non-empty cursor_before, suitable for resuming interrupted imports.
+func (s *Store) GetLatestCheckpointedSync(sourceID int64) (*SyncRun, error) {
+	row := s.db.QueryRow(`
+		SELECT id, source_id, started_at, completed_at, status,
+		       messages_processed, messages_added, messages_updated, errors_count,
+		       error_message, cursor_before, cursor_after
+		FROM sync_runs
+		WHERE source_id = ? AND cursor_before IS NOT NULL AND cursor_before != ''
+		ORDER BY id DESC
+		LIMIT 1
+	`, sourceID)
+
+	run, err := scanSyncRun(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return run, err
+}
+
 // GetLastSuccessfulSync returns the most recent successful sync for a source.
 func (s *Store) GetLastSuccessfulSync(sourceID int64) (*SyncRun, error) {
 	row := s.db.QueryRow(`
