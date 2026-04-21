@@ -90,6 +90,12 @@ func runDeduplicate(cmd *cobra.Command, _ []string) error {
 		canonicalAccount = scope.DisplayName()
 	}
 
+	identityAddrs := cfg.IdentityAddressSet()
+	if len(identityAddrs) > 0 {
+		logger.Info("dedup identity addresses loaded",
+			"count", len(identityAddrs))
+	}
+
 	config := dedup.Config{
 		SourcePreference:           preference,
 		ContentHashFallback:        dedupContentHash,
@@ -98,6 +104,7 @@ func runDeduplicate(cmd *cobra.Command, _ []string) error {
 		Account:                    canonicalAccount,
 		DeleteDupsFromSourceServer: dedupDeleteFromSourceSrvr,
 		DeletionsDir:               deletionsDir,
+		IdentityAddresses:          identityAddrs,
 	}
 
 	engine := dedup.NewEngine(st, config, logger)
