@@ -37,6 +37,7 @@ For each invalid field, it:
 This is useful after a sync that may have produced invalid UTF-8 due to
 charset detection issues in the MIME parser.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
 		dbPath := cfg.DatabaseDSN()
 		s, err := store.Open(dbPath)
 		if err != nil {
@@ -48,8 +49,35 @@ charset detection issues in the MIME parser.`,
 			return fmt.Errorf("init schema: %w", err)
 		}
 
-		if err := repairEncoding(s); err != nil {
+		reembedNeededIDs, err := repairEncoding(s)
+		if err != nil {
 			return err
+		}
+
+		// Re-enqueue repaired messages for re-embedding so semantic
+		// results reflect the corrected text. setupVectorFeatures
+		// returns (nil, nil) when vector search is disabled or the
+		// binary was built without sqlite_vec; in those cases the
+		// pending_embeddings table is irrelevant and there's nothing
+		// to do.
+		if len(reembedNeededIDs) > 0 {
+			vf, err := setupVectorFeatures(ctx, s.DB(), dbPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr,
+					"Warning: failed to open vectors.db for re-enqueue: %v\n", err)
+			} else if vf != nil {
+				if err := vf.Enqueuer.EnqueueMessages(ctx, reembedNeededIDs); err != nil {
+					fmt.Fprintf(os.Stderr,
+						"Warning: failed to re-enqueue %d messages for re-embedding: %v\n",
+						len(reembedNeededIDs), err)
+				} else {
+					fmt.Printf("Re-enqueued %d message(s) for re-embedding.\n",
+						len(reembedNeededIDs))
+				}
+				if closeErr := vf.Close(); closeErr != nil {
+					logger.Warn("closing vectors.db failed", "error", closeErr)
+				}
+			}
 		}
 
 		analyticsDir := cfg.AnalyticsDir()
@@ -81,22 +109,29 @@ type repairStats struct {
 	skippedRows   int
 }
 
-func repairEncoding(s *store.Store) error {
+// repairEncoding runs all repair passes over s and returns the IDs of
+// messages whose embedding inputs (subject, body_text, or body_html)
+// were modified. Callers use that list to re-enqueue affected messages
+// for re-embedding so semantic search results don't stay stale against
+// the repaired text. Snippet-only repairs are NOT included because the
+// embedder doesn't read snippet.
+func repairEncoding(s *store.Store) (reembedNeededIDs []int64, err error) {
 	stats := &repairStats{}
 
 	// Repair message text fields
-	if err := repairMessageFields(s, stats); err != nil {
-		return err
+	reembedNeededIDs, err = repairMessageFields(s, stats)
+	if err != nil {
+		return nil, err
 	}
 
 	// Repair display names in participants and message_recipients
 	if err := repairDisplayNames(s, stats); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Repair other string fields that could have encoding issues
 	if err := repairOtherStrings(s, stats); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Summary
@@ -105,7 +140,7 @@ func repairEncoding(s *store.Store) error {
 		stats.convSourceIDs + stats.emailAddrs + stats.domains
 	if total == 0 {
 		fmt.Println("No encoding repairs needed.")
-		return nil
+		return nil, nil
 	}
 
 	fmt.Println("\n=== Repair Summary ===")
@@ -146,10 +181,10 @@ func repairEncoding(s *store.Store) error {
 		fmt.Printf("  Skipped rows:  %d (scan errors)\n", stats.skippedRows)
 	}
 	fmt.Printf("  Total fields:  %d\n", total)
-	return nil
+	return reembedNeededIDs, nil
 }
 
-func repairMessageFields(s *store.Store, stats *repairStats) error {
+func repairMessageFields(s *store.Store, stats *repairStats) (reembedNeededIDs []int64, err error) {
 	fmt.Println("Scanning messages for invalid UTF-8...")
 
 	db := s.DB()
@@ -163,7 +198,7 @@ func repairMessageFields(s *store.Store, stats *repairStats) error {
 		LEFT JOIN message_raw mr ON mr.message_id = m.id
 	`)
 	if err != nil {
-		return fmt.Errorf("query messages: %w", err)
+		return nil, fmt.Errorf("query messages: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -232,6 +267,14 @@ func repairMessageFields(s *store.Store, stats *repairStats) error {
 					}
 					return fmt.Errorf("upsert message_bodies %d: %w", r.id, err)
 				}
+			}
+
+			// Any change to fields that feed the embedder (subject,
+			// body_text, body_html) invalidates prior embeddings and
+			// must trigger a re-enqueue. Snippet is not embedded, so
+			// snippet-only repairs are excluded.
+			if r.newSubject.Valid || r.newBody.Valid || r.newHTML.Valid {
+				reembedNeededIDs = append(reembedNeededIDs, r.id)
 			}
 		}
 
@@ -322,19 +365,19 @@ func repairMessageFields(s *store.Store, stats *repairStats) error {
 			// Apply batch when full
 			if len(repairs) >= batchSize {
 				if err := applyBatch(); err != nil {
-					return err
+					return nil, err
 				}
 			}
 		}
 	}
 
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate messages: %w", err)
+		return nil, fmt.Errorf("iterate messages: %w", err)
 	}
 
 	// Apply remaining repairs
 	if err := applyBatch(); err != nil {
-		return err
+		return nil, err
 	}
 
 	if totalRepaired > 0 {
@@ -342,7 +385,7 @@ func repairMessageFields(s *store.Store, stats *repairStats) error {
 	} else {
 		fmt.Println("No messages needed repair")
 	}
-	return nil
+	return reembedNeededIDs, nil
 }
 
 func repairDisplayNames(s *store.Store, stats *repairStats) error {

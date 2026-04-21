@@ -153,23 +153,25 @@ type Checkpoint struct {
 
 // StartSync creates a new sync run record and returns its ID.
 func (s *Store) StartSync(sourceID int64, syncType string) (int64, error) {
+	now := s.dialect.Now()
+
 	// Mark any existing running syncs as failed
-	_, err := s.db.Exec(`
+	_, err := s.db.Exec(fmt.Sprintf(`
 		UPDATE sync_runs
 		SET status = 'failed',
 		    error_message = 'superseded by new sync',
-		    completed_at = datetime('now')
+		    completed_at = %s
 		WHERE source_id = ? AND status = 'running'
-	`, sourceID)
+	`, now), sourceID)
 	if err != nil {
 		return 0, fmt.Errorf("mark old syncs failed: %w", err)
 	}
 
 	// Create new sync run
-	result, err := s.db.Exec(`
+	result, err := s.db.Exec(fmt.Sprintf(`
 		INSERT INTO sync_runs (source_id, started_at, status, messages_processed, messages_added, messages_updated, errors_count)
-		VALUES (?, datetime('now'), 'running', 0, 0, 0, 0)
-	`, sourceID)
+		VALUES (?, %s, 'running', 0, 0, 0, 0)
+	`, now), sourceID)
 	if err != nil {
 		return 0, fmt.Errorf("insert sync_run: %w", err)
 	}
@@ -193,25 +195,25 @@ func (s *Store) UpdateSyncCheckpoint(syncID int64, cp *Checkpoint) error {
 
 // CompleteSync marks a sync as successfully completed.
 func (s *Store) CompleteSync(syncID int64, finalHistoryID string) error {
-	_, err := s.db.Exec(`
+	_, err := s.db.Exec(fmt.Sprintf(`
 		UPDATE sync_runs
 		SET status = 'completed',
-		    completed_at = datetime('now'),
+		    completed_at = %s,
 		    cursor_after = ?
 		WHERE id = ?
-	`, finalHistoryID, syncID)
+	`, s.dialect.Now()), finalHistoryID, syncID)
 	return err
 }
 
 // FailSync marks a sync as failed with an error message.
 func (s *Store) FailSync(syncID int64, errMsg string) error {
-	_, err := s.db.Exec(`
+	_, err := s.db.Exec(fmt.Sprintf(`
 		UPDATE sync_runs
 		SET status = 'failed',
-		    completed_at = datetime('now'),
+		    completed_at = %s,
 		    error_message = ?
 		WHERE id = ?
-	`, errMsg, syncID)
+	`, s.dialect.Now()), errMsg, syncID)
 	return err
 }
 
@@ -288,10 +290,11 @@ func (s *Store) GetOrCreateSource(sourceType, identifier string) (*Source, error
 	}
 
 	// Create new
-	result, err := s.db.Exec(`
+	now := s.dialect.Now()
+	result, err := s.db.Exec(fmt.Sprintf(`
 		INSERT INTO sources (source_type, identifier, created_at, updated_at)
-		VALUES (?, ?, datetime('now'), datetime('now'))
-	`, sourceType, identifier)
+		VALUES (?, ?, %s, %s)
+	`, now, now), sourceType, identifier)
 	if err != nil {
 		return nil, fmt.Errorf("insert source: %w", err)
 	}
@@ -309,11 +312,12 @@ func (s *Store) GetOrCreateSource(sourceType, identifier string) (*Source, error
 
 // UpdateSourceSyncCursor updates the sync cursor (historyId) for a source.
 func (s *Store) UpdateSourceSyncCursor(sourceID int64, cursor string) error {
-	_, err := s.db.Exec(`
+	now := s.dialect.Now()
+	_, err := s.db.Exec(fmt.Sprintf(`
 		UPDATE sources
-		SET sync_cursor = ?, last_sync_at = datetime('now'), updated_at = datetime('now')
+		SET sync_cursor = ?, last_sync_at = %s, updated_at = %s
 		WHERE id = ?
-	`, cursor, sourceID)
+	`, now, now), cursor, sourceID)
 	return err
 }
 
@@ -363,21 +367,21 @@ func (s *Store) ListSources(sourceType string) ([]*Source, error) {
 
 // UpdateSourceDisplayName updates the display name for a source.
 func (s *Store) UpdateSourceDisplayName(sourceID int64, displayName string) error {
-	_, err := s.db.Exec(`
+	_, err := s.db.Exec(fmt.Sprintf(`
 		UPDATE sources
-		SET display_name = ?, updated_at = datetime('now')
+		SET display_name = ?, updated_at = %s
 		WHERE id = ?
-	`, displayName, sourceID)
+	`, s.dialect.Now()), displayName, sourceID)
 	return err
 }
 
 // UpdateSourceSyncConfig updates the JSON sync configuration for an IMAP source.
 func (s *Store) UpdateSourceSyncConfig(sourceID int64, configJSON string) error {
-	_, err := s.db.Exec(`
+	_, err := s.db.Exec(fmt.Sprintf(`
 		UPDATE sources
-		SET sync_config = ?, updated_at = datetime('now')
+		SET sync_config = ?, updated_at = %s
 		WHERE id = ?
-	`, configJSON, sourceID)
+	`, s.dialect.Now()), configJSON, sourceID)
 	return err
 }
 
@@ -385,11 +389,11 @@ func (s *Store) UpdateSourceSyncConfig(sourceID int64, configJSON string) error 
 // Used by add-o365 to fix up the IMAP host when re-authorizing an account
 // whose host classification changed (e.g. personal vs org scope correction).
 func (s *Store) UpdateSourceIdentifier(sourceID int64, identifier string) error {
-	_, err := s.db.Exec(`
+	_, err := s.db.Exec(fmt.Sprintf(`
 		UPDATE sources
-		SET identifier = ?, updated_at = datetime('now')
+		SET identifier = ?, updated_at = %s
 		WHERE id = ?
-	`, identifier, sourceID)
+	`, s.dialect.Now()), identifier, sourceID)
 	return err
 }
 

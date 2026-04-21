@@ -523,6 +523,52 @@ func (e *Engine) GetMessageBySourceID(ctx context.Context, sourceMessageID strin
 	return nil, ErrNotSupported
 }
 
+// GetMessageSummariesByIDs loops GetMessage over the supplied IDs.
+// Remote mode pays one HTTP round-trip per id; a future remote API
+// could add /messages?ids=... to collapse this into a single call.
+// For now, this method exists to satisfy the query.Engine contract
+// — the local SQLite/DuckDB engines are the ones doing the bulk
+// optimization for vector/hybrid search hydration.
+func (e *Engine) GetMessageSummariesByIDs(ctx context.Context, ids []int64) ([]query.MessageSummary, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out := make([]query.MessageSummary, 0, len(ids))
+	for _, id := range ids {
+		md, err := e.GetMessage(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("get message %d: %w", id, err)
+		}
+		if md == nil {
+			continue
+		}
+		summary := query.MessageSummary{
+			ID:                   md.ID,
+			SourceMessageID:      md.SourceMessageID,
+			ConversationID:       md.ConversationID,
+			SourceConversationID: md.SourceConversationID,
+			Subject:              md.Subject,
+			Snippet:              md.Snippet,
+			SentAt:               md.SentAt,
+			SizeEstimate:         md.SizeEstimate,
+			HasAttachments:       md.HasAttachments,
+			AttachmentCount:      len(md.Attachments),
+			Labels:               md.Labels,
+		}
+		// Carry sender details from the first From address so remote
+		// MCP search_messages/find_similar_messages responses don't
+		// silently drop who sent each hit. FromPhone is omitted — the
+		// HTTP remote API does not expose it today; callers that need
+		// it must fall back to a local engine.
+		if len(md.From) > 0 {
+			summary.FromEmail = md.From[0].Email
+			summary.FromName = md.From[0].Name
+		}
+		out = append(out, summary)
+	}
+	return out, nil
+}
+
 // GetAttachment returns attachment metadata by ID.
 // This operation is not supported in remote mode.
 func (e *Engine) GetAttachment(ctx context.Context, id int64) (*query.AttachmentInfo, error) {

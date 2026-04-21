@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -18,6 +19,8 @@ import (
 	"github.com/wesm/msgvault/internal/export"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/search"
+	"github.com/wesm/msgvault/internal/vector"
+	"github.com/wesm/msgvault/internal/vector/hybrid"
 )
 
 const maxLimit = 1000
@@ -26,6 +29,47 @@ type handlers struct {
 	engine         query.Engine
 	attachmentsDir string
 	dataDir        string
+
+	// Optional vector-search wiring. When hybridEngine is nil, the
+	// search_messages handler rejects mode=vector and mode=hybrid with
+	// a vector_not_enabled error. backend is additionally required by
+	// the find_similar_messages handler to load seed vectors and
+	// resolve the active generation.
+	hybridEngine *hybrid.Engine
+	vectorCfg    vector.Config
+	backend      vector.Backend
+}
+
+// translateVectorErr maps well-known vector sentinel errors to MCP tool
+// error results. Returns nil if the error is not a known sentinel
+// (callers should wrap it themselves).
+func translateVectorErr(err error) *mcp.CallToolResult {
+	switch {
+	case errors.Is(err, vector.ErrNotEnabled):
+		return mcp.NewToolResultError(
+			"vector_not_enabled: vector search is not configured",
+		)
+	case errors.Is(err, vector.ErrIndexStale):
+		return mcp.NewToolResultError(
+			"index_stale: the vector index does not match the configured model; " +
+				"run `msgvault build-embeddings --full-rebuild`",
+		)
+	case errors.Is(err, vector.ErrIndexBuilding):
+		return mcp.NewToolResultError(
+			"index_building: the initial vector index is still being built",
+		)
+	case errors.Is(err, vector.ErrNoActiveGeneration):
+		return mcp.NewToolResultError(
+			"no_active_generation: vector search has no active index yet; " +
+				"run `msgvault build-embeddings` to build one",
+		)
+	case errors.Is(err, vector.ErrEmbeddingTimeout):
+		return mcp.NewToolResultError(
+			"embedding_timeout: the embedding endpoint did not respond in time; " +
+				"retry, or raise [vector.embeddings].timeout in config",
+		)
+	}
+	return nil
 }
 
 // getAccountID looks up a source ID by email address.
@@ -112,6 +156,27 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 		return mcp.NewToolResultError("query parameter is required"), nil
 	}
 
+	mode, _ := args["mode"].(string)
+	if mode == "" {
+		mode = "fts"
+	}
+	explain, _ := args["explain"].(bool)
+
+	if mode == "vector" || mode == "hybrid" {
+		if off := limitArg(args, "offset", 0); off > 0 {
+			return mcp.NewToolResultError(
+				"pagination_unsupported: mode=" + mode + " only supports offset=0",
+			), nil
+		}
+		return h.searchMessagesHybrid(ctx, args, queryStr, mode, explain)
+	}
+
+	if mode != "fts" {
+		return mcp.NewToolResultError(
+			fmt.Sprintf("invalid mode %q: must be fts, vector, or hybrid", mode),
+		), nil
+	}
+
 	limit := limitArg(args, "limit", 20)
 	offset := limitArg(args, "offset", 0)
 
@@ -142,6 +207,319 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 	}
 
 	return jsonResult(results)
+}
+
+// hybridScoreBreakdown exposes fused-score components for debugging.
+// All score fields are pointer-typed so "not present in this signal"
+// can be distinguished from a legitimate 0.0 score. RRF is omitted in
+// mode=vector (only one signal, nothing to fuse).
+type hybridScoreBreakdown struct {
+	RRF            *float64 `json:"rrf,omitempty"`
+	BM25           *float64 `json:"bm25,omitempty"`
+	Vector         *float64 `json:"vector,omitempty"`
+	SubjectBoosted bool     `json:"subject_boosted,omitempty"`
+}
+
+// hybridMessageItem is a single hit in a vector/hybrid response. The
+// embedded MessageSummary carries the standard message fields; Score is
+// present only when explain=true was requested.
+type hybridMessageItem struct {
+	query.MessageSummary
+	Score *hybridScoreBreakdown `json:"score,omitempty"`
+}
+
+// hybridGenerationSummary describes the active vector-index generation
+// used to answer a hybrid/vector query.
+type hybridGenerationSummary struct {
+	ID          int64  `json:"id"`
+	Model       string `json:"model"`
+	Dimension   int    `json:"dimension"`
+	Fingerprint string `json:"fingerprint"`
+	State       string `json:"state"`
+}
+
+// hybridSearchResponse is the full response body for a mode=vector or
+// mode=hybrid request on the search_messages tool.
+type hybridSearchResponse struct {
+	Query         string                  `json:"query"`
+	Mode          string                  `json:"mode"`
+	Returned      int                     `json:"returned"`
+	PoolSaturated bool                    `json:"pool_saturated"`
+	Generation    hybridGenerationSummary `json:"generation"`
+	Messages      []hybridMessageItem     `json:"messages"`
+}
+
+// searchMessagesHybrid runs vector or hybrid search via the configured
+// hybrid engine. Mirrors api/handlers.go handleHybridSearch: returns
+// descriptive errors when the engine is not configured or the index is
+// stale/building, otherwise returns RRF-ranked hits hydrated via
+// engine.GetMessage.
+func (h *handlers) searchMessagesHybrid(
+	ctx context.Context, args map[string]any,
+	queryStr, mode string, explain bool,
+) (*mcp.CallToolResult, error) {
+	if h.hybridEngine == nil {
+		return mcp.NewToolResultError(
+			"vector_not_enabled: vector search is not configured on this server",
+		), nil
+	}
+
+	// Resolve account filter to a source ID for the structured Filter.
+	account, _ := args["account"].(string)
+	sourceID, err := h.getAccountID(ctx, account)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	limit := limitArg(args, "limit", 20)
+	if maxPage := h.vectorCfg.Search.MaxPageSizeHybridClamp(); maxPage > 0 && limit > maxPage {
+		limit = maxPage
+	}
+
+	parsed := search.Parse(queryStr)
+	freeText := strings.Join(parsed.TextTerms, " ")
+
+	// mode=vector|hybrid requires at least one free-text term; filter-only
+	// queries have no query vector to rank by. Callers that want pure
+	// structured filtering should use mode=fts instead.
+	if freeText == "" {
+		return mcp.NewToolResultError(
+			"missing_free_text: mode=" + mode +
+				" requires at least one free-text term; use mode=fts for filter-only queries",
+		), nil
+	}
+
+	subjectTerms := make([]string, 0, len(parsed.TextTerms))
+	for _, t := range parsed.TextTerms {
+		subjectTerms = append(subjectTerms, strings.ToLower(t))
+	}
+
+	filter, err := h.hybridEngine.BuildFilter(ctx, parsed)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("filter resolution failed: %v", err)), nil
+	}
+	if sourceID != nil {
+		filter.SourceIDs = []int64{*sourceID}
+	}
+
+	req := hybrid.SearchRequest{
+		Mode:         hybrid.Mode(mode),
+		FreeText:     freeText,
+		Filter:       filter,
+		Limit:        limit,
+		SubjectTerms: subjectTerms,
+		Explain:      explain,
+	}
+
+	hits, meta, err := h.hybridEngine.Search(ctx, req)
+	if err != nil {
+		if r := translateVectorErr(err); r != nil {
+			return r, nil
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+	}
+
+	// Bulk-hydrate hits in one round-trip instead of looping
+	// GetMessage per result (which fetches body, From, To, Cc, Bcc,
+	// labels, and attachments for each id and was the dominant search
+	// latency cost).
+	hitIDs := make([]int64, len(hits))
+	for i, h := range hits {
+		hitIDs[i] = h.MessageID
+	}
+	summaries, err := h.engine.GetMessageSummariesByIDs(ctx, hitIDs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"mcp: hydrate hybrid hits failed: ids=%d error=%v\n",
+			len(hitIDs), err)
+		summaries = nil
+	}
+	byID := make(map[int64]query.MessageSummary, len(summaries))
+	for _, s := range summaries {
+		byID[s.ID] = s
+	}
+	items := make([]hybridMessageItem, 0, len(hits))
+	for _, hit := range hits {
+		msg, ok := byID[hit.MessageID]
+		if !ok {
+			continue
+		}
+		item := hybridMessageItem{MessageSummary: msg}
+		if explain {
+			sb := &hybridScoreBreakdown{SubjectBoosted: hit.SubjectBoosted}
+			if !math.IsNaN(hit.RRFScore) {
+				v := hit.RRFScore
+				sb.RRF = &v
+			}
+			if !math.IsNaN(hit.BM25Score) {
+				v := hit.BM25Score
+				sb.BM25 = &v
+			}
+			if !math.IsNaN(hit.VectorScore) {
+				v := hit.VectorScore
+				sb.Vector = &v
+			}
+			item.Score = sb
+		}
+		items = append(items, item)
+	}
+
+	return jsonResult(hybridSearchResponse{
+		Query:         queryStr,
+		Mode:          mode,
+		Returned:      len(items),
+		PoolSaturated: meta.PoolSaturated,
+		Generation: hybridGenerationSummary{
+			ID:          int64(meta.Generation.ID),
+			Model:       meta.Generation.Model,
+			Dimension:   meta.Generation.Dimension,
+			Fingerprint: meta.Generation.Fingerprint,
+			State:       string(meta.Generation.State),
+		},
+		Messages: items,
+	})
+}
+
+// similarMessagesResponse is the full response body for
+// find_similar_messages.
+type similarMessagesResponse struct {
+	SeedMessageID int64                   `json:"seed_message_id"`
+	Returned      int                     `json:"returned"`
+	Generation    hybridGenerationSummary `json:"generation"`
+	Messages      []query.MessageSummary  `json:"messages"`
+}
+
+// findSimilarMessages returns nearest-neighbour messages to a seed
+// message using the active vector index. The seed is excluded from
+// results. Structured filters (account, after, before, has_attachment)
+// are applied at the backend level.
+func (h *handlers) findSimilarMessages(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if h.backend == nil {
+		return mcp.NewToolResultError(
+			"vector_not_enabled: vector search is not configured on this server",
+		), nil
+	}
+	args := req.GetArguments()
+
+	seedID, err := getIDArg(args, "message_id")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	limit := limitArg(args, "limit", 20)
+	if maxPage := h.vectorCfg.Search.MaxPageSizeHybridClamp(); maxPage > 0 && limit > maxPage {
+		limit = maxPage
+	}
+
+	filter, err := h.filterFromFindSimilarArgs(ctx, args)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	seed, err := h.backend.LoadVector(ctx, seedID)
+	if err != nil {
+		if r := translateVectorErr(err); r != nil {
+			return r, nil
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("load seed vector: %v", err)), nil
+	}
+
+	active, err := h.backend.ActiveGeneration(ctx)
+	if err != nil {
+		if r := translateVectorErr(err); r != nil {
+			return r, nil
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("active generation: %v", err)), nil
+	}
+
+	// +1 so we can drop the seed itself from results without coming up short.
+	hits, err := h.backend.Search(ctx, active.ID, seed, limit+1, filter)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+	}
+
+	// Bulk-hydrate keeping rank order. Drop the seed first so the +1
+	// over-fetch is paid for in the size budget rather than the
+	// hydration round-trip.
+	wantIDs := make([]int64, 0, limit)
+	for _, hit := range hits {
+		if hit.MessageID == seedID {
+			continue
+		}
+		if len(wantIDs) >= limit {
+			break
+		}
+		wantIDs = append(wantIDs, hit.MessageID)
+	}
+	summaries, err := h.engine.GetMessageSummariesByIDs(ctx, wantIDs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"mcp: hydrate similar hits failed: ids=%d error=%v\n",
+			len(wantIDs), err)
+		summaries = nil
+	}
+	byID := make(map[int64]query.MessageSummary, len(summaries))
+	for _, s := range summaries {
+		byID[s.ID] = s
+	}
+	messages := make([]query.MessageSummary, 0, len(wantIDs))
+	for _, id := range wantIDs {
+		if msg, ok := byID[id]; ok {
+			messages = append(messages, msg)
+		}
+	}
+
+	return jsonResult(similarMessagesResponse{
+		SeedMessageID: seedID,
+		Returned:      len(messages),
+		Generation: hybridGenerationSummary{
+			ID:          int64(active.ID),
+			Model:       active.Model,
+			Dimension:   active.Dimension,
+			Fingerprint: active.Fingerprint,
+			State:       string(active.State),
+		},
+		Messages: messages,
+	})
+}
+
+// filterFromFindSimilarArgs builds a vector.Filter from the
+// find_similar_messages args. Returns an error if account lookup fails.
+// Sender/label filters are intentionally not exposed — resolving
+// participant/label names to IDs requires a main-DB handle that the
+// MCP handlers struct does not currently hold. A future task that
+// wires the DB through can extend both the schema and this helper.
+func (h *handlers) filterFromFindSimilarArgs(ctx context.Context, args map[string]any) (vector.Filter, error) {
+	var f vector.Filter
+
+	account, _ := args["account"].(string)
+	srcID, err := h.getAccountID(ctx, account)
+	if err != nil {
+		return f, err
+	}
+	if srcID != nil {
+		f.SourceIDs = []int64{*srcID}
+	}
+
+	if v, ok := args["has_attachment"].(bool); ok && v {
+		tr := true
+		f.HasAttachment = &tr
+	}
+	after, err := getDateArg(args, "after")
+	if err != nil {
+		return f, err
+	}
+	if after != nil {
+		f.After = after
+	}
+	before, err := getDateArg(args, "before")
+	if err != nil {
+		return f, err
+	}
+	if before != nil {
+		f.Before = before
+	}
+	return f, nil
 }
 
 func (h *handlers) getMessage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -354,6 +732,15 @@ func (h *handlers) listMessages(ctx context.Context, req mcp.CallToolRequest) (*
 	return jsonResult(results)
 }
 
+// getStatsResponse is the JSON body returned by the get_stats MCP tool.
+// VectorSearch is omitempty so archives without vector search do not
+// surface an empty sub-object to callers.
+type getStatsResponse struct {
+	Stats        *query.TotalStats   `json:"stats"`
+	Accounts     []query.AccountInfo `json:"accounts"`
+	VectorSearch *vector.StatsView   `json:"vector_search,omitempty"`
+}
+
 func (h *handlers) getStats(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	stats, err := h.engine.GetTotalStats(ctx, query.StatsOptions{})
 	if err != nil {
@@ -365,15 +752,18 @@ func (h *handlers) getStats(ctx context.Context, _ mcp.CallToolRequest) (*mcp.Ca
 		return mcp.NewToolResultError(fmt.Sprintf("accounts failed: %v", err)), nil
 	}
 
-	resp := struct {
-		Stats    *query.TotalStats   `json:"stats"`
-		Accounts []query.AccountInfo `json:"accounts"`
-	}{
-		Stats:    stats,
-		Accounts: accounts,
+	// Vector stats are best-effort: partial failures are logged here but
+	// still attached to the response so callers see whatever succeeded.
+	vs, vsErr := vector.CollectStats(ctx, h.backend)
+	if vsErr != nil {
+		fmt.Fprintf(os.Stderr, "mcp: vector stats failed: %v\n", vsErr)
 	}
 
-	return jsonResult(resp)
+	return jsonResult(getStatsResponse{
+		Stats:        stats,
+		Accounts:     accounts,
+		VectorSearch: vs,
+	})
 }
 
 func (h *handlers) aggregate(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

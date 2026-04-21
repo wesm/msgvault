@@ -41,7 +41,7 @@ func openLoggedMem(t *testing.T) *loggedDB {
 	); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
-	return newLoggedDB(db)
+	return newLoggedDB(db, nil)
 }
 
 func TestLoggedDB_ExecLogsStatement(t *testing.T) {

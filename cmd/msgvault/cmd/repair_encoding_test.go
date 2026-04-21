@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/testutil"
@@ -99,7 +100,7 @@ func TestRepairEncoding_NoScanErrors(t *testing.T) {
 
 	stats := &repairStats{}
 
-	if err := repairMessageFields(st, stats); err != nil {
+	if _, err := repairMessageFields(st, stats); err != nil {
 		t.Fatalf("repairMessageFields: %v", err)
 	}
 	if err := repairDisplayNames(st, stats); err != nil {
@@ -111,6 +112,86 @@ func TestRepairEncoding_NoScanErrors(t *testing.T) {
 
 	if stats.skippedRows != 0 {
 		t.Errorf("skippedRows = %d, want 0 for valid data", stats.skippedRows)
+	}
+}
+
+// TestRepairMessageFields_ReturnsReembedNeededIDs guards the re-embedding
+// hook: when any field that feeds the embedder (subject, body_text,
+// body_html) is repaired, the affected message id must appear in the
+// returned slice so the caller can re-enqueue it against
+// pending_embeddings. Snippet-only repairs must NOT appear because the
+// embedder doesn't read snippet.
+func TestRepairMessageFields_ReturnsReembedNeededIDs(t *testing.T) {
+	st := testutil.NewTestStore(t)
+	db := st.DB()
+
+	// Insert a source and conversation so FKs are satisfied.
+	if _, err := db.Exec(
+		`INSERT INTO sources (id, source_type, identifier, created_at, updated_at)
+		 VALUES (1, 'test', 'test@example.com', datetime('now'), datetime('now'))`); err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO conversations (id, source_id, source_conversation_id, conversation_type, title, created_at, updated_at)
+		 VALUES (1, 1, 'conv-1', 'email_thread', 'title', datetime('now'), datetime('now'))`); err != nil {
+		t.Fatalf("insert conversation: %v", err)
+	}
+
+	// Message 10: subject has invalid UTF-8 → subject is repaired
+	//             (embedder reads subject, so must be re-enqueued).
+	// Message 20: body_text has invalid UTF-8 → body is repaired.
+	// Message 30: body_html has invalid UTF-8 → body is repaired.
+	// Message 40: only snippet has invalid UTF-8 → snippet-only repair
+	//             must NOT be in the re-enqueue list (not embedded).
+	// Message 50: all fields clean → nothing repaired.
+	inserts := []struct {
+		id       int64
+		subject  string
+		bodyText string
+		bodyHTML string
+		snippet  string
+	}{
+		{10, "subj\x80bad", "clean body", "", "clean snippet"},
+		{20, "clean subject", "body\xFEbad", "", "snip"},
+		{30, "clean subject", "", "<p>body\xFFbad</p>", "snip"},
+		{40, "clean subject", "clean body", "", "snip\x81bad"},
+		{50, "clean subject", "clean body", "", "clean snippet"},
+	}
+	for _, ins := range inserts {
+		if _, err := db.Exec(
+			`INSERT INTO messages (id, conversation_id, source_id, source_message_id,
+			 message_type, subject, snippet, sent_at, size_estimate)
+			 VALUES (?, 1, 1, ?, 'email', ?, ?, datetime('now'), 1000)`,
+			ins.id, fmt.Sprintf("src-%d", ins.id), ins.subject, ins.snippet); err != nil {
+			t.Fatalf("insert message %d: %v", ins.id, err)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO message_bodies (message_id, body_text, body_html) VALUES (?, ?, ?)`,
+			ins.id, ins.bodyText, ins.bodyHTML); err != nil {
+			t.Fatalf("insert body %d: %v", ins.id, err)
+		}
+	}
+
+	stats := &repairStats{}
+	ids, err := repairMessageFields(st, stats)
+	if err != nil {
+		t.Fatalf("repairMessageFields: %v", err)
+	}
+
+	gotSet := map[int64]bool{}
+	for _, id := range ids {
+		gotSet[id] = true
+	}
+	for _, want := range []int64{10, 20, 30} {
+		if !gotSet[want] {
+			t.Errorf("msg %d missing from reembedNeededIDs, got: %v", want, ids)
+		}
+	}
+	if gotSet[40] {
+		t.Errorf("msg 40 (snippet-only repair) must NOT be in reembedNeededIDs, got: %v", ids)
+	}
+	if gotSet[50] {
+		t.Errorf("msg 50 (no repair) must NOT be in reembedNeededIDs, got: %v", ids)
 	}
 }
 

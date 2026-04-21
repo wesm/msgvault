@@ -1314,6 +1314,120 @@ client_secrets = "/absolute/personal.json"
 	}
 }
 
+func TestLoadExpandsVectorDBPath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	t.Setenv("MSGVAULT_HOME", tmpDir)
+
+	configContent := `
+[vector]
+enabled = true
+db_path = "~/custom/vectors.db"
+
+[vector.embeddings]
+endpoint = "http://localhost:8080/v1"
+model = "nomic-embed-text-v1.5"
+dimension = 768
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load("", "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	expected := filepath.Join(home, "custom/vectors.db")
+	if cfg.Vector.DBPath != expected {
+		t.Errorf("Vector.DBPath = %q, want %q", cfg.Vector.DBPath, expected)
+	}
+}
+
+func TestLoadResolvesRelativeVectorDBPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+
+	configContent := `
+[vector]
+enabled = true
+db_path = "sub/vectors.db"
+
+[vector.embeddings]
+endpoint = "http://localhost:8080/v1"
+model = "nomic-embed-text-v1.5"
+dimension = 768
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(configPath, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	expected := filepath.Join(tmpDir, "sub/vectors.db")
+	if cfg.Vector.DBPath != expected {
+		t.Errorf("Vector.DBPath = %q, want %q", cfg.Vector.DBPath, expected)
+	}
+}
+
+// TestLoadReappliesVectorDefaults verifies that a zero-valued numeric
+// field in the TOML file (e.g. max_retries = 0) gets normalized back to
+// the documented default so users cannot accidentally disable retries or
+// timeouts. Preprocess booleans use pointer semantics and are exempt
+// from this re-defaulting.
+func TestLoadReappliesVectorDefaults(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+
+	configContent := `
+[vector]
+enabled = true
+
+[vector.embeddings]
+endpoint = "http://localhost:8080/v1"
+model = "nomic-embed-text"
+dimension = 768
+max_retries = 0
+timeout = "0s"
+
+[vector.preprocess]
+strip_signatures = false
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(configPath, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Vector.Embeddings.MaxRetries != 3 {
+		t.Errorf("MaxRetries = %d, want 3 (re-defaulted from explicit 0)", cfg.Vector.Embeddings.MaxRetries)
+	}
+	// NOTE: TOML "0s" currently decodes to time.Duration(0); post-decode
+	// ApplyDefaults lifts it back to 30s to avoid a hang.
+	if cfg.Vector.Embeddings.Timeout <= 0 {
+		t.Errorf("Timeout = %v, want positive (re-defaulted from explicit 0s)", cfg.Vector.Embeddings.Timeout)
+	}
+	// Explicit false in the TOML file must survive.
+	if cfg.Vector.Preprocess.StripSignaturesEnabled() != false {
+		t.Errorf("StripSignaturesEnabled() = %v, want false (user explicitly set)", cfg.Vector.Preprocess.StripSignaturesEnabled())
+	}
+	// Omitted sibling stays at default true.
+	if cfg.Vector.Preprocess.StripQuotesEnabled() != true {
+		t.Errorf("StripQuotesEnabled() = %v, want true (unset → default)", cfg.Vector.Preprocess.StripQuotesEnabled())
+	}
+}
+
 func TestLoadWithNamedOAuthApps_RelativePaths(t *testing.T) {
 	tmpDir := t.TempDir()
 

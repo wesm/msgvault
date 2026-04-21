@@ -133,6 +133,24 @@ client_secrets = "/path/to/secrets.json"
 	}
 }
 
+// TestSetupVectorFeatures_Disabled verifies that when
+// cfg.Vector.Enabled is false, setupVectorFeatures returns (nil, nil)
+// regardless of build tag. Runs under both tagged and untagged builds.
+func TestSetupVectorFeatures_Disabled(t *testing.T) {
+	savedCfg := cfg
+	defer func() { cfg = savedCfg }()
+	cfg = &config.Config{}
+	cfg.Vector.Enabled = false
+
+	vf, err := setupVectorFeatures(context.Background(), nil, "")
+	if err != nil {
+		t.Fatalf("setupVectorFeatures error = %v, want nil", err)
+	}
+	if vf != nil {
+		t.Errorf("setupVectorFeatures = %v, want nil when disabled", vf)
+	}
+}
+
 func TestCronExpressionValidation(t *testing.T) {
 	tests := []struct {
 		name    string

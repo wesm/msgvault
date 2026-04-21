@@ -7,18 +7,21 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/vector"
+	"github.com/wesm/msgvault/internal/vector/hybrid"
 )
 
 // Tool name constants.
 const (
-	ToolSearchMessages   = "search_messages"
-	ToolGetMessage       = "get_message"
-	ToolGetAttachment    = "get_attachment"
-	ToolExportAttachment = "export_attachment"
-	ToolListMessages     = "list_messages"
-	ToolGetStats         = "get_stats"
-	ToolAggregate        = "aggregate"
-	ToolStageDeletion    = "stage_deletion"
+	ToolSearchMessages      = "search_messages"
+	ToolGetMessage          = "get_message"
+	ToolGetAttachment       = "get_attachment"
+	ToolExportAttachment    = "export_attachment"
+	ToolListMessages        = "list_messages"
+	ToolGetStats            = "get_stats"
+	ToolAggregate           = "aggregate"
+	ToolStageDeletion       = "stage_deletion"
+	ToolFindSimilarMessages = "find_similar_messages"
 )
 
 // Common argument helpers for recurring tool option definitions.
@@ -53,19 +56,65 @@ func withAccount() mcp.ToolOption {
 	)
 }
 
+// ServeOptions configures an MCP server. Only Engine is required; the
+// HybridEngine and VectorCfg fields enable the vector/hybrid modes on
+// the search_messages tool, and Backend additionally enables the
+// find_similar_messages tool.
+type ServeOptions struct {
+	Engine         query.Engine
+	AttachmentsDir string
+	DataDir        string
+
+	// HybridEngine is optional. When nil, search_messages rejects
+	// mode=vector and mode=hybrid with a vector_not_enabled error.
+	HybridEngine *hybrid.Engine
+	// VectorCfg should already have ApplyDefaults() called on it.
+	// The handler reads Search.MaxPageSizeHybridClamp() at request
+	// time; a positive value clamps the per-request limit, and zero
+	// disables clamping (the user can set
+	// `max_page_size_hybrid = 0` in TOML to disable; ApplyDefaults
+	// only fills in 50 when the field was omitted).
+	VectorCfg vector.Config
+	// Backend is optional. When nil, find_similar_messages rejects all
+	// calls with a vector_not_enabled error.
+	Backend vector.Backend
+}
+
 // Serve creates an MCP server with email archive tools and serves over stdio.
 // It blocks until stdin is closed or the context is cancelled.
 // dataDir is the base data directory (e.g., ~/.msgvault) used for deletions.
+//
+// Serve is a thin wrapper around ServeWithOptions that leaves the vector
+// fields empty; callers that want vector/hybrid search should use
+// ServeWithOptions directly.
 func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir string) error {
+	return ServeWithOptions(ctx, ServeOptions{
+		Engine:         engine,
+		AttachmentsDir: attachmentsDir,
+		DataDir:        dataDir,
+	})
+}
+
+// ServeWithOptions creates an MCP server from opts and serves over stdio.
+// It blocks until stdin is closed or the context is cancelled.
+func ServeWithOptions(ctx context.Context, opts ServeOptions) error {
 	s := server.NewMCPServer(
 		"msgvault",
 		"1.0.0",
 		server.WithToolCapabilities(false),
 	)
 
-	h := &handlers{engine: engine, attachmentsDir: attachmentsDir, dataDir: dataDir}
+	h := &handlers{
+		engine:         opts.Engine,
+		attachmentsDir: opts.AttachmentsDir,
+		dataDir:        opts.DataDir,
+		hybridEngine:   opts.HybridEngine,
+		vectorCfg:      opts.VectorCfg,
+		backend:        opts.Backend,
+	}
 
-	s.AddTool(searchMessagesTool(), h.searchMessages)
+	vectorAvailable := opts.HybridEngine != nil
+	s.AddTool(searchMessagesTool(vectorAvailable), h.searchMessages)
 	s.AddTool(getMessageTool(), h.getMessage)
 	s.AddTool(getAttachmentTool(), h.getAttachment)
 	s.AddTool(exportAttachmentTool(), h.exportAttachment)
@@ -73,22 +122,49 @@ func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir str
 	s.AddTool(getStatsTool(), h.getStats)
 	s.AddTool(aggregateTool(), h.aggregate)
 	s.AddTool(stageDeletionTool(), h.stageDeletion)
+	if opts.Backend != nil {
+		s.AddTool(findSimilarMessagesTool(), h.findSimilarMessages)
+	}
 
 	stdio := server.NewStdioServer(s)
 	return stdio.Listen(ctx, os.Stdin, os.Stdout)
 }
 
-func searchMessagesTool() mcp.Tool {
+func searchMessagesTool(vectorAvailable bool) mcp.Tool {
+	if !vectorAvailable {
+		return mcp.NewTool(ToolSearchMessages,
+			mcp.WithDescription("Search emails using Gmail-like query syntax. Supports from:, to:, subject:, label:, has:attachment, before:, after:, and free text. (This server is not configured for vector search; only keyword FTS is available.)"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithString("query",
+				mcp.Required(),
+				mcp.Description("Gmail-style search query (e.g. 'from:alice subject:meeting after:2024-01-01')"),
+			),
+			withAccount(),
+			withLimit("20"),
+			withOffset(),
+		)
+	}
 	return mcp.NewTool(ToolSearchMessages,
-		mcp.WithDescription("Search emails using Gmail-like query syntax. Supports from:, to:, subject:, label:, has:attachment, before:, after:, and free text."),
+		mcp.WithDescription("Search emails using Gmail-like query syntax. Supports from:, to:, subject:, label:, has:attachment, before:, after:, and free text. Vector search is configured: set mode=vector for pure semantic search or mode=hybrid to fuse BM25 and vector ranking via RRF. Vector/hybrid modes require free-text terms in the query; filter-only queries must use mode=fts."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("query",
 			mcp.Required(),
-			mcp.Description("Gmail-style search query (e.g. 'from:alice subject:meeting after:2024-01-01')"),
+			mcp.Description("Gmail-style search query (e.g. 'from:alice subject:meeting after:2024-01-01'); mode=vector|hybrid require at least one free-text term"),
 		),
 		withAccount(),
 		withLimit("20"),
-		withOffset(),
+		// offset is FTS-only here. Vector/hybrid responses don't page —
+		// callers should bump limit (capped by max_page_size_hybrid) instead.
+		mcp.WithNumber("offset",
+			mcp.Description("Number of results to skip for pagination (default 0). Only valid for mode=fts; mode=vector and mode=hybrid reject offset>0 with pagination_unsupported."),
+		),
+		mcp.WithString("mode",
+			mcp.Description("Search mode: fts (default, keyword only), vector (semantic only), or hybrid (BM25 + vector fused via RRF)"),
+			mcp.Enum("fts", "vector", "hybrid"),
+		),
+		mcp.WithBoolean("explain",
+			mcp.Description("Include per-signal scores in the response (for debugging or ranking inspection)"),
+		),
 	)
 }
 
@@ -190,6 +266,24 @@ func stageDeletionTool() mcp.Tool {
 		mcp.WithString("label",
 			mcp.Description("Filter by Gmail label (e.g. 'CATEGORY_PROMOTIONS')"),
 		),
+		withAfter(),
+		withBefore(),
+		mcp.WithBoolean("has_attachment",
+			mcp.Description("Only messages with attachments"),
+		),
+	)
+}
+
+func findSimilarMessagesTool() mcp.Tool {
+	return mcp.NewTool(ToolFindSimilarMessages,
+		mcp.WithDescription("Find messages whose embeddings are closest to the given message. Requires vector search to be configured and an active index generation."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithNumber("message_id",
+			mcp.Required(),
+			mcp.Description("Seed message ID; its embedding is used as the query vector"),
+		),
+		withLimit("20"),
+		withAccount(),
 		withAfter(),
 		withBefore(),
 		mcp.WithBoolean("has_attachment",

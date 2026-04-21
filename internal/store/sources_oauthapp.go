@@ -1,14 +1,17 @@
 package store
 
-import "database/sql"
+import (
+	"database/sql"
+	"fmt"
+)
 
 // UpdateSourceOAuthApp updates the OAuth app binding for a source.
 // Pass a null NullString to clear the binding (use default app).
 func (s *Store) UpdateSourceOAuthApp(sourceID int64, oauthApp sql.NullString) error {
-	_, err := s.db.Exec(`
+	_, err := s.db.Exec(fmt.Sprintf(`
 		UPDATE sources
-		SET oauth_app = ?, updated_at = datetime('now')
+		SET oauth_app = ?, updated_at = %s
 		WHERE id = ?
-	`, oauthApp, sourceID)
+	`, s.dialect.Now()), oauthApp, sourceID)
 	return err
 }

@@ -4,26 +4,40 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/wesm/msgvault/internal/export"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/query/querytest"
 	"github.com/wesm/msgvault/internal/testutil"
+	"github.com/wesm/msgvault/internal/vector"
+	"github.com/wesm/msgvault/internal/vector/hybrid"
 )
+
+// stubEmbedder is an EmbeddingClient placeholder for tests where the
+// engine never reaches the embed step (e.g. ResolveActiveForFingerprint
+// fails first). Calling Embed signals a test bug.
+type stubEmbedder struct{}
+
+func (stubEmbedder) Embed(_ context.Context, _ []string) ([][]float32, error) {
+	return nil, errors.New("stubEmbedder.Embed should not be called in this test")
+}
 
 // toolHandler is the function signature for MCP tool handler methods.
 type toolHandler func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
 
 // Response types for runTool generic calls.
 type statsResponse struct {
-	Stats    query.TotalStats    `json:"stats"`
-	Accounts []query.AccountInfo `json:"accounts"`
+	Stats        query.TotalStats    `json:"stats"`
+	Accounts     []query.AccountInfo `json:"accounts"`
+	VectorSearch *vector.StatsView   `json:"vector_search"`
 }
 
 type attachmentMeta struct {
@@ -124,6 +138,210 @@ func TestSearchFallbackToFTS(t *testing.T) {
 	}
 }
 
+func TestSearchMessages_HybridModeNotConfigured(t *testing.T) {
+	// Handlers constructed without a hybridEngine must reject
+	// mode=hybrid (and mode=vector) with a vector_not_enabled error.
+	h := newTestHandlers(&querytest.MockEngine{})
+
+	r := runToolExpectError(t, "search_messages", h.searchMessages, map[string]any{
+		"query": "meeting notes",
+		"mode":  "hybrid",
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "vector_not_enabled") {
+		t.Fatalf("expected 'vector_not_enabled' error, got: %s", txt)
+	}
+}
+
+// newHybridHandlersForErrorTest wires a real hybrid.Engine around the
+// supplied backend so the search_messages handler exercises the engine's
+// sentinel-error translation. mainDB is nil because the test query has
+// no operators, so BuildFilter never touches it.
+func newHybridHandlersForErrorTest(backend vector.Backend) *handlers {
+	engine := hybrid.NewEngine(backend, nil, stubEmbedder{}, hybrid.Config{
+		ExpectedFingerprint: "nomic-embed:768",
+		RRFK:                60,
+		KPerSignal:          10,
+	})
+	return &handlers{
+		engine:       &querytest.MockEngine{},
+		hybridEngine: engine,
+		backend:      backend,
+	}
+}
+
+// TestSearchMessages_HybridErrIndexBuilding regression-guards the MCP
+// handler's translation of vector.ErrIndexBuilding from the hybrid
+// engine into an "index_building" tool error. The engine returns this
+// when no active generation exists yet but a build is in progress.
+func TestSearchMessages_HybridErrIndexBuilding(t *testing.T) {
+	building := &vector.Generation{
+		ID: 1, Model: "nomic-embed", Dimension: 768,
+		Fingerprint: "nomic-embed:768", State: vector.GenerationBuilding,
+	}
+	// activeErr drives ResolveActiveForFingerprint to consult the
+	// building generation; with one present the result is ErrIndexBuilding.
+	h := newHybridHandlersForErrorTest(&fakeBackend{
+		activeErr: vector.ErrNoActiveGeneration,
+		building:  building,
+	})
+
+	r := runToolExpectError(t, "search_messages", h.searchMessages, map[string]any{
+		"query": "anything",
+		"mode":  "hybrid",
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "index_building") {
+		t.Fatalf("expected 'index_building' error, got: %s", txt)
+	}
+}
+
+// TestSearchMessages_HybridErrNotEnabled regression-guards the MCP
+// handler's translation of vector.ErrNotEnabled from the hybrid engine
+// into a "vector_not_enabled" tool error. The engine returns this when
+// no generation exists at all (no active, no building).
+func TestSearchMessages_HybridErrNotEnabled(t *testing.T) {
+	// fakeBackend.activeErr=ErrNoActiveGeneration + building=nil
+	// drives ResolveActiveForFingerprint into the ErrNotEnabled branch.
+	h := newHybridHandlersForErrorTest(&fakeBackend{
+		activeErr: vector.ErrNoActiveGeneration,
+	})
+
+	r := runToolExpectError(t, "search_messages", h.searchMessages, map[string]any{
+		"query": "anything",
+		"mode":  "hybrid",
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "vector_not_enabled") {
+		t.Fatalf("expected 'vector_not_enabled' error, got: %s", txt)
+	}
+}
+
+// realEmbedder returns a deterministic vector. Used for end-to-end
+// MCP hybrid tests that exercise the engine's embed → backend.Search
+// path; pickEmbedGeneration tests use stubEmbedder instead.
+type realEmbedder struct {
+	dim int
+}
+
+func (e realEmbedder) Embed(_ context.Context, inputs []string) ([][]float32, error) {
+	out := make([][]float32, len(inputs))
+	for i := range inputs {
+		v := make([]float32, e.dim)
+		v[0] = 1
+		out[i] = v
+	}
+	return out, nil
+}
+
+// TestSearchMessages_HybridFilterOnlyReturnsMissingFreeText
+// regression-guards the wire-level contract that mode=vector|hybrid
+// rejects filter-only queries (no free-text terms) with the
+// "missing_free_text" tool error rather than passing an empty string
+// into the embedder. Mirrors the API-side handler check so MCP and
+// HTTP clients see the same boundary.
+func TestSearchMessages_HybridFilterOnlyReturnsMissingFreeText(t *testing.T) {
+	// A real engine wired to a backend with an active generation —
+	// stubEmbedder keeps us safe if the handler ever forgets to
+	// short-circuit (Embed will return an error, exposing the bug).
+	backend := &fakeBackend{
+		active: vector.Generation{
+			ID: 1, Model: "fake", Dimension: 4,
+			Fingerprint: "fake:4", State: vector.GenerationActive,
+		},
+	}
+	engine := hybrid.NewEngine(backend, nil, stubEmbedder{}, hybrid.Config{
+		ExpectedFingerprint: "fake:4", RRFK: 60, KPerSignal: 10,
+	})
+	h := &handlers{
+		engine:       &querytest.MockEngine{},
+		hybridEngine: engine,
+		backend:      backend,
+	}
+
+	r := runToolExpectError(t, "search_messages", h.searchMessages, map[string]any{
+		"query": "from:alice@example.com",
+		"mode":  "vector",
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "missing_free_text") {
+		t.Fatalf("expected 'missing_free_text' error, got: %s", txt)
+	}
+}
+
+// TestSearchMessages_HybridPoolSaturatedAlwaysEmitted regression-guards
+// the wire-level contract that pool_saturated is always present (and
+// false on a successful, under-cap response). An `omitempty` slip
+// would silently drop the field when false; clients that key off
+// "saturated vs not" would break.
+func TestSearchMessages_HybridPoolSaturatedAlwaysEmitted(t *testing.T) {
+	backend := &fakeBackend{
+		active: vector.Generation{
+			ID: 1, Model: "fake", Dimension: 4,
+			Fingerprint: "fake:4", State: vector.GenerationActive,
+		},
+		// No hits → pool_saturated computes to false (len(hits) < limit).
+		searchHits: nil,
+	}
+	engine := hybrid.NewEngine(backend, nil, realEmbedder{dim: 4}, hybrid.Config{
+		ExpectedFingerprint: "fake:4", RRFK: 60, KPerSignal: 10,
+	})
+	h := &handlers{
+		engine:       &querytest.MockEngine{},
+		hybridEngine: engine,
+		backend:      backend,
+	}
+
+	r := callToolDirect(t, "search_messages", h.searchMessages, map[string]any{
+		"query": "hello world",
+		"mode":  "vector",
+	})
+	if r.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, r))
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(resultText(t, r)), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	val, exists := raw["pool_saturated"]
+	if !exists {
+		t.Fatalf("pool_saturated key missing from successful response (raw=%s)", resultText(t, r))
+	}
+	if string(val) != "false" {
+		t.Errorf("pool_saturated = %s, want false", string(val))
+	}
+}
+
+func TestSearchMessages_HybridModePaginationUnsupported(t *testing.T) {
+	// offset>0 must be rejected before any hybrid-engine lookup. The
+	// pagination check runs first, so a missing hybridEngine does not
+	// mask the pagination_unsupported error.
+	h := newTestHandlers(&querytest.MockEngine{})
+
+	r := runToolExpectError(t, "search_messages", h.searchMessages, map[string]any{
+		"query":  "meeting notes",
+		"mode":   "vector",
+		"offset": float64(1),
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "pagination_unsupported") {
+		t.Fatalf("expected 'pagination_unsupported' error, got: %s", txt)
+	}
+}
+
+func TestSearchMessages_UnknownMode(t *testing.T) {
+	h := newTestHandlers(&querytest.MockEngine{})
+
+	r := runToolExpectError(t, "search_messages", h.searchMessages, map[string]any{
+		"query": "meeting notes",
+		"mode":  "bogus",
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "invalid mode") {
+		t.Fatalf("expected 'invalid mode' error, got: %s", txt)
+	}
+}
+
 func TestGetMessage(t *testing.T) {
 	eng := &querytest.MockEngine{
 		Messages: map[int64]*query.MessageDetail{
@@ -159,7 +377,7 @@ func TestGetMessage(t *testing.T) {
 	}
 }
 
-func TestGetStats(t *testing.T) {
+func TestGetStats_VectorDisabled(t *testing.T) {
 	eng := &querytest.MockEngine{
 		Stats: &query.TotalStats{
 			MessageCount: 1000,
@@ -171,6 +389,7 @@ func TestGetStats(t *testing.T) {
 			{ID: 2, Identifier: "bob@gmail.com"},
 		},
 	}
+	// newTestHandlers leaves backend nil, mirroring a non-vector install.
 	h := newTestHandlers(eng)
 
 	resp := runTool[statsResponse](t, "get_stats", h.getStats, map[string]any{})
@@ -180,6 +399,80 @@ func TestGetStats(t *testing.T) {
 	}
 	if len(resp.Accounts) != 2 {
 		t.Fatalf("unexpected account count: %d", len(resp.Accounts))
+	}
+	if resp.VectorSearch != nil {
+		t.Fatalf("expected VectorSearch to be nil when backend is disabled, got %+v",
+			resp.VectorSearch)
+	}
+
+	// Also confirm the JSON payload omits the key entirely, so clients
+	// that type-check the wire format see a clean absence rather than
+	// a null value.
+	r := callToolDirect(t, "get_stats", h.getStats, map[string]any{})
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(resultText(t, r)), &raw); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	if _, ok := raw["vector_search"]; ok {
+		t.Errorf("expected 'vector_search' to be absent from JSON when backend is nil")
+	}
+}
+
+func TestGetStats_VectorEnabled(t *testing.T) {
+	eng := &querytest.MockEngine{
+		Stats: &query.TotalStats{
+			MessageCount: 100,
+			AccountCount: 1,
+		},
+		Accounts: []query.AccountInfo{
+			{ID: 1, Identifier: "alice@gmail.com"},
+		},
+	}
+	activatedAt := time.Date(2025, 3, 1, 12, 0, 0, 0, time.UTC)
+	fb := &fakeBackend{
+		active: vector.Generation{
+			ID:          5,
+			Model:       "nomic-embed",
+			Dimension:   768,
+			Fingerprint: "nomic-embed:768",
+			State:       vector.GenerationActive,
+			ActivatedAt: &activatedAt,
+		},
+		stats: map[vector.GenerationID]vector.Stats{
+			5: {EmbeddingCount: 100, PendingCount: 3},
+		},
+	}
+
+	h := &handlers{engine: eng, backend: fb}
+
+	resp := runTool[statsResponse](t, "get_stats", h.getStats, map[string]any{})
+
+	if resp.VectorSearch == nil {
+		t.Fatal("expected vector_search sub-object, got nil")
+	}
+	if !resp.VectorSearch.Enabled {
+		t.Error("vector_search.enabled = false, want true")
+	}
+	if resp.VectorSearch.ActiveGeneration == nil {
+		t.Fatal("expected vector_search.active_generation to be populated")
+	}
+	ag := resp.VectorSearch.ActiveGeneration
+	if ag.ID != 5 {
+		t.Errorf("active_generation.id = %d, want 5", ag.ID)
+	}
+	if ag.Model != "nomic-embed" {
+		t.Errorf("active_generation.model = %q, want 'nomic-embed'", ag.Model)
+	}
+	if ag.MessageCount != 100 {
+		t.Errorf("active_generation.message_count = %d, want 100", ag.MessageCount)
+	}
+	if resp.VectorSearch.PendingEmbeddingsTotal != 3 {
+		t.Errorf("pending_embeddings_total = %d, want 3",
+			resp.VectorSearch.PendingEmbeddingsTotal)
+	}
+	if resp.VectorSearch.BuildingGeneration != nil {
+		t.Errorf("building_generation = %+v, want nil",
+			resp.VectorSearch.BuildingGeneration)
 	}
 }
 
@@ -1045,4 +1338,207 @@ func TestStageDeletion(t *testing.T) {
 				maxStageDeletionResults, capturedFilter.Pagination.Limit)
 		}
 	})
+}
+
+// fakeBackend is a minimal vector.Backend used to exercise
+// find_similar_messages and get_stats without standing up a real
+// sqlitevec backend. LoadVector/ActiveGeneration/Search are driven
+// by their dedicated fields; BuildingGeneration and Stats expose
+// optional fields so the get_stats tests can populate them. Methods
+// not otherwise configured return errors and should not be called.
+type fakeBackend struct {
+	loadVec     []float32
+	loadErr     error
+	active      vector.Generation
+	activeErr   error
+	searchHits  []vector.Hit
+	searchErr   error
+	building    *vector.Generation
+	buildingErr error
+	stats       map[vector.GenerationID]vector.Stats
+	statsErr    error
+}
+
+func (f *fakeBackend) LoadVector(_ context.Context, _ int64) ([]float32, error) {
+	return f.loadVec, f.loadErr
+}
+func (f *fakeBackend) ActiveGeneration(_ context.Context) (vector.Generation, error) {
+	return f.active, f.activeErr
+}
+func (f *fakeBackend) Search(_ context.Context, _ vector.GenerationID, _ []float32, _ int, _ vector.Filter) ([]vector.Hit, error) {
+	return f.searchHits, f.searchErr
+}
+func (f *fakeBackend) CreateGeneration(_ context.Context, _ string, _ int) (vector.GenerationID, error) {
+	return 0, errors.New("not implemented")
+}
+func (f *fakeBackend) ActivateGeneration(_ context.Context, _ vector.GenerationID) error {
+	return errors.New("not implemented")
+}
+func (f *fakeBackend) RetireGeneration(_ context.Context, _ vector.GenerationID) error {
+	return errors.New("not implemented")
+}
+func (f *fakeBackend) BuildingGeneration(_ context.Context) (*vector.Generation, error) {
+	return f.building, f.buildingErr
+}
+func (f *fakeBackend) Upsert(_ context.Context, _ vector.GenerationID, _ []vector.Chunk) error {
+	return errors.New("not implemented")
+}
+func (f *fakeBackend) Delete(_ context.Context, _ vector.GenerationID, _ []int64) error {
+	return errors.New("not implemented")
+}
+func (f *fakeBackend) Stats(_ context.Context, gen vector.GenerationID) (vector.Stats, error) {
+	if f.statsErr != nil {
+		return vector.Stats{}, f.statsErr
+	}
+	return f.stats[gen], nil
+}
+func (f *fakeBackend) Close() error { return nil }
+func (f *fakeBackend) EnsureSeeded(_ context.Context, _ vector.GenerationID) error {
+	return nil
+}
+
+var _ vector.Backend = (*fakeBackend)(nil)
+
+// similarResponse matches the JSON response shape of find_similar_messages.
+type similarResponse struct {
+	SeedMessageID int64                  `json:"seed_message_id"`
+	Returned      int                    `json:"returned"`
+	Generation    generationSummary      `json:"generation"`
+	Messages      []query.MessageSummary `json:"messages"`
+}
+
+type generationSummary struct {
+	ID          int64  `json:"id"`
+	Model       string `json:"model"`
+	Dimension   int    `json:"dimension"`
+	Fingerprint string `json:"fingerprint"`
+	State       string `json:"state"`
+}
+
+func TestFindSimilarMessages_VectorNotEnabled(t *testing.T) {
+	h := newTestHandlers(&querytest.MockEngine{})
+
+	r := runToolExpectError(t, "find_similar_messages", h.findSimilarMessages, map[string]any{
+		"message_id": float64(1),
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "vector_not_enabled") {
+		t.Fatalf("expected 'vector_not_enabled' error, got: %s", txt)
+	}
+}
+
+// TestSearchMessagesTool_AdvertisesVectorModesOnlyWhenAvailable guards the
+// capability-discovery contract: when the server has no hybrid engine,
+// the search_messages tool omits the "mode" and "explain" parameters so
+// clients don't build vector requests that will fail at runtime.
+func TestSearchMessagesTool_AdvertisesVectorModesOnlyWhenAvailable(t *testing.T) {
+	disabled := searchMessagesTool(false)
+	if _, ok := disabled.InputSchema.Properties["mode"]; ok {
+		t.Errorf("vectorAvailable=false: tool advertises 'mode' but vector modes are unsupported")
+	}
+	if _, ok := disabled.InputSchema.Properties["explain"]; ok {
+		t.Errorf("vectorAvailable=false: tool advertises 'explain' but vector modes are unsupported")
+	}
+	if strings.Contains(disabled.Description, "mode=vector") || strings.Contains(disabled.Description, "mode=hybrid") {
+		t.Errorf("vectorAvailable=false: tool description mentions vector modes: %q", disabled.Description)
+	}
+
+	enabled := searchMessagesTool(true)
+	if _, ok := enabled.InputSchema.Properties["mode"]; !ok {
+		t.Errorf("vectorAvailable=true: tool is missing 'mode' parameter")
+	}
+	if _, ok := enabled.InputSchema.Properties["explain"]; !ok {
+		t.Errorf("vectorAvailable=true: tool is missing 'explain' parameter")
+	}
+	if !strings.Contains(enabled.Description, "free-text") {
+		t.Errorf("vectorAvailable=true: tool description should call out the free-text requirement, got: %q", enabled.Description)
+	}
+}
+
+func TestFindSimilarMessages_MissingID(t *testing.T) {
+	h := &handlers{
+		engine:  &querytest.MockEngine{},
+		backend: &fakeBackend{},
+	}
+
+	r := runToolExpectError(t, "find_similar_messages", h.findSimilarMessages, map[string]any{})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "message_id") {
+		t.Fatalf("expected error mentioning 'message_id', got: %s", txt)
+	}
+}
+
+func TestFindSimilarMessages_HappyPath(t *testing.T) {
+	seed := make([]float32, 4)
+	for i := range seed {
+		seed[i] = float32(i)
+	}
+	fb := &fakeBackend{
+		loadVec: seed,
+		active: vector.Generation{
+			ID:          7,
+			Model:       "nomic-embed",
+			Dimension:   4,
+			Fingerprint: "nomic-embed:4",
+			State:       vector.GenerationActive,
+		},
+		searchHits: []vector.Hit{
+			{MessageID: 100, Score: 0.99, Rank: 1}, // seed — must be filtered out
+			{MessageID: 200, Score: 0.95, Rank: 2},
+			{MessageID: 300, Score: 0.90, Rank: 3},
+		},
+	}
+
+	eng := &querytest.MockEngine{
+		Messages: map[int64]*query.MessageDetail{
+			200: testutil.NewMessageDetail(200).WithSubject("related one").BuildPtr(),
+			300: testutil.NewMessageDetail(300).WithSubject("related two").BuildPtr(),
+		},
+	}
+
+	h := &handlers{engine: eng, backend: fb}
+
+	resp := runTool[similarResponse](t, "find_similar_messages", h.findSimilarMessages, map[string]any{
+		"message_id": float64(100),
+		"limit":      float64(20),
+	})
+
+	if resp.SeedMessageID != 100 {
+		t.Fatalf("seed_message_id = %d, want 100", resp.SeedMessageID)
+	}
+	if resp.Returned != 2 {
+		t.Fatalf("returned = %d, want 2", resp.Returned)
+	}
+	if resp.Generation.ID != 7 {
+		t.Fatalf("generation.id = %d, want 7", resp.Generation.ID)
+	}
+	if resp.Generation.Fingerprint != "nomic-embed:4" {
+		t.Fatalf("generation.fingerprint = %s, want nomic-embed:4", resp.Generation.Fingerprint)
+	}
+	if len(resp.Messages) != 2 {
+		t.Fatalf("messages len = %d, want 2", len(resp.Messages))
+	}
+	for _, m := range resp.Messages {
+		if m.ID == 100 {
+			t.Fatalf("seed message 100 must not appear in results")
+		}
+	}
+	if resp.Messages[0].ID != 200 || resp.Messages[1].ID != 300 {
+		t.Fatalf("unexpected order: %v", resp.Messages)
+	}
+}
+
+func TestFindSimilarMessages_NoActiveGeneration(t *testing.T) {
+	fb := &fakeBackend{
+		loadErr: vector.ErrNoActiveGeneration,
+	}
+	h := &handlers{engine: &querytest.MockEngine{}, backend: fb}
+
+	r := runToolExpectError(t, "find_similar_messages", h.findSimilarMessages, map[string]any{
+		"message_id": float64(1),
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "no_active_generation") {
+		t.Fatalf("expected 'no_active_generation' error, got: %s", txt)
+	}
 }

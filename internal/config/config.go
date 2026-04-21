@@ -12,6 +12,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/wesm/msgvault/internal/fileutil"
+	"github.com/wesm/msgvault/internal/vector"
 )
 
 // ChatConfig holds chat/LLM configuration.
@@ -87,6 +88,7 @@ type Config struct {
 	Chat      ChatConfig        `toml:"chat"`
 	Server    ServerConfig      `toml:"server"`
 	Remote    RemoteConfig      `toml:"remote"`
+	Vector    vector.Config     `toml:"vector"`
 	Accounts  []AccountSchedule `toml:"accounts"`
 	Imports   []ImportSchedule  `toml:"imports"`
 
@@ -218,7 +220,7 @@ func DefaultHome() string {
 // NewDefaultConfig returns a configuration with default values.
 func NewDefaultConfig() *Config {
 	homeDir := DefaultHome()
-	return &Config{
+	cfg := &Config{
 		HomeDir: homeDir,
 		Data: DataConfig{
 			DataDir: homeDir,
@@ -237,6 +239,8 @@ func NewDefaultConfig() *Config {
 		},
 		Accounts: []AccountSchedule{},
 	}
+	cfg.Vector.ApplyDefaults()
+	return cfg
 }
 
 // Load reads the configuration from the specified file.
@@ -298,6 +302,7 @@ func Load(path, homeDir string) (*Config, error) {
 	cfg.Data.DataDir = expandPath(cfg.Data.DataDir)
 	cfg.Log.Dir = expandPath(cfg.Log.Dir)
 	cfg.OAuth.ClientSecrets = expandPath(cfg.OAuth.ClientSecrets)
+	cfg.Vector.DBPath = expandPath(cfg.Vector.DBPath)
 	for name, app := range cfg.OAuth.Apps {
 		app.ClientSecrets = expandPath(app.ClientSecrets)
 		cfg.OAuth.Apps[name] = app
@@ -312,11 +317,18 @@ func Load(path, homeDir string) (*Config, error) {
 		cfg.Data.DataDir = resolveRelative(cfg.Data.DataDir, cfg.HomeDir)
 		cfg.Log.Dir = resolveRelative(cfg.Log.Dir, cfg.HomeDir)
 		cfg.OAuth.ClientSecrets = resolveRelative(cfg.OAuth.ClientSecrets, cfg.HomeDir)
+		cfg.Vector.DBPath = resolveRelative(cfg.Vector.DBPath, cfg.HomeDir)
 		for name, app := range cfg.OAuth.Apps {
 			app.ClientSecrets = resolveRelative(app.ClientSecrets, cfg.HomeDir)
 			cfg.OAuth.Apps[name] = app
 		}
 	}
+
+	// Re-apply numeric defaults over any zero-valued vector fields that
+	// survived decode (e.g. `max_retries = 0` or an omitted timeout).
+	// Preprocess booleans are *bool so pointer-nil still means "default";
+	// an explicit false in the file stays false.
+	cfg.Vector.ApplyDefaults()
 
 	return cfg, nil
 }

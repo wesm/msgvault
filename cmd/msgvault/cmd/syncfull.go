@@ -163,6 +163,21 @@ Examples:
 			fmt.Println("\nInterrupted. Saving checkpoint...")
 			cancel()
 		}()
+
+		// Open vector backend (optional) so newly-ingested messages
+		// are enqueued for embedding.
+		vf, err := setupVectorFeatures(ctx, s.DB(), dbPath)
+		if err != nil {
+			return fmt.Errorf("vector features: %w", err)
+		}
+		defer func() {
+			if vf != nil && vf.Close != nil {
+				if closeErr := vf.Close(); closeErr != nil {
+					logger.Warn("closing vectors.db failed", "error", closeErr)
+				}
+			}
+		}()
+
 		for _, src := range sources {
 			if ctx.Err() != nil {
 				break
@@ -176,7 +191,7 @@ Examples:
 				}
 			}
 
-			if err := runFullSync(ctx, s, getOAuthMgr, src); err != nil {
+			if err := runFullSync(ctx, s, getOAuthMgr, src, vf); err != nil {
 				syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", src.Identifier, err))
 				continue
 			}
@@ -280,7 +295,7 @@ func buildAPIClient(ctx context.Context, src *store.Source, getOAuthMgr func(str
 	}
 }
 
-func runFullSync(ctx context.Context, s *store.Store, getOAuthMgr func(string) (*oauth.Manager, error), src *store.Source) error {
+func runFullSync(ctx context.Context, s *store.Store, getOAuthMgr func(string) (*oauth.Manager, error), src *store.Source, vf *vectorFeatures) error {
 	apiClient, err := buildAPIClient(ctx, src, getOAuthMgr)
 	if err != nil {
 		return err
@@ -320,6 +335,9 @@ func runFullSync(ctx context.Context, s *store.Store, getOAuthMgr func(string) (
 	syncer := sync.New(apiClient, s, opts).
 		WithLogger(logger).
 		WithProgress(&CLIProgress{})
+	if vf != nil {
+		syncer.SetEmbedEnqueuer(vf.Enqueuer)
+	}
 
 	// Run sync
 	startTime := time.Now()

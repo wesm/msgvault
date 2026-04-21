@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -64,6 +65,13 @@ type mockStore struct {
 	stats    *StoreStats
 	messages []APIMessage
 	total    int64
+
+	// Call counts so tests can assert that bulk hydration paths use
+	// GetMessagesSummariesByIDs (one round-trip) instead of looping
+	// GetMessage (per-hit N+1).
+	getMessageCalls          atomic.Int32
+	getSummariesByIDsCalls   atomic.Int32
+	getSummariesByIDsLastIDs []int64
 }
 
 func (m *mockStore) GetStats() (*StoreStats, error) {
@@ -78,12 +86,29 @@ func (m *mockStore) ListMessages(offset, limit int) ([]APIMessage, int64, error)
 }
 
 func (m *mockStore) GetMessage(id int64) (*APIMessage, error) {
+	m.getMessageCalls.Add(1)
 	for _, msg := range m.messages {
 		if msg.ID == id {
 			return &msg, nil
 		}
 	}
 	return nil, nil
+}
+
+func (m *mockStore) GetMessagesSummariesByIDs(ids []int64) ([]APIMessage, error) {
+	m.getSummariesByIDsCalls.Add(1)
+	m.getSummariesByIDsLastIDs = append([]int64(nil), ids...)
+	byID := make(map[int64]APIMessage, len(m.messages))
+	for _, msg := range m.messages {
+		byID[msg.ID] = msg
+	}
+	out := make([]APIMessage, 0, len(ids))
+	for _, id := range ids {
+		if msg, ok := byID[id]; ok {
+			out = append(out, msg)
+		}
+	}
+	return out, nil
 }
 
 func (m *mockStore) SearchMessages(query string, offset, limit int) ([]APIMessage, int64, error) {

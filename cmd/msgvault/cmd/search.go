@@ -18,6 +18,8 @@ var (
 	searchOffset  int
 	searchJSON    bool
 	searchAccount string
+	searchMode    string
+	searchExplain bool
 )
 
 var searchCmd = &cobra.Command{
@@ -66,7 +68,20 @@ Examples:
 					"--account is not supported in remote mode",
 				)
 			}
+			if searchMode != "fts" {
+				return fmt.Errorf("--mode is not supported in remote mode")
+			}
 			return runRemoteSearch(queryStr)
+		}
+
+		if searchMode != "fts" {
+			if searchMode != "vector" && searchMode != "hybrid" {
+				return fmt.Errorf("invalid --mode: %q (want fts|vector|hybrid)", searchMode)
+			}
+			if searchOffset > 0 {
+				return fmt.Errorf("--offset is not supported with --mode=%s (pagination is single-page)", searchMode)
+			}
+			return runHybridSearch(cmd, queryStr, searchMode, searchExplain)
 		}
 
 		return runLocalSearch(cmd, queryStr)
@@ -264,6 +279,8 @@ func init() {
 	searchCmd.Flags().IntVar(&searchOffset, "offset", 0, "Skip first N results")
 	searchCmd.Flags().BoolVar(&searchJSON, "json", false, "Output as JSON")
 	searchCmd.Flags().StringVar(&searchAccount, "account", "", "Limit results to a specific account (email address)")
+	searchCmd.Flags().StringVar(&searchMode, "mode", "fts", "Search mode: fts|vector|hybrid")
+	searchCmd.Flags().BoolVar(&searchExplain, "explain", false, "Include per-signal scores in output (hybrid/vector modes)")
 }
 
 // ensureFTSIndex checks if the FTS search index needs to be built and

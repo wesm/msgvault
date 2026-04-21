@@ -90,6 +90,26 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("init schema: %w", err)
 	}
 
+	// Set up cancellable context early so vector-backend initialization
+	// (which may open files and run migrations) respects Ctrl+C.
+	ctx, cancel := context.WithCancel(cmd.Context())
+	defer cancel()
+
+	// Build optional vector-search components. Returns (nil, nil) when
+	// cfg.Vector.Enabled is false, or an error when enabled but the
+	// binary was built without -tags sqlite_vec.
+	vf, err := setupVectorFeatures(ctx, s.DB(), dbPath)
+	if err != nil {
+		return fmt.Errorf("vector features: %w", err)
+	}
+	defer func() {
+		if vf != nil && vf.Close != nil {
+			if closeErr := vf.Close(); closeErr != nil {
+				logger.Warn("closing vectors.db failed", "error", closeErr)
+			}
+		}
+	}()
+
 	// Create query engine for TUI aggregate support.
 	// Prefer DuckDB over Parquet when the cache is complete and fresh;
 	// otherwise fall back to SQLite so remote endpoints still work.
@@ -129,12 +149,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Create dispatch function: Gmail syncs vs local imports
+	// Create dispatch function: Gmail syncs vs local imports.
+	// vf is captured and used inside runScheduledSync to wire the embed
+	// enqueuer into each per-run Syncer; it is nil when vector search is disabled.
 	dispatchFunc := func(ctx context.Context, key string) error {
 		if ic, ok := importConfigs[key]; ok {
 			return runScheduledImport(ctx, s, ic.path, ic.identifier, ic.attachmentsDir)
 		}
-		return runScheduledSync(ctx, key, s, getOAuthMgr)
+		return runScheduledSync(ctx, key, s, getOAuthMgr, vf)
 	}
 
 	// Create and configure scheduler
@@ -164,9 +186,27 @@ func runServe(cmd *cobra.Command, args []string) error {
 		logger.Warn("no accounts or imports scheduled - add entries to config.toml")
 	}
 
-	// Set up signal handling for graceful shutdown
-	ctx, cancel := context.WithCancel(cmd.Context())
-	defer cancel()
+	// Register the embed job (cron-driven plus optional post-sync hook).
+	// Only when vector search is enabled and wired.
+	if vf != nil {
+		embedJob := &scheduler.EmbedJob{
+			Worker:      vf.Worker,
+			Backend:     vf.Backend,
+			VectorsDB:   vf.VectorsDB,
+			Fingerprint: vf.Cfg.Embeddings.Fingerprint(),
+			Log:         logger,
+		}
+		schedule := cfg.Vector.Embed.Schedule.Cron
+		if err := sched.SetEmbedJob(
+			embedJob, schedule, cfg.Vector.Embed.Schedule.RunAfterSync,
+		); err != nil {
+			return fmt.Errorf("register embed job: %w", err)
+		}
+		logger.Info("embed scheduled",
+			"cron", schedule,
+			"run_after_sync", cfg.Vector.Embed.Schedule.RunAfterSync,
+		)
+	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -179,13 +219,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 	schedAdapter := &schedulerAdapter{scheduler: sched}
 
 	// Create and start API server
-	apiServer := api.NewServerWithOptions(api.ServerOptions{
+	apiOpts := api.ServerOptions{
 		Config:    cfg,
 		Store:     storeAdapter,
 		Engine:    engine,
 		Scheduler: schedAdapter,
 		Logger:    logger,
-	})
+	}
+	if vf != nil {
+		apiOpts.HybridEngine = vf.HybridEngine
+		apiOpts.Backend = vf.Backend
+		apiOpts.VectorCfg = vf.Cfg
+	}
+	apiServer := api.NewServerWithOptions(apiOpts)
 
 	// Start API server in goroutine
 	serverErr := make(chan error, 1)
@@ -267,6 +313,10 @@ func (a *storeAPIAdapter) ListMessages(offset, limit int) ([]api.APIMessage, int
 
 func (a *storeAPIAdapter) GetMessage(id int64) (*api.APIMessage, error) {
 	return a.store.GetMessage(id)
+}
+
+func (a *storeAPIAdapter) GetMessagesSummariesByIDs(ids []int64) ([]api.APIMessage, error) {
+	return a.store.GetMessagesSummariesByIDs(ids)
 }
 
 func (a *storeAPIAdapter) SearchMessages(query string, offset, limit int) ([]api.APIMessage, int64, error) {
@@ -359,8 +409,11 @@ func runScheduledImport(ctx context.Context, s *store.Store, mailDir, identifier
 	return nil
 }
 
-// runScheduledSync performs an incremental sync for a scheduled account.
-func runScheduledSync(ctx context.Context, email string, s *store.Store, getOAuthMgr func(string) (*oauth.Manager, error)) error {
+// runScheduledSync performs an incremental sync for a scheduled
+// account. When vf is non-nil (vector search enabled), the Syncer is
+// configured to enqueue newly-ingested message IDs into the embedding
+// pipeline so subsequent embed runs pick them up.
+func runScheduledSync(ctx context.Context, email string, s *store.Store, getOAuthMgr func(string) (*oauth.Manager, error), vf *vectorFeatures) error {
 	logger.Info("starting scheduled sync", "email", email)
 	startTime := time.Now()
 
@@ -404,6 +457,9 @@ func runScheduledSync(ctx context.Context, email string, s *store.Store, getOAut
 
 	// Create syncer (no CLI progress for daemon mode)
 	syncer := sync.New(client, s, opts).WithLogger(logger)
+	if vf != nil {
+		syncer.SetEmbedEnqueuer(vf.Enqueuer)
+	}
 
 	// Resolve source — scheduled sync is Gmail-only.
 	source, err := s.GetOrCreateSource("gmail", email)
