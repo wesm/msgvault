@@ -65,7 +65,7 @@ var collectionsDeleteCmd = &cobra.Command{
 var collectionsAccounts string
 
 func runCollectionsCreate(_ *cobra.Command, args []string) error {
-	st, err := openStore()
+	st, err := openStoreAndInit()
 	if err != nil {
 		return err
 	}
@@ -87,7 +87,7 @@ func runCollectionsCreate(_ *cobra.Command, args []string) error {
 }
 
 func runCollectionsList(_ *cobra.Command, _ []string) error {
-	st, err := openStore()
+	st, err := openStoreAndInit()
 	if err != nil {
 		return err
 	}
@@ -114,7 +114,7 @@ func runCollectionsList(_ *cobra.Command, _ []string) error {
 }
 
 func runCollectionsShow(_ *cobra.Command, args []string) error {
-	st, err := openStore()
+	st, err := openStoreAndInit()
 	if err != nil {
 		return err
 	}
@@ -140,7 +140,7 @@ func runCollectionsShow(_ *cobra.Command, args []string) error {
 }
 
 func runCollectionsAdd(_ *cobra.Command, args []string) error {
-	st, err := openStore()
+	st, err := openStoreAndInit()
 	if err != nil {
 		return err
 	}
@@ -159,7 +159,7 @@ func runCollectionsAdd(_ *cobra.Command, args []string) error {
 }
 
 func runCollectionsRemove(_ *cobra.Command, args []string) error {
-	st, err := openStore()
+	st, err := openStoreAndInit()
 	if err != nil {
 		return err
 	}
@@ -178,7 +178,7 @@ func runCollectionsRemove(_ *cobra.Command, args []string) error {
 }
 
 func runCollectionsDelete(_ *cobra.Command, args []string) error {
-	st, err := openStore()
+	st, err := openStoreAndInit()
 	if err != nil {
 		return err
 	}
@@ -191,24 +191,6 @@ func runCollectionsDelete(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func openStore() (*store.Store, error) {
-	dbPath := cfg.DatabaseDSN()
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf(
-			"database not found: %s\nRun 'msgvault init-db' first",
-			dbPath,
-		)
-	}
-	st, err := store.Open(dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
-	}
-	if err := st.InitSchema(); err != nil {
-		_ = st.Close()
-		return nil, fmt.Errorf("init schema: %w", err)
-	}
-	return st, nil
-}
 
 func resolveAccountList(st *store.Store, accounts string) ([]int64, error) {
 	if accounts == "" {

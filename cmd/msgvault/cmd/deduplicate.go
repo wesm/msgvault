@@ -49,7 +49,7 @@ var (
 )
 
 func runDeduplicate(cmd *cobra.Command, _ []string) error {
-	st, err := openStore()
+	st, err := openStoreAndInit()
 	if err != nil {
 		return err
 	}

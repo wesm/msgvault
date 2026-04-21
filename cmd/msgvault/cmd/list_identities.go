@@ -37,7 +37,7 @@ deduplicate's sent-copy detection.`,
 }
 
 func runListIdentities(_ *cobra.Command, _ []string) error {
-	st, err := openStore()
+	st, err := openStoreAndInit()
 	if err != nil {
 		return err
 	}
