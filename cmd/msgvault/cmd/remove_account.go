@@ -122,19 +122,28 @@ func runRemoveAccount(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("collect attachment paths: %w", err)
 	}
 
-	// Check for active syncs BEFORE RemoveSource. The cascade deletes the
-	// sync_runs rows for this source, which would hide a sync that is still
-	// running on the account being removed from a post-RemoveSource check.
-	skipFileDeletion := syncRunningBeforeRemove(
-		s, cfg.AttachmentsDir(), len(attachmentPaths) > 0,
-	)
-
-	if err := s.RemoveSource(source.ID); err != nil {
+	// RemoveSourceSerialized runs the active-sync check and the cascade
+	// under a single exclusive write lock. StartSync blocks on that lock,
+	// so a sync started between our check and the delete is either seen
+	// as active (we skip file deletion) or fails after we commit because
+	// the source is gone.
+	hadActiveSync, err := s.RemoveSourceSerialized(cmd.Context(), source.ID)
+	if err != nil {
 		return fmt.Errorf("remove account: %w", err)
 	}
 
 	var deletedFiles, preservedFiles int
-	if !skipFileDeletion {
+	switch {
+	case hadActiveSync:
+		if len(attachmentPaths) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"Warning: a sync is in progress; "+
+					"attachment files were not deleted.\n"+
+					"Orphaned files may remain in %s\n",
+				cfg.AttachmentsDir(),
+			)
+		}
+	default:
 		deletedFiles, preservedFiles = deleteOrphanedAttachmentFiles(
 			cmd.Context(), s, attachmentPaths, cfg.AttachmentsDir(),
 		)
@@ -221,43 +230,6 @@ func runRemoveAccount(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// syncRunningBeforeRemove checks HasAnyActiveSync before RemoveSource runs.
-// Returns true if file deletion should be skipped because some sync is
-// running, or because the check itself failed (fail-safe). Prints a warning
-// in either case when hasPaths is true.
-//
-// This pre-RemoveSource check is required because RemoveSource cascades the
-// sync_runs rows for the account being removed, which would hide an active
-// sync on that same account from a post-RemoveSource HasAnyActiveSync call.
-func syncRunningBeforeRemove(
-	s *store.Store, attachmentsDir string, hasPaths bool,
-) bool {
-	running, err := s.HasAnyActiveSync()
-	if err != nil {
-		if hasPaths {
-			fmt.Fprintf(os.Stderr,
-				"Warning: could not check for active syncs: %v; "+
-					"attachment files were not deleted.\n"+
-					"Orphaned files may remain in %s\n",
-				err, attachmentsDir,
-			)
-		}
-		return true
-	}
-	if running {
-		if hasPaths {
-			fmt.Fprintf(os.Stderr,
-				"Warning: a sync is in progress; "+
-					"attachment files were not deleted.\n"+
-					"Orphaned files may remain in %s\n",
-				attachmentsDir,
-			)
-		}
-		return true
-	}
-	return false
-}
-
 // deleteOrphanedAttachmentFiles removes files in paths that are no longer
 // referenced by any attachment row. Returns the count of files actually
 // deleted and the count preserved because a concurrent reference appeared
@@ -267,9 +239,9 @@ func syncRunningBeforeRemove(
 // insert an attachment row (and place a file on disk) between the
 // IsAttachmentPathReferenced check and os.Remove. The inside-lock
 // HasAnyActiveSync recheck catches any sync on a different source that
-// started between syncRunningBeforeRemove and lock acquisition; the
-// per-file reference check handles the narrower race where a sync inserts
-// a row for one of our candidate hashes.
+// started between RemoveSourceSerialized releasing its lock and this
+// helper acquiring its own; the per-file reference check handles the
+// narrower race where a sync inserts a row for one of our candidate hashes.
 func deleteOrphanedAttachmentFiles(
 	ctx context.Context,
 	s *store.Store,

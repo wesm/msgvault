@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
@@ -176,6 +177,82 @@ func TestStore_RemoveSource_CascadesConversations(t *testing.T) {
 	testutil.MustNoErr(t, err, "count message_recipients")
 	if recipCount != 0 {
 		t.Errorf("message_recipients count = %d, want 0", recipCount)
+	}
+}
+
+func TestStore_RemoveSourceSerialized_NoActiveSync(t *testing.T) {
+	f := storetest.New(t)
+	f.CreateMessage("msg-1")
+
+	had, err := f.Store.RemoveSourceSerialized(context.Background(), f.Source.ID)
+	testutil.MustNoErr(t, err, "RemoveSourceSerialized")
+	if had {
+		t.Error("hadActiveSync = true, want false")
+	}
+
+	src, err := f.Store.GetSourceByIdentifier("test@example.com")
+	testutil.MustNoErr(t, err, "GetSourceByIdentifier")
+	if src != nil {
+		t.Error("source should be removed")
+	}
+}
+
+func TestStore_RemoveSourceSerialized_ActiveSyncSameSource(t *testing.T) {
+	f := storetest.New(t)
+	f.CreateMessage("msg-1")
+	// Active sync on the source being removed — this row would be cascaded
+	// by the DELETE. The serialized check must still observe it.
+	f.StartSync()
+
+	had, err := f.Store.RemoveSourceSerialized(context.Background(), f.Source.ID)
+	testutil.MustNoErr(t, err, "RemoveSourceSerialized")
+	if !had {
+		t.Error("hadActiveSync = false, want true for sync on removed source")
+	}
+
+	src, err := f.Store.GetSourceByIdentifier("test@example.com")
+	testutil.MustNoErr(t, err, "GetSourceByIdentifier")
+	if src != nil {
+		t.Error("source should still be removed even when sync was active")
+	}
+}
+
+func TestStore_RemoveSourceSerialized_ActiveSyncOtherSource(t *testing.T) {
+	f := storetest.New(t)
+
+	// Create a second source with its own running sync.
+	otherSrc, err := f.Store.GetOrCreateSource("gmail", "other@example.com")
+	testutil.MustNoErr(t, err, "create other source")
+	_, err = f.Store.StartSync(otherSrc.ID, "full")
+	testutil.MustNoErr(t, err, "start other sync")
+
+	had, err := f.Store.RemoveSourceSerialized(context.Background(), f.Source.ID)
+	testutil.MustNoErr(t, err, "RemoveSourceSerialized")
+	if !had {
+		t.Error("hadActiveSync = false, want true for sync on another source")
+	}
+
+	// Original source is gone.
+	src, err := f.Store.GetSourceByIdentifier("test@example.com")
+	testutil.MustNoErr(t, err, "GetSourceByIdentifier")
+	if src != nil {
+		t.Error("test source should be removed")
+	}
+
+	// Other source (with the active sync) is untouched.
+	other, err := f.Store.GetSourceByIdentifier("other@example.com")
+	testutil.MustNoErr(t, err, "GetSourceByIdentifier other")
+	if other == nil {
+		t.Error("other source should remain")
+	}
+}
+
+func TestStore_RemoveSourceSerialized_NotFound(t *testing.T) {
+	st := testutil.NewTestStore(t)
+
+	_, err := st.RemoveSourceSerialized(context.Background(), 99999)
+	if err == nil {
+		t.Fatal("RemoveSourceSerialized should error for nonexistent ID")
 	}
 }
 
