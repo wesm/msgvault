@@ -434,8 +434,11 @@ func writeThreadToStore(
 	threadIdx int,
 	cp *store.Checkpoint,
 ) error {
-	// Ensure conversation.
-	convID, err := st.EnsureConversationWithType(sourceID, td.Name, thread.ConvType, thread.Title)
+	// Ensure conversation. Use section-qualified name so threads with
+	// the same basename in different sections (e.g. inbox vs archived)
+	// don't collide.
+	threadKey := td.Section + "/" + td.Name
+	convID, err := st.EnsureConversationWithType(sourceID, threadKey, thread.ConvType, thread.Title)
 	if err != nil {
 		return fmt.Errorf("ensure conversation: %w", err)
 	}
@@ -513,8 +516,9 @@ func writeThreadToStore(
 			}
 		}
 
-		// Build the source_message_id.
-		srcMsgID := fmt.Sprintf("%s__%s%d", td.Name, prefix, m.Index)
+		// Build the source_message_id. Section-qualified to avoid
+		// collisions across sections with the same thread basename.
+		srcMsgID := fmt.Sprintf("%s__%s%d", threadKey, prefix, m.Index)
 
 		snippet := buildSnippet(m.Body)
 		msgRow := &store.Message{

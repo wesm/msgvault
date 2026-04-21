@@ -102,7 +102,7 @@ func TestImportDYI_DirectChat(t *testing.T) {
 	_ = importFixture(t, st, "testdata/json_simple")
 	var ct string
 	if err := st.DB().QueryRow(
-		"SELECT conversation_type FROM conversations WHERE source_conversation_id='alice_ABC123'",
+		"SELECT conversation_type FROM conversations WHERE source_conversation_id='inbox/alice_ABC123'",
 	).Scan(&ct); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestImportDYI_GroupChat(t *testing.T) {
 	_ = importFixture(t, st, "testdata/json_group")
 	var ct string
 	if err := st.DB().QueryRow(
-		"SELECT conversation_type FROM conversations WHERE source_conversation_id='crew_GRP123'",
+		"SELECT conversation_type FROM conversations WHERE source_conversation_id='inbox/crew_GRP123'",
 	).Scan(&ct); err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestImportDYI_GroupChat(t *testing.T) {
 	var badMsgs int
 	if err := st.DB().QueryRow(`
 		SELECT COUNT(*) FROM messages m
-		WHERE m.conversation_id = (SELECT id FROM conversations WHERE source_conversation_id='crew_GRP123')
+		WHERE m.conversation_id = (SELECT id FROM conversations WHERE source_conversation_id='inbox/crew_GRP123')
 		AND NOT EXISTS (SELECT 1 FROM message_recipients r WHERE r.message_id = m.id AND r.recipient_type='to')
 	`).Scan(&badMsgs); err != nil {
 		t.Fatal(err)
@@ -183,7 +183,7 @@ func TestImportDYI_MultifileNumericSort(t *testing.T) {
 	// All source_message_id values must be prefixed dave_MULTI__ and
 	// have monotonic index suffixes.
 	for i, id := range ids {
-		want := fmt.Sprintf("dave_MULTI__%d", i)
+		want := fmt.Sprintf("inbox/dave_MULTI__%d", i)
 		if id != want {
 			t.Errorf("source_message_id[%d]=%q want %q", i, id, want)
 		}
@@ -255,7 +255,7 @@ func TestImportDYI_UnnumberedSiblingSkipped(t *testing.T) {
 	// Valid file must be imported.
 	var n int
 	if err := st.DB().QueryRow(
-		"SELECT COUNT(*) FROM conversations WHERE source_conversation_id='mixnames_OK'",
+		"SELECT COUNT(*) FROM conversations WHERE source_conversation_id='inbox/mixnames_OK'",
 	).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestImportDYI_CorruptSkipped(t *testing.T) {
 	// Good sibling message must still be imported.
 	var n int
 	if err := st.DB().QueryRow(
-		"SELECT COUNT(*) FROM conversations WHERE source_conversation_id='goodsibling_OK'",
+		"SELECT COUNT(*) FROM conversations WHERE source_conversation_id='inbox/goodsibling_OK'",
 	).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
@@ -434,12 +434,12 @@ func TestImportDYI_NonTextMessageBodies(t *testing.T) {
 	st := testutil.NewTestStore(t)
 	_ = importFixture(t, st, "testdata/json_nontext")
 	want := map[string]string{
-		"sam_NONTXT__0": "[system] Sam left the chat",
-		"sam_NONTXT__1": "[shared link] https://example.com/article\nExample share text",
-		"sam_NONTXT__2": "[call: missed, 0s]",
-		"sam_NONTXT__3": "[call: 3m 12s]",
-		"sam_NONTXT__4": "[photo]",
-		"sam_NONTXT__5": "[sticker]",
+		"inbox/sam_NONTXT__0": "[system] Sam left the chat",
+		"inbox/sam_NONTXT__1": "[shared link] https://example.com/article\nExample share text",
+		"inbox/sam_NONTXT__2": "[call: missed, 0s]",
+		"inbox/sam_NONTXT__3": "[call: 3m 12s]",
+		"inbox/sam_NONTXT__4": "[photo]",
+		"inbox/sam_NONTXT__5": "[sticker]",
 	}
 	for id, wantBody := range want {
 		var body string
@@ -461,7 +461,7 @@ func TestImportDYI_MixedFormatJSONWins(t *testing.T) {
 	_ = importFixture(t, st, "testdata/mixed")
 	// Exactly one conversation.
 	var n int
-	if err := st.DB().QueryRow("SELECT COUNT(*) FROM conversations WHERE source_conversation_id='eve_MIX'").Scan(&n); err != nil {
+	if err := st.DB().QueryRow("SELECT COUNT(*) FROM conversations WHERE source_conversation_id='inbox/eve_MIX'").Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
@@ -510,7 +510,7 @@ func TestImportDYI_FormatBoth(t *testing.T) {
 		t.Errorf("html rows=%d want 2", n)
 	}
 	// One conversation row, not two.
-	if err := st.DB().QueryRow("SELECT COUNT(*) FROM conversations WHERE source_conversation_id='eve_MIX'").Scan(&n); err != nil {
+	if err := st.DB().QueryRow("SELECT COUNT(*) FROM conversations WHERE source_conversation_id='inbox/eve_MIX'").Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
@@ -542,7 +542,7 @@ func TestImportDYI_IsFromMe(t *testing.T) {
 	var wesFromMe, aliceFromMe int
 	if err := st.DB().QueryRow(`
 		SELECT COUNT(*) FROM messages m
-		WHERE m.is_from_me = 1 AND m.source_message_id LIKE 'alice_ABC123__%'
+		WHERE m.is_from_me = 1 AND m.source_message_id LIKE 'inbox/alice_ABC123__%'
 	`).Scan(&wesFromMe); err != nil {
 		t.Fatal(err)
 	}
@@ -551,7 +551,7 @@ func TestImportDYI_IsFromMe(t *testing.T) {
 	}
 	if err := st.DB().QueryRow(`
 		SELECT COUNT(*) FROM messages m
-		WHERE m.is_from_me = 0 AND m.source_message_id LIKE 'alice_ABC123__%'
+		WHERE m.is_from_me = 0 AND m.source_message_id LIKE 'inbox/alice_ABC123__%'
 	`).Scan(&aliceFromMe); err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +580,7 @@ func TestImportDYI_LabelTaxonomy(t *testing.T) {
 		JOIN labels l ON l.id = ml.label_id
 		JOIN messages m ON m.id = ml.message_id
 		WHERE l.name = 'Messenger / Inbox'
-		AND m.source_message_id LIKE 'alice_ABC123__%'
+		AND m.source_message_id LIKE 'inbox/alice_ABC123__%'
 	`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +592,7 @@ func TestImportDYI_LabelTaxonomy(t *testing.T) {
 		JOIN labels l ON l.id = ml.label_id
 		JOIN messages m ON m.id = ml.message_id
 		WHERE l.name = 'Messenger / Archived'
-		AND m.source_message_id LIKE 'zoe_ARCH__%'
+		AND m.source_message_id LIKE 'archived_threads/zoe_ARCH__%'
 	`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
@@ -814,7 +814,7 @@ func TestImportDYI_ResumeFromCheckpoint(t *testing.T) {
 	// All three threads must still be present.
 	var n int
 	if err := st.DB().QueryRow(
-		`SELECT COUNT(*) FROM conversations WHERE source_conversation_id LIKE 'thread_%_OK'`,
+		`SELECT COUNT(*) FROM conversations WHERE source_conversation_id LIKE 'inbox/thread_%_OK'`,
 	).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
