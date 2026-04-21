@@ -364,3 +364,84 @@ func TestEngine_FormatMethodology_MentionsSentPolicy(t *testing.T) {
 		t.Errorf("methodology missing cross-account guarantee")
 	}
 }
+
+func TestEngine_SurvivorTiebreakers(t *testing.T) {
+	t.Run("raw MIME wins over no raw MIME", func(t *testing.T) {
+		f := storetest.New(t)
+		st := f.Store
+
+		idNoRaw := addMessage(t, st, f.Source, "no-raw", "rfc-raw-tie", false)
+		idHasRaw := addMessage(t, st, f.Source, "has-raw", "rfc-raw-tie", false)
+		testutil.MustNoErr(t,
+			st.UpsertMessageRaw(idHasRaw, []byte("Subject: test\r\n\r\nBody")),
+			"UpsertMessageRaw",
+		)
+
+		eng := dedup.NewEngine(st, dedup.Config{
+			AccountSourceIDs: []int64{f.Source.ID},
+			Account:          "test",
+		}, nil)
+		report, err := eng.Scan(context.Background())
+		testutil.MustNoErr(t, err, "Scan")
+		if report.DuplicateGroups != 1 {
+			t.Fatalf("groups = %d, want 1", report.DuplicateGroups)
+		}
+		survivor := report.Groups[0].Messages[report.Groups[0].Survivor]
+		if survivor.ID != idHasRaw {
+			t.Errorf("survivor = %d, want %d (has raw)", survivor.ID, idHasRaw)
+		}
+		_ = idNoRaw
+	})
+
+	t.Run("more labels wins when raw MIME is equal", func(t *testing.T) {
+		f := storetest.New(t)
+		st := f.Store
+
+		idFew := addMessage(t, st, f.Source, "few", "rfc-label-tie", false)
+		idMany := addMessage(t, st, f.Source, "many", "rfc-label-tie", false)
+
+		lid1, _ := st.EnsureLabel(f.Source.ID, "L1", "Label1", "user")
+		lid2, _ := st.EnsureLabel(f.Source.ID, "L2", "Label2", "user")
+		lid3, _ := st.EnsureLabel(f.Source.ID, "L3", "Label3", "user")
+		_ = st.LinkMessageLabel(idFew, lid1)
+		_ = st.LinkMessageLabel(idMany, lid1)
+		_ = st.LinkMessageLabel(idMany, lid2)
+		_ = st.LinkMessageLabel(idMany, lid3)
+
+		eng := dedup.NewEngine(st, dedup.Config{
+			AccountSourceIDs: []int64{f.Source.ID},
+			Account:          "test",
+		}, nil)
+		report, err := eng.Scan(context.Background())
+		testutil.MustNoErr(t, err, "Scan")
+		if report.DuplicateGroups != 1 {
+			t.Fatalf("groups = %d, want 1", report.DuplicateGroups)
+		}
+		survivor := report.Groups[0].Messages[report.Groups[0].Survivor]
+		if survivor.ID != idMany {
+			t.Errorf("survivor = %d, want %d (more labels)", survivor.ID, idMany)
+		}
+	})
+
+	t.Run("lower ID wins as final tiebreaker", func(t *testing.T) {
+		f := storetest.New(t)
+		st := f.Store
+
+		idFirst := addMessage(t, st, f.Source, "first", "rfc-id-tie", false)
+		_ = addMessage(t, st, f.Source, "second", "rfc-id-tie", false)
+
+		eng := dedup.NewEngine(st, dedup.Config{
+			AccountSourceIDs: []int64{f.Source.ID},
+			Account:          "test",
+		}, nil)
+		report, err := eng.Scan(context.Background())
+		testutil.MustNoErr(t, err, "Scan")
+		if report.DuplicateGroups != 1 {
+			t.Fatalf("groups = %d, want 1", report.DuplicateGroups)
+		}
+		survivor := report.Groups[0].Messages[report.Groups[0].Survivor]
+		if survivor.ID != idFirst {
+			t.Errorf("survivor = %d, want %d (lower ID)", survivor.ID, idFirst)
+		}
+	})
+}

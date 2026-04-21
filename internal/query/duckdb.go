@@ -648,10 +648,7 @@ func (e *DuckDBEngine) buildWhereClause(opts AggregateOptions, keyColumns ...str
 	// message_type IS NULL and '' handle old data without the column.
 	conditions = append(conditions, "(msg.message_type = 'email' OR msg.message_type IS NULL OR msg.message_type = '')")
 
-	if opts.SourceID != nil {
-		conditions = append(conditions, "msg.source_id = ?")
-		args = append(args, *opts.SourceID)
-	}
+	conditions, args = appendSourceFilter(conditions, args, "msg.", opts.SourceID, opts.SourceIDs)
 
 	if opts.After != nil {
 		conditions = append(conditions, "msg.sent_at >= CAST(? AS TIMESTAMP)")
@@ -854,10 +851,7 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 	// message_type IS NULL and '' handle old data without the column.
 	conditions = append(conditions, "(msg.message_type = 'email' OR msg.message_type IS NULL OR msg.message_type = '')")
 
-	if filter.SourceID != nil {
-		conditions = append(conditions, "msg.source_id = ?")
-		args = append(args, *filter.SourceID)
-	}
+	conditions, args = appendSourceFilter(conditions, args, "msg.", filter.SourceID, filter.SourceIDs)
 
 	if filter.ConversationID != nil {
 		conditions = append(conditions, "msg.conversation_id = ?")
@@ -1117,10 +1111,7 @@ func (e *DuckDBEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 	// Restrict to email messages only; NULL and '' handle pre-message_type data.
 	conditions = append(conditions, emailOnlyFilterMsg)
 
-	if opts.SourceID != nil {
-		conditions = append(conditions, "msg.source_id = ?")
-		args = append(args, *opts.SourceID)
-	}
+	conditions, args = appendSourceFilter(conditions, args, "msg.", opts.SourceID, opts.SourceIDs)
 
 	if opts.WithAttachmentsOnly {
 		conditions = append(conditions, "msg.has_attachments = 1")
@@ -2320,10 +2311,7 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 	conditions = append(conditions, emailOnlyFilterMsg)
 
 	// Apply basic filter conditions (ignoring join flags for search - we handle those differently)
-	if filter.SourceID != nil {
-		conditions = append(conditions, "msg.source_id = ?")
-		args = append(args, *filter.SourceID)
-	}
+	conditions, args = appendSourceFilter(conditions, args, "msg.", filter.SourceID, filter.SourceIDs)
 	if filter.After != nil {
 		conditions = append(conditions, "msg.sent_at >= CAST(? AS TIMESTAMP)")
 		args = append(args, filter.After.Format("2006-01-02 15:04:05"))

@@ -191,7 +191,6 @@ func runCollectionsDelete(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-
 func resolveAccountList(st *store.Store, accounts string) ([]int64, error) {
 	if accounts == "" {
 		return nil, fmt.Errorf("--accounts is required")

@@ -267,6 +267,9 @@ func (s *Store) RemoveSourcesFromCollection(name string, sourceIDs []int64) erro
 	if err := s.ensureCollectionSchema(); err != nil {
 		return err
 	}
+	if err := s.validateSourceIDs(sourceIDs); err != nil {
+		return err
+	}
 	collID, err := s.getCollectionID(name)
 	if err != nil {
 		return err
