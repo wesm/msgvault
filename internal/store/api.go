@@ -323,10 +323,13 @@ func (s *Store) SearchMessagesQuery(
 	conditions = append(conditions,
 		"m.deleted_from_source_at IS NULL")
 
-	// FTS text terms.
+	// FTS text terms. ftsEnabled is the authoritative signal that FTS is
+	// active — ftsJoin may be empty on dialects (e.g. PostgreSQL) whose
+	// tsvector lives on the main table and needs no extra join.
+	ftsEnabled := len(q.TextTerms) > 0
 	var ftsJoin, ftsOrder, ftsExpr string
 	var ftsOrderArgCount int
-	if len(q.TextTerms) > 0 {
+	if ftsEnabled {
 		ftsExpr = buildFTSExpression(q.TextTerms)
 		join, where, orderBy, orderArgCount := s.dialect.FTSSearchClause()
 		ftsJoin = join
@@ -447,7 +450,7 @@ func (s *Store) SearchMessagesQuery(
 
 	var total int64
 	if err := s.db.QueryRow(countSQL, args...).Scan(&total); err != nil {
-		if ftsJoin != "" {
+		if ftsEnabled {
 			return s.searchMessagesQueryNoFTS(q, offset, limit)
 		}
 		return nil, 0, fmt.Errorf("count search results: %w", err)
@@ -455,7 +458,7 @@ func (s *Store) SearchMessagesQuery(
 
 	// Results query.
 	orderBy := "COALESCE(m.sent_at, m.received_at, m.internal_date) DESC"
-	if ftsJoin != "" {
+	if ftsEnabled {
 		orderBy = ftsOrder + ", " + orderBy
 	}
 	searchSQL := s.Rebind(fmt.Sprintf(`
@@ -490,7 +493,7 @@ func (s *Store) SearchMessagesQuery(
 	rows, err := s.db.Query(searchSQL, resultArgs...)
 	if err != nil {
 		// FTS5 not available -- fall back if we used it.
-		if ftsJoin != "" {
+		if ftsEnabled {
 			return s.searchMessagesQueryNoFTS(q, offset, limit)
 		}
 		return nil, 0, err

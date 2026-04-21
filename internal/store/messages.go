@@ -503,7 +503,7 @@ func (s *Store) EnsureLabel(
 	err := s.withTx(func(tx *sql.Tx) error {
 		var txErr error
 		id, txErr = ensureLabelWith(
-			tx, sourceID, sourceLabelID, name, labelType,
+			tx, s.dialect, sourceID, sourceLabelID, name, labelType,
 		)
 		return txErr
 	})
@@ -512,6 +512,7 @@ func (s *Store) EnsureLabel(
 
 // ensureLabelWith is the core label-upsert logic, parameterised on the
 // database handle so it works both standalone and inside a transaction.
+// The dialect is used to rebind ? placeholders for non-SQLite backends.
 //
 // Labels are identified by source_label_id (Gmail label ID) but have a
 // UNIQUE constraint on (source_id, name). This function handles:
@@ -519,17 +520,17 @@ func (s *Store) EnsureLabel(
 //   - Name conflict with different source_label_id: upserts, adopting
 //     the new source_label_id (handles deleted+recreated labels, imports)
 func ensureLabelWith(
-	q dbQuerier,
+	q dbQuerier, d Dialect,
 	sourceID int64,
 	sourceLabelID, name, labelType string,
 ) (int64, error) {
 	// Look up by canonical identifier (Gmail label ID).
 	var id int64
 	var existingName string
-	err := q.QueryRow(`
+	err := q.QueryRow(d.Rebind(`
 		SELECT id, name FROM labels
 		WHERE source_id = ? AND source_label_id = ?
-	`, sourceID, sourceLabelID).Scan(&id, &existingName)
+	`), sourceID, sourceLabelID).Scan(&id, &existingName)
 
 	if err == nil {
 		if existingName == name {
@@ -538,13 +539,13 @@ func ensureLabelWith(
 		// Label was renamed — update the name. If another row already
 		// claims the target name, merge it: move its message-label
 		// associations to the canonical row and delete the stale one.
-		if err = mergeLabelByName(q, sourceID, name, id); err != nil {
+		if err = mergeLabelByName(q, d, sourceID, name, id); err != nil {
 			return 0, err
 		}
-		if _, err = q.Exec(`
+		if _, err = q.Exec(d.Rebind(`
 			UPDATE labels SET name = ?, label_type = ?
 			WHERE id = ?
-		`, name, labelType, id); err != nil {
+		`), name, labelType, id); err != nil {
 			return 0, fmt.Errorf("update label name: %w", err)
 		}
 		return id, nil
@@ -556,19 +557,19 @@ func ensureLabelWith(
 	// Not found by source_label_id — upsert by name. Handles the case
 	// where a label with this name exists from a previous import or
 	// with a stale/NULL source_label_id.
-	if _, err = q.Exec(`
+	if _, err = q.Exec(d.Rebind(`
 		INSERT INTO labels (source_id, source_label_id, name, label_type)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(source_id, name) DO UPDATE SET
 			source_label_id = excluded.source_label_id,
 			label_type = excluded.label_type
-	`, sourceID, sourceLabelID, name, labelType); err != nil {
+	`), sourceID, sourceLabelID, name, labelType); err != nil {
 		return 0, err
 	}
 
-	err = q.QueryRow(`
+	err = q.QueryRow(d.Rebind(`
 		SELECT id FROM labels WHERE source_id = ? AND name = ?
-	`, sourceID, name).Scan(&id)
+	`), sourceID, name).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -579,13 +580,13 @@ func ensureLabelWith(
 // and merges it into keepID: message-label associations are reassigned
 // and the stale row is deleted. No-op if no conflicting label exists.
 func mergeLabelByName(
-	q dbQuerier, sourceID int64, name string, keepID int64,
+	q dbQuerier, d Dialect, sourceID int64, name string, keepID int64,
 ) error {
 	var conflictID int64
-	err := q.QueryRow(`
+	err := q.QueryRow(d.Rebind(`
 		SELECT id FROM labels
 		WHERE source_id = ? AND name = ? AND id != ?
-	`, sourceID, name, keepID).Scan(&conflictID)
+	`), sourceID, name, keepID).Scan(&conflictID)
 	if err == sql.ErrNoRows {
 		return nil
 	}
@@ -596,24 +597,24 @@ func mergeLabelByName(
 	// already linked to keepID). This is the portable equivalent of
 	// SQLite's UPDATE OR IGNORE — done explicitly so PostgreSQL works the
 	// same way.
-	if _, err = q.Exec(`
+	if _, err = q.Exec(d.Rebind(`
 		DELETE FROM message_labels
 		WHERE label_id = ?
 		AND message_id IN (
 			SELECT message_id FROM message_labels WHERE label_id = ?
 		)
-	`, conflictID, keepID); err != nil {
+	`), conflictID, keepID); err != nil {
 		return fmt.Errorf("drop conflicting associations: %w", err)
 	}
 	// Reassign the remaining associations (no PK violations possible now).
-	if _, err = q.Exec(`
+	if _, err = q.Exec(d.Rebind(`
 		UPDATE message_labels SET label_id = ? WHERE label_id = ?
-	`, keepID, conflictID); err != nil {
+	`), keepID, conflictID); err != nil {
 		return fmt.Errorf("reassign label associations: %w", err)
 	}
-	if _, err = q.Exec(`
+	if _, err = q.Exec(d.Rebind(`
 		DELETE FROM labels WHERE id = ?
-	`, conflictID); err != nil {
+	`), conflictID); err != nil {
 		return fmt.Errorf("delete conflicting label: %w", err)
 	}
 	return nil
@@ -650,10 +651,10 @@ func (s *Store) EnsureLabelsBatch(
 		for sourceLabelID, info := range labels {
 			var id int64
 			var curName string
-			err := tx.QueryRow(`
+			err := tx.QueryRow(s.dialect.Rebind(`
 				SELECT id, name FROM labels
 				WHERE source_id = ? AND source_label_id = ?
-			`, sourceID, sourceLabelID).Scan(&id, &curName)
+			`), sourceID, sourceLabelID).Scan(&id, &curName)
 			if err == sql.ErrNoRows || curName == info.Name {
 				continue
 			}
@@ -662,10 +663,10 @@ func (s *Store) EnsureLabelsBatch(
 					"check label %s: %w", sourceLabelID, err,
 				)
 			}
-			if _, err = tx.Exec(`
+			if _, err = tx.Exec(s.dialect.Rebind(`
 				UPDATE labels SET name = CAST(id AS TEXT) || X'00'
 				WHERE id = ?
-			`, id); err != nil {
+			`), id); err != nil {
 				return fmt.Errorf(
 					"clear name for label %s: %w", sourceLabelID, err,
 				)
@@ -677,7 +678,7 @@ func (s *Store) EnsureLabelsBatch(
 		// is safe to merge (dead/imported label).
 		for sourceLabelID, info := range labels {
 			id, err := ensureLabelWith(
-				tx, sourceID, sourceLabelID, info.Name, info.Type,
+				tx, s.dialect, sourceID, sourceLabelID, info.Name, info.Type,
 			)
 			if err != nil {
 				return err
