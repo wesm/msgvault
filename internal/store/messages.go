@@ -1236,16 +1236,20 @@ func (s *Store) AttachmentPathsUniqueToSource(sourceID int64) ([]string, error) 
 	rows, err := s.db.Query(`
 		SELECT DISTINCT a.storage_path
 		FROM attachments a
-		JOIN messages m ON m.id = a.message_id
-		WHERE m.source_id = ?
+		WHERE EXISTS (
+		    SELECT 1 FROM messages m
+		    WHERE m.id = a.message_id AND m.source_id = ?
+		  )
 		  AND a.content_hash IS NOT NULL
 		  AND a.storage_path IS NOT NULL
 		  AND a.storage_path != ''
 		  AND NOT EXISTS (
 		      SELECT 1 FROM attachments a2
-		      JOIN messages m2 ON m2.id = a2.message_id
 		      WHERE a2.content_hash = a.content_hash
-		        AND m2.source_id != ?
+		        AND EXISTS (
+		            SELECT 1 FROM messages m2
+		            WHERE m2.id = a2.message_id AND m2.source_id != ?
+		        )
 		  )
 	`, sourceID, sourceID)
 	if err != nil {

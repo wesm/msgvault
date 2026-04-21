@@ -186,9 +186,10 @@ func (s *Store) DB() *sql.DB {
 // database. In WAL mode this blocks concurrent writers (e.g. StartSync) while
 // allowing reads (e.g. IsAttachmentPathReferenced) to proceed. Use this to
 // serialize destructive file operations against concurrent sync attachment
-// ingestion.
-func (s *Store) WithExclusiveLock(fn func() error) error {
-	ctx := context.Background()
+// ingestion. The context controls both lock acquisition and the lifetime of
+// the underlying connection; cancelling it aborts a pending BEGIN EXCLUSIVE
+// and rolls back any held transaction.
+func (s *Store) WithExclusiveLock(ctx context.Context, fn func() error) error {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire connection: %w", err)

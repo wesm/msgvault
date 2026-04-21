@@ -191,3 +191,44 @@ func TestScanSource_NullRequiredTimestamp(t *testing.T) {
 		t.Errorf("error should mention field and NULL status, got: %s", errStr)
 	}
 }
+
+func TestStore_HasAnyActiveSync(t *testing.T) {
+	f := storetest.New(t)
+
+	running, err := f.Store.HasAnyActiveSync()
+	testutil.MustNoErr(t, err, "HasAnyActiveSync (initial)")
+	if running {
+		t.Error("expected no active sync on fresh DB")
+	}
+
+	syncID := f.StartSync()
+
+	running, err = f.Store.HasAnyActiveSync()
+	testutil.MustNoErr(t, err, "HasAnyActiveSync (after StartSync)")
+	if !running {
+		t.Error("expected active sync after StartSync")
+	}
+
+	// A second StartSync on the same source marks the prior one failed, but
+	// itself is running.
+	_ = f.StartSync()
+	running, err = f.Store.HasAnyActiveSync()
+	testutil.MustNoErr(t, err, "HasAnyActiveSync (after second StartSync)")
+	if !running {
+		t.Error("expected an active sync after second StartSync")
+	}
+
+	// Mark the latest sync as completed.
+	_, err = f.Store.DB().Exec(
+		`UPDATE sync_runs SET status = 'completed' WHERE status = 'running'`,
+	)
+	testutil.MustNoErr(t, err, "mark sync completed")
+
+	running, err = f.Store.HasAnyActiveSync()
+	testutil.MustNoErr(t, err, "HasAnyActiveSync (after completion)")
+	if running {
+		t.Error("expected no active sync after completion")
+	}
+
+	_ = syncID
+}

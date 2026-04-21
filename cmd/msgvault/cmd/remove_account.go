@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -125,105 +126,9 @@ func runRemoveAccount(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("remove account: %w", err)
 	}
 
-	// Delete attachment files that are no longer referenced by any source.
-	// This runs under an exclusive DB lock to prevent races with concurrent
-	// syncs: the lock blocks StartSync() (a write), so no new sync can start
-	// and place a file on disk without a corresponding DB row while we're
-	// checking references and deleting files.
-	attachmentsDir := cfg.AttachmentsDir()
-	var deletedFiles int
-	if len(attachmentPaths) > 0 {
-		cleanDir, err := filepath.Abs(attachmentsDir)
-		if err != nil {
-			fmt.Fprintf(os.Stderr,
-				"Warning: could not resolve attachments dir; "+
-					"skipping file deletion: %v\n"+
-					"Orphaned files may remain in %s\n",
-				err, attachmentsDir,
-			)
-		} else {
-			lockErr := s.WithExclusiveLock(func() error {
-				anySyncRunning, err := s.HasAnyActiveSync()
-				if err != nil {
-					fmt.Fprintf(os.Stderr,
-						"Warning: could not check for active syncs: %v; "+
-							"attachment files were not deleted.\n"+
-							"Orphaned files may remain in %s\n",
-						err, attachmentsDir,
-					)
-					return nil
-				}
-				if anySyncRunning {
-					fmt.Fprintf(os.Stderr,
-						"Warning: a sync is in progress; "+
-							"attachment files were not deleted.\n"+
-							"Orphaned files may remain in %s\n",
-						attachmentsDir,
-					)
-					return nil
-				}
-
-				var failedFiles int
-				for _, relPath := range attachmentPaths {
-					absPath := filepath.Join(cleanDir, relPath)
-
-					rel, err := filepath.Rel(cleanDir, absPath)
-					if err != nil ||
-						rel == ".." ||
-						strings.HasPrefix(
-							rel,
-							".."+string(filepath.Separator),
-						) {
-						fmt.Fprintf(os.Stderr,
-							"Warning: attachment path %q escapes "+
-								"attachments directory, skipping\n",
-							relPath,
-						)
-						failedFiles++
-						continue
-					}
-
-					referenced, err := s.IsAttachmentPathReferenced(
-						relPath,
-					)
-					if err != nil {
-						fmt.Fprintf(os.Stderr,
-							"Warning: could not verify attachment "+
-								"%s is unreferenced: %v\n",
-							relPath, err,
-						)
-						failedFiles++
-						continue
-					}
-					if referenced {
-						continue
-					}
-					if err := os.Remove(absPath); err != nil &&
-						!os.IsNotExist(err) {
-						failedFiles++
-					} else {
-						deletedFiles++
-					}
-				}
-				if failedFiles > 0 {
-					fmt.Fprintf(os.Stderr,
-						"Warning: could not remove %d attachment "+
-							"file(s) from disk.\n",
-						failedFiles,
-					)
-				}
-				return nil
-			})
-			if lockErr != nil {
-				fmt.Fprintf(os.Stderr,
-					"Warning: could not acquire exclusive lock; "+
-						"skipping file deletion: %v\n"+
-						"Orphaned files may remain in %s\n",
-					lockErr, attachmentsDir,
-				)
-			}
-		}
-	}
+	deletedFiles, preservedFiles := deleteOrphanedAttachmentFiles(
+		cmd.Context(), s, attachmentPaths, cfg.AttachmentsDir(),
+	)
 
 	// Remove credentials for the source type.
 	switch source.SourceType {
@@ -293,11 +198,135 @@ func runRemoveAccount(cmd *cobra.Command, args []string) error {
 	if deletedFiles > 0 {
 		fmt.Printf("Deleted %d attachment file(s) from disk.\n", deletedFiles)
 	}
+	if preservedFiles > 0 {
+		fmt.Printf(
+			"Preserved %d attachment file(s) shared with other accounts.\n",
+			preservedFiles,
+		)
+	}
 	fmt.Println(
 		"Run 'msgvault build-cache' to rebuild the analytics cache.",
 	)
 
 	return nil
+}
+
+// deleteOrphanedAttachmentFiles removes files in paths that are no longer
+// referenced by any attachment row. Returns the count of files actually
+// deleted and the count preserved because a concurrent reference appeared
+// after the candidate list was collected.
+//
+// The work runs under an exclusive DB write lock so that no new sync can
+// insert an attachment row (and place a file on disk) between the
+// IsAttachmentPathReferenced check and os.Remove. The gap between
+// RemoveSource and lock acquisition is covered by the per-file reference
+// recheck: any sync that started in that window and inserted a row for one
+// of our candidate hashes is detected and that file is preserved.
+func deleteOrphanedAttachmentFiles(
+	ctx context.Context,
+	s *store.Store,
+	paths []string,
+	attachmentsDir string,
+) (deleted, preserved int) {
+	if len(paths) == 0 {
+		return 0, 0
+	}
+
+	cleanDir, err := filepath.Abs(attachmentsDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"Warning: could not resolve attachments dir; "+
+				"skipping file deletion: %v\n"+
+				"Orphaned files may remain in %s\n",
+			err, attachmentsDir,
+		)
+		return 0, 0
+	}
+
+	lockErr := s.WithExclusiveLock(ctx, func() error {
+		running, err := s.HasAnyActiveSync()
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"Warning: could not check for active syncs: %v; "+
+					"attachment files were not deleted.\n"+
+					"Orphaned files may remain in %s\n",
+				err, attachmentsDir,
+			)
+			return nil
+		}
+		if running {
+			fmt.Fprintf(os.Stderr,
+				"Warning: a sync is in progress; "+
+					"attachment files were not deleted.\n"+
+					"Orphaned files may remain in %s\n",
+				attachmentsDir,
+			)
+			return nil
+		}
+
+		var failed int
+		for _, relPath := range paths {
+			d, p, ok := deleteOneAttachmentFile(s, cleanDir, relPath)
+			if !ok {
+				failed++
+				continue
+			}
+			deleted += d
+			preserved += p
+		}
+		if failed > 0 {
+			fmt.Fprintf(os.Stderr,
+				"Warning: could not remove %d attachment file(s) "+
+					"from disk.\n",
+				failed,
+			)
+		}
+		return nil
+	})
+	if lockErr != nil {
+		fmt.Fprintf(os.Stderr,
+			"Warning: could not acquire exclusive lock; "+
+				"skipping file deletion: %v\n"+
+				"Orphaned files may remain in %s\n",
+			lockErr, attachmentsDir,
+		)
+	}
+	return deleted, preserved
+}
+
+// deleteOneAttachmentFile checks that relPath is safe to delete and either
+// removes it, preserves it (still referenced), or reports a failure via ok=false.
+func deleteOneAttachmentFile(
+	s *store.Store, cleanDir, relPath string,
+) (deleted, preserved int, ok bool) {
+	absPath := filepath.Join(cleanDir, relPath)
+
+	rel, err := filepath.Rel(cleanDir, absPath)
+	if err != nil || rel == ".." ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		fmt.Fprintf(os.Stderr,
+			"Warning: attachment path %q escapes attachments "+
+				"directory, skipping\n",
+			relPath,
+		)
+		return 0, 0, false
+	}
+
+	referenced, err := s.IsAttachmentPathReferenced(relPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"Warning: could not verify attachment %s is unreferenced: %v\n",
+			relPath, err,
+		)
+		return 0, 0, false
+	}
+	if referenced {
+		return 0, 1, true
+	}
+	if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+		return 0, 0, false
+	}
+	return 1, 0, true
 }
 
 // resolveSource finds the unique source for the given identifier.
