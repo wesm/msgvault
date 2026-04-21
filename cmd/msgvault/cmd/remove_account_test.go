@@ -200,6 +200,66 @@ func TestRemoveAccountCmd_SkipsDeletionDuringActiveSync(t *testing.T) {
 	}
 }
 
+// Regression test: if the account being removed has its own active sync,
+// RemoveSource's cascade deletes that sync_runs row. A post-RemoveSource
+// HasAnyActiveSync would return false and the deletion loop would run even
+// though the sync worker may still be writing attachment files. The
+// pre-RemoveSource check must catch this and skip file deletion.
+func TestRemoveAccountCmd_SkipsDeletionWhenRemovedAccountHasActiveSync(t *testing.T) {
+	tmpDir := t.TempDir()
+	attachmentsDir := filepath.Join(tmpDir, "attachments")
+
+	s, err := store.Open(filepath.Join(tmpDir, "msgvault.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := s.InitSchema(); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+	seedMessageWithAttachment(t, s,
+		"alice@example.com", "thread-a", "msg-a",
+		"dd/hashA", "hashA")
+	aliceSrc, err := s.GetSourceByIdentifier("alice@example.com")
+	if err != nil {
+		t.Fatalf("GetSourceByIdentifier: %v", err)
+	}
+	if aliceSrc == nil {
+		t.Fatal("expected alice source to exist")
+	}
+	// Active sync on the account being removed — this is the row that
+	// RemoveSource cascades away.
+	if _, err := s.StartSync(aliceSrc.ID, "full"); err != nil {
+		t.Fatalf("StartSync: %v", err)
+	}
+	_ = s.Close()
+
+	filePath := seedAttachmentFile(t, attachmentsDir, "dd/hashA", "content-a")
+
+	savedCfg := cfg
+	defer func() { cfg = savedCfg }()
+	cfg = &config.Config{
+		HomeDir: tmpDir,
+		Data:    config.DataConfig{DataDir: tmpDir},
+	}
+
+	root := newTestRootCmd()
+	root.AddCommand(newRemoveAccountCmd())
+	// --yes bypasses the initial GetActiveSync guard so we exercise the
+	// later file-deletion path.
+	root.SetArgs([]string{"remove-account", "alice@example.com", "--yes"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("remove-account: %v", err)
+	}
+
+	if _, err := os.Stat(filePath); err != nil {
+		t.Errorf(
+			"attachment file should be preserved when the removed account "+
+				"has an active sync, err = %v",
+			err,
+		)
+	}
+}
+
 func TestRemoveAccountCmd_RejectsPathTraversal(t *testing.T) {
 	tmpDir := t.TempDir()
 	attachmentsDir := filepath.Join(tmpDir, "attachments")
