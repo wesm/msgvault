@@ -191,7 +191,6 @@ func runCollectionsDelete(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-// openStore opens the database and inits schema.
 func openStore() (*store.Store, error) {
 	dbPath := cfg.DatabaseDSN()
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
@@ -211,8 +210,6 @@ func openStore() (*store.Store, error) {
 	return st, nil
 }
 
-// resolveAccountList resolves a comma-separated list of account
-// identifiers to source IDs.
 func resolveAccountList(st *store.Store, accounts string) ([]int64, error) {
 	if accounts == "" {
 		return nil, fmt.Errorf("--accounts is required")

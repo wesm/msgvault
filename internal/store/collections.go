@@ -221,6 +221,21 @@ func (s *Store) ListCollections() ([]*CollectionWithSources, error) {
 	return result, nil
 }
 
+// getCollectionID looks up a collection ID by name without hydrating.
+func (s *Store) getCollectionID(name string) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(
+		`SELECT id FROM collections WHERE name = ?`, name,
+	).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrCollectionNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
 // AddSourcesToCollection attaches sources to a collection. Idempotent.
 func (s *Store) AddSourcesToCollection(name string, sourceIDs []int64) error {
 	if err := s.ensureCollectionSchema(); err != nil {
@@ -229,7 +244,7 @@ func (s *Store) AddSourcesToCollection(name string, sourceIDs []int64) error {
 	if err := s.validateSourceIDs(sourceIDs); err != nil {
 		return err
 	}
-	coll, err := s.GetCollectionByName(name)
+	collID, err := s.getCollectionID(name)
 	if err != nil {
 		return err
 	}
@@ -238,7 +253,7 @@ func (s *Store) AddSourcesToCollection(name string, sourceIDs []int64) error {
 			`INSERT OR IGNORE INTO collection_sources
 			  (collection_id, source_id)
 			 VALUES (?, ?)`,
-			coll.ID, sid,
+			collID, sid,
 		)
 		if err != nil {
 			return fmt.Errorf("add source %d: %w", sid, err)
@@ -252,7 +267,7 @@ func (s *Store) RemoveSourcesFromCollection(name string, sourceIDs []int64) erro
 	if err := s.ensureCollectionSchema(); err != nil {
 		return err
 	}
-	coll, err := s.GetCollectionByName(name)
+	collID, err := s.getCollectionID(name)
 	if err != nil {
 		return err
 	}
@@ -260,7 +275,7 @@ func (s *Store) RemoveSourcesFromCollection(name string, sourceIDs []int64) erro
 		_, err = s.db.Exec(
 			`DELETE FROM collection_sources
 			 WHERE collection_id = ? AND source_id = ?`,
-			coll.ID, sid,
+			collID, sid,
 		)
 		if err != nil {
 			return fmt.Errorf("remove source %d: %w", sid, err)
@@ -341,16 +356,36 @@ func scanCollection(row interface {
 }
 
 func (s *Store) validateSourceIDs(ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := "SELECT id FROM sources WHERE id IN (" +
+		strings.Join(placeholders, ",") + ")"
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return fmt.Errorf("validate source IDs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	found := make(map[int64]bool, len(ids))
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		found[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
 	for _, id := range ids {
-		var exists int
-		err := s.db.QueryRow(
-			`SELECT 1 FROM sources WHERE id = ?`, id,
-		).Scan(&exists)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("source %d not found", id)
-			}
-			return fmt.Errorf("validate source %d: %w", id, err)
+		if !found[id] {
+			return fmt.Errorf("source %d not found", id)
 		}
 	}
 	return nil
