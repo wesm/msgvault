@@ -1670,6 +1670,7 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	var args []interface{}
 
 	// Always exclude deleted messages
+	conditions = append(conditions, "msg.deleted_at IS NULL")
 	conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
 
 	// Gmail scoping is handled by JOIN src in the query below — this function

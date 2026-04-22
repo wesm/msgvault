@@ -52,6 +52,9 @@ func runListIdentities(_ *cobra.Command, _ []string) error {
 			return err
 		}
 		scopeIDs = scope.SourceIDs()
+		if len(scopeIDs) == 0 {
+			return fmt.Errorf("--account %q resolved to zero sources", identitiesAccount)
+		}
 		scopeLabel = scope.DisplayName()
 	}
 
