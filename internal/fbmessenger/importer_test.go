@@ -937,6 +937,88 @@ func TestImportDYI_InvalidFormatRejected(t *testing.T) {
 	}
 }
 
+// TestImportDYI_ReimportPicksUpNewMessages verifies that re-importing a root
+// after a successful import picks up new messages added to an existing thread,
+// rather than treating the completed run as resumable and skipping threads.
+// Regression test for: GetLatestCheckpointedSync matching completed runs.
+func TestImportDYI_ReimportPicksUpNewMessages(t *testing.T) {
+	// Copy json_simple fixture to a temp dir so we can mutate it.
+	root := t.TempDir()
+	cpDir(t, "testdata/json_simple", root)
+
+	st := testutil.NewTestStore(t)
+
+	// First import: 4 messages (3 inbox + 1 archived).
+	s1 := importFixture(t, st, root)
+	if s1.MessagesAdded != 4 {
+		t.Fatalf("first import: MessagesAdded=%d want 4", s1.MessagesAdded)
+	}
+	before := countMessages(t, st, "message_type='fbmessenger'")
+	if before != 4 {
+		t.Fatalf("messages after first import=%d want 4", before)
+	}
+
+	// Add a new message to the existing alice thread.
+	threadFile := filepath.Join(root, "your_activity_across_facebook/messages/inbox/alice_ABC123/message_1.json")
+	raw, err := os.ReadFile(threadFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var thread map[string]any
+	if err := json.Unmarshal(raw, &thread); err != nil {
+		t.Fatal(err)
+	}
+	msgs := thread["messages"].([]any)
+	newMsg := map[string]any{
+		"sender_name":  "Alice Example",
+		"timestamp_ms": float64(1600000200000),
+		"content":      "New message after first import",
+		"type":         "Generic",
+	}
+	thread["messages"] = append([]any{newMsg}, msgs...)
+	updated, err := json.MarshalIndent(thread, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(threadFile, updated, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-import the same root. The new message must be picked up.
+	s2 := importFixture(t, st, root)
+	after := countMessages(t, st, "message_type='fbmessenger'")
+	if after != before+1 {
+		t.Errorf("messages after re-import=%d want %d (added=%d)", after, before+1, s2.MessagesAdded)
+	}
+}
+
+// cpDir recursively copies src into dst.
+func cpDir(t *testing.T, src, dst string) {
+	t.Helper()
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		sp := filepath.Join(src, e.Name())
+		dp := filepath.Join(dst, e.Name())
+		if e.IsDir() {
+			if err := os.MkdirAll(dp, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cpDir(t, sp, dp)
+		} else {
+			data, err := os.ReadFile(sp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(dp, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
 func TestImportDYI_TimingTripwire(t *testing.T) {
 	st := testutil.NewTestStore(t)
 	root := writeLargeFixture(t)
