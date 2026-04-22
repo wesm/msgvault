@@ -969,29 +969,81 @@ func (s *Store) UpsertFTS(messageID int64, subject, bodyText, fromAddr, toAddrs,
 // (position in ID range, total ID range). Each batch is committed
 // independently so partial progress is preserved if interrupted.
 // Returns the number of rows inserted. No-op if FTS5 is not available.
+//
+// BackfillFTS clears FTS rows with DELETE before inserting. If the FTS5
+// shadow tables are themselves malformed, that DELETE will either fail or
+// leave corruption in place — callers recovering from shadow-table
+// corruption should use RebuildFTS instead.
 func (s *Store) BackfillFTS(progress func(done, total int64)) (int64, error) {
 	if !s.fts5Available {
 		return 0, nil
 	}
 
-	const batchSize = 5000
-
-	// Use MIN/MAX (instant B-tree lookups) instead of COUNT(*) (full scan)
-	var minID, maxID int64
-	err := s.db.QueryRow("SELECT COALESCE(MIN(id),0), COALESCE(MAX(id),0) FROM messages").Scan(&minID, &maxID)
+	minID, maxID, err := s.messageIDRange()
 	if err != nil {
-		return 0, fmt.Errorf("get message ID range: %w", err)
+		return 0, err
 	}
 	if maxID == 0 {
 		return 0, nil
 	}
-	idRange := maxID - minID + 1
 
-	// Clear existing FTS data
 	if _, err := s.db.Exec(s.dialect.FTSClearSQL()); err != nil {
 		return 0, fmt.Errorf("clear FTS: %w", err)
 	}
 
+	return s.backfillFTSRange(minID, maxID, progress)
+}
+
+// RebuildFTS fully recreates the FTS index from the underlying message
+// tables. Unlike BackfillFTS (DELETE + INSERT), this drops and recreates
+// the FTS table itself so malformed FTS5 shadow tables are fully replaced.
+//
+// Ignores the cached fts5Available flag: a corrupt shadow table causes the
+// availability probe to fail, which is precisely the symptom this method
+// exists to recover from. On successful completion, fts5Available is set to
+// true. Returns an error if the binary was built without FTS5 support.
+func (s *Store) RebuildFTS(progress func(done, total int64)) (int64, error) {
+	if err := s.dialect.FTSRebuildSchema(s.db.DB); err != nil {
+		return 0, err
+	}
+
+	minID, maxID, err := s.messageIDRange()
+	if err != nil {
+		return 0, err
+	}
+	if maxID == 0 {
+		s.fts5Available = true
+		return 0, nil
+	}
+
+	indexed, err := s.backfillFTSRange(minID, maxID, progress)
+	if err != nil {
+		return indexed, err
+	}
+	s.fts5Available = true
+	return indexed, nil
+}
+
+// messageIDRange returns (minID, maxID) using MIN/MAX B-tree lookups
+// rather than COUNT(*), which would scan the whole table.
+func (s *Store) messageIDRange() (int64, int64, error) {
+	var minID, maxID int64
+	err := s.db.QueryRow(
+		"SELECT COALESCE(MIN(id),0), COALESCE(MAX(id),0) FROM messages",
+	).Scan(&minID, &maxID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("get message ID range: %w", err)
+	}
+	return minID, maxID, nil
+}
+
+// backfillFTSRange inserts FTS rows for all messages with id in [minID, maxID],
+// in batches. Shared between BackfillFTS (DELETE+fill) and RebuildFTS
+// (DROP+CREATE+fill). Each batch is committed independently so partial
+// progress is preserved if interrupted.
+func (s *Store) backfillFTSRange(minID, maxID int64, progress func(done, total int64)) (int64, error) {
+	const batchSize = 5000
+	idRange := maxID - minID + 1
 	var indexed int64
 	cursor := minID
 
@@ -1012,7 +1064,6 @@ func (s *Store) BackfillFTS(progress func(done, total int64)) (int64, error) {
 			progress(pos, idRange)
 		}
 	}
-
 	return indexed, nil
 }
 

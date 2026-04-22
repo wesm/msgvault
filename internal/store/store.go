@@ -388,6 +388,14 @@ func (s *Store) FTS5Available() bool {
 	return s.fts5Available
 }
 
+// IsBusyError reports whether err indicates another process holds the
+// database (SQLITE_BUSY or SQLITE_LOCKED). Callers running maintenance
+// operations that need exclusive access can use this to produce a
+// user-actionable "stop other processes and retry" message.
+func (s *Store) IsBusyError(err error) bool {
+	return s.dialect.IsBusyError(err)
+}
+
 // SchemaStale checks whether the database schema is missing columns
 // added by recent migrations. Returns (stale, column, err). Only
 // reports stale when the query succeeds and the column is absent;

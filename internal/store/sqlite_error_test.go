@@ -77,6 +77,33 @@ func TestIsSQLiteError_NilError(t *testing.T) {
 	}
 }
 
+func TestSQLiteDialect_IsBusyError(t *testing.T) {
+	d := &SQLiteDialect{}
+
+	busy := sqlite3.Error{Code: sqlite3.ErrBusy}
+	if !d.IsBusyError(fmt.Errorf("wrapped: %w", busy)) {
+		t.Error("IsBusyError should match SQLITE_BUSY")
+	}
+
+	locked := sqlite3.Error{Code: sqlite3.ErrLocked}
+	if !d.IsBusyError(fmt.Errorf("wrapped: %w", locked)) {
+		t.Error("IsBusyError should match SQLITE_LOCKED")
+	}
+
+	constraint := sqlite3.Error{Code: sqlite3.ErrConstraint}
+	if d.IsBusyError(fmt.Errorf("wrapped: %w", constraint)) {
+		t.Error("IsBusyError should not match non-busy sqlite errors")
+	}
+
+	if d.IsBusyError(errors.New("plain error")) {
+		t.Error("IsBusyError should not match non-sqlite errors")
+	}
+
+	if d.IsBusyError(nil) {
+		t.Error("IsBusyError should not match nil")
+	}
+}
+
 // typedNilError is a helper type that implements error and allows
 // errors.As to extract a typed nil *sqlite3.Error
 type typedNilError struct {
