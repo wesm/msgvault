@@ -133,7 +133,11 @@ type LogConfig struct {
 func (c *Config) IdentityAddressSet() map[string]bool {
 	out := make(map[string]bool, len(c.Identity.Addresses))
 	for _, addr := range c.Identity.Addresses {
-		out[strings.ToLower(strings.TrimSpace(addr))] = true
+		a := strings.ToLower(strings.TrimSpace(addr))
+		if a == "" {
+			continue
+		}
+		out[a] = true
 	}
 	return out
 }
