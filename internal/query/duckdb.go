@@ -1672,15 +1672,7 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	// Always exclude deleted messages
 	conditions = append(conditions, "msg.deleted_at IS NULL")
 	conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
-
-	// Gmail scoping is handled by JOIN src in the query below — this function
-	// is used for Gmail-specific deletion/staging workflows and must not
-	// return WhatsApp or other source IDs.
-
-	if filter.SourceID != nil {
-		conditions = append(conditions, "msg.source_id = ?")
-		args = append(args, *filter.SourceID)
-	}
+	conditions, args = appendSourceFilter(conditions, args, "msg.", filter.SourceID, filter.SourceIDs)
 
 	// Use EXISTS subqueries for filtering (becomes semi-joins, no duplicates)
 	if filter.Sender != "" {
