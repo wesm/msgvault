@@ -522,13 +522,6 @@ func normalizeRawMIME(raw []byte) []byte {
 	}
 
 	headerSection := raw[:headerEnd]
-	// Skip past the header/body separator so the body starts after it,
-	// then re-emit a canonical separator ("\n\n") to ensure messages
-	// with CRLF vs LF line endings produce the same hash.
-	sep := bytes.Index(raw[headerEnd:], []byte("\n"))
-	if sep == -1 {
-		return raw
-	}
 	// Find the start of the actual body after the blank line.
 	bodyStart := headerEnd
 	if bytes.HasPrefix(raw[headerEnd:], []byte("\r\n\r\n")) {
