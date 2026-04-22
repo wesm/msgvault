@@ -187,7 +187,7 @@ func runDeduplicatePerSource(
 		}
 
 		batchID := fmt.Sprintf(
-			"dedup-%s", time.Now().Format("20060102-150405"),
+			"dedup-%s-%s", time.Now().Format("20060102-150405"), src.Identifier,
 		)
 		summary, err := engineScoped.Execute(
 			cmd.Context(), report, batchID,

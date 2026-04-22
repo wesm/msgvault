@@ -908,10 +908,7 @@ func (e *SQLiteEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	conditions = append(conditions, "m.deleted_from_source_at IS NULL")
 	conditions = append(conditions, "m.deleted_at IS NULL")
 
-	if filter.SourceID != nil {
-		conditions = append(conditions, "m.source_id = ?")
-		args = append(args, *filter.SourceID)
-	}
+	conditions, args = appendSourceFilter(conditions, args, "m.", filter.SourceID, filter.SourceIDs)
 
 	// Build JOIN clauses based on filter type
 	var joins []string
