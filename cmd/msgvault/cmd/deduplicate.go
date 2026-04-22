@@ -84,6 +84,9 @@ func runDeduplicate(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		accountSourceIDs = scope.SourceIDs()
+		if len(accountSourceIDs) == 0 {
+			return fmt.Errorf("--account %q resolved to zero sources", dedupAccount)
+		}
 		canonicalAccount = scope.DisplayName()
 	}
 
@@ -209,7 +212,7 @@ func runDeduplicatePerSource(
 		}
 
 		batchID := fmt.Sprintf(
-			"dedup-%s-%d-%s", time.Now().Format("20060102-150405"), src.ID, src.Identifier,
+			"dedup-%s-%d-%s", time.Now().Format("20060102-150405"), src.ID, dedup.SanitizeFilenameComponent(src.Identifier),
 		)
 		summary, err := engineScoped.Execute(
 			cmd.Context(), report, batchID,

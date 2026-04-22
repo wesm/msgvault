@@ -766,10 +766,13 @@ func (e *Engine) stageDeletionManifests(
 }
 
 func manifestIDFor(batchID, account string) string {
-	return fmt.Sprintf("%s-%s", batchID, sanitizeAccount(account))
+	return fmt.Sprintf("%s-%s", batchID, SanitizeFilenameComponent(account))
 }
 
-func sanitizeAccount(a string) string {
+// SanitizeFilenameComponent strips or replaces characters that are unsafe
+// for use in filenames, ensuring the result contains only alphanumeric,
+// hyphens, and underscores (with @ and . replaced by hyphens).
+func SanitizeFilenameComponent(a string) string {
 	var b strings.Builder
 	for _, r := range a {
 		switch {
