@@ -62,8 +62,15 @@ func runDeduplicate(cmd *cobra.Command, _ []string) error {
 	preference := dedup.DefaultSourcePreference
 	if dedupPrefer != "" {
 		preference = strings.Split(dedupPrefer, ",")
+		known := make(map[string]bool, len(dedup.DefaultSourcePreference))
+		for _, t := range dedup.DefaultSourcePreference {
+			known[t] = true
+		}
 		for i := range preference {
 			preference[i] = strings.TrimSpace(preference[i])
+			if !known[preference[i]] {
+				fmt.Fprintf(os.Stderr, "Warning: unknown source type in --prefer: %q\n", preference[i])
+			}
 		}
 	}
 
