@@ -330,21 +330,21 @@ func readDedupYesNo(cmd *cobra.Command) (bool, error) {
 }
 
 func copyFileForBackup(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
+	// Copy the main database file.
+	if err := copyFile(src, dst); err != nil {
 		return err
 	}
-	defer func() { _ = in.Close() }()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
+	// Also copy WAL and SHM files if they exist, so the backup is
+	// consistent even when SQLite has uncheckpointed WAL pages.
+	for _, suffix := range []string{"-wal", "-shm"} {
+		extra := src + suffix
+		if _, err := os.Stat(extra); err == nil {
+			if err := copyFile(extra, dst+suffix); err != nil {
+				return fmt.Errorf("copy %s: %w", suffix, err)
+			}
+		}
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	return out.Close()
+	return nil
 }
 
 func init() {
