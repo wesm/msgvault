@@ -146,7 +146,7 @@ func TestStore_BackfillRFC822IDs_EmptyTable(t *testing.T) {
 		t.Errorf("empty-table count = %d, want 0", count)
 	}
 
-	updated, err := f.Store.BackfillRFC822IDs(nil)
+	updated, _, err := f.Store.BackfillRFC822IDs(nil)
 	testutil.MustNoErr(t, err, "BackfillRFC822IDs")
 	if updated != 0 {
 		t.Errorf("updated = %d, want 0", updated)
@@ -195,7 +195,7 @@ func TestStore_BackfillRFC822IDs_ParsesFromRawMIME(t *testing.T) {
 		t.Fatalf("count without rfc822 = %d, want 1", count)
 	}
 
-	updated, err := f.Store.BackfillRFC822IDs(nil)
+	updated, _, err := f.Store.BackfillRFC822IDs(nil)
 	testutil.MustNoErr(t, err, "BackfillRFC822IDs")
 	if updated != 1 {
 		t.Fatalf("updated = %d, want 1", updated)

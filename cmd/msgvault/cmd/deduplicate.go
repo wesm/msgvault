@@ -119,7 +119,7 @@ func runDeduplicate(cmd *cobra.Command, _ []string) error {
 	}
 
 	if len(accountSourceIDs) == 0 {
-		return runDeduplicatePerSource(cmd, st, config)
+		return runDeduplicatePerSource(cmd, st, dbPath, config)
 	}
 
 	return runDeduplicateOnce(cmd, dbPath, config, engine)
@@ -128,6 +128,7 @@ func runDeduplicate(cmd *cobra.Command, _ []string) error {
 func runDeduplicatePerSource(
 	cmd *cobra.Command,
 	st *store.Store,
+	dbPath string,
 	cfgBase dedup.Config,
 ) error {
 	sources, err := st.ListSources("")
@@ -144,6 +145,7 @@ func runDeduplicatePerSource(
 	)
 	fmt.Println()
 
+	backedUp := false
 	anyRan := false
 	for _, src := range sources {
 		cfgScoped := cfgBase
@@ -186,8 +188,21 @@ func runDeduplicatePerSource(
 			}
 		}
 
+		if !backedUp && !dedupNoBackup {
+			backedUp = true
+			backupPath := fmt.Sprintf(
+				"%s.dedup-backup-%s", dbPath,
+				time.Now().Format("20060102-150405"),
+			)
+			fmt.Printf("Backing up database to %s...\n",
+				filepath.Base(backupPath))
+			if err := copyFileForBackup(dbPath, backupPath); err != nil {
+				return fmt.Errorf("backup database: %w", err)
+			}
+		}
+
 		batchID := fmt.Sprintf(
-			"dedup-%s-%s", time.Now().Format("20060102-150405"), src.Identifier,
+			"dedup-%s-%d-%s", time.Now().Format("20060102-150405"), src.ID, src.Identifier,
 		)
 		summary, err := engineScoped.Execute(
 			cmd.Context(), report, batchID,

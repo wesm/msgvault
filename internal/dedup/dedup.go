@@ -206,7 +206,8 @@ func (e *Engine) Scan(ctx context.Context) (*Report, error) {
 	if count > 0 {
 		e.logger.Info("backfilling rfc822_message_id from stored MIME",
 			"count", count)
-		backfilledCount, err = e.store.BackfillRFC822IDs(
+		var backfillFailed int64
+		backfilledCount, backfillFailed, err = e.store.BackfillRFC822IDs(
 			func(done, total int64) {
 				e.logger.Info("backfill progress",
 					"done", done, "total", total)
@@ -218,6 +219,10 @@ func (e *Engine) Scan(ctx context.Context) (*Report, error) {
 		if backfilledCount > 0 {
 			e.logger.Info("backfilled rfc822_message_id",
 				"count", backfilledCount)
+		}
+		if backfillFailed > 0 {
+			e.logger.Warn("backfill: some messages could not be parsed",
+				"failed", backfillFailed)
 		}
 	}
 

@@ -395,23 +395,22 @@ func (s *Store) CountMessagesWithoutRFC822ID() (int64, error) {
 
 func (s *Store) BackfillRFC822IDs(
 	progress func(done, total int64),
-) (int64, error) {
+) (updated int64, failed int64, err error) {
 	var total int64
-	err := s.db.QueryRow(`
+	err = s.db.QueryRow(`
 		SELECT COUNT(*) FROM messages m
 		JOIN message_raw mr ON mr.message_id = m.id
 		WHERE (m.rfc822_message_id IS NULL OR m.rfc822_message_id = '')
 		  AND m.deleted_at IS NULL
 	`).Scan(&total)
 	if err != nil {
-		return 0, fmt.Errorf("count backfill candidates: %w", err)
+		return 0, 0, fmt.Errorf("count backfill candidates: %w", err)
 	}
 	if total == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 
 	const batchSize = 1000
-	var updated int64
 	lastID := int64(0)
 
 	for {
@@ -425,7 +424,7 @@ func (s *Store) BackfillRFC822IDs(
 			LIMIT ?
 		`, lastID, batchSize)
 		if err != nil {
-			return updated, fmt.Errorf("fetch backfill batch: %w", err)
+			return updated, failed, fmt.Errorf("fetch backfill batch: %w", err)
 		}
 
 		var batchIDs []int64
@@ -433,13 +432,13 @@ func (s *Store) BackfillRFC822IDs(
 			var id int64
 			if err := rows.Scan(&id); err != nil {
 				_ = rows.Close()
-				return updated, err
+				return updated, failed, err
 			}
 			batchIDs = append(batchIDs, id)
 		}
 		_ = rows.Close()
 		if err := rows.Err(); err != nil {
-			return updated, err
+			return updated, failed, err
 		}
 		if len(batchIDs) == 0 {
 			break
@@ -448,10 +447,12 @@ func (s *Store) BackfillRFC822IDs(
 		for _, id := range batchIDs {
 			raw, err := s.GetMessageRaw(id)
 			if err != nil {
+				failed++
 				continue
 			}
 			parsed, err := mime.Parse(raw)
 			if err != nil || parsed.MessageID == "" {
+				failed++
 				continue
 			}
 			normalizedID := strings.TrimSpace(parsed.MessageID)
@@ -463,6 +464,7 @@ func (s *Store) BackfillRFC822IDs(
 				"UPDATE messages SET rfc822_message_id = ? WHERE id = ?",
 				normalizedID, id,
 			); err != nil {
+				failed++
 				continue
 			}
 			updated++
@@ -473,5 +475,5 @@ func (s *Store) BackfillRFC822IDs(
 			progress(updated, total)
 		}
 	}
-	return updated, nil
+	return updated, failed, nil
 }
