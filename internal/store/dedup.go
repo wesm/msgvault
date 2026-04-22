@@ -355,6 +355,11 @@ func (s *Store) StreamMessageRaw(
 	return nil
 }
 
+// UndoDedup restores soft-deleted duplicates from a dedup batch by
+// clearing deleted_at and delete_batch_id. Merge side effects (labels
+// copied to survivors, raw MIME backfilled onto survivors) are not
+// reversed — those changes are additive enrichment that leaves
+// survivors strictly better off.
 func (s *Store) UndoDedup(batchID string) (int64, error) {
 	result, err := s.db.Exec(`
 		UPDATE messages
