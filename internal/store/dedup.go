@@ -383,26 +383,45 @@ func (s *Store) CountActiveMessages(sourceIDs ...int64) (int64, error) {
 	return count, err
 }
 
-func (s *Store) CountMessagesWithoutRFC822ID() (int64, error) {
-	var count int64
-	err := s.db.QueryRow(`
-		SELECT COUNT(*) FROM messages
+func (s *Store) CountMessagesWithoutRFC822ID(sourceIDs ...int64) (int64, error) {
+	q := `SELECT COUNT(*) FROM messages
 		WHERE (rfc822_message_id IS NULL OR rfc822_message_id = '')
-		  AND deleted_at IS NULL
-	`).Scan(&count)
+		  AND deleted_at IS NULL`
+	var args []any
+	if len(sourceIDs) > 0 {
+		placeholders := make([]string, len(sourceIDs))
+		for i, id := range sourceIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		q += " AND source_id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	var count int64
+	err := s.db.QueryRow(q, args...).Scan(&count)
 	return count, err
 }
 
 func (s *Store) BackfillRFC822IDs(
+	sourceIDs []int64,
 	progress func(done, total int64),
 ) (updated int64, failed int64, err error) {
+	scopeClause := ""
+	var scopeArgs []any
+	if len(sourceIDs) > 0 {
+		placeholders := make([]string, len(sourceIDs))
+		for i, id := range sourceIDs {
+			placeholders[i] = "?"
+			scopeArgs = append(scopeArgs, id)
+		}
+		scopeClause = " AND m.source_id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+
 	var total int64
-	err = s.db.QueryRow(`
-		SELECT COUNT(*) FROM messages m
+	countQ := `SELECT COUNT(*) FROM messages m
 		JOIN message_raw mr ON mr.message_id = m.id
 		WHERE (m.rfc822_message_id IS NULL OR m.rfc822_message_id = '')
-		  AND m.deleted_at IS NULL
-	`).Scan(&total)
+		  AND m.deleted_at IS NULL` + scopeClause
+	err = s.db.QueryRow(countQ, scopeArgs...).Scan(&total)
 	if err != nil {
 		return 0, 0, fmt.Errorf("count backfill candidates: %w", err)
 	}
@@ -414,15 +433,16 @@ func (s *Store) BackfillRFC822IDs(
 	lastID := int64(0)
 
 	for {
-		rows, err := s.db.Query(`
-			SELECT m.id FROM messages m
+		batchQ := `SELECT m.id FROM messages m
 			JOIN message_raw mr ON mr.message_id = m.id
 			WHERE (m.rfc822_message_id IS NULL OR m.rfc822_message_id = '')
 			  AND m.deleted_at IS NULL
-			  AND m.id > ?
+			  AND m.id > ?` + scopeClause + `
 			ORDER BY m.id
-			LIMIT ?
-		`, lastID, batchSize)
+			LIMIT ?`
+		batchArgs := append([]any{lastID}, scopeArgs...)
+		batchArgs = append(batchArgs, batchSize)
+		rows, err := s.db.Query(batchQ, batchArgs...)
 		if err != nil {
 			return updated, failed, fmt.Errorf("fetch backfill batch: %w", err)
 		}

@@ -196,18 +196,34 @@ type StagedManifest struct {
 }
 
 // Scan finds all duplicate groups that dedup would prune.
+// AccountSourceIDs must be non-empty to prevent accidental cross-account
+// grouping; the CLI ensures this by iterating sources one at a time when
+// no explicit --account is given.
 func (e *Engine) Scan(ctx context.Context) (*Report, error) {
-	count, err := e.store.CountMessagesWithoutRFC822ID()
+	if len(e.config.AccountSourceIDs) == 0 {
+		return nil, fmt.Errorf("AccountSourceIDs must be non-empty; use per-source iteration for unscoped dedup")
+	}
+
+	count, err := e.store.CountMessagesWithoutRFC822ID(
+		e.config.AccountSourceIDs...,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("count messages without rfc822 id: %w", err)
 	}
 
 	var backfilledCount int64
-	if count > 0 {
+	if count > 0 && e.config.DryRun {
+		e.logger.Info(
+			"dry-run: backfill needed before dedup can run — "+
+				"messages missing rfc822_message_id will be skipped",
+			"count", count)
+		backfilledCount = -count // negative signals "needed but skipped"
+	} else if count > 0 {
 		e.logger.Info("backfilling rfc822_message_id from stored MIME",
 			"count", count)
 		var backfillFailed int64
 		backfilledCount, backfillFailed, err = e.store.BackfillRFC822IDs(
+			e.config.AccountSourceIDs,
 			func(done, total int64) {
 				e.logger.Info("backfill progress",
 					"done", done, "total", total)
@@ -858,7 +874,14 @@ func (e *Engine) FormatReport(r *Report) string {
 	var sb strings.Builder
 	sb.WriteString("\n=== Deduplication Report ===\n\n")
 
-	if r.BackfilledCount > 0 {
+	if r.BackfilledCount < 0 {
+		fmt.Fprintf(&sb,
+			"Note: %d messages need RFC822 Message-ID backfill "+
+				"from stored MIME (skipped in dry-run).\n"+
+				"These messages will be backfilled and included "+
+				"when you run with --apply.\n\n",
+			-r.BackfilledCount)
+	} else if r.BackfilledCount > 0 {
 		fmt.Fprintf(&sb,
 			"Backfilled %d messages with RFC822 Message-ID "+
 				"from stored MIME.\n\n",
