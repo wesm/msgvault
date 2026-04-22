@@ -2,7 +2,10 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+
+	"github.com/mattn/go-sqlite3"
 )
 
 // SQLiteDialect implements Dialect for SQLite (the default backend).
@@ -106,6 +109,30 @@ func (d *SQLiteDialect) SchemaFTS() string {
 	return "schema_sqlite.sql"
 }
 
+// FTSRebuildSchema drops and recreates the messages_fts virtual table. The
+// DROP pathway discards FTS5 shadow tables in their entirety, which is the
+// only reliable fix when those shadow tables are malformed — the `rebuild`
+// pragma reads from them and `delete-all` is rejected on contentful tables.
+func (d *SQLiteDialect) FTSRebuildSchema(db *sql.DB) error {
+	if _, err := db.Exec("DROP TABLE IF EXISTS messages_fts"); err != nil {
+		return fmt.Errorf("drop messages_fts: %w", err)
+	}
+	schema, err := schemaFS.ReadFile("schema_sqlite.sql")
+	if err != nil {
+		return fmt.Errorf("read schema_sqlite.sql: %w", err)
+	}
+	if _, err := db.Exec(string(schema)); err != nil {
+		if d.IsNoSuchModuleError(err) {
+			return fmt.Errorf(
+				"cannot rebuild FTS: this msgvault binary was built without " +
+					"FTS5 support (rebuild with `-tags fts5`)",
+			)
+		}
+		return fmt.Errorf("create messages_fts: %w", err)
+	}
+	return nil
+}
+
 // InitConn is a no-op for SQLite — PRAGMAs are set via DSN parameters.
 func (d *SQLiteDialect) InitConn(db *sql.DB) error { return nil }
 
@@ -158,4 +185,23 @@ func (d *SQLiteDialect) IsNoSuchModuleError(err error) bool {
 // IsReturningError returns true if the error indicates RETURNING is not supported.
 func (d *SQLiteDialect) IsReturningError(err error) bool {
 	return isSQLiteError(err, "RETURNING")
+}
+
+// IsBusyError returns true for SQLITE_BUSY and SQLITE_LOCKED. Matching on
+// the result code is more robust than substring matching: BUSY surfaces as
+// "database is locked" but LOCKED surfaces as "database table is locked",
+// so a single substring cannot catch both.
+func (d *SQLiteDialect) IsBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var serr sqlite3.Error
+	if errors.As(err, &serr) {
+		return serr.Code == sqlite3.ErrBusy || serr.Code == sqlite3.ErrLocked
+	}
+	var serrPtr *sqlite3.Error
+	if errors.As(err, &serrPtr) && serrPtr != nil {
+		return serrPtr.Code == sqlite3.ErrBusy || serrPtr.Code == sqlite3.ErrLocked
+	}
+	return false
 }

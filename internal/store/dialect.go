@@ -90,6 +90,14 @@ type Dialect interface {
 	// (e.g., PostgreSQL includes tsvector in its main schema).
 	SchemaFTS() string
 
+	// FTSRebuildSchema tears down and recreates the FTS infrastructure from
+	// scratch — the caller is expected to follow up with a full backfill.
+	// Used to recover from malformed FTS shadow-table state that in-place
+	// rebuild operations (e.g., SQLite's rebuild pragma) cannot clear.
+	// SQLite: DROP TABLE IF EXISTS messages_fts + re-execute schema_sqlite.sql.
+	// PostgreSQL: TODO (REINDEX / recompute tsvector column).
+	FTSRebuildSchema(db *sql.DB) error
+
 	// Connection lifecycle
 
 	// InitConn performs driver-specific connection initialization.
@@ -128,4 +136,10 @@ type Dialect interface {
 	// This handles SQLite < 3.35 which doesn't support RETURNING.
 	// Always false for PostgreSQL (which always supports RETURNING).
 	IsReturningError(err error) bool
+
+	// IsBusyError returns true if the error indicates the database is held
+	// by another connection, either busy (SQLITE_BUSY) or locked
+	// (SQLITE_LOCKED). Used to surface actionable errors from maintenance
+	// commands that need exclusive access.
+	IsBusyError(err error) bool
 }
