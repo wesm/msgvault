@@ -22,14 +22,25 @@ func TestCollections_CRUD(t *testing.T) {
 		t.Fatalf("name = %q, want work", coll.Name)
 	}
 
-	// List
+	// List — includes the auto-created "All" collection plus "work"
 	list, err := st.ListCollections()
 	testutil.MustNoErr(t, err, "ListCollections")
-	if len(list) != 1 {
-		t.Fatalf("list = %d, want 1", len(list))
+	if len(list) != 2 {
+		t.Fatalf("list = %d, want 2", len(list))
 	}
-	if len(list[0].SourceIDs) != 2 {
-		t.Fatalf("sourceIDs = %d, want 2", len(list[0].SourceIDs))
+	// Find "work" in the list and verify its sources.
+	var workColl *store.CollectionWithSources
+	for _, c := range list {
+		if c.Name == "work" {
+			workColl = c
+			break
+		}
+	}
+	if workColl == nil {
+		t.Fatal("expected 'work' collection in list")
+	}
+	if len(workColl.SourceIDs) != 2 {
+		t.Fatalf("sourceIDs = %d, want 2", len(workColl.SourceIDs))
 	}
 
 	// Get by name

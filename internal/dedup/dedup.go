@@ -523,7 +523,7 @@ func normalizeRawMIME(raw []byte) []byte {
 
 	headerSection := raw[:headerEnd]
 	// Find the start of the actual body after the blank line.
-	bodyStart := headerEnd
+	var bodyStart int
 	if bytes.HasPrefix(raw[headerEnd:], []byte("\r\n\r\n")) {
 		bodyStart = headerEnd + 4
 	} else {

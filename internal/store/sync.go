@@ -321,6 +321,13 @@ func (s *Store) GetOrCreateSource(sourceType, identifier string) (*Source, error
 	}
 	newSource.ID, _ = result.LastInsertId()
 
+	// Add to the default "All" collection if it exists.
+	_, _ = s.db.Exec(
+		`INSERT OR IGNORE INTO collection_sources (collection_id, source_id)
+		 SELECT id, ? FROM collections WHERE name = 'All'`,
+		newSource.ID,
+	)
+
 	return newSource, nil
 }
 

@@ -297,6 +297,11 @@ func (e *DuckDBEngine) parquetCTEs() string {
 	} else {
 		msgExtra = append(msgExtra, "'' AS message_type")
 	}
+	if e.hasCol("messages", "deleted_at") {
+		msgReplace = append(msgReplace, "TRY_CAST(deleted_at AS TIMESTAMP) AS deleted_at")
+	} else {
+		msgExtra = append(msgExtra, "NULL::TIMESTAMP AS deleted_at")
+	}
 	msgCTE := fmt.Sprintf("SELECT * REPLACE (\n\t\t\t\t%s\n\t\t\t)", strings.Join(msgReplace, ",\n\t\t\t\t"))
 	if len(msgExtra) > 0 {
 		msgCTE += ", " + strings.Join(msgExtra, ", ")
@@ -648,6 +653,7 @@ func (e *DuckDBEngine) buildWhereClause(opts AggregateOptions, keyColumns ...str
 	// message_type IS NULL and '' handle old data without the column.
 	conditions = append(conditions, "(msg.message_type = 'email' OR msg.message_type IS NULL OR msg.message_type = '')")
 
+	conditions = append(conditions, "msg.deleted_at IS NULL")
 	conditions, args = appendSourceFilter(conditions, args, "msg.", opts.SourceID, opts.SourceIDs)
 
 	if opts.After != nil {
@@ -851,6 +857,7 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 	// message_type IS NULL and '' handle old data without the column.
 	conditions = append(conditions, "(msg.message_type = 'email' OR msg.message_type IS NULL OR msg.message_type = '')")
 
+	conditions = append(conditions, "msg.deleted_at IS NULL")
 	conditions, args = appendSourceFilter(conditions, args, "msg.", filter.SourceID, filter.SourceIDs)
 
 	if filter.ConversationID != nil {
@@ -1111,6 +1118,7 @@ func (e *DuckDBEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 	// Restrict to email messages only; NULL and '' handle pre-message_type data.
 	conditions = append(conditions, emailOnlyFilterMsg)
 
+	conditions = append(conditions, "msg.deleted_at IS NULL")
 	conditions, args = appendSourceFilter(conditions, args, "msg.", opts.SourceID, opts.SourceIDs)
 
 	if opts.WithAttachmentsOnly {
@@ -2311,6 +2319,7 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 	conditions = append(conditions, emailOnlyFilterMsg)
 
 	// Apply basic filter conditions (ignoring join flags for search - we handle those differently)
+	conditions = append(conditions, "msg.deleted_at IS NULL")
 	conditions, args = appendSourceFilter(conditions, args, "msg.", filter.SourceID, filter.SourceIDs)
 	if filter.After != nil {
 		conditions = append(conditions, "msg.sent_at >= CAST(? AS TIMESTAMP)")

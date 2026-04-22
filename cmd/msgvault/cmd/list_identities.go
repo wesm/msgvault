@@ -1,13 +1,14 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"regexp"
-	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/store"
 )
@@ -114,17 +115,24 @@ func writeIdentitiesTOML(candidates []store.IdentityCandidate) error {
 		fmt.Println("# no candidates — nothing to paste")
 		return nil
 	}
-	fmt.Println("[identity]")
-	fmt.Println("addresses = [")
+
+	addrs := make([]string, 0, len(candidates))
 	for _, c := range candidates {
-		safe := strings.ReplaceAll(c.Email, `"`, `\"`)
-		fmt.Printf("  \"%s\",  # %s msgs, %s\n",
-			safe,
-			formatCount(c.MessageCount),
-			c.Signals.String(),
-		)
+		addrs = append(addrs, c.Email)
 	}
-	fmt.Println("]")
+
+	cfg := struct {
+		Identity struct {
+			Addresses []string `toml:"addresses"`
+		} `toml:"identity"`
+	}{}
+	cfg.Identity.Addresses = addrs
+
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
+		return fmt.Errorf("encode TOML: %w", err)
+	}
+	fmt.Print(buf.String())
 	return nil
 }
 

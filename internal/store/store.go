@@ -464,6 +464,12 @@ func (s *Store) InitSchema() error {
 	// Probe availability through the dialect so it works uniformly for
 	// backends that carry FTS inside their main schema.
 	s.fts5Available = s.dialect.FTSAvailable(s.db.DB)
+
+	// Ensure the default "All" collection exists and contains every source.
+	if err := s.EnsureDefaultCollection(); err != nil {
+		return fmt.Errorf("ensure default collection: %w", err)
+	}
+
 	return nil
 }
 
