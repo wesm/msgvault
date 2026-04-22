@@ -529,9 +529,16 @@ var transportHeaders = map[string]bool{
 
 // normalizeRawMIME strips transport/export-specific headers before hashing.
 func normalizeRawMIME(raw []byte) []byte {
-	headerEnd := bytes.Index(raw, []byte("\r\n\r\n"))
-	if headerEnd == -1 {
-		headerEnd = bytes.Index(raw, []byte("\n\n"))
+	crlfEnd := bytes.Index(raw, []byte("\r\n\r\n"))
+	lfEnd := bytes.Index(raw, []byte("\n\n"))
+	headerEnd := -1
+	switch {
+	case crlfEnd >= 0 && lfEnd >= 0:
+		headerEnd = min(crlfEnd, lfEnd)
+	case crlfEnd >= 0:
+		headerEnd = crlfEnd
+	case lfEnd >= 0:
+		headerEnd = lfEnd
 	}
 	if headerEnd == -1 {
 		return raw

@@ -51,6 +51,11 @@ func TestNormalizeRawMIME(t *testing.T) {
 			input:    []byte("Received: from mx1\r\nFrom: a@b.com\r\n\r\nExact body content here."),
 			contains: "Exact body content here.",
 		},
+		{
+			name:     "LF headers with CRLF in body uses earliest boundary",
+			input:    []byte("From: a@b.com\nSubject: Test\n\nBody has \r\n\r\n inside"),
+			contains: "Body has \r\n\r\n inside",
+		},
 	}
 
 	for _, tt := range tests {
