@@ -456,8 +456,8 @@ func (s *Store) InitSchema() error {
 			if !s.dialect.IsNoSuchModuleError(err) {
 				return fmt.Errorf("init FTS schema: %w", err)
 			}
-			// Module not compiled in; availability stays false.
-			return nil
+			// Module not compiled in; availability stays false. Fall
+			// through so the rest of schema init still runs.
 		}
 	}
 
