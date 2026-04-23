@@ -1092,6 +1092,268 @@ func TestImportDYI_SynthesizedSenderLinkedToConversation(t *testing.T) {
 	}
 }
 
+// TestImportDYI_SenderIDPreservedOnReimport verifies that re-importing a
+// thread whose message sender no longer resolves (e.g. the participant
+// was renamed or the second import uses a different fixture) does not
+// null-out the previously-recorded messages.sender_id, display name, or
+// is_from_me flag. The importer reads any existing sender data and reuses
+// it when the current run can't produce one.
+func TestImportDYI_SenderIDPreservedOnReimport(t *testing.T) {
+	st := testutil.NewTestStore(t)
+	tmp := t.TempDir()
+	threadDir := filepath.Join(tmp, "your_activity_across_facebook", "messages", "inbox", "alice_PRES")
+	if err := os.MkdirAll(threadDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	write := func(msg0Sender, msg1Sender string) {
+		fixture := map[string]any{
+			"participants": []map[string]any{
+				{"name": "Test User"},
+				{"name": "Alice Example"},
+			},
+			"messages": []map[string]any{
+				{
+					"sender_name":  msg0Sender,
+					"timestamp_ms": 1600000000000,
+					"content":      "from alice",
+					"type":         "Generic",
+				},
+				{
+					"sender_name":  msg1Sender,
+					"timestamp_ms": 1600000001000,
+					"content":      "from me",
+					"type":         "Generic",
+				},
+			},
+			"title":                "Alice Example",
+			"is_still_participant": true,
+			"thread_type":          "Regular",
+			"thread_path":          "inbox/alice_PRES",
+		}
+		data, err := json.Marshal(fixture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(threadDir, "message_1.json"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// First import: message 0 from Alice, message 1 from Test User (self).
+	write("Alice Example", "Test User")
+	if _, err := ImportDYI(context.Background(), st, ImportOptions{
+		Me:             "test.user@facebook.messenger",
+		RootDir:        tmp,
+		AttachmentsDir: t.TempDir(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	type snap struct {
+		senderID sql.NullInt64
+		isFromMe bool
+		fromName sql.NullString
+		fromPID  sql.NullInt64
+	}
+	capture := func(srcMsgID string) snap {
+		t.Helper()
+		var s snap
+		if err := st.DB().QueryRow(
+			`SELECT sender_id, is_from_me FROM messages WHERE source_message_id = ?`,
+			srcMsgID,
+		).Scan(&s.senderID, &s.isFromMe); err != nil {
+			t.Fatalf("messages row for %s: %v", srcMsgID, err)
+		}
+		if err := st.DB().QueryRow(`
+			SELECT mr.display_name, mr.participant_id
+			FROM message_recipients mr
+			JOIN messages m ON m.id = mr.message_id
+			WHERE m.source_message_id = ? AND mr.recipient_type = 'from'
+		`, srcMsgID).Scan(&s.fromName, &s.fromPID); err != nil {
+			t.Fatalf("from recipient for %s: %v", srcMsgID, err)
+		}
+		return s
+	}
+
+	aliceBefore := capture("inbox/alice_PRES__0")
+	selfBefore := capture("inbox/alice_PRES__1")
+	if !aliceBefore.senderID.Valid || aliceBefore.isFromMe {
+		t.Fatalf("alice msg setup: senderID=%v isFromMe=%v", aliceBefore.senderID, aliceBefore.isFromMe)
+	}
+	if !selfBefore.senderID.Valid || !selfBefore.isFromMe {
+		t.Fatalf("self msg setup: senderID=%v isFromMe=%v", selfBefore.senderID, selfBefore.isFromMe)
+	}
+
+	// Second import: both sender_names stripped so the current run can't
+	// resolve them. The importer must preserve prior sender_id, is_from_me,
+	// and message_recipients for both messages.
+	write("", "")
+	summary, err := ImportDYI(context.Background(), st, ImportOptions{
+		Me:             "test.user@facebook.messenger",
+		RootDir:        tmp,
+		AttachmentsDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Rehydrated self-authored messages must still count toward
+	// FromMeCount so the CLI doesn't warn about a --me mismatch.
+	if summary.FromMeCount < 1 {
+		t.Errorf("FromMeCount=%d want >=1 on rehydration", summary.FromMeCount)
+	}
+
+	aliceAfter := capture("inbox/alice_PRES__0")
+	selfAfter := capture("inbox/alice_PRES__1")
+
+	if !aliceAfter.senderID.Valid || aliceAfter.senderID.Int64 != aliceBefore.senderID.Int64 {
+		t.Errorf("alice sender_id not preserved: before=%v after=%v", aliceBefore.senderID, aliceAfter.senderID)
+	}
+	if aliceAfter.isFromMe {
+		t.Errorf("alice is_from_me flipped to true")
+	}
+	if !aliceAfter.fromName.Valid || aliceAfter.fromName.String != "Alice Example" {
+		t.Errorf("alice from display_name=%q want Alice Example", aliceAfter.fromName.String)
+	}
+	if !aliceAfter.fromPID.Valid || aliceAfter.fromPID.Int64 != aliceBefore.senderID.Int64 {
+		t.Errorf("alice from participant_id not preserved: got %v want %d", aliceAfter.fromPID, aliceBefore.senderID.Int64)
+	}
+
+	if !selfAfter.senderID.Valid || selfAfter.senderID.Int64 != selfBefore.senderID.Int64 {
+		t.Errorf("self sender_id not preserved: before=%v after=%v", selfBefore.senderID, selfAfter.senderID)
+	}
+	if !selfAfter.isFromMe {
+		t.Errorf("self is_from_me not preserved (flipped to false)")
+	}
+	// The self participant is seeded with an empty participants.display_name,
+	// so rehydration must fall back to the prior message_recipients display
+	// name rather than clobbering it with "".
+	if !selfAfter.fromName.Valid || selfAfter.fromName.String != "Test User" {
+		t.Errorf("self from display_name=%q want Test User", selfAfter.fromName.String)
+	}
+
+	// The account owner must NOT appear in "to" for the self-authored
+	// message — otherwise the dropped is_from_me flag would inflate
+	// participant analytics and cause self-to-self recipient rows.
+	var selfInTo int
+	if err := st.DB().QueryRow(`
+		SELECT COUNT(*) FROM message_recipients mr
+		JOIN messages m ON m.id = mr.message_id
+		WHERE m.source_message_id = 'inbox/alice_PRES__1'
+		  AND mr.recipient_type = 'to'
+		  AND mr.participant_id = ?
+	`, selfBefore.senderID.Int64).Scan(&selfInTo); err != nil {
+		t.Fatal(err)
+	}
+	if selfInTo != 0 {
+		t.Errorf("self participant appeared in 'to' for self-authored message: count=%d", selfInTo)
+	}
+}
+
+// TestImportDYI_ReimportRepairsConversationParticipant verifies that a
+// conversation missing a participant row (the pre-fix state for databases
+// imported before synthesized senders were linked) gets re-linked on a
+// subsequent import via the sender_id-preservation rehydration path.
+func TestImportDYI_ReimportRepairsConversationParticipant(t *testing.T) {
+	st := testutil.NewTestStore(t)
+	tmp := t.TempDir()
+	threadDir := filepath.Join(tmp, "your_activity_across_facebook", "messages", "inbox", "alice_REPAIR")
+	if err := os.MkdirAll(threadDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The sender "Facebook User" is intentionally NOT in the participants
+	// list, so the message goes through the synthesized-sender path. Only
+	// the rehydration branch (not the thread-participants loop) would
+	// re-link this participant on a later re-import.
+	fixture := map[string]any{
+		"participants": []map[string]any{
+			{"name": "Test User"},
+			{"name": "Alice Example"},
+		},
+		"messages": []map[string]any{
+			{
+				"sender_name":  "Facebook User",
+				"timestamp_ms": 1600000000000,
+				"content":      "system message",
+				"type":         "Generic",
+			},
+		},
+		"title":                "Alice Example",
+		"is_still_participant": true,
+		"thread_type":          "Regular",
+		"thread_path":          "inbox/alice_REPAIR",
+	}
+	data, err := json.Marshal(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture := func() {
+		if err := os.WriteFile(filepath.Join(threadDir, "message_1.json"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeFixture()
+	if _, err := ImportDYI(context.Background(), st, ImportOptions{
+		Me:             "test.user@facebook.messenger",
+		RootDir:        tmp,
+		AttachmentsDir: t.TempDir(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var orphanID int64
+	if err := st.DB().QueryRow(
+		`SELECT sender_id FROM messages WHERE source_message_id = 'inbox/alice_REPAIR__0'`,
+	).Scan(&orphanID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the pre-fix DB state: delete the synthesized sender's
+	// conversation_participants row while leaving the message sender_id
+	// intact. This is the scenario a database imported before synthesized
+	// senders were linked would end up in.
+	var convID int64
+	if err := st.DB().QueryRow(
+		`SELECT id FROM conversations WHERE source_conversation_id = 'inbox/alice_REPAIR'`,
+	).Scan(&convID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(
+		`DELETE FROM conversation_participants WHERE conversation_id = ? AND participant_id = ?`,
+		convID, orphanID,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-import with sender_name stripped so the current run can't
+	// synthesize the orphan — rehydration is the only path that can
+	// recover the participant link.
+	fixture["messages"].([]map[string]any)[0]["sender_name"] = ""
+	data, err = json.Marshal(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture()
+	if _, err := ImportDYI(context.Background(), st, ImportOptions{
+		Me:             "test.user@facebook.messenger",
+		RootDir:        tmp,
+		AttachmentsDir: t.TempDir(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	if err := st.DB().QueryRow(
+		`SELECT COUNT(*) FROM conversation_participants WHERE conversation_id = ? AND participant_id = ?`,
+		convID, orphanID,
+	).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("conversation_participants not repaired on re-import: got %d want 1", n)
+	}
+}
+
 func TestImportDYI_TimingTripwire(t *testing.T) {
 	st := testutil.NewTestStore(t)
 	root := writeLargeFixture(t)

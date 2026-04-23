@@ -540,6 +540,57 @@ func writeThreadToStore(
 		// collisions across sections with the same thread basename.
 		srcMsgID := fmt.Sprintf("%s__%s%d", threadKey, prefix, m.Index)
 
+		// If we couldn't resolve a sender this run but a previous import
+		// of the same message already recorded one, preserve it — the
+		// UpsertMessage UPDATE path unconditionally overwrites sender_id
+		// with the incoming value, which would nullify valid prior data.
+		// Also rehydrate the sender's display name and email so
+		// downstream writes to message_recipients("from") and FTS don't
+		// clobber the prior display-name / from-address with empty
+		// strings derived from an unresolved current-run senderName.
+		if !senderID.Valid {
+			var priorID sql.NullInt64
+			var priorName, priorEmail sql.NullString
+			var priorIsFromMe bool
+			// COALESCE onto message_recipients.display_name because the
+			// seeded self (--me) participant is created with an empty
+			// display_name; falling back to what we wrote on the prior
+			// import preserves the sender label for self-authored rows.
+			err := st.DB().QueryRow(
+				`SELECT m.sender_id, m.is_from_me,
+					COALESCE(NULLIF(p.display_name, ''),
+						(SELECT mr.display_name FROM message_recipients mr
+						 WHERE mr.message_id = m.id AND mr.recipient_type = 'from'
+						 LIMIT 1)),
+					p.email_address
+				 FROM messages m
+				 LEFT JOIN participants p ON p.id = m.sender_id
+				 WHERE m.source_id = ? AND m.source_message_id = ?`,
+				sourceID, srcMsgID,
+			).Scan(&priorID, &priorIsFromMe, &priorName, &priorEmail)
+			if err == nil && priorID.Valid {
+				senderID = priorID
+				isFromMe = priorIsFromMe
+				if priorIsFromMe {
+					summary.FromMeCount++
+				}
+				if priorName.Valid && priorName.String != "" {
+					senderName = priorName.String
+					nameToID[senderName] = priorID.Int64
+					if priorEmail.Valid {
+						nameToEmail[senderName] = priorEmail.String
+					}
+				}
+				// Re-link the rehydrated participant into the
+				// conversation. Older DBs affected by the
+				// pre-fix synthesized-sender bug have a valid
+				// messages.sender_id but no matching
+				// conversation_participants row; this repairs
+				// them on re-import.
+				_ = st.EnsureConversationParticipant(convID, priorID.Int64, "member")
+			}
+		}
+
 		snippet := buildSnippet(m.Body)
 		msgRow := &store.Message{
 			ConversationID:  convID,
