@@ -338,19 +338,27 @@ func parseHTMLLines(lines []string, images []htmlImageRef, absRoot, htmlDir stri
 		}
 		// Find the next timestamp line.
 		end := -1
+		nextSender := -1
 		for j := i + 1; j < len(remaining) && j < i+1+maxBodyLinesBeforeTimestamp; j++ {
 			if _, ok := parseHTMLTimestamp(remaining[j]); ok {
 				end = j
 				break
 			}
 			// If we hit another sender name before a timestamp, this
-			// block lacks a timestamp; bail out gracefully.
+			// block lacks a timestamp; bail out gracefully and resume
+			// scanning at that candidate rather than advancing one line
+			// at a time through the failed window.
 			if participantNames[remaining[j]] {
+				nextSender = j
 				break
 			}
 		}
 		if end == -1 {
-			i++
+			if nextSender > i {
+				i = nextSender
+			} else {
+				i++
+			}
 			continue
 		}
 		bodyLines := remaining[i+1 : end]

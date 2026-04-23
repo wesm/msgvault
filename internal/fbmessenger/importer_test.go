@@ -1019,6 +1019,79 @@ func cpDir(t *testing.T, src, dst string) {
 	}
 }
 
+// TestImportDYI_SynthesizedSenderLinkedToConversation verifies that when a
+// message's sender_name is not in the thread's participants array (a
+// system/orphan sender), the synthesized participant is still linked to the
+// conversation via conversation_participants. Regression for the case where
+// senderID was recorded on the message but not joined to the conversation,
+// skewing participant-based analytics.
+func TestImportDYI_SynthesizedSenderLinkedToConversation(t *testing.T) {
+	st := testutil.NewTestStore(t)
+	tmp := t.TempDir()
+	threadDir := filepath.Join(tmp, "your_activity_across_facebook", "messages", "inbox", "alice_ORPH")
+	if err := os.MkdirAll(threadDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture := map[string]any{
+		"participants": []map[string]any{
+			{"name": "Test User"},
+			{"name": "Alice Example"},
+		},
+		"messages": []map[string]any{
+			{
+				"sender_name":  "Alice Example",
+				"timestamp_ms": 1600000000000,
+				"content":      "hi",
+				"type":         "Generic",
+			},
+			{
+				// Orphan sender: not in participants.
+				"sender_name":  "Facebook User",
+				"timestamp_ms": 1600000001000,
+				"content":      "system message",
+				"type":         "Generic",
+			},
+		},
+		"title":                "Alice Example",
+		"is_still_participant": true,
+		"thread_type":          "Regular",
+		"thread_path":          "inbox/alice_ORPH",
+	}
+	data, err := json.Marshal(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(threadDir, "message_1.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = ImportDYI(context.Background(), st, ImportOptions{
+		Me:             "test.user@facebook.messenger",
+		RootDir:        tmp,
+		AttachmentsDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The synthesized "Facebook User" sender must be linked to the
+	// conversation via conversation_participants, not just present as
+	// sender_id on its message.
+	var n int
+	if err := st.DB().QueryRow(`
+		SELECT COUNT(*) FROM conversation_participants cp
+		JOIN participants p ON p.id = cp.participant_id
+		WHERE cp.conversation_id = (
+			SELECT id FROM conversations WHERE source_conversation_id = 'inbox/alice_ORPH'
+		)
+		AND p.email_address = 'facebook.user@facebook.messenger'
+	`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("orphan sender not linked to conversation: got %d want 1", n)
+	}
+}
+
 func TestImportDYI_TimingTripwire(t *testing.T) {
 	st := testutil.NewTestStore(t)
 	root := writeLargeFixture(t)

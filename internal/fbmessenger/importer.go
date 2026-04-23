@@ -20,6 +20,11 @@ import (
 	"github.com/wesm/msgvault/internal/store"
 )
 
+// errLimitReached signals that ImportOptions.Limit tripped mid-thread so
+// the caller should stop importing and not advance the per-thread
+// checkpoint past a partially-imported thread.
+var errLimitReached = errors.New("fbmessenger: import limit reached")
+
 // fbmessengerCheckpoint is the JSON payload stored in
 // sync_runs.cursor_before that records progress through a DYI import so
 // a subsequent run can skip already-processed threads. RootDir is
@@ -272,12 +277,21 @@ func ImportDYI(ctx context.Context, st *store.Store, opts ImportOptions) (*Impor
 		}
 
 		summary.ThreadsProcessed++
-		if err := importThread(ctx, st, source.ID, td, effective, format, opts, labelIDs, meLocal, logger, summary, syncID, absRoot, threadIdx, &cp); err != nil {
+		err := importThread(ctx, st, source.ID, td, effective, format, opts, labelIDs, meLocal, logger, summary, syncID, absRoot, threadIdx, &cp)
+		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				syncErr = err
 				return summary, err
 			}
+			if errors.Is(err, errLimitReached) {
+				// Limit tripped mid-thread: do not advance the
+				// checkpoint past this thread, so a subsequent
+				// non-limited run re-scans it and picks up the
+				// remaining messages via source_message_id dedup.
+				break
+			}
 			summary.Errors++
+			summary.HardErrors = true
 			logger.Warn("fbmessenger: thread failed", "thread", td.Name, "err", err)
 		}
 		// Persist per-thread checkpoint so resume can skip fully
@@ -483,7 +497,7 @@ func writeThreadToStore(
 			return ctx.Err()
 		}
 		if opts.Limit > 0 && summary.MessagesAdded >= int64(opts.Limit) {
-			return nil
+			return errLimitReached
 		}
 		summary.MessagesProcessed++
 
@@ -504,6 +518,7 @@ func writeThreadToStore(
 						senderID = sql.NullInt64{Int64: id, Valid: true}
 						nameToID[senderName] = id
 						nameToEmail[senderName] = addr.Email
+						_ = st.EnsureConversationParticipant(convID, id, "member")
 					}
 				}
 			}
@@ -538,6 +553,7 @@ func writeThreadToStore(
 		messageID, err := st.UpsertMessage(msgRow)
 		if err != nil {
 			summary.Errors++
+			summary.MessagesSkipped++
 			logger.Warn("fbmessenger: upsert message", "err", err)
 			continue
 		}
@@ -558,13 +574,16 @@ func writeThreadToStore(
 		}
 
 		// Recipients: from = sender, to = other participants.
-		var fromIDs []int64
-		var fromNames []string
+		// Only rewrite "from" when we have a valid sender — otherwise on
+		// re-import we would clobber a previously-recorded sender with an
+		// empty row.
 		if senderID.Valid {
-			fromIDs = []int64{senderID.Int64}
-			fromNames = []string{senderName}
+			fromIDs := []int64{senderID.Int64}
+			fromNames := []string{senderName}
+			if err := st.ReplaceMessageRecipients(messageID, "from", fromIDs, fromNames); err != nil {
+				logger.Warn("fbmessenger: replace from recipients", "err", err)
+			}
 		}
-		_ = st.ReplaceMessageRecipients(messageID, "from", fromIDs, fromNames)
 
 		var toIDs []int64
 		var toNames []string
