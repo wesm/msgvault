@@ -104,12 +104,12 @@ func (s *Store) GetDuplicateGroupMessages(
 		       (SELECT COUNT(*) FROM message_labels ml
 		          WHERE ml.message_id = m.id) AS label_count,
 		       COALESCE(m.is_from_me, 0) AS is_from_me,
-		       EXISTS (
+		       CAST(EXISTS (
 		           SELECT 1 FROM message_labels ml2
 		           JOIN labels l ON l.id = ml2.label_id
 		           WHERE ml2.message_id = m.id
 		             AND (l.source_label_id = 'SENT' OR UPPER(l.name) = 'SENT')
-		       ) AS has_sent_label,
+		       ) AS INTEGER) AS has_sent_label,
 		       COALESCE((
 		           SELECT LOWER(p_from.email_address)
 		           FROM message_recipients mr_from
@@ -143,8 +143,7 @@ func (s *Store) GetDuplicateGroupMessages(
 	var msgs []DuplicateMessageRow
 	for rows.Next() {
 		var dm DuplicateMessageRow
-		var sentAt sql.NullTime
-		var archivedAt sql.NullString
+		var sentAt, archivedAt sql.NullTime
 		var hasRaw, isFromMe, hasSent int
 		if err := rows.Scan(
 			&dm.ID, &dm.SourceID, &dm.SourceType, &dm.SourceIdentifier,
@@ -158,11 +157,7 @@ func (s *Store) GetDuplicateGroupMessages(
 			dm.SentAt = sentAt.Time
 		}
 		if archivedAt.Valid {
-			if t, err := time.Parse(
-				"2006-01-02 15:04:05", archivedAt.String,
-			); err == nil {
-				dm.ArchivedAt = t
-			}
+			dm.ArchivedAt = archivedAt.Time
 		}
 		dm.HasRawMIME = hasRaw == 1
 		dm.IsFromMe = isFromMe == 1
@@ -180,12 +175,19 @@ func (s *Store) MergeDuplicates(
 	}
 
 	result := &MergeResult{}
+	unionLabelsSQL := s.dialect.InsertOrIgnore(`INSERT OR IGNORE INTO message_labels (message_id, label_id)
+			SELECT ?, label_id FROM message_labels WHERE message_id = ?`)
+	backfillRawSQL := s.dialect.InsertOrIgnore(`INSERT OR IGNORE INTO message_raw
+			  (message_id, raw_data, raw_format, compression)
+			SELECT ?, raw_data, raw_format, compression
+			FROM message_raw WHERE message_id = ?`)
+	softDeleteSQL := fmt.Sprintf(`UPDATE messages
+			SET deleted_at = %s, delete_batch_id = ?
+			WHERE id = ?`, s.dialect.Now())
+
 	err := s.withTx(func(tx *loggedTx) error {
 		for _, dupID := range duplicateIDs {
-			res, err := tx.Exec(`
-				INSERT OR IGNORE INTO message_labels (message_id, label_id)
-				SELECT ?, label_id FROM message_labels WHERE message_id = ?
-			`, survivorID, dupID)
+			res, err := tx.Exec(unionLabelsSQL, survivorID, dupID)
 			if err != nil {
 				return fmt.Errorf("union labels from %d: %w", dupID, err)
 			}
@@ -202,12 +204,7 @@ func (s *Store) MergeDuplicates(
 		}
 		if survivorHasRaw == 0 {
 			for _, dupID := range duplicateIDs {
-				res, err := tx.Exec(`
-					INSERT OR IGNORE INTO message_raw
-					  (message_id, raw_data, raw_format, compression)
-					SELECT ?, raw_data, raw_format, compression
-					FROM message_raw WHERE message_id = ?
-				`, survivorID, dupID)
+				res, err := tx.Exec(backfillRawSQL, survivorID, dupID)
 				if err != nil {
 					return fmt.Errorf("backfill raw MIME from %d: %w", dupID, err)
 				}
@@ -220,11 +217,7 @@ func (s *Store) MergeDuplicates(
 		}
 
 		for _, dupID := range duplicateIDs {
-			if _, err := tx.Exec(`
-				UPDATE messages
-				SET deleted_at = datetime('now'), delete_batch_id = ?
-				WHERE id = ?
-			`, batchID, dupID); err != nil {
+			if _, err := tx.Exec(softDeleteSQL, batchID, dupID); err != nil {
 				return fmt.Errorf("soft-delete duplicate %d: %w", dupID, err)
 			}
 		}
@@ -243,12 +236,12 @@ func (s *Store) GetAllRawMIMECandidates(
 		       (SELECT COUNT(*) FROM message_labels ml
 		          WHERE ml.message_id = m.id) AS label_count,
 		       COALESCE(m.is_from_me, 0) AS is_from_me,
-		       EXISTS (
+		       CAST(EXISTS (
 		           SELECT 1 FROM message_labels ml2
 		           JOIN labels l ON l.id = ml2.label_id
 		           WHERE ml2.message_id = m.id
 		             AND (l.source_label_id = 'SENT' OR UPPER(l.name) = 'SENT')
-		       ) AS has_sent_label,
+		       ) AS INTEGER) AS has_sent_label,
 		       COALESCE((
 		           SELECT LOWER(p_from.email_address)
 		           FROM message_recipients mr_from
@@ -282,8 +275,7 @@ func (s *Store) GetAllRawMIMECandidates(
 	var candidates []ContentHashCandidate
 	for rows.Next() {
 		var c ContentHashCandidate
-		var sentAt sql.NullTime
-		var archivedAt sql.NullString
+		var sentAt, archivedAt sql.NullTime
 		var isFromMe, hasSent int
 		if err := rows.Scan(
 			&c.ID, &c.SourceID, &c.SourceType, &c.SourceIdentifier,
@@ -296,11 +288,7 @@ func (s *Store) GetAllRawMIMECandidates(
 			c.SentAt = sentAt.Time
 		}
 		if archivedAt.Valid {
-			if t, err := time.Parse(
-				"2006-01-02 15:04:05", archivedAt.String,
-			); err == nil {
-				c.ArchivedAt = t
-			}
+			c.ArchivedAt = archivedAt.Time
 		}
 		c.IsFromMe = isFromMe == 1
 		c.HasSentLabel = hasSent == 1
@@ -389,9 +377,10 @@ func (s *Store) CountActiveMessages(sourceIDs ...int64) (int64, error) {
 }
 
 func (s *Store) CountMessagesWithoutRFC822ID(sourceIDs ...int64) (int64, error) {
-	q := `SELECT COUNT(*) FROM messages
-		WHERE (rfc822_message_id IS NULL OR rfc822_message_id = '')
-		  AND deleted_at IS NULL`
+	q := `SELECT COUNT(*) FROM messages m
+		JOIN message_raw mr ON mr.message_id = m.id
+		WHERE (m.rfc822_message_id IS NULL OR m.rfc822_message_id = '')
+		  AND m.deleted_at IS NULL`
 	var args []any
 	if len(sourceIDs) > 0 {
 		placeholders := make([]string, len(sourceIDs))
@@ -399,7 +388,7 @@ func (s *Store) CountMessagesWithoutRFC822ID(sourceIDs ...int64) (int64, error) 
 			placeholders[i] = "?"
 			args = append(args, id)
 		}
-		q += " AND source_id IN (" + strings.Join(placeholders, ",") + ")"
+		q += " AND m.source_id IN (" + strings.Join(placeholders, ",") + ")"
 	}
 	var count int64
 	err := s.db.QueryRow(q, args...).Scan(&count)
@@ -483,6 +472,7 @@ func (s *Store) BackfillRFC822IDs(
 			normalizedID := strings.TrimSpace(parsed.MessageID)
 			normalizedID = strings.Trim(normalizedID, "<>")
 			if normalizedID == "" {
+				failed++
 				continue
 			}
 			if _, err := s.db.Exec(
