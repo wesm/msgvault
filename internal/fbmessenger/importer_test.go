@@ -920,6 +920,59 @@ func TestImportDYI_ResumeFromFailedSync(t *testing.T) {
 	}
 }
 
+// TestImportDYI_ResumeFromFirstThreadCheckpoint verifies that a
+// checkpoint saved while still processing the first thread
+// (ThreadIndex == 0) is treated as resumable rather than ignored.
+// source_message_id dedup covers the data path; this test asserts the
+// UX-visible state (WasResumed true and cumulative counters carried
+// forward) so a user-visible interrupt during thread 0 is reflected in
+// the next run's summary.
+func TestImportDYI_ResumeFromFirstThreadCheckpoint(t *testing.T) {
+	st := testutil.NewTestStore(t)
+	root := writeMultiThreadFixture(t, 2)
+
+	// Seed a failed sync whose checkpoint is mid-first-thread.
+	src, err := st.GetOrCreateSource("facebook_messenger", "test.user@facebook.messenger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncID, err := st.StartSync(src.ID, "import-messenger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cpJSON, err := json.Marshal(fbmessengerCheckpoint{
+		RootDir:          absRoot,
+		ThreadIndex:      0,
+		LastMessageIndex: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateSyncCheckpoint(syncID, &store.Checkpoint{
+		PageToken:         string(cpJSON),
+		MessagesProcessed: 1,
+		MessagesAdded:     1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.FailSync(syncID, "context canceled"); err != nil {
+		t.Fatal(err)
+	}
+
+	summary := importFixture(t, st, root)
+	if !summary.WasResumed {
+		t.Errorf("WasResumed=false, want true for first-thread checkpoint")
+	}
+	// Cumulative counters must carry over from the prior run.
+	if summary.MessagesProcessed < 1 {
+		t.Errorf("MessagesProcessed=%d, want carry-over from prior run (>=1)", summary.MessagesProcessed)
+	}
+}
+
 func TestImportDYI_InvalidFormatRejected(t *testing.T) {
 	st := testutil.NewTestStore(t)
 	root := writeMultiThreadFixture(t, 1)

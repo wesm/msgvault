@@ -168,21 +168,26 @@ func ImportDYI(ctx context.Context, st *store.Store, opts ImportOptions) (*Impor
 						prior.RootDir, absRoot,
 					)
 				}
-				if prior.ThreadIndex > 0 {
-					startThreadIdx = prior.ThreadIndex
-					summary.WasResumed = true
-					cp.MessagesProcessed = prev.MessagesProcessed
-					cp.MessagesAdded = prev.MessagesAdded
-					cp.MessagesUpdated = prev.MessagesUpdated
-					cp.ErrorsCount = prev.ErrorsCount
-					summary.MessagesProcessed = prev.MessagesProcessed
-					summary.MessagesAdded = prev.MessagesAdded
-					logger.Info("fbmessenger: resuming import",
-						"root", absRoot,
-						"thread_index", startThreadIdx,
-						"processed", cp.MessagesProcessed,
-					)
-				}
+				// Treat any well-formed checkpoint as resumable. A
+				// checkpoint saved mid-way through the first thread
+				// has ThreadIndex == 0; the outer loop still starts
+				// at threadIdx=0 either way, but resuming lets us
+				// carry cumulative counters forward and emit the
+				// "resuming" log so a user-visible interrupt during
+				// thread 0 is reflected in the summary.
+				startThreadIdx = prior.ThreadIndex
+				summary.WasResumed = true
+				cp.MessagesProcessed = prev.MessagesProcessed
+				cp.MessagesAdded = prev.MessagesAdded
+				cp.MessagesUpdated = prev.MessagesUpdated
+				cp.ErrorsCount = prev.ErrorsCount
+				summary.MessagesProcessed = prev.MessagesProcessed
+				summary.MessagesAdded = prev.MessagesAdded
+				logger.Info("fbmessenger: resuming import",
+					"root", absRoot,
+					"thread_index", startThreadIdx,
+					"processed", cp.MessagesProcessed,
+				)
 			}
 		}
 	}
@@ -293,6 +298,12 @@ func ImportDYI(ctx context.Context, st *store.Store, opts ImportOptions) (*Impor
 			summary.Errors++
 			summary.HardErrors = true
 			logger.Warn("fbmessenger: thread failed", "thread", td.Name, "err", err)
+			// Don't advance the checkpoint on a hard thread error.
+			// source_message_id dedup makes retry safe on the next
+			// run, so a transient failure (DB lock, I/O blip) self-
+			// heals. If the error is persistent the user will see
+			// HardErrors=true and can rerun with --no-resume.
+			continue
 		}
 		// Persist per-thread checkpoint so resume can skip fully
 		// committed threads. Advance ThreadIndex to threadIdx+1
