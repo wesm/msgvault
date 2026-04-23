@@ -116,6 +116,47 @@ func TestParseE2EEJSONFile_MediaResolution(t *testing.T) {
 	}
 }
 
+func TestParseE2EEJSONFile_NotAThread(t *testing.T) {
+	tmp := t.TempDir()
+	cases := map[string]string{
+		"array.json":   `[{"any": "list"}]`,
+		"scalar.json":  `"a string"`,
+		"no_keys.json": `{"setting": true, "version": 2}`,
+	}
+	for name, body := range cases {
+		p := filepath.Join(tmp, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := ParseE2EEJSONFile(tmp, p)
+		if !errors.Is(err, ErrNotE2EEThread) {
+			t.Errorf("%s: expected ErrNotE2EEThread, got %v", name, err)
+		}
+	}
+}
+
+// TestParseE2EEJSONFile_PartialObjectCorrupt verifies that an object
+// with exactly one of "participants"/"messages" is classified as corrupt
+// rather than silently skipped — a partial export with missing
+// messages must not vanish silently.
+func TestParseE2EEJSONFile_PartialObjectCorrupt(t *testing.T) {
+	tmp := t.TempDir()
+	cases := map[string]string{
+		"only_p.json":   `{"participants": ["A", "B"]}`,
+		"only_msg.json": `{"messages": [{"senderName":"A","text":"x","timestamp":1}]}`,
+	}
+	for name, body := range cases {
+		p := filepath.Join(tmp, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := ParseE2EEJSONFile(tmp, p)
+		if !errors.Is(err, ErrCorruptJSON) {
+			t.Errorf("%s: expected ErrCorruptJSON, got %v", name, err)
+		}
+	}
+}
+
 func TestParseE2EEJSONFile_CorruptJSON(t *testing.T) {
 	tmp := t.TempDir()
 	badFile := filepath.Join(tmp, "bad.json")
@@ -191,5 +232,35 @@ func TestDiscover_E2EEFlat(t *testing.T) {
 	}
 	if dirs[1].Name != "group_2" {
 		t.Errorf("dirs[1].Name=%q want group_2", dirs[1].Name)
+	}
+}
+
+// TestDiscover_E2EEFlatRejectsNonThreadJSON verifies that a directory
+// containing both real thread files and unknown non-thread JSON blobs
+// (e.g. a new DYI metadata file Facebook may add) discovers only the
+// thread files. Keeping the indexed list stable across runs is required
+// for checkpoint-by-thread-index resume.
+func TestDiscover_E2EEFlatRejectsNonThreadJSON(t *testing.T) {
+	tmp := t.TempDir()
+	thread := `{"participants":["A","B"],"threadName":"t","messages":[]}`
+	if err := os.WriteFile(filepath.Join(tmp, "real_1.json"), []byte(thread), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "metadata.json"), []byte(`{"setting":true,"version":3}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "list.json"), []byte(`[1,2,3]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dirs, err := Discover(tmp)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(dirs) != 1 {
+		t.Fatalf("discovered %d files, want 1: %+v", len(dirs), dirs)
+	}
+	if dirs[0].Name != "real_1" {
+		t.Errorf("dirs[0].Name=%q want real_1", dirs[0].Name)
 	}
 }

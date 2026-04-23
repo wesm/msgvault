@@ -9,6 +9,13 @@ import (
 // cannot be parsed as valid JSON. Callers should log and skip the thread.
 var ErrCorruptJSON = errors.New("fbmessenger: corrupt json")
 
+// ErrNotE2EEThread is returned by ParseE2EEJSONFile when a candidate
+// flat-export JSON file parses successfully but is not an E2EE thread
+// (e.g. a DYI metadata file). Callers should silently skip — the
+// discoverer does not pre-filter by shape, so the parser is responsible
+// for rejecting non-thread JSON.
+var ErrNotE2EEThread = errors.New("fbmessenger: not an e2ee thread")
+
 // Thread is the parsed form of one DYI thread directory, ready for import.
 type Thread struct {
 	// DirName is the directory name (e.g. "testuser_ABC123XYZ"). This

@@ -36,6 +36,19 @@ type rawE2EEMessage struct {
 	Reactions  []rawE2EEReaction `json:"reactions"`
 }
 
+// missingThreadKey names the missing top-level key for the corrupt-
+// thread error message, given which of "participants"/"messages" is
+// present.
+func missingThreadKey(hasP, hasM bool) string {
+	switch {
+	case !hasP:
+		return "participants"
+	case !hasM:
+		return "messages"
+	}
+	return ""
+}
+
 // ParseE2EEJSONFile parses a single E2EE flat-export JSON file and
 // returns a populated Thread. rootDir is the export root (used for
 // resolving media paths); filePath is the absolute path to the JSON file.
@@ -43,6 +56,31 @@ func ParseE2EEJSONFile(rootDir, filePath string) (*Thread, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("fbmessenger: read e2ee file: %w", err)
+	}
+	// Classify the top-level shape before doing the strongly-typed
+	// decode. discover.probeE2EEShape already filters out obvious
+	// non-thread JSON, but the parser defends against direct callers
+	// and against a discovery layer that defers to it on ambiguous
+	// shapes. Distinguish three cases:
+	//   - neither "participants" nor "messages": not a thread → silent skip
+	//   - exactly one of the two: malformed → ErrCorruptJSON so the
+	//     importer logs and counts it
+	//   - both present, or non-object: object→full decode; non-object→not a thread
+	var top any
+	if err := json.Unmarshal(data, &top); err != nil {
+		return nil, fmt.Errorf("%w: %s: %v", ErrCorruptJSON, filepath.Base(filePath), err)
+	}
+	obj, ok := top.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrNotE2EEThread, filepath.Base(filePath))
+	}
+	_, hasP := obj["participants"]
+	_, hasM := obj["messages"]
+	switch {
+	case !hasP && !hasM:
+		return nil, fmt.Errorf("%w: %s", ErrNotE2EEThread, filepath.Base(filePath))
+	case hasP != hasM:
+		return nil, fmt.Errorf("%w: %s: missing %s", ErrCorruptJSON, filepath.Base(filePath), missingThreadKey(hasP, hasM))
 	}
 	var decoded rawE2EEExport
 	if err := json.Unmarshal(data, &decoded); err != nil {

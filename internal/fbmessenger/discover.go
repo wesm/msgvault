@@ -1,6 +1,7 @@
 package fbmessenger
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -145,16 +146,98 @@ func discoverE2EEFlat(dir string) []ThreadDir {
 		if isKnownMetadataFile(name) {
 			continue
 		}
+		full := filepath.Join(dir, name)
+		// Probe the top-level JSON shape via a streaming decoder so
+		// only actual threads enter the indexed list. Keeping the list
+		// stable across runs matters because per-thread checkpoints
+		// resume by index — if metadata files joined the list one run
+		// and dropped the next (e.g. after a Facebook DYI schema change
+		// or an allowlist update) the saved index would point past the
+		// next real thread. On any I/O or JSON error we fall through
+		// and include the file so ParseE2EEJSONFile can classify it
+		// (corrupt files still raise ErrCorruptJSON instead of being
+		// silently dropped at discovery).
+		if shape := probeE2EEShape(full); shape == e2eeShapeNotThread {
+			continue
+		}
 		threadName := strings.TrimSuffix(name, ".json")
 		out = append(out, ThreadDir{
 			Path:     dir,
-			FilePath: filepath.Join(dir, name),
+			FilePath: full,
 			Section:  "e2ee_cutover",
 			Name:     threadName,
 			Format:   "e2ee_json",
 		})
 	}
 	return out
+}
+
+type e2eeShape int
+
+const (
+	// e2eeShapeUnknown: the probe couldn't read or decode the file; the
+	// caller should include it so the full parser can classify it.
+	e2eeShapeUnknown e2eeShape = iota
+	// e2eeShapeThread: the file is a JSON object with at least both of
+	// "participants" and "messages" at the top level.
+	e2eeShapeThread
+	// e2eeShapeNotThread: the file is valid JSON but not a thread —
+	// non-object shape (array/scalar), or an object missing both
+	// "participants" and "messages". Objects that have exactly one of
+	// the two are reported as e2eeShapeUnknown so the parser can raise
+	// ErrCorruptJSON rather than being silently dropped.
+	e2eeShapeNotThread
+)
+
+// probeE2EEShape classifies the top-level shape of a candidate E2EE
+// flat-export JSON file without decoding the entire body. It streams
+// tokens with json.Decoder and stops as soon as both "participants"
+// and "messages" keys have been seen.
+func probeE2EEShape(filePath string) e2eeShape {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return e2eeShapeUnknown
+	}
+	defer func() { _ = f.Close() }()
+	dec := json.NewDecoder(f)
+	tok, err := dec.Token()
+	if err != nil {
+		return e2eeShapeUnknown
+	}
+	d, ok := tok.(json.Delim)
+	if !ok || d != '{' {
+		return e2eeShapeNotThread
+	}
+	var hasP, hasM bool
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return e2eeShapeUnknown
+		}
+		key, ok := tok.(string)
+		if !ok {
+			return e2eeShapeUnknown
+		}
+		if key == "participants" {
+			hasP = true
+		}
+		if key == "messages" {
+			hasM = true
+		}
+		if hasP && hasM {
+			return e2eeShapeThread
+		}
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return e2eeShapeUnknown
+		}
+	}
+	if !hasP && !hasM {
+		return e2eeShapeNotThread
+	}
+	// Object with exactly one of the two keys — let the parser raise
+	// ErrCorruptJSON rather than silently dropping it.
+	return e2eeShapeUnknown
 }
 
 // isKnownMetadataFile returns true for JSON filenames that are DYI

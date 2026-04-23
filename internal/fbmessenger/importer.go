@@ -394,6 +394,11 @@ func importThread(
 				logger.Warn("fbmessenger: corrupt e2ee json, skipping", "thread", td.Name, "err", err)
 				return nil
 			}
+			if errors.Is(err, ErrNotE2EEThread) {
+				// Not a thread (e.g. a DYI metadata file Facebook
+				// added that isn't in the allowlist). Silently skip.
+				return nil
+			}
 			return err
 		}
 		th.Section = td.Section
