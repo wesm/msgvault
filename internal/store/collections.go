@@ -248,18 +248,19 @@ func (s *Store) AddSourcesToCollection(name string, sourceIDs []int64) error {
 	if err != nil {
 		return err
 	}
-	for _, sid := range sourceIDs {
-		_, err = s.db.Exec(
-			`INSERT OR IGNORE INTO collection_sources
-			  (collection_id, source_id)
-			 VALUES (?, ?)`,
-			collID, sid,
-		)
-		if err != nil {
-			return fmt.Errorf("add source %d: %w", sid, err)
+	return s.withTx(func(tx *loggedTx) error {
+		for _, sid := range sourceIDs {
+			if _, err := tx.Exec(
+				`INSERT OR IGNORE INTO collection_sources
+				  (collection_id, source_id)
+				 VALUES (?, ?)`,
+				collID, sid,
+			); err != nil {
+				return fmt.Errorf("add source %d: %w", sid, err)
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // RemoveSourcesFromCollection detaches sources. Idempotent.
@@ -274,17 +275,18 @@ func (s *Store) RemoveSourcesFromCollection(name string, sourceIDs []int64) erro
 	if err != nil {
 		return err
 	}
-	for _, sid := range sourceIDs {
-		_, err = s.db.Exec(
-			`DELETE FROM collection_sources
-			 WHERE collection_id = ? AND source_id = ?`,
-			collID, sid,
-		)
-		if err != nil {
-			return fmt.Errorf("remove source %d: %w", sid, err)
+	return s.withTx(func(tx *loggedTx) error {
+		for _, sid := range sourceIDs {
+			if _, err := tx.Exec(
+				`DELETE FROM collection_sources
+				 WHERE collection_id = ? AND source_id = ?`,
+				collID, sid,
+			); err != nil {
+				return fmt.Errorf("remove source %d: %w", sid, err)
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // DeleteCollection drops the collection. Sources and messages untouched.
