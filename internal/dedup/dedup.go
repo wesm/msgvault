@@ -27,6 +27,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -167,14 +168,15 @@ func (m DuplicateMessage) IsSentCopy() bool {
 
 // Report summarises the results of a dedup scan.
 type Report struct {
-	TotalMessages     int64
-	DuplicateGroups   int
-	DuplicateMessages int            // messages that would be pruned
-	BySourcePair      map[string]int // "gmail+mbox" -> groups
-	SampleGroups      []DuplicateGroup
-	Groups            []DuplicateGroup
-	BackfilledCount   int64
-	ContentHashGroups int
+	TotalMessages              int64
+	DuplicateGroups            int
+	DuplicateMessages          int            // messages that would be pruned
+	BySourcePair               map[string]int // "gmail+mbox" -> groups
+	SampleGroups               []DuplicateGroup
+	Groups                     []DuplicateGroup
+	BackfilledCount            int64
+	ContentHashGroups          int
+	SkippedDecompressionErrors int
 }
 
 // ExecutionSummary summarises the results of dedup execution.
@@ -193,6 +195,16 @@ type StagedManifest struct {
 	SourceType   string
 	ManifestID   string
 	MessageCount int
+}
+
+// remoteKey groups remote source IDs by the (account, source_type) pair so
+// that a user with multiple remote sources sharing the same account
+// identifier (e.g. gmail + imap for the same address) gets one manifest per
+// source type rather than a single manifest whose SourceType label reflects
+// only the first contributor.
+type remoteKey struct {
+	Account    string
+	SourceType string
 }
 
 // Scan finds all duplicate groups that dedup would prune.
@@ -320,12 +332,13 @@ func (e *Engine) Scan(ctx context.Context) (*Report, error) {
 			}
 		}
 
-		contentHashGroups, err := e.scanNormalizedHashGroups(excludeIDs)
+		contentHashGroups, skipped, err := e.scanNormalizedHashGroups(excludeIDs)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"scan normalized content hashes: %w", err,
 			)
 		}
+		report.SkippedDecompressionErrors = skipped
 		for _, g := range contentHashGroups {
 			report.Groups = append(report.Groups, g)
 			report.ContentHashGroups++
@@ -339,7 +352,9 @@ func (e *Engine) Scan(ctx context.Context) (*Report, error) {
 	}
 
 	maxSamples := min(10, len(report.Groups))
-	report.SampleGroups = report.Groups[:maxSamples]
+	report.SampleGroups = append(
+		[]DuplicateGroup(nil), report.Groups[:maxSamples]...,
+	)
 
 	return report, nil
 }
@@ -353,20 +368,23 @@ type rawWorkItem struct {
 
 // hashResult carries the normalized hash plus message metadata.
 type hashResult struct {
-	hash string
-	msg  DuplicateMessage
+	hash    string
+	msg     DuplicateMessage
+	skipped bool
 }
 
 // scanNormalizedHashGroups hashes raw MIME after stripping transport-specific
 // headers. It skips messages already matched by the primary Message-ID pass.
+// Returns the duplicate groups plus a count of candidates skipped due to
+// zlib decompression failure.
 func (e *Engine) scanNormalizedHashGroups(
 	excludeIDs map[int64]bool,
-) ([]DuplicateGroup, error) {
+) ([]DuplicateGroup, int, error) {
 	candidates, err := e.store.GetAllRawMIMECandidates(
 		e.config.AccountSourceIDs...,
 	)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	candidateMap := make(map[int64]store.ContentHashCandidate, len(candidates))
@@ -376,7 +394,7 @@ func (e *Engine) scanNormalizedHashGroups(
 		}
 	}
 	if len(candidateMap) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
 
 	ids := make([]int64, 0, len(candidateMap))
@@ -409,11 +427,17 @@ func (e *Engine) scanNormalizedHashGroups(
 				if item.compress == "zlib" {
 					r, err := zlib.NewReader(bytes.NewReader(raw))
 					if err != nil {
+						e.logger.Warn("content-hash: zlib open failed",
+							"message_id", item.candidate.ID, "err", err)
+						results <- hashResult{skipped: true}
 						continue
 					}
 					decompressed, err := io.ReadAll(r)
 					_ = r.Close()
 					if err != nil {
+						e.logger.Warn("content-hash: zlib read failed",
+							"message_id", item.candidate.ID, "err", err)
+						results <- hashResult{skipped: true}
 						continue
 					}
 					raw = decompressed
@@ -452,9 +476,14 @@ func (e *Engine) scanNormalizedHashGroups(
 		msgs []DuplicateMessage
 	}
 	hashMap := make(map[string]*hashEntry)
+	skipped := 0
 	collectDone := make(chan struct{})
 	go func() {
 		for r := range results {
+			if r.skipped {
+				skipped++
+				continue
+			}
 			if entry, ok := hashMap[r.hash]; ok {
 				entry.msgs = append(entry.msgs, r.msg)
 			} else {
@@ -486,7 +515,7 @@ func (e *Engine) scanNormalizedHashGroups(
 	<-collectDone
 
 	if readErr != nil {
-		return nil, fmt.Errorf("stream message raw: %w", readErr)
+		return nil, skipped, fmt.Errorf("stream message raw: %w", readErr)
 	}
 
 	var groups []DuplicateGroup
@@ -502,7 +531,7 @@ func (e *Engine) scanNormalizedHashGroups(
 		e.selectSurvivor(&g)
 		groups = append(groups, g)
 	}
-	return groups, nil
+	return groups, skipped, nil
 }
 
 // transportHeaders vary across otherwise-identical copies of the same email.
@@ -668,8 +697,7 @@ func (e *Engine) Execute(
 ) (*ExecutionSummary, error) {
 	summary := &ExecutionSummary{BatchID: batchID}
 
-	remoteByAccount := make(map[string][]string)
-	remoteSourceType := make(map[string]string)
+	remoteByKey := make(map[remoteKey][]string)
 
 	for i, group := range report.Groups {
 		if ctx.Err() != nil {
@@ -698,12 +726,10 @@ func (e *Engine) Execute(
 			if acct == "" {
 				acct = e.config.Account
 			}
-			remoteByAccount[acct] = append(
-				remoteByAccount[acct], m.SourceMessageID,
+			key := remoteKey{Account: acct, SourceType: m.SourceType}
+			remoteByKey[key] = append(
+				remoteByKey[key], m.SourceMessageID,
 			)
-			if _, ok := remoteSourceType[acct]; !ok {
-				remoteSourceType[acct] = m.SourceType
-			}
 		}
 
 		mergeResult, err := e.store.MergeDuplicates(
@@ -721,10 +747,8 @@ func (e *Engine) Execute(
 		summary.RawMIMEBackfilled += mergeResult.RawMIMEBackfilled
 	}
 
-	if e.config.DeleteDupsFromSourceServer && len(remoteByAccount) > 0 {
-		staged, err := e.stageDeletionManifests(
-			batchID, remoteByAccount, remoteSourceType,
-		)
+	if e.config.DeleteDupsFromSourceServer && len(remoteByKey) > 0 {
+		staged, err := e.stageDeletionManifests(batchID, remoteByKey)
 		if err != nil {
 			return summary, err
 		}
@@ -736,8 +760,7 @@ func (e *Engine) Execute(
 
 func (e *Engine) stageDeletionManifests(
 	batchID string,
-	byAccount map[string][]string,
-	srcType map[string]string,
+	byKey map[remoteKey][]string,
 ) ([]StagedManifest, error) {
 	if e.config.DeletionsDir == "" {
 		return nil, fmt.Errorf(
@@ -751,36 +774,54 @@ func (e *Engine) stageDeletionManifests(
 		return nil, fmt.Errorf("open deletion manager: %w", err)
 	}
 
-	accounts := make([]string, 0, len(byAccount))
-	for a := range byAccount {
-		accounts = append(accounts, a)
+	keys := make([]remoteKey, 0, len(byKey))
+	for k := range byKey {
+		keys = append(keys, k)
 	}
-	sort.Strings(accounts)
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Account != keys[j].Account {
+			return keys[i].Account < keys[j].Account
+		}
+		return keys[i].SourceType < keys[j].SourceType
+	})
+
+	// Single-type accounts keep the original manifest ID (no source-type
+	// suffix) so existing consumers — and test fixtures — don't see a
+	// rename. Only accounts contributing duplicates from more than one
+	// source type need disambiguation.
+	typesPerAccount := make(map[string]int)
+	for k := range byKey {
+		typesPerAccount[k.Account]++
+	}
 
 	var staged []StagedManifest
-	for _, acct := range accounts {
-		ids := dedupStrings(byAccount[acct])
+	for _, k := range keys {
+		ids := dedupStrings(byKey[k])
 		if len(ids) == 0 {
 			continue
 		}
 
 		description := fmt.Sprintf("Dedup pruned duplicates (%s)", batchID)
 		manifest := deletion.NewManifest(description, ids)
-		manifest.ID = manifestIDFor(batchID, acct)
+		if typesPerAccount[k.Account] > 1 {
+			manifest.ID = manifestIDFor(batchID, k.Account+"-"+k.SourceType)
+		} else {
+			manifest.ID = manifestIDFor(batchID, k.Account)
+		}
 		manifest.CreatedBy = "dedup"
-		manifest.Filters.Account = acct
+		manifest.Filters.Account = k.Account
 
 		path := filepath.Join(
 			mgr.PendingDir(), manifest.ID+".json",
 		)
 		if err := manifest.Save(path); err != nil {
 			return staged, fmt.Errorf(
-				"save manifest for %s: %w", acct, err,
+				"save manifest for %s: %w", k.Account, err,
 			)
 		}
 		staged = append(staged, StagedManifest{
-			Account:      acct,
-			SourceType:   srcType[acct],
+			Account:      k.Account,
+			SourceType:   k.SourceType,
 			ManifestID:   manifest.ID,
 			MessageCount: len(ids),
 		})
@@ -811,7 +852,8 @@ func SanitizeFilenameComponent(a string) string {
 		s = "account"
 	}
 	if len(s) > 40 {
-		s = s[:40]
+		sum := sha256.Sum256([]byte(a))
+		s = s[:31] + "-" + hex.EncodeToString(sum[:4])
 	}
 	return s
 }
@@ -832,6 +874,11 @@ func dedupStrings(in []string) []string {
 
 // Undo restores every message with the given batch ID and cancels any
 // pending deletion manifests that dedup created for that batch.
+//
+// Manifest cancellation is best-effort: if cancelling one manifest
+// fails, the remaining manifests are still attempted, and any errors
+// are joined into a single returned error alongside the restored row
+// count and the list of manifests already in progress.
 func (e *Engine) Undo(batchID string) (int64, []string, error) {
 	restored, err := e.store.UndoDedup(batchID)
 	if err != nil {
@@ -856,15 +903,16 @@ func (e *Engine) Undo(batchID string) (int64, []string, error) {
 	}
 
 	var stillExecuting []string
+	var cancelErrs []error
 	prefix := batchID + "-"
 	for _, m := range pending {
 		if !strings.HasPrefix(m.ID, prefix) && m.ID != batchID {
 			continue
 		}
 		if err := mgr.CancelManifest(m.ID); err != nil {
-			return restored, stillExecuting, fmt.Errorf(
+			cancelErrs = append(cancelErrs, fmt.Errorf(
 				"cancel manifest %s: %w", m.ID, err,
-			)
+			))
 		}
 	}
 	for _, m := range inProgress {
@@ -872,6 +920,9 @@ func (e *Engine) Undo(batchID string) (int64, []string, error) {
 			continue
 		}
 		stillExecuting = append(stillExecuting, m.ID)
+	}
+	if len(cancelErrs) > 0 {
+		return restored, stillExecuting, errors.Join(cancelErrs...)
 	}
 	return restored, stillExecuting, nil
 }
@@ -904,6 +955,12 @@ func (e *Engine) FormatReport(r *Report) string {
 	fmt.Fprintf(&sb, "Messages to prune:      %d\n", r.DuplicateMessages)
 	if r.ContentHashGroups > 0 {
 		fmt.Fprintf(&sb, "Content-hash groups:   %d\n", r.ContentHashGroups)
+	}
+	if r.SkippedDecompressionErrors > 0 {
+		fmt.Fprintf(&sb,
+			"Skipped (decompression error): %d "+
+				"(see log for per-message details)\n",
+			r.SkippedDecompressionErrors)
 	}
 
 	if len(r.BySourcePair) > 0 {
@@ -1006,7 +1063,12 @@ func (e *Engine) FormatMethodology() string {
 		sb.WriteString("  a normalized raw-MIME hash that strips transport " +
 			"headers such as\n")
 		sb.WriteString("  Received, Delivered-To, X-Gmail-Labels, and " +
-			"DKIM/ARC traces.\n\n")
+			"DKIM/ARC traces.\n")
+		sb.WriteString("  The hash is byte-sensitive below the header " +
+			"boundary, so two\n")
+		sb.WriteString("  messages whose bodies differ only in line-ending " +
+			"style (CRLF vs LF)\n")
+		sb.WriteString("  will not match via content-hash.\n\n")
 	} else {
 		sb.WriteString(" Messages still without an ID are ignored.\n\n")
 	}
@@ -1035,6 +1097,11 @@ func (e *Engine) FormatMethodology() string {
 		"the survivor.\n")
 	sb.WriteString("  - Raw MIME is backfilled onto the survivor " +
 		"if it lacks it.\n")
+	sb.WriteString("  - Only raw MIME is backfilled; parsed " +
+		"message_bodies are not.\n")
+	sb.WriteString("    If a survivor is missing text for display, run\n")
+	sb.WriteString("    'msgvault repair-encoding' or " +
+		"'msgvault build-cache --full-rebuild'.\n")
 	sb.WriteString("  - Pruned duplicates are hidden in the msgvault " +
 		"database (reversible via --undo).\n")
 	sb.WriteString("  - Remote mailboxes (Gmail, IMAP) are NEVER " +
