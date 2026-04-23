@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -98,6 +99,9 @@ func (s *Store) ListLikelyIdentities(
 			MAX(CASE WHEN is_from_me = 1 THEN 1 ELSE 0 END) AS sig_from_me,
 			MAX(CASE WHEN has_sent_label THEN 1 ELSE 0 END) AS sig_sent_label,
 			MAX(CASE WHEN email = src_identifier THEN 1 ELSE 0 END) AS sig_account_match,
+			-- GROUP_CONCAT is SQLite-specific. When the Postgres
+			-- dialect lands, switch to string_agg(DISTINCT source_id::text, ',').
+			-- Result order is unspecified; callers treat SourceIDs as a set.
 			GROUP_CONCAT(DISTINCT source_id) AS source_ids
 		FROM sent_messages
 		WHERE (is_from_me = 1
@@ -159,12 +163,11 @@ func parseInt64CSV(s string) []int64 {
 	parts := strings.Split(s, ",")
 	out := make([]int64, 0, len(parts))
 	for _, p := range parts {
-		var id int64
-		if _, err := fmt.Sscanf(
-			strings.TrimSpace(p), "%d", &id,
-		); err == nil {
-			out = append(out, id)
+		id, err := strconv.ParseInt(strings.TrimSpace(p), 10, 64)
+		if err != nil {
+			continue
 		}
+		out = append(out, id)
 	}
 	return out
 }

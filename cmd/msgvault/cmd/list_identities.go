@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -61,7 +62,7 @@ func runListIdentities(_ *cobra.Command, _ []string) error {
 	var matcher *regexp.Regexp
 	if identitiesMatch != "" {
 		pattern := identitiesMatch
-		if len(pattern) < 4 || pattern[:4] != "(?i)" {
+		if !strings.HasPrefix(pattern, "(?i)") {
 			pattern = "(?i)" + pattern
 		}
 		matcher, err = regexp.Compile(pattern)
