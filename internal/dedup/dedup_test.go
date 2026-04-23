@@ -120,6 +120,33 @@ func TestEngine_Scan_UnionsLabelsOnSurvivor(t *testing.T) {
 	assertSoftDeleted(t, st, idMbox, true)
 }
 
+func TestEngine_Scan_RejectsEmptyAccountSourceIDs(t *testing.T) {
+	f := storetest.New(t)
+	st := f.Store
+
+	cases := []struct {
+		name string
+		ids  []int64
+	}{
+		{"nil", nil},
+		{"empty slice", []int64{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := dedup.NewEngine(st, dedup.Config{
+				AccountSourceIDs: tc.ids,
+			}, nil)
+			_, err := eng.Scan(context.Background())
+			if err == nil {
+				t.Fatal("expected error for empty AccountSourceIDs")
+			}
+			if !strings.Contains(err.Error(), "AccountSourceIDs must be non-empty") {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestEngine_SurvivorFavorsSentCopy(t *testing.T) {
 	f := storetest.New(t)
 	st := f.Store
