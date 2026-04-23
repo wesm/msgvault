@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -42,7 +44,7 @@ var (
 	dedupNoBackup             bool
 	dedupPrefer               string
 	dedupContentHash          bool
-	dedupUndo                 string
+	dedupUndo                 []string
 	dedupAccount              string
 	dedupDeleteFromSourceSrvr bool
 	dedupYes                  bool
@@ -109,22 +111,27 @@ func runDeduplicate(cmd *cobra.Command, _ []string) error {
 
 	engine := dedup.NewEngine(st, config, logger)
 
-	if dedupUndo != "" {
-		restored, stillRunning, err := engine.Undo(dedupUndo)
-		if err != nil {
-			return fmt.Errorf("undo dedup: %w", err)
-		}
-		fmt.Printf("Restored %d messages from batch %q.\n",
-			restored, dedupUndo)
-		if len(stillRunning) > 0 {
-			fmt.Printf(
-				"\nWarning: the following deletion manifests are " +
-					"already in progress\nand could not be cancelled:\n",
-			)
-			for _, id := range stillRunning {
-				fmt.Printf("  - %s\n", id)
+	if len(dedupUndo) > 0 {
+		var allStillRunning []string
+		for _, batchID := range dedupUndo {
+			restored, stillRunning, err := engine.Undo(batchID)
+			// Undo is best-effort: database rows may have been restored
+			// even if cancelling pending manifests failed. Always report
+			// the restored count and any still-running manifests before
+			// returning the error so the user isn't left thinking the
+			// undo did nothing.
+			fmt.Printf("Restored %d messages from batch %q.\n",
+				restored, batchID)
+			allStillRunning = append(allStillRunning, stillRunning...)
+			if err != nil {
+				printStillRunningWarning(allStillRunning)
+				fmt.Fprintf(os.Stderr,
+					"\nError cancelling one or more pending manifests "+
+						"for batch %q:\n  %v\n", batchID, err)
+				return fmt.Errorf("undo dedup %q: %w", batchID, err)
 			}
 		}
+		printStillRunningWarning(allStillRunning)
 		return nil
 	}
 
@@ -132,7 +139,7 @@ func runDeduplicate(cmd *cobra.Command, _ []string) error {
 		return runDeduplicatePerSource(cmd, st, dbPath, config)
 	}
 
-	return runDeduplicateOnce(cmd, dbPath, config, engine)
+	return runDeduplicateOnce(cmd, st, dbPath, config, engine)
 }
 
 func runDeduplicatePerSource(
@@ -157,6 +164,7 @@ func runDeduplicatePerSource(
 
 	backedUp := false
 	anyRan := false
+	var executedBatches []string
 	for _, src := range sources {
 		cfgScoped := cfgBase
 		cfgScoped.AccountSourceIDs = []int64{src.ID}
@@ -206,7 +214,7 @@ func runDeduplicatePerSource(
 			)
 			fmt.Printf("Backing up database to %s...\n",
 				filepath.Base(backupPath))
-			if err := copyFileForBackup(dbPath, backupPath); err != nil {
+			if err := backupDatabase(st, backupPath); err != nil {
 				return fmt.Errorf("backup database: %w", err)
 			}
 		}
@@ -220,6 +228,7 @@ func runDeduplicatePerSource(
 		if err != nil {
 			return fmt.Errorf("execute %s: %w", src.Identifier, err)
 		}
+		executedBatches = append(executedBatches, summary.BatchID)
 		printDedupSummary(summary)
 		fmt.Println()
 	}
@@ -228,12 +237,21 @@ func runDeduplicatePerSource(
 		fmt.Println("\nDry run complete. No changes made.")
 	} else if !anyRan {
 		fmt.Println("No duplicates found in any source.")
+	} else if len(executedBatches) > 1 {
+		var b strings.Builder
+		b.WriteString("\nTo undo all of the above:\n  msgvault deduplicate")
+		for _, id := range executedBatches {
+			fmt.Fprintf(&b, " --undo %s", id)
+		}
+		b.WriteString("\n")
+		fmt.Print(b.String())
 	}
 	return nil
 }
 
 func runDeduplicateOnce(
 	cmd *cobra.Command,
+	st *store.Store,
 	dbPath string,
 	cfgScoped dedup.Config,
 	engine *dedup.Engine,
@@ -279,13 +297,15 @@ func runDeduplicateOnce(
 		)
 		fmt.Printf("Backing up database to %s...\n",
 			filepath.Base(backupPath))
-		if err := copyFileForBackup(dbPath, backupPath); err != nil {
+		if err := backupDatabase(st, backupPath); err != nil {
 			return fmt.Errorf("backup database: %w", err)
 		}
 	}
 
 	batchID := fmt.Sprintf(
-		"dedup-%s", time.Now().Format("20060102-150405"),
+		"dedup-%s-run-%s",
+		time.Now().Format("20060102-150405"),
+		randomBatchToken(),
 	)
 	fmt.Println("Merging duplicates...")
 	summary, err := engine.Execute(cmd.Context(), report, batchID)
@@ -332,22 +352,42 @@ func readDedupYesNo(cmd *cobra.Command) (bool, error) {
 	return response == "y" || response == "yes", nil
 }
 
-func copyFileForBackup(src, dst string) error {
-	// Copy the main database file.
-	if err := copyFile(src, dst); err != nil {
-		return err
+// randomBatchToken returns a short random hex token used to disambiguate
+// single-run dedup batch IDs from per-source batch IDs that may have been
+// generated in the same second.
+func randomBatchToken() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%08x", time.Now().UnixNano()&0xffffffff)
 	}
-	// Also copy WAL and SHM files if they exist, so the backup is
-	// consistent even when SQLite has uncheckpointed WAL pages.
-	for _, suffix := range []string{"-wal", "-shm"} {
-		extra := src + suffix
-		if _, err := os.Stat(extra); err == nil {
-			if err := copyFile(extra, dst+suffix); err != nil {
-				return fmt.Errorf("copy %s: %w", suffix, err)
-			}
-		}
+	return hex.EncodeToString(b[:])
+}
+
+// backupDatabase writes a point-in-time consistent copy of the SQLite
+// database to dst using VACUUM INTO. Unlike a file-system copy of the
+// main/-wal/-shm triple, this is atomic and handles uncheckpointed WAL
+// pages without any external coordination.
+func backupDatabase(st *store.Store, dst string) error {
+	if _, err := os.Stat(dst); err == nil {
+		return fmt.Errorf("backup target already exists: %s", dst)
+	}
+	if _, err := st.DB().Exec("VACUUM INTO ?", dst); err != nil {
+		return fmt.Errorf("vacuum into %s: %w", dst, err)
 	}
 	return nil
+}
+
+func printStillRunningWarning(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	fmt.Printf(
+		"\nWarning: the following deletion manifests are already in " +
+			"progress\nand cannot be cancelled:\n",
+	)
+	for _, id := range ids {
+		fmt.Printf("  - %s\n", id)
+	}
 }
 
 func init() {
@@ -361,8 +401,9 @@ func init() {
 			"(default: gmail,imap,mbox,emlx,hey)")
 	deduplicateCmd.Flags().BoolVar(&dedupContentHash, "content-hash", false,
 		"Also detect duplicates by normalized raw MIME content")
-	deduplicateCmd.Flags().StringVar(&dedupUndo, "undo", "",
-		"Undo a previous dedup run by batch ID")
+	deduplicateCmd.Flags().StringArrayVar(&dedupUndo, "undo", nil,
+		"Undo a previous dedup run by batch ID "+
+			"(repeat to undo multiple batches)")
 	deduplicateCmd.Flags().StringVar(&dedupAccount, "account", "",
 		"Dedup across all sources for this account")
 	deduplicateCmd.Flags().BoolVar(&dedupDeleteFromSourceSrvr,
