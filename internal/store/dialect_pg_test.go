@@ -99,42 +99,26 @@ func TestPostgreSQLDialect_InsertOrIgnoreSuffix(t *testing.T) {
 
 func TestPostgreSQLDialect_FTSSearchClause(t *testing.T) {
 	d := &PostgreSQLDialect{}
-	join, where, orderBy := d.FTSSearchClause(1)
+	join, where, orderBy, orderArgCount := d.FTSSearchClause()
 	if join != "" {
 		t.Errorf("join = %q, want empty (PostgreSQL needs no JOIN)", join)
 	}
-	if where != "m.search_fts @@ plainto_tsquery('simple', $1)" {
+	if where != "m.search_fts @@ plainto_tsquery('simple', ?)" {
 		t.Errorf("where = %q, unexpected", where)
 	}
-	if orderBy != "ts_rank(m.search_fts, plainto_tsquery('simple', $1)) DESC" {
+	if orderBy != "ts_rank(m.search_fts, plainto_tsquery('simple', ?)) DESC" {
 		t.Errorf("orderBy = %q, unexpected", orderBy)
 	}
-
-	// Verify paramIndex is respected
-	_, where3, _ := d.FTSSearchClause(3)
-	if want := "m.search_fts @@ plainto_tsquery('simple', $3)"; where3 != want {
-		t.Errorf("where3 = %q, want %q", where3, want)
+	if orderArgCount != 1 {
+		t.Errorf("orderArgCount = %d, want 1 (ts_rank needs query a second time)", orderArgCount)
 	}
 }
 
-func TestSQLiteDialect_FTSSearchClause(t *testing.T) {
-	d := &SQLiteDialect{}
-	join, where, orderBy := d.FTSSearchClause(1)
-	if join != "JOIN messages_fts fts ON fts.rowid = m.id" {
-		t.Errorf("join = %q, unexpected", join)
-	}
-	if where != "messages_fts MATCH ?" {
-		t.Errorf("where = %q, unexpected", where)
-	}
-	if orderBy != "rank" {
-		t.Errorf("orderBy = %q, unexpected", orderBy)
-	}
-}
-
-func TestSQLiteDialect_IsReturningError(t *testing.T) {
-	d := &SQLiteDialect{}
-	// Non-sqlite error returns false
-	if d.IsReturningError(nil) {
-		t.Error("IsReturningError(nil) should be false")
+func TestPostgreSQLDialect_InsertOrIgnorePrefix(t *testing.T) {
+	d := &PostgreSQLDialect{}
+	in := "INSERT OR IGNORE INTO message_labels (message_id, label_id) VALUES "
+	want := "INSERT INTO message_labels (message_id, label_id) VALUES "
+	if got := d.InsertOrIgnorePrefix(in); got != want {
+		t.Errorf("InsertOrIgnorePrefix(%q) = %q, want %q", in, got, want)
 	}
 }

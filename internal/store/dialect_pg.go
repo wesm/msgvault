@@ -57,42 +57,45 @@ func (d *PostgreSQLDialect) InsertOrIgnore(sql string) string {
 	return s
 }
 
+// InsertOrIgnorePrefix strips "OR IGNORE" from a chunked insert prefix —
+// PostgreSQL's conflict clause is appended by InsertOrIgnoreSuffix instead.
+// The input must end with "VALUES " (prefix form used by insertInChunks).
+func (d *PostgreSQLDialect) InsertOrIgnorePrefix(sql string) string {
+	return strings.Replace(sql, "INSERT OR IGNORE INTO", "INSERT INTO", 1)
+}
+
 // InsertOrIgnoreSuffix returns the PostgreSQL suffix for conflict-ignoring batch inserts.
 func (d *PostgreSQLDialect) InsertOrIgnoreSuffix() string {
 	return " ON CONFLICT DO NOTHING"
 }
 
-// UpdateOrIgnore rewrites UPDATE OR IGNORE to a standard UPDATE.
-// PostgreSQL has no UPDATE OR IGNORE equivalent. The single call site
-// (mergeLabelByName) tolerates constraint violations being raised; the
-// caller follows up with a DELETE to clean up conflicts.
-func (d *PostgreSQLDialect) UpdateOrIgnore(sql string) string {
-	return strings.Replace(sql, "UPDATE OR IGNORE", "UPDATE", 1)
-}
-
-// FTSUpsertSQL returns the SQL to update the tsvector column on messages.
-// Parameters: $1=subject, $2=messageID (for rowid compat), $3=subject, $4=bodyText,
-// $5=fromAddr, $6=toAddrs, $7=ccAddrs
-// Note: For compatibility with the SQLite call convention (which passes messageID
-// as both params 1 and 2), param $1 is the messageID and $2 is also messageID.
-// We use $3-$7 for the text fields and $1 for the WHERE clause.
-func (d *PostgreSQLDialect) FTSUpsertSQL() string {
-	return `UPDATE messages SET search_fts =
-		setweight(to_tsvector('simple', COALESCE($3, '')), 'A') ||
-		setweight(to_tsvector('simple', COALESCE($5, '')), 'B') ||
-		to_tsvector('simple', COALESCE($4, '')) ||
-		to_tsvector('simple', COALESCE($6, '')) ||
-		to_tsvector('simple', COALESCE($7, ''))
-	WHERE id = $1`
+// FTSUpsert updates the tsvector column on messages for a single message.
+// PostgreSQL stores the FTS index inline on `messages.search_fts`, so there
+// is no separate virtual table — the operation is an UPDATE, not an INSERT.
+func (d *PostgreSQLDialect) FTSUpsert(q querier, doc FTSDoc) error {
+	_, err := q.Exec(
+		`UPDATE messages SET search_fts =
+			setweight(to_tsvector('simple', COALESCE($2, '')), 'A') ||
+			setweight(to_tsvector('simple', COALESCE($4, '')), 'B') ||
+			to_tsvector('simple', COALESCE($3, '')) ||
+			to_tsvector('simple', COALESCE($5, '')) ||
+			to_tsvector('simple', COALESCE($6, ''))
+		WHERE id = $1`,
+		doc.MessageID, doc.Subject, doc.Body,
+		doc.FromAddr, doc.ToAddrs, doc.CcAddrs,
+	)
+	return err
 }
 
 // FTSSearchClause returns SQL fragments for tsvector full-text search.
 // PostgreSQL stores the tsvector on the messages table — no JOIN needed.
-func (d *PostgreSQLDialect) FTSSearchClause(paramIndex int) (join, where, orderBy string) {
-	p := fmt.Sprintf("$%d", paramIndex)
+// Uses `?` placeholders; loggedDB rebinds to `$N` at execution time.
+// ts_rank needs the query term a second time, so orderArgCount is 1.
+func (d *PostgreSQLDialect) FTSSearchClause() (join, where, orderBy string, orderArgCount int) {
 	return "",
-		fmt.Sprintf("m.search_fts @@ plainto_tsquery('simple', %s)", p),
-		fmt.Sprintf("ts_rank(m.search_fts, plainto_tsquery('simple', %s)) DESC", p)
+		"m.search_fts @@ plainto_tsquery('simple', ?)",
+		"ts_rank(m.search_fts, plainto_tsquery('simple', ?)) DESC",
+		1
 }
 
 // FTSDeleteSQL returns the SQL to clear tsvector data for messages belonging to a source.
@@ -121,29 +124,26 @@ func (d *PostgreSQLDialect) FTSBackfillBatchSQL() string {
 
 // FTSAvailable reports whether tsvector search is available.
 // PostgreSQL always supports tsvector — check that the column exists.
-func (d *PostgreSQLDialect) FTSAvailable(db *sql.DB) (bool, error) {
+func (d *PostgreSQLDialect) FTSAvailable(db *sql.DB) bool {
 	var count int
 	err := db.QueryRow(`
 		SELECT COUNT(*) FROM information_schema.columns
 		WHERE table_name = 'messages' AND column_name = 'search_fts'
 	`).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
+	return err == nil && count > 0
 }
 
 // FTSNeedsBackfill reports whether the tsvector column needs population.
-func (d *PostgreSQLDialect) FTSNeedsBackfill(db *sql.DB) (bool, error) {
+func (d *PostgreSQLDialect) FTSNeedsBackfill(db *sql.DB) bool {
 	var msgMax int64
 	if err := db.QueryRow("SELECT COALESCE(MAX(id), 0) FROM messages").Scan(&msgMax); err != nil || msgMax == 0 {
-		return false, nil
+		return false
 	}
 	var populatedMax int64
 	if err := db.QueryRow("SELECT COALESCE(MAX(id), 0) FROM messages WHERE search_fts IS NOT NULL").Scan(&populatedMax); err != nil {
-		return false, nil
+		return false
 	}
-	return populatedMax < msgMax-msgMax/10, nil
+	return populatedMax < msgMax-msgMax/10
 }
 
 // FTSClearSQL returns the SQL to clear all tsvector data.
@@ -154,6 +154,15 @@ func (d *PostgreSQLDialect) FTSClearSQL() string {
 // SchemaFTS returns the embedded filename containing PostgreSQL FTS DDL.
 func (d *PostgreSQLDialect) SchemaFTS() string {
 	return "schema_pg.sql"
+}
+
+// FTSRebuildSchema is a scaffold for PostgreSQL. The SQLite path drops and
+// recreates the FTS5 virtual table to recover from shadow-table corruption;
+// PostgreSQL's tsvector column has no analogous shadow state, so a proper
+// rebuild here (REINDEX the GIN index, NULL out the column, let the caller
+// backfill) is deferred to PR3 along with the rest of the functional path.
+func (d *PostgreSQLDialect) FTSRebuildSchema(db *sql.DB) error {
+	return fmt.Errorf("FTSRebuildSchema: PostgreSQL FTS rebuild not yet implemented")
 }
 
 // InitConn performs PostgreSQL-specific connection initialization.
@@ -200,6 +209,14 @@ func (d *PostgreSQLDialect) IsNoSuchModuleError(err error) bool { return false }
 
 // IsReturningError always returns false for PostgreSQL (RETURNING always supported).
 func (d *PostgreSQLDialect) IsReturningError(err error) bool { return false }
+
+// IsBusyError reports whether err indicates the database is held by another
+// connection. PostgreSQL surfaces this as SQLSTATE 55P03 (lock_not_available)
+// for statement_timeout-triggered lock waits and 40P01 (deadlock_detected)
+// for deadlocks; both mean "retry later."
+func (d *PostgreSQLDialect) IsBusyError(err error) bool {
+	return isPgError(err, "55P03") || isPgError(err, "40P01")
+}
 
 // isPgError checks if err is a pgconn.PgError with the given SQLSTATE code.
 func isPgError(err error, code string) bool {
