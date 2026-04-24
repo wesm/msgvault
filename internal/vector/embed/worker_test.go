@@ -616,3 +616,75 @@ func TestWorker_MissingMessagesDrainedFromQueue(t *testing.T) {
 		t.Errorf("embeddings = %d, want 1", embedded)
 	}
 }
+
+// TestWorker_EmptyPreprocessedMessagesDrainedFromQueue verifies that
+// messages whose content is stripped to empty are dropped from the
+// queue instead of being sent to embedders that reject empty inputs.
+func TestWorker_EmptyPreprocessedMessagesDrainedFromQueue(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkerFixture(t, 0)
+
+	// Message 1 becomes empty after quote stripping; message 2 remains
+	// embeddable so the batch must still succeed.
+	if _, err := f.MainDB.ExecContext(ctx,
+		`INSERT INTO messages (id, subject) VALUES (1, ''), (2, 'kept')`); err != nil {
+		t.Fatalf("insert messages: %v", err)
+	}
+	if _, err := f.MainDB.ExecContext(ctx,
+		`INSERT INTO message_bodies (message_id, body_text) VALUES
+		 (1, '> quoted only'),
+		 (2, 'actual body')`); err != nil {
+		t.Fatalf("insert bodies: %v", err)
+	}
+	if _, err := f.VectorsDB.ExecContext(ctx,
+		`INSERT INTO pending_embeddings (generation_id, message_id, enqueued_at) VALUES
+		 (?, 1, 0),
+		 (?, 2, 0)`,
+		int64(f.BuildingGen), int64(f.BuildingGen)); err != nil {
+		t.Fatalf("seed pending: %v", err)
+	}
+
+	w := NewWorker(WorkerDeps{
+		Backend:       f.Backend,
+		VectorsDB:     f.VectorsDB,
+		MainDB:        f.MainDB,
+		Client:        f.FakeClient,
+		Preprocess:    PreprocessConfig{StripQuotes: true},
+		MaxInputChars: 8000,
+		BatchSize:     2,
+	})
+
+	res, err := w.RunOnce(ctx, f.BuildingGen)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if res.Succeeded != 1 {
+		t.Errorf("Succeeded=%d, want 1", res.Succeeded)
+	}
+	if len(f.FakeClient.LastInputs) != 1 {
+		t.Fatalf("captured %d inputs, want 1", len(f.FakeClient.LastInputs))
+	}
+	if got := f.FakeClient.LastInputs[0]; strings.TrimSpace(got) == "" {
+		t.Fatalf("embedder received empty input %q", got)
+	}
+
+	var pending int
+	if err := f.VectorsDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pending_embeddings WHERE generation_id = ?`,
+		int64(f.BuildingGen)).Scan(&pending); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	if pending != 0 {
+		t.Errorf("pending after drain = %d, want 0", pending)
+	}
+
+	var embedded int
+	if err := f.VectorsDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM embeddings WHERE generation_id = ?`,
+		int64(f.BuildingGen)).Scan(&embedded); err != nil {
+		t.Fatalf("count embeddings: %v", err)
+	}
+	if embedded != 1 {
+		t.Errorf("embeddings = %d, want 1", embedded)
+	}
+}

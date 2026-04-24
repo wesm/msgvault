@@ -205,17 +205,24 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 			// here counts toward MaxConsecutiveFailures because the
 			// loop would otherwise busy-spin on a stuck claim until
 			// ReclaimStale runs (10 min default).
-			if len(eb.missing) > 0 {
-				w.deps.Log.Warn("pending messages missing from main DB",
-					"gen", gen, "ids", eb.missing)
-				if cerr := w.q.Complete(ctx, gen, token, eb.missing); cerr != nil {
-					res.Failed += len(eb.missing)
-					w.deps.Log.Error("complete missing failed", "error", cerr,
-						"gen", gen, "ids", len(eb.missing))
+			dropIDs := append(append([]int64(nil), eb.missing...), eb.empty...)
+			if len(dropIDs) > 0 {
+				if len(eb.missing) > 0 {
+					w.deps.Log.Warn("pending messages missing from main DB",
+						"gen", gen, "ids", eb.missing)
+				}
+				if len(eb.empty) > 0 {
+					w.deps.Log.Warn("pending messages empty after preprocess",
+						"gen", gen, "ids", eb.empty)
+				}
+				if cerr := w.q.Complete(ctx, gen, token, dropIDs); cerr != nil {
+					res.Failed += len(dropIDs)
+					w.deps.Log.Error("complete drop failed", "error", cerr,
+						"gen", gen, "ids", len(dropIDs))
 					consecutiveFailures++
 					lastErr = cerr
 					orphanDrainErr = cerr
-					orphanDrainCount += len(eb.missing)
+					orphanDrainCount += len(dropIDs)
 					if consecutiveFailures >= w.deps.MaxConsecutiveFailures {
 						return res, fmt.Errorf("embed worker aborting after %d consecutive failures: %w",
 							consecutiveFailures, lastErr)
@@ -268,17 +275,24 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 		// we still own. Failure here still counts as a batch failure
 		// because the orphan rows would stay claimed until
 		// ReclaimStale runs and falsely block the queue.
-		if len(eb.missing) > 0 {
-			w.deps.Log.Warn("pending messages missing from main DB",
-				"gen", gen, "ids", eb.missing)
-			if cerr := w.q.Complete(ctx, gen, token, eb.missing); cerr != nil {
-				res.Failed += len(eb.missing)
-				w.deps.Log.Error("complete missing failed", "error", cerr,
-					"gen", gen, "ids", len(eb.missing))
+		dropIDs := append(append([]int64(nil), eb.missing...), eb.empty...)
+		if len(dropIDs) > 0 {
+			if len(eb.missing) > 0 {
+				w.deps.Log.Warn("pending messages missing from main DB",
+					"gen", gen, "ids", eb.missing)
+			}
+			if len(eb.empty) > 0 {
+				w.deps.Log.Warn("pending messages empty after preprocess",
+					"gen", gen, "ids", eb.empty)
+			}
+			if cerr := w.q.Complete(ctx, gen, token, dropIDs); cerr != nil {
+				res.Failed += len(dropIDs)
+				w.deps.Log.Error("complete drop failed", "error", cerr,
+					"gen", gen, "ids", len(dropIDs))
 				consecutiveFailures++
 				lastErr = cerr
 				orphanDrainErr = cerr
-				orphanDrainCount += len(eb.missing)
+				orphanDrainCount += len(dropIDs)
 				if consecutiveFailures >= w.deps.MaxConsecutiveFailures {
 					// Embedded rows were already counted into
 					// res.Succeeded above; record the orphan-drain
@@ -304,12 +318,14 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 // embedBatchResult carries the output of embedBatch. chunks and
 // embeddedIDs are aligned by position and correspond to messages that
 // were actually fetched and embedded. missing lists ids from the
-// input that had no row in the messages table and so were not sent
-// to the embedder.
+// input that had no row in the messages table; empty lists ids whose
+// content preprocessed to empty and therefore should not be sent to
+// embedders that reject blank strings.
 type embedBatchResult struct {
 	chunks      []vector.Chunk
 	embeddedIDs []int64
 	missing     []int64
+	empty       []int64
 	truncated   int
 }
 
@@ -339,6 +355,7 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 
 	var msgs []msgText
 	var inputs []string
+	var empty []int64
 	fetched := make(map[int64]struct{}, len(ids))
 	for rows.Next() {
 		var id int64
@@ -354,6 +371,11 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 			body = mime.StripHTML(bodyHTML)
 		}
 		txt, trunc := Preprocess(subject, body, w.deps.MaxInputChars, w.deps.Preprocess)
+		fetched[id] = struct{}{}
+		if strings.TrimSpace(txt) == "" {
+			empty = append(empty, id)
+			continue
+		}
 		// Preprocess truncates by runes, so the recorded length must
 		// also be a rune count. Using len(txt) (bytes) inflates
 		// SourceCharLen by 2-4x for CJK / emoji / accented text and
@@ -361,7 +383,6 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 		// input?" reasoning.
 		msgs = append(msgs, msgText{ID: id, Text: txt, Chars: utf8.RuneCountInString(txt), Trunc: trunc})
 		inputs = append(inputs, txt)
-		fetched[id] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
 		return embedBatchResult{}, fmt.Errorf("iterate message rows: %w", err)
@@ -379,7 +400,7 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 	if len(msgs) == 0 {
 		// All claimed ids are missing — return an empty result (no
 		// chunks, no error). Caller handles the drop.
-		return embedBatchResult{missing: missing}, nil
+		return embedBatchResult{missing: missing, empty: empty}, nil
 	}
 
 	start := time.Now()
@@ -413,6 +434,7 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 		chunks:      chunks,
 		embeddedIDs: embeddedIDs,
 		missing:     missing,
+		empty:       empty,
 		truncated:   truncated,
 	}, nil
 }
