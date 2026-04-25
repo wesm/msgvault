@@ -748,6 +748,53 @@ func TestWorker_ProgressCalledPerSuccessfulBatch(t *testing.T) {
 	}
 }
 
+func TestWorker_ProgressCountsDroppedRowsTowardTotal(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkerFixture(t, 3)
+
+	const missingID = 2
+	if _, err := f.MainDB.ExecContext(ctx,
+		`DELETE FROM messages WHERE id = ?`, missingID); err != nil {
+		t.Fatalf("delete missing message: %v", err)
+	}
+	if _, err := f.MainDB.ExecContext(ctx,
+		`DELETE FROM message_bodies WHERE message_id = ?`, missingID); err != nil {
+		t.Fatalf("delete missing body: %v", err)
+	}
+
+	var reports []ProgressReport
+	w := NewWorker(WorkerDeps{
+		Backend:       f.Backend,
+		VectorsDB:     f.VectorsDB,
+		MainDB:        f.MainDB,
+		Client:        f.FakeClient,
+		MaxInputChars: 8000,
+		BatchSize:     3,
+		TotalPending:  3,
+		Progress: func(p ProgressReport) {
+			reports = append(reports, p)
+		},
+	})
+
+	res, err := w.RunOnce(ctx, f.BuildingGen)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if res.Succeeded != 2 {
+		t.Fatalf("succeeded=%d, want 2 embedded rows", res.Succeeded)
+	}
+	if len(reports) == 0 {
+		t.Fatalf("expected progress report for mixed embed/drop batch")
+	}
+	final := reports[len(reports)-1]
+	if final.Done != 3 {
+		t.Fatalf("final progress Done=%d, want 3 pending rows processed", final.Done)
+	}
+	if final.BatchMsgs != 3 {
+		t.Fatalf("final progress BatchMsgs=%d, want 3 pending rows processed in batch", final.BatchMsgs)
+	}
+}
+
 // TestWorker_DownshiftDrain_HappyPath_AllSingletonsSucceed verifies
 // that when a multi-message batch returns ErrPermanent4xx (e.g. one
 // message in the batch is too long for the model), the worker walks
@@ -968,4 +1015,43 @@ func TestWorker_DownshiftDrain_CtxCancelMidDrain(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 	assertPending(t, f.VectorsDB, int64(f.BuildingGen), 2)
+}
+
+func TestWorker_DownshiftDrain_TransientErrorReleasesRemainingAndErrors(t *testing.T) {
+	f := newWorkerFixture(t, 3)
+	var singletonCalls int
+	f.FakeClient.OnEmbed = func(inputs []string) ([][]float32, error) {
+		if len(inputs) > 1 {
+			return nil, fmt.Errorf("embed: HTTP 400: %w", ErrPermanent4xx)
+		}
+		singletonCalls++
+		if singletonCalls == 2 {
+			return nil, fmt.Errorf("temporary network failure")
+		}
+		v := make([]float32, 4)
+		v[0] = 1
+		return [][]float32{v}, nil
+	}
+	w := NewWorker(WorkerDeps{
+		Backend:   f.Backend,
+		VectorsDB: f.VectorsDB,
+		MainDB:    f.MainDB,
+		Client:    f.FakeClient,
+		BatchSize: 3,
+	})
+
+	res, err := w.RunOnce(context.Background(), f.BuildingGen)
+	if err == nil {
+		t.Fatalf("expected transient mid-drain error, got nil")
+	}
+	if !strings.Contains(err.Error(), "temporary network failure") {
+		t.Fatalf("expected original transient error, got %v", err)
+	}
+	if res.Succeeded != 1 {
+		t.Fatalf("Succeeded=%d, want 1 completed singleton before transient error", res.Succeeded)
+	}
+	assertPending(t, f.VectorsDB, int64(f.BuildingGen), 2)
+	if available := countAvailable(t, f.VectorsDB, int64(f.BuildingGen)); available != 2 {
+		t.Fatalf("available pending rows=%d, want 2 released rows", available)
+	}
 }

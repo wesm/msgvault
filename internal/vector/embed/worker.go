@@ -55,19 +55,19 @@ type WorkerDeps struct {
 	// callback (if any) to report percent done and ETA. Zero disables
 	// the denominator — Progress still fires but leaves ETA empty.
 	TotalPending int
-	// Progress, if non-nil, is called once after each fully-successful
-	// batch (upsert + complete both ok) with cumulative and per-batch
-	// stats. Failed or partially-drained batches do not fire Progress,
-	// keeping the semantics of "this many messages are now embedded"
-	// unambiguous. Callbacks run on the worker goroutine; rate-limit
-	// inside the callback if output is expensive.
+	// Progress, if non-nil, is called after queue rows are durably
+	// completed, whether they produced embeddings or were intentionally
+	// dropped as missing/empty/unembeddable. Done and BatchMsgs count
+	// completed queue rows so they can be compared to TotalPending.
+	// Callbacks run on the worker goroutine; rate-limit inside the
+	// callback if output is expensive.
 	Progress func(ProgressReport)
 }
 
-// ProgressReport captures the state of a RunOnce at the completion of
-// one successful batch. BatchElapsed is end-to-end for the batch
-// (fetch + preprocess + embed + upsert + complete), matching what
-// RunElapsed accumulates — so the two ratios agree.
+// ProgressReport captures RunOnce progress after a set of queue rows
+// has been completed. Done and BatchMsgs count completed pending rows;
+// BatchChars counts source chars for rows that actually embedded.
+// BatchElapsed is end-to-end for that progress unit.
 type ProgressReport struct {
 	Done         int
 	TotalPending int
@@ -181,6 +181,7 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 	var res RunResult
 	consecutiveFailures := 0
 	var lastErr error
+	completedRows := 0
 	w.runStart = time.Now()
 	// orphanDrainErr/orphanDrainCount preserve the latest orphan-drain
 	// failure across iterations so we can surface it on the empty-claim
@@ -223,7 +224,7 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 				// endpoint-wide failure can't be ruled out).
 				w.deps.Log.Info("embed: downshifting to BatchSize=1 to drain failing batch",
 					"gen", gen, "batch_size", len(ids))
-				embedded, dropped, drainErr := w.downshiftDrain(ctx, gen, token, ids, &res)
+				embedded, dropped, drainErr := w.downshiftDrain(ctx, gen, token, ids, &res, &completedRows)
 				res.Succeeded += embedded
 				if drainErr != nil {
 					w.deps.Log.Info("embed: downshift drain returned error",
@@ -249,10 +250,10 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 					// batch, already counted) from "drain hit an
 					// independent error" (transient-after-retries,
 					// upsert/complete failure, ctx cancel — a fresh
-					// failure that should also count).
+					// failure that should fail this run immediately.
 					lastErr = drainErr
 					if !errors.Is(drainErr, ErrPermanent4xx) {
-						consecutiveFailures++
+						return res, fmt.Errorf("downshift drain: %w", drainErr)
 					}
 					if consecutiveFailures >= w.deps.MaxConsecutiveFailures {
 						return res, fmt.Errorf("embed worker aborting after %d consecutive failures: %w",
@@ -304,7 +305,10 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 						return res, fmt.Errorf("embed worker aborting after %d consecutive failures: %w",
 							consecutiveFailures, lastErr)
 					}
+					continue
 				}
+				completedRows += len(dropIDs)
+				w.reportProgress(completedRows, len(dropIDs), 0, time.Since(batchStart))
 			}
 			continue
 		}
@@ -396,20 +400,13 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 		}
 		res.Succeeded += len(eb.embeddedIDs)
 		consecutiveFailures = 0
-		if w.deps.Progress != nil {
-			batchChars := 0
-			for _, c := range eb.chunks {
-				batchChars += c.SourceCharLen
-			}
-			w.deps.Progress(ProgressReport{
-				Done:         res.Succeeded,
-				TotalPending: w.deps.TotalPending,
-				BatchMsgs:    len(eb.embeddedIDs),
-				BatchChars:   batchChars,
-				BatchElapsed: time.Since(batchStart),
-				RunElapsed:   time.Since(w.runStart),
-			})
+		batchProcessed := len(eb.embeddedIDs) + len(dropIDs)
+		completedRows += batchProcessed
+		batchChars := 0
+		for _, c := range eb.chunks {
+			batchChars += c.SourceCharLen
 		}
+		w.reportProgress(completedRows, batchProcessed, batchChars, time.Since(batchStart))
 	}
 }
 
@@ -578,11 +575,12 @@ func (w *Worker) downshiftDrain(
 	token string,
 	ids []int64,
 	res *RunResult,
+	completedRows *int,
 ) (embedded int, dropped int, err error) {
 	var deferredDrops []int64
 	var lastDeferredErr error
 
-	for _, id := range ids {
+	for i, id := range ids {
 		select {
 		case <-ctx.Done():
 			return embedded, dropped, ctx.Err()
@@ -599,6 +597,7 @@ func (w *Worker) downshiftDrain(
 				lastDeferredErr = e
 				continue
 			}
+			w.releaseDownshiftRemainder(ctx, gen, token, append(append([]int64(nil), deferredDrops...), ids[i:]...))
 			return embedded, dropped, e
 		}
 		if len(eb.chunks) == 0 {
@@ -606,35 +605,31 @@ func (w *Worker) downshiftDrain(
 			if len(drop) > 0 {
 				if cerr := w.q.Complete(ctx, gen, token, drop); cerr != nil {
 					res.Failed += len(drop)
+					w.releaseDownshiftRemainder(ctx, gen, token, append(append([]int64(nil), deferredDrops...), ids[i:]...))
 					return embedded, dropped, fmt.Errorf("complete drop: %w", cerr)
 				}
 				dropped += len(drop)
+				*completedRows += len(drop)
+				w.reportProgress(*completedRows, len(drop), 0, time.Since(batchStart))
 			}
 			continue
 		}
 		if uerr := w.deps.Backend.Upsert(ctx, gen, eb.chunks); uerr != nil {
+			w.releaseDownshiftRemainder(ctx, gen, token, append(append([]int64(nil), deferredDrops...), ids[i:]...))
 			return embedded, dropped, fmt.Errorf("upsert: %w", uerr)
 		}
 		if cerr := w.q.Complete(ctx, gen, token, eb.embeddedIDs); cerr != nil {
+			w.releaseDownshiftRemainder(ctx, gen, token, append(append([]int64(nil), deferredDrops...), ids[i:]...))
 			return embedded, dropped, fmt.Errorf("complete: %w", cerr)
 		}
 		res.Truncated += eb.truncated
 		embedded += len(eb.embeddedIDs)
-
-		if w.deps.Progress != nil {
-			batchChars := 0
-			for _, c := range eb.chunks {
-				batchChars += c.SourceCharLen
-			}
-			w.deps.Progress(ProgressReport{
-				Done:         res.Succeeded + embedded,
-				TotalPending: w.deps.TotalPending,
-				BatchMsgs:    len(eb.embeddedIDs),
-				BatchChars:   batchChars,
-				BatchElapsed: time.Since(batchStart),
-				RunElapsed:   time.Since(w.runStart),
-			})
+		*completedRows += len(eb.embeddedIDs)
+		batchChars := 0
+		for _, c := range eb.chunks {
+			batchChars += c.SourceCharLen
 		}
+		w.reportProgress(*completedRows, len(eb.embeddedIDs), batchChars, time.Since(batchStart))
 	}
 
 	// Drain finished. Decide deferred-drop fate.
@@ -649,11 +644,14 @@ func (w *Worker) downshiftDrain(
 			w.deps.Log.Warn("dropping pending message after singleton 4xx",
 				"gen", gen, "id", id, "error", lastDeferredErr)
 		}
+		dropStart := time.Now()
 		if cerr := w.q.Complete(ctx, gen, token, deferredDrops); cerr != nil {
 			res.Failed += len(deferredDrops)
 			return embedded, dropped, fmt.Errorf("complete drop: %w", cerr)
 		}
 		dropped += len(deferredDrops)
+		*completedRows += len(deferredDrops)
+		w.reportProgress(*completedRows, len(deferredDrops), 0, time.Since(dropStart))
 		return embedded, dropped, nil
 	}
 	// embedded == 0. We can't distinguish endpoint-wide failure from a
@@ -670,6 +668,30 @@ func (w *Worker) downshiftDrain(
 	}
 	return embedded, dropped, fmt.Errorf("downshift all-drop: every singleton returned non-retryable 4xx (released %d row(s) back to queue): %w",
 		len(deferredDrops), lastDeferredErr)
+}
+
+func (w *Worker) releaseDownshiftRemainder(ctx context.Context, gen vector.GenerationID, token string, ids []int64) {
+	if len(ids) == 0 {
+		return
+	}
+	if rerr := w.q.Release(ctx, gen, token, ids); rerr != nil {
+		w.deps.Log.Error("release after downshift interruption", "error", rerr,
+			"gen", gen, "ids", len(ids))
+	}
+}
+
+func (w *Worker) reportProgress(done, batchMsgs, batchChars int, batchElapsed time.Duration) {
+	if w.deps.Progress == nil {
+		return
+	}
+	w.deps.Progress(ProgressReport{
+		Done:         done,
+		TotalPending: w.deps.TotalPending,
+		BatchMsgs:    batchMsgs,
+		BatchChars:   batchChars,
+		BatchElapsed: batchElapsed,
+		RunElapsed:   time.Since(w.runStart),
+	})
 }
 
 func totalChars(ms []msgText) int {
