@@ -9,9 +9,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/wesm/msgvault/internal/vector"
+	"github.com/wesm/msgvault/internal/vector/embed"
 	"github.com/wesm/msgvault/internal/vector/sqlitevec"
 )
 
@@ -481,4 +484,64 @@ type buildingShim struct {
 
 func (s *buildingShim) BuildingGeneration(ctx context.Context) (*vector.Generation, error) {
 	return s.forceBuilding, nil
+}
+
+func TestNewProgressPrinter_UsesWindowedRate(t *testing.T) {
+	var buf bytes.Buffer
+	// window=2, total=210 so the percent path runs and the final
+	// event bypasses the throttle.
+	print := newProgressPrinter(&buf, 210, 2)
+
+	// Three calls. Pick values so the windowed rate at the final
+	// event is different from the cumulative rate the old printer
+	// would have shown — that way a regression to cumulative would
+	// fail the assertion below, not just pass coincidentally.
+	//
+	//   call 1: Done=100, BatchMsgs=100, BatchElapsed=1s (lastPrint
+	//           starts zero, so this emits and Adds).
+	//   call 2: Done=200, BatchMsgs=100, BatchElapsed=1s (throttled
+	//           out by the 2s minInterval; not emitted, not Added).
+	//   call 3: Done=210, BatchMsgs=10, BatchElapsed=5s, isFinal
+	//           (Done==total, bypasses throttle; emits and Adds).
+	//
+	// After call 3 the window holds two samples: (100,1s) and
+	// (10,5s) → windowed rate = 110/6 ≈ 18.33 → printed "18 msg/s".
+	// The old cumulative implementation would have printed
+	// 210/RunElapsed=7s = 30 → "30 msg/s". Asserting on the final
+	// line distinguishes the two.
+	print(embed.ProgressReport{
+		Done: 100, TotalPending: 210,
+		BatchMsgs: 100, BatchChars: 1000,
+		BatchElapsed: 1 * time.Second,
+		RunElapsed:   1 * time.Second,
+	})
+	print(embed.ProgressReport{
+		Done: 200, TotalPending: 210,
+		BatchMsgs: 100, BatchChars: 1000,
+		BatchElapsed: 1 * time.Second,
+		RunElapsed:   2 * time.Second,
+	})
+	print(embed.ProgressReport{
+		Done: 210, TotalPending: 210,
+		BatchMsgs: 10, BatchChars: 100,
+		BatchElapsed: 5 * time.Second,
+		RunElapsed:   7 * time.Second,
+	})
+
+	out := buf.String()
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected at least 2 emitted lines, got:\n%s", out)
+	}
+	finalLine := lines[len(lines)-1]
+
+	if !strings.Contains(finalLine, "(last 2)") {
+		t.Errorf("expected `(last 2)` annotation on final line, got:\n%s", finalLine)
+	}
+	if !strings.Contains(finalLine, "18 msg/s") {
+		t.Errorf("expected windowed `18 msg/s` on final line, got:\n%s", finalLine)
+	}
+	if strings.Contains(finalLine, "30 msg/s") {
+		t.Errorf("final line shows cumulative rate `30 msg/s`; windowed implementation should not produce this:\n%s", finalLine)
+	}
 }

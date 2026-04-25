@@ -263,6 +263,25 @@ func TestApplyDefaults_PreservesExplicitMaxPageSizeHybridZero(t *testing.T) {
 	}
 }
 
+func TestEmbeddingsConfig_ETAWindowDefault(t *testing.T) {
+	var c Config
+	c.Embeddings.Endpoint = "http://localhost:1234/v1"
+	c.ApplyDefaults()
+	if c.Embeddings.ETAWindow != 10 {
+		t.Fatalf("ETAWindow default: got %d, want 10", c.Embeddings.ETAWindow)
+	}
+}
+
+func TestEmbeddingsConfig_ETAWindowExplicit(t *testing.T) {
+	var c Config
+	c.Embeddings.Endpoint = "http://localhost:1234/v1"
+	c.Embeddings.ETAWindow = 25
+	c.ApplyDefaults()
+	if c.Embeddings.ETAWindow != 25 {
+		t.Fatalf("ETAWindow explicit: got %d, want 25", c.Embeddings.ETAWindow)
+	}
+}
+
 // TestSearchConfig_PointerSemantics_FromTOML rounds out the
 // pointer-semantic guarantee at the TOML decode layer: omitted →
 // nil → ApplyDefaults fills 50; explicit 0 → preserved; explicit

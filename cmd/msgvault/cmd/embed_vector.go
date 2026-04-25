@@ -8,9 +8,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/vector"
@@ -67,6 +69,11 @@ func runEmbed(ctx context.Context) error {
 		Timeout:    cfg.Vector.Embeddings.Timeout,
 		MaxRetries: cfg.Vector.Embeddings.MaxRetries,
 	})
+	totalPending, err := pendingCount(ctx, backend.DB(), gen)
+	if err != nil {
+		return fmt.Errorf("count pending: %w", err)
+	}
+
 	worker := embed.NewWorker(embed.WorkerDeps{
 		Backend:   backend,
 		VectorsDB: backend.DB(),
@@ -80,6 +87,8 @@ func runEmbed(ctx context.Context) error {
 		BatchSize:       cfg.Vector.Embeddings.BatchSize,
 		EmbedTimeout:    cfg.Vector.Embeddings.Timeout,
 		EmbedMaxRetries: cfg.Vector.Embeddings.MaxRetries,
+		TotalPending:    totalPending,
+		Progress:        newProgressPrinter(os.Stderr, totalPending, cfg.Vector.Embeddings.ETAWindow),
 	})
 
 	if n, err := worker.ReclaimStale(ctx); err != nil {
@@ -242,6 +251,77 @@ func pendingCount(ctx context.Context, db *sql.DB, gen vector.GenerationID) (int
 		return 0, fmt.Errorf("query pending: %w", err)
 	}
 	return n, nil
+}
+
+// newProgressPrinter returns an embed.Worker Progress callback that
+// emits a rate-limited one-line summary to w. Rate limit is ~2s to
+// keep stderr quiet on fast backends (ANE sustains ~500 msg/s at
+// batch=100, which would be 5 updates/sec unthrottled). total is the
+// pending snapshot at run start; zero disables ETA/percent.
+// windowSize controls how many recent batches are used for the
+// windowed rate estimate shown in the "(last K)" annotation.
+func newProgressPrinter(w io.Writer, total int, windowSize int) func(embed.ProgressReport) {
+	const minInterval = 2 * time.Second
+	var lastPrint time.Time
+	window := newRateWindow(windowSize)
+	return func(p embed.ProgressReport) {
+		now := time.Now()
+		isFinal := total > 0 && p.Done >= total
+		if !isFinal && now.Sub(lastPrint) < minInterval {
+			return
+		}
+		lastPrint = now
+
+		window.Add(p.BatchMsgs, p.BatchElapsed)
+		windowedRate := window.Rate()
+		samples := window.Samples()
+
+		msPerMsg := float64(p.BatchElapsed.Milliseconds()) / float64(max1(p.BatchMsgs))
+		usPerChar := float64(p.BatchElapsed.Microseconds()) / float64(max1(p.BatchChars))
+
+		if total > 0 && windowedRate > 0 {
+			remaining := total - p.Done
+			if remaining < 0 {
+				remaining = 0
+			}
+			eta := time.Duration(float64(remaining)/windowedRate) * time.Second
+			pct := 100 * float64(p.Done) / float64(total)
+			fmt.Fprintf(w,
+				"progress: %d/%d (%.1f%%) — %.0f msg/s (last %d), %.1f ms/msg, %.2f µs/char, ETA %s\n",
+				p.Done, total, pct, windowedRate, samples, msPerMsg, usPerChar, formatETA(eta))
+		} else {
+			fmt.Fprintf(w,
+				"progress: %d embedded — %.0f msg/s (last %d), %.1f ms/msg, %.2f µs/char\n",
+				p.Done, windowedRate, samples, msPerMsg, usPerChar)
+		}
+	}
+}
+
+// max1 floors a denominator at 1 so per-unit averages never divide by
+// zero on the rare empty or single-char batch.
+func max1(n int) int {
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// formatETA renders a duration as h:mm:ss or m:ss, dropping leading
+// zero components so "3 hours" reads as "3h02m18s" and "45 seconds"
+// as "45s". Rounds to whole seconds.
+func formatETA(d time.Duration) string {
+	d = d.Round(time.Second)
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	switch {
+	case h > 0:
+		return fmt.Sprintf("%dh%02dm%02ds", h, m, s)
+	case m > 0:
+		return fmt.Sprintf("%dm%02ds", m, s)
+	default:
+		return fmt.Sprintf("%ds", s)
+	}
 }
 
 // confirmEmbed reads a y/N answer from stdin. Default is no.

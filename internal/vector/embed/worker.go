@@ -50,6 +50,30 @@ type WorkerDeps struct {
 	// Default 5.
 	MaxConsecutiveFailures int
 	Log                    *slog.Logger
+	// TotalPending is the queue depth at run start, used by a Progress
+	// callback (if any) to report percent done and ETA. Zero disables
+	// the denominator — Progress still fires but leaves ETA empty.
+	TotalPending int
+	// Progress, if non-nil, is called once after each fully-successful
+	// batch (upsert + complete both ok) with cumulative and per-batch
+	// stats. Failed or partially-drained batches do not fire Progress,
+	// keeping the semantics of "this many messages are now embedded"
+	// unambiguous. Callbacks run on the worker goroutine; rate-limit
+	// inside the callback if output is expensive.
+	Progress func(ProgressReport)
+}
+
+// ProgressReport captures the state of a RunOnce at the completion of
+// one successful batch. BatchElapsed is end-to-end for the batch
+// (fetch + preprocess + embed + upsert + complete), matching what
+// RunElapsed accumulates — so the two ratios agree.
+type ProgressReport struct {
+	Done         int
+	TotalPending int
+	BatchMsgs    int
+	BatchChars   int
+	BatchElapsed time.Duration
+	RunElapsed   time.Duration
 }
 
 // Worker drives one building generation from claimed pending rows to
@@ -155,6 +179,7 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 	var res RunResult
 	consecutiveFailures := 0
 	var lastErr error
+	runStart := time.Now()
 	// orphanDrainErr/orphanDrainCount preserve the latest orphan-drain
 	// failure across iterations so we can surface it on the empty-claim
 	// exit. Without this, a Complete() failure on orphan rows would be
@@ -168,6 +193,7 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 		if err := ctx.Err(); err != nil {
 			return res, fmt.Errorf("RunOnce: %w", err)
 		}
+		batchStart := time.Now()
 		ids, token, err := w.q.Claim(ctx, gen, w.deps.BatchSize)
 		if err != nil {
 			return res, fmt.Errorf("claim: %w", err)
@@ -312,6 +338,20 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 		}
 		res.Succeeded += len(eb.embeddedIDs)
 		consecutiveFailures = 0
+		if w.deps.Progress != nil {
+			batchChars := 0
+			for _, c := range eb.chunks {
+				batchChars += c.SourceCharLen
+			}
+			w.deps.Progress(ProgressReport{
+				Done:         res.Succeeded,
+				TotalPending: w.deps.TotalPending,
+				BatchMsgs:    len(eb.embeddedIDs),
+				BatchChars:   batchChars,
+				BatchElapsed: time.Since(batchStart),
+				RunElapsed:   time.Since(runStart),
+			})
+		}
 	}
 }
 

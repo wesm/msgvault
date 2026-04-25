@@ -33,6 +33,7 @@ type EmbeddingsConfig struct {
 	Timeout       time.Duration `toml:"timeout"`
 	MaxRetries    int           `toml:"max_retries"`
 	MaxInputChars int           `toml:"max_input_chars"`
+	ETAWindow     int           `toml:"eta_window"`
 }
 
 // PreprocessConfig controls message text preprocessing before embedding.
@@ -151,6 +152,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Embeddings.MaxInputChars == 0 {
 		c.Embeddings.MaxInputChars = 32768
+	}
+	if c.Embeddings.ETAWindow <= 0 {
+		c.Embeddings.ETAWindow = 10
 	}
 	if c.Search.RRFK == 0 {
 		c.Search.RRFK = 60

@@ -688,3 +688,61 @@ func TestWorker_EmptyPreprocessedMessagesDrainedFromQueue(t *testing.T) {
 		t.Errorf("embeddings = %d, want 1", embedded)
 	}
 }
+
+// Progress fires once per fully-successful batch and carries cumulative
+// Done, batch size, and char counts — enough for an ETA printer to work
+// off of without peeking at worker internals.
+func TestWorker_ProgressCalledPerSuccessfulBatch(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkerFixture(t, 5)
+
+	var reports []ProgressReport
+	w := NewWorker(WorkerDeps{
+		Backend:       f.Backend,
+		VectorsDB:     f.VectorsDB,
+		MainDB:        f.MainDB,
+		Client:        f.FakeClient,
+		Preprocess:    PreprocessConfig{},
+		MaxInputChars: 8000,
+		BatchSize:     2,
+		TotalPending:  5,
+		Progress: func(p ProgressReport) {
+			reports = append(reports, p)
+		},
+	})
+
+	res, err := w.RunOnce(ctx, f.BuildingGen)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if res.Succeeded != 5 {
+		t.Fatalf("succeeded=%d, want 5", res.Succeeded)
+	}
+	// 5 messages, batch=2 → batches of 2, 2, 1 → three Progress calls.
+	if len(reports) != 3 {
+		t.Fatalf("progress called %d times, want 3", len(reports))
+	}
+
+	wantDone := []int{2, 4, 5}
+	wantBatchMsgs := []int{2, 2, 1}
+	for i, p := range reports {
+		if p.Done != wantDone[i] {
+			t.Errorf("report[%d].Done=%d, want %d", i, p.Done, wantDone[i])
+		}
+		if p.BatchMsgs != wantBatchMsgs[i] {
+			t.Errorf("report[%d].BatchMsgs=%d, want %d", i, p.BatchMsgs, wantBatchMsgs[i])
+		}
+		if p.TotalPending != 5 {
+			t.Errorf("report[%d].TotalPending=%d, want 5", i, p.TotalPending)
+		}
+		if p.BatchChars <= 0 {
+			t.Errorf("report[%d].BatchChars=%d, want >0 (non-empty fixture bodies)", i, p.BatchChars)
+		}
+		if p.BatchElapsed < 0 {
+			t.Errorf("report[%d].BatchElapsed=%s, want >=0", i, p.BatchElapsed)
+		}
+		if p.RunElapsed < p.BatchElapsed {
+			t.Errorf("report[%d].RunElapsed=%s < BatchElapsed=%s", i, p.RunElapsed, p.BatchElapsed)
+		}
+	}
+}
