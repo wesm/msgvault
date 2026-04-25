@@ -374,6 +374,12 @@ func (w *Worker) RunOnce(ctx context.Context, gen vector.GenerationID) (RunResul
 				lastErr = cerr
 				orphanDrainErr = cerr
 				orphanDrainCount += len(dropIDs)
+				batchChars := 0
+				for _, c := range eb.chunks {
+					batchChars += c.SourceCharLen
+				}
+				completedRows += len(eb.embeddedIDs)
+				w.reportProgress(completedRows, len(eb.embeddedIDs), batchChars, time.Since(batchStart))
 				if consecutiveFailures >= w.deps.MaxConsecutiveFailures {
 					// Embedded rows were already counted into
 					// res.Succeeded above; record the orphan-drain
@@ -564,9 +570,12 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 //     The caller increments consecutiveFailures and the cap will
 //     eventually trip, surfacing the original 4xx body.
 //   - non-nil non-4xx interruption: transient errors that exhausted
-//     retries inside embedBatch, upsert/complete failures, ctx
-//     cancellation. Deferred and unprocessed IDs stay claimed for
-//     ReclaimStale to recover.
+//     retries inside embedBatch, upsert/complete failures, or a
+//     cancellation seen after embedBatch starts. Deferred and
+//     unprocessed IDs are released before returning so a later run
+//     can retry them promptly. A cancellation observed before the
+//     next singleton starts returns ctx.Err without releasing; those
+//     rows remain claimed for ReclaimStale to recover.
 //   - nil: drain completed cleanly. If `embedded > 0` and there were
 //     deferred IDs, they were Completed as message-specific drops.
 func (w *Worker) downshiftDrain(

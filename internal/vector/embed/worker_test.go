@@ -497,6 +497,7 @@ func TestWorker_OrphanCompleteFailureDoesNotStrandValidWork(t *testing.T) {
 		t.Fatalf("install trigger: %v", err)
 	}
 
+	var reports []ProgressReport
 	w := NewWorker(WorkerDeps{
 		Backend:                f.Backend,
 		VectorsDB:              f.VectorsDB,
@@ -504,6 +505,10 @@ func TestWorker_OrphanCompleteFailureDoesNotStrandValidWork(t *testing.T) {
 		Client:                 f.FakeClient,
 		BatchSize:              2,
 		MaxConsecutiveFailures: 5, // generous so the orphan drain failure does not abort mid-loop
+		TotalPending:           2,
+		Progress: func(p ProgressReport) {
+			reports = append(reports, p)
+		},
 	})
 
 	res, err := w.RunOnce(ctx, f.BuildingGen)
@@ -521,6 +526,16 @@ func TestWorker_OrphanCompleteFailureDoesNotStrandValidWork(t *testing.T) {
 	}
 	if res.Failed == 0 {
 		t.Errorf("Failed=%d, want > 0 (orphan drain failure should be reported)", res.Failed)
+	}
+	if len(reports) == 0 {
+		t.Fatalf("expected progress for valid embedded row even though orphan drain failed")
+	}
+	final := reports[len(reports)-1]
+	if final.Done != 1 {
+		t.Errorf("final progress Done=%d, want 1 durable embedded row", final.Done)
+	}
+	if final.BatchMsgs != 1 {
+		t.Errorf("final progress BatchMsgs=%d, want 1 durable embedded row", final.BatchMsgs)
 	}
 
 	// The valid message's pending row must be GONE (Complete succeeded).
