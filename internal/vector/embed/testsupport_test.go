@@ -205,6 +205,12 @@ type fakeEmbeddingClient struct {
 	// letting tests assert what text the worker actually sent to the
 	// embedder (e.g. body_text vs HTML-stripped body_html).
 	LastInputs []string
+
+	// OnEmbed, if non-nil, replaces the default Embed behavior with
+	// a caller-provided closure. Used by tests that need to vary
+	// returned errors per call (e.g. fail multi-msg batches with
+	// ErrPermanent4xx, succeed on singletons).
+	OnEmbed func(inputs []string) ([][]float32, error)
 }
 
 // FailNext forces the next n Embed calls to return an error.
@@ -213,6 +219,13 @@ func (c *fakeEmbeddingClient) FailNext(n int) { c.failN = n }
 // Embed returns one deterministic, non-zero vector per input.
 func (c *fakeEmbeddingClient) Embed(_ context.Context, inputs []string) ([][]float32, error) {
 	c.calls++
+	if c.OnEmbed != nil {
+		out, err := c.OnEmbed(inputs)
+		if err == nil {
+			c.LastInputs = append(c.LastInputs[:0], inputs...)
+		}
+		return out, err
+	}
 	if c.failN > 0 {
 		c.failN--
 		return nil, fmt.Errorf("simulated embed failure (call %d)", c.calls)

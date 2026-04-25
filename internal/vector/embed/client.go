@@ -16,6 +16,13 @@ import (
 	"time"
 )
 
+// ErrPermanent4xx marks a non-retryable HTTP 4xx response from the
+// embeddings endpoint. Use errors.Is(err, ErrPermanent4xx) to detect
+// it; the error message still carries the status code and a bounded
+// response body. 429 (rate-limited) and 5xx are NOT wrapped — they
+// flow through the retry loop as transient errors.
+var ErrPermanent4xx = errors.New("embed: non-retryable 4xx response")
+
 // Config controls an embeddings Client. The zero value is not usable; callers
 // must set Endpoint, Model, and Dimension at a minimum.
 type Config struct {
@@ -99,7 +106,14 @@ func (c *Client) Embed(ctx context.Context, inputs []string) ([][]float32, error
 		if attempt == c.cfg.MaxRetries {
 			break
 		}
-		backoff := time.Duration(1<<attempt) * 100 * time.Millisecond
+		// Clamp the shift so a misconfigured MaxRetries can't
+		// produce a backoff measured in hours, and so attempt >= 63
+		// can't trigger the undefined shift behavior on int. 1<<8 *
+		// 100ms = 25.6s, which is plenty for transient-error backoff
+		// on an HTTP embedding endpoint; the retry cap (MaxRetries)
+		// bounds total wait time more naturally than the shift does.
+		shift := min(attempt, 8)
+		backoff := time.Duration(1<<shift) * 100 * time.Millisecond
 		// retryAfterSet distinguishes a successfully parsed
 		// "Retry-After: 0" (immediate retry) from "no usable header".
 		// Without the flag we'd fall back to exponential backoff when
@@ -160,13 +174,15 @@ func (c *Client) doOnce(ctx context.Context, body []byte, want int) ([][]float32
 	if resp.StatusCode >= 400 {
 		body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if err != nil {
-			return nil, fmt.Errorf("embed: HTTP %d (read error body: %v)", resp.StatusCode, err)
+			return nil, fmt.Errorf("embed: HTTP %d (read error body: %v): %w",
+				resp.StatusCode, err, ErrPermanent4xx)
 		}
 		msg := strings.TrimSpace(string(body))
 		if msg == "" {
-			return nil, fmt.Errorf("embed: HTTP %d", resp.StatusCode)
+			return nil, fmt.Errorf("embed: HTTP %d: %w", resp.StatusCode, ErrPermanent4xx)
 		}
-		return nil, fmt.Errorf("embed: HTTP %d: %s", resp.StatusCode, msg)
+		return nil, fmt.Errorf("embed: HTTP %d: %s: %w",
+			resp.StatusCode, msg, ErrPermanent4xx)
 	}
 
 	var r embeddingResponse

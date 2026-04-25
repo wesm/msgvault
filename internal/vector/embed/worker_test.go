@@ -4,6 +4,7 @@ package embed
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -745,4 +746,226 @@ func TestWorker_ProgressCalledPerSuccessfulBatch(t *testing.T) {
 			t.Errorf("report[%d].RunElapsed=%s < BatchElapsed=%s", i, p.RunElapsed, p.BatchElapsed)
 		}
 	}
+}
+
+// TestWorker_DownshiftDrain_HappyPath_AllSingletonsSucceed verifies
+// that when a multi-message batch returns ErrPermanent4xx (e.g. one
+// message in the batch is too long for the model), the worker walks
+// the same already-claimed IDs one at a time and embeds the rest.
+func TestWorker_DownshiftDrain_HappyPath_AllSingletonsSucceed(t *testing.T) {
+	f := newWorkerFixture(t, 3)
+	f.FakeClient.OnEmbed = func(inputs []string) ([][]float32, error) {
+		if len(inputs) > 1 {
+			return nil, fmt.Errorf("embed: HTTP 400: too long: %w", ErrPermanent4xx)
+		}
+		v := make([]float32, 4)
+		v[0] = 1
+		return [][]float32{v}, nil
+	}
+	w := NewWorker(WorkerDeps{
+		Backend:   f.Backend,
+		VectorsDB: f.VectorsDB,
+		MainDB:    f.MainDB,
+		Client:    f.FakeClient,
+		BatchSize: 3,
+	})
+	res, err := w.RunOnce(context.Background(), f.BuildingGen)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if res.Succeeded != 3 {
+		t.Fatalf("Succeeded: got %d, want 3", res.Succeeded)
+	}
+	if res.Failed != 0 {
+		t.Fatalf("Failed: got %d, want 0", res.Failed)
+	}
+	assertPending(t, f.VectorsDB, int64(f.BuildingGen), 0)
+}
+
+// TestWorker_DownshiftDrain_PartialDrop verifies that singleton 4xxs
+// inside a drain are dropped (Completed without an embedding) while
+// the rest of the drain proceeds normally.
+func TestWorker_DownshiftDrain_PartialDrop(t *testing.T) {
+	f := newWorkerFixture(t, 3)
+	var singletonSeen int
+	f.FakeClient.OnEmbed = func(inputs []string) ([][]float32, error) {
+		if len(inputs) > 1 {
+			return nil, fmt.Errorf("embed: HTTP 400: too long: %w", ErrPermanent4xx)
+		}
+		singletonSeen++
+		if singletonSeen == 2 {
+			return nil, fmt.Errorf("embed: HTTP 400: blocked: %w", ErrPermanent4xx)
+		}
+		v := make([]float32, 4)
+		v[0] = 1
+		return [][]float32{v}, nil
+	}
+	w := NewWorker(WorkerDeps{
+		Backend:   f.Backend,
+		VectorsDB: f.VectorsDB,
+		MainDB:    f.MainDB,
+		Client:    f.FakeClient,
+		BatchSize: 3,
+	})
+	res, err := w.RunOnce(context.Background(), f.BuildingGen)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if res.Succeeded != 2 {
+		t.Errorf("Succeeded: got %d, want 2", res.Succeeded)
+	}
+	// Singleton 4xx drops are NOT counted as Failed — Complete
+	// succeeded, so the worker treated the unembeddable message
+	// the same way the main loop treats missing/empty drops.
+	// res.Failed is reserved for genuine processing failures
+	// (Complete errors, transient embed failures, etc.).
+	if res.Failed != 0 {
+		t.Errorf("Failed (no Complete errors expected): got %d, want 0", res.Failed)
+	}
+	assertPending(t, f.VectorsDB, int64(f.BuildingGen), 0)
+}
+
+// TestWorker_DownshiftDrain_AllDrop_StillTripsCap verifies that a
+// fully misconfigured endpoint (every message rejected as 4xx) still
+// trips the consecutive-failure cap so the worker aborts instead of
+// silently dropping every message.
+func TestWorker_DownshiftDrain_AllDrop_StillTripsCap(t *testing.T) {
+	f := newWorkerFixture(t, 6)
+	f.FakeClient.OnEmbed = func(inputs []string) ([][]float32, error) {
+		return nil, fmt.Errorf("embed: HTTP 400: misconfigured: %w", ErrPermanent4xx)
+	}
+	w := NewWorker(WorkerDeps{
+		Backend:                f.Backend,
+		VectorsDB:              f.VectorsDB,
+		MainDB:                 f.MainDB,
+		Client:                 f.FakeClient,
+		BatchSize:              3,
+		MaxConsecutiveFailures: 2,
+	})
+	_, err := w.RunOnce(context.Background(), f.BuildingGen)
+	if err == nil {
+		t.Fatalf("expected abort error, got nil")
+	}
+	if !strings.Contains(err.Error(), "consecutive failures") {
+		t.Errorf("expected abort message, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "misconfigured") {
+		t.Errorf("expected original 4xx body in error, got %v", err)
+	}
+}
+
+// TestWorker_DownshiftDrain_AllDropClean_NoSilentDelete covers the
+// most dangerous failure mode: a misconfigured endpoint (bad API
+// key, wrong model, malformed shared request config) returns 4xx
+// for every input. ErrPermanent4xx is indistinguishable from a
+// message-specific 4xx at the call site, so the worker MUST NOT
+// Complete-delete pending rows when no singleton in the drain
+// embedded — it must release them so the cap eventually trips and
+// the operator sees the failure with the original 4xx body intact
+// AND the rows still in the queue for retry after fixing the
+// config.
+func TestWorker_DownshiftDrain_AllDropClean_NoSilentDelete(t *testing.T) {
+	f := newWorkerFixture(t, 4)
+	f.FakeClient.OnEmbed = func(inputs []string) ([][]float32, error) {
+		return nil, fmt.Errorf("embed: HTTP 401: bad-api-key: %w", ErrPermanent4xx)
+	}
+	// BatchSize=2, default MaxConsecutiveFailures=5. Each iteration:
+	// upstream 4xx (cf+1), drain walks both singletons, both 4xx,
+	// drain returns wrapped ErrPermanent4xx (no double-count since
+	// the drain confirms the upstream failure rather than adding a
+	// new one), drain releases the 2 deferred IDs back to the queue.
+	// After 5 iterations the cap trips. Pending count stays at 4
+	// throughout because rows are released, not Completed.
+	w := NewWorker(WorkerDeps{
+		Backend:   f.Backend,
+		VectorsDB: f.VectorsDB,
+		MainDB:    f.MainDB,
+		Client:    f.FakeClient,
+		BatchSize: 2,
+	})
+	res, err := w.RunOnce(context.Background(), f.BuildingGen)
+	if err == nil {
+		t.Fatalf("expected cap-trip error on misconfigured endpoint, got nil")
+	}
+	if res.Succeeded != 0 {
+		t.Errorf("Succeeded: got %d, want 0 (no embeds during all-drop)", res.Succeeded)
+	}
+	if !strings.Contains(err.Error(), "consecutive failures") {
+		t.Errorf("expected cap-trip error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "bad-api-key") {
+		t.Errorf("expected original 4xx body in error, got %v", err)
+	}
+	// Critical: rows must NOT have been silently deleted. They
+	// should still be in pending_embeddings (released back, not
+	// Completed) so a corrected config can re-claim them on the
+	// next run.
+	assertPending(t, f.VectorsDB, int64(f.BuildingGen), 4)
+}
+
+// TestWorker_SingletonBatch_4xx_NoSilentDelete verifies that a
+// BatchSize=1 claim returning ErrPermanent4xx does NOT silently
+// delete the row. The drain walks the single ID, defers the drop,
+// finds embedded == 0, releases the row back to the queue, and
+// returns the wrapped 4xx. The caller sees errors.Is(err,
+// ErrPermanent4xx) so the drain return doesn't double-count, but
+// the upstream batch failure still increments consecutiveFailures
+// once per iteration. With MaxConsecutiveFailures=3 the cap trips
+// after 3 iterations and the row remains in pending_embeddings.
+func TestWorker_SingletonBatch_4xx_NoSilentDelete(t *testing.T) {
+	f := newWorkerFixture(t, 1)
+	f.FakeClient.OnEmbed = func(inputs []string) ([][]float32, error) {
+		return nil, fmt.Errorf("embed: HTTP 400: bad: %w", ErrPermanent4xx)
+	}
+	w := NewWorker(WorkerDeps{
+		Backend:                f.Backend,
+		VectorsDB:              f.VectorsDB,
+		MainDB:                 f.MainDB,
+		Client:                 f.FakeClient,
+		BatchSize:              1,
+		MaxConsecutiveFailures: 3,
+	})
+	_, err := w.RunOnce(context.Background(), f.BuildingGen)
+	if err == nil {
+		t.Fatalf("expected abort after cap, got nil")
+	}
+	if !strings.Contains(err.Error(), "consecutive failures") {
+		t.Errorf("expected cap abort message, got %v", err)
+	}
+	assertPending(t, f.VectorsDB, int64(f.BuildingGen), 1)
+}
+
+// TestWorker_DownshiftDrain_CtxCancelMidDrain verifies that
+// cancellation during the drain returns ctx.Err() and the remaining
+// claimed rows are not lost (they remain in pending_embeddings to be
+// recovered by ReclaimStale).
+func TestWorker_DownshiftDrain_CtxCancelMidDrain(t *testing.T) {
+	f := newWorkerFixture(t, 3)
+	ctx, cancel := context.WithCancel(context.Background())
+	var singletonCalls int
+	f.FakeClient.OnEmbed = func(inputs []string) ([][]float32, error) {
+		if len(inputs) > 1 {
+			return nil, fmt.Errorf("embed: HTTP 400: %w", ErrPermanent4xx)
+		}
+		singletonCalls++
+		if singletonCalls == 2 {
+			cancel()
+			return nil, context.Canceled
+		}
+		v := make([]float32, 4)
+		v[0] = 1
+		return [][]float32{v}, nil
+	}
+	w := NewWorker(WorkerDeps{
+		Backend:   f.Backend,
+		VectorsDB: f.VectorsDB,
+		MainDB:    f.MainDB,
+		Client:    f.FakeClient,
+		BatchSize: 3,
+	})
+	_, err := w.RunOnce(ctx, f.BuildingGen)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	assertPending(t, f.VectorsDB, int64(f.BuildingGen), 2)
 }

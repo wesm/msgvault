@@ -152,8 +152,11 @@ func (s *Scheduler) RemoveAccount(email string) {
 // post-sync hook when runAfterSync is true). Replacing a previously-set
 // job removes the old cron entry. Passing nil clears any existing job.
 //
-// If schedule is non-empty and invalid, the previous job and cron entry
-// are preserved and an error is returned — the call is all-or-nothing.
+// A schedule rejected by ValidateCronExpr is caught before any state
+// mutates, so the previous job and cron entry are preserved. An
+// internal AddFunc failure after that point is treated as an invariant
+// violation (ValidateCronExpr already accepted the expression) and
+// clears the embed job rather than restoring the prior one.
 func (s *Scheduler) SetEmbedJob(job *EmbedJob, schedule string, runAfterSync bool) error {
 	// Validate the cron expression before mutating any state so a bad
 	// schedule can't leave the scheduler with a half-removed previous

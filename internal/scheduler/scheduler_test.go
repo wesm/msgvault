@@ -602,23 +602,28 @@ func TestEmbedJob_Run_ActiveGeneration(t *testing.T) {
 	}
 }
 
-func TestEmbedJob_Run_BuildingFallback(t *testing.T) {
-	building := &vector.Generation{ID: 7, State: vector.GenerationBuilding}
+func TestEmbedJob_Run_BuildingRefusedWithoutFingerprint(t *testing.T) {
+	// A daemon with no configured Fingerprint cannot tell whether a
+	// building generation matches the model it is supposed to be
+	// using; draining (and thus auto-activating) it could silently
+	// swap the production index to a different model. pickTarget
+	// must refuse, leaving the build for the CLI to resolve.
+	building := &vector.Generation{ID: 7, State: vector.GenerationBuilding, Fingerprint: "old-model:512"}
 	backend := &fakeBackend{
 		activeErr: vector.ErrNoActiveGeneration,
 		building:  building,
 	}
 	runner := &fakeRunner{}
-	job := &EmbedJob{Worker: runner, Backend: backend}
+	job := &EmbedJob{Worker: runner, Backend: backend} // Fingerprint left empty
 
 	job.Run(context.Background())
 
-	_, run, gen := runner.calls()
-	if run != 1 {
-		t.Errorf("RunOnce calls = %d, want 1", run)
+	_, run, _ := runner.calls()
+	if run != 0 {
+		t.Errorf("RunOnce calls = %d, want 0 (refuse to drain without fingerprint)", run)
 	}
-	if gen != 7 {
-		t.Errorf("RunOnce gen = %d, want 7", gen)
+	if got := backend.activations(); len(got) != 0 {
+		t.Errorf("ActivateGeneration calls = %v, want none", got)
 	}
 }
 

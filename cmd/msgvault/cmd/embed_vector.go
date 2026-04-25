@@ -265,6 +265,13 @@ func newProgressPrinter(w io.Writer, total int, windowSize int) func(embed.Progr
 	var lastPrint time.Time
 	window := newRateWindow(windowSize)
 	return func(p embed.ProgressReport) {
+		// Always feed the window — including events the throttle is
+		// about to suppress. Otherwise a fast downshift drain (where
+		// each singleton report arrives much faster than the 2s
+		// throttle) would leak almost all of its samples and the
+		// "(last K)" annotation would never reflect drain throughput.
+		window.Add(p.BatchMsgs, p.BatchElapsed)
+
 		now := time.Now()
 		isFinal := total > 0 && p.Done >= total
 		if !isFinal && now.Sub(lastPrint) < minInterval {
@@ -272,7 +279,6 @@ func newProgressPrinter(w io.Writer, total int, windowSize int) func(embed.Progr
 		}
 		lastPrint = now
 
-		window.Add(p.BatchMsgs, p.BatchElapsed)
 		windowedRate := window.Rate()
 		samples := window.Samples()
 

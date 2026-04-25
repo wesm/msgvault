@@ -172,7 +172,19 @@ func (j *EmbedJob) pickTarget(ctx context.Context, log *slog.Logger) (vector.Gen
 		return 0, false, false
 	}
 	if bg != nil {
-		if j.Fingerprint != "" && bg.Fingerprint != j.Fingerprint {
+		if j.Fingerprint == "" {
+			// Without a configured fingerprint we cannot tell
+			// whether this building generation matches the model
+			// the daemon is supposed to be using. Draining (and
+			// thus auto-activating) it could silently swap the
+			// production index to a different model. Refuse;
+			// resolution requires the CLI, where pickEmbedGeneration
+			// enforces a fingerprint match.
+			log.Warn("embed: in-flight rebuild present but no configured fingerprint — refusing to drain",
+				"building_fingerprint", bg.Fingerprint)
+			return 0, false, false
+		}
+		if bg.Fingerprint != j.Fingerprint {
 			log.Warn("embed: in-flight rebuild fingerprint differs from config — leaving for CLI to resolve",
 				"building_fingerprint", bg.Fingerprint, "config_fingerprint", j.Fingerprint)
 			return 0, false, false
