@@ -148,6 +148,7 @@ CREATE TABLE account_identities (
 - `list-identities` writes candidates to this table with a `signal` value.
 - The user confirms candidates (`--confirm` flag, or by editing).
 - Dedup reads the union of identity addresses for the scope's `SourceIDs` (one account: that account's identities; collection: union across member accounts).
+- `list-identities --collection <name>` displays a per-account breakdown grouped by source, not a flattened union — the user is confirming identities one account at a time.
 - The global `[identity] addresses = [...]` config is removed.
 
 #### Migration on first startup after upgrade
@@ -200,7 +201,10 @@ The spec narrative is rewritten so:
 
 - Continue on `jesse/dedup-v2` / PR #286. The maintainer's review thread stays intact.
 - Updated PR description leads with what changed in response to review and the boundary between shipped and future.
-- Commits are organized to make the model alignment reviewable in isolation from the live-message-predicate plumbing and the per-account identity work.
+- Commits are organized to make the model alignment reviewable in isolation from the live-message-predicate plumbing and the per-account identity work. Suggested order:
+  1. Vocabulary, `Scope` type, CLI flag split, collections-into-canonical-schema, undo language, remote-deletion tests under collections — the model alignment, isolated.
+  2. `internal/livemsg` predicate, audit/patch every read path, regression tests for each path, `SourceIDs` propagation through user-facing surfaces — the cross-cutting plumbing.
+  3. Per-account identity schema, `list-identities` writing to it, dedup reading the union, global config migration — the identity rework.
 
 ## Out of Scope (Future Work)
 
