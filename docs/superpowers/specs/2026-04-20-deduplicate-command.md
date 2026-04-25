@@ -1,5 +1,7 @@
 # Identities, Collections, and Deduplication
 
+> **Note:** The data-model, scope, and live-message-filtering portions of this spec have been superseded by [`2026-04-25-account-collection-model-alignment.md`](./2026-04-25-account-collection-model-alignment.md), which incorporates the [PR #286 review feedback](https://github.com/wesm/msgvault/pull/286#issuecomment-4320039075). The product framing below still stands.
+
 Our communications are scattered across decades of email accounts, chat apps, phone backups, and meeting recordings. Getting it all into one place is the first step. msgvault handles that -- it accepts Gmail API syncs, old mbox exports, Apple Mail folders from a retired laptop, IMAP backups, Facebook Messenger dumps, SMS exports, WhatsApp histories, meeting recordings, call logs. Throw everything at it.
 
 The mess comes after. The same email appears three times because it arrived via Gmail sync, an old mbox export, and an Apple Mail import. Message counts are wrong. Search returns duplicates. There's no way to tell what was sent vs received in an old mbox dump that lost its metadata. And every import sits in its own silo -- there's no unified view of "all my communications."
