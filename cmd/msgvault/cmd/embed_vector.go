@@ -261,7 +261,10 @@ func pendingCount(ctx context.Context, db *sql.DB, gen vector.GenerationID) (int
 // windowSize controls how many recent batches are used for the
 // windowed rate estimate shown in the "(last K)" annotation.
 func newProgressPrinter(w io.Writer, total int, windowSize int) func(embed.ProgressReport) {
-	const minInterval = 2 * time.Second
+	return newProgressPrinterWithMinInterval(w, total, windowSize, 2*time.Second)
+}
+
+func newProgressPrinterWithMinInterval(w io.Writer, total int, windowSize int, minInterval time.Duration) func(embed.ProgressReport) {
 	var lastPrint time.Time
 	window := newRateWindow(windowSize)
 	return func(p embed.ProgressReport) {
@@ -273,8 +276,7 @@ func newProgressPrinter(w io.Writer, total int, windowSize int) func(embed.Progr
 		window.Add(p.BatchMsgs, p.BatchElapsed)
 
 		now := time.Now()
-		isFinal := total > 0 && p.Done >= total
-		if !isFinal && now.Sub(lastPrint) < minInterval {
+		if now.Sub(lastPrint) < minInterval {
 			return
 		}
 		lastPrint = now

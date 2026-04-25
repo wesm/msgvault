@@ -488,9 +488,9 @@ func (s *buildingShim) BuildingGeneration(ctx context.Context) (*vector.Generati
 
 func TestNewProgressPrinter_UsesWindowedRate(t *testing.T) {
 	var buf bytes.Buffer
-	// window=2, total=210 so the percent path runs and the final
-	// event bypasses the throttle.
-	print := newProgressPrinter(&buf, 210, 2)
+	// window=2, total=210 so the percent path runs. The zero
+	// interval keeps the test deterministic without sleeping.
+	print := newProgressPrinterWithMinInterval(&buf, 210, 2, 0)
 
 	// Three calls. Pick values so the windowed rate at the final
 	// event is different from the cumulative rate the old printer
@@ -499,12 +499,10 @@ func TestNewProgressPrinter_UsesWindowedRate(t *testing.T) {
 	//
 	//   call 1: Done=100, BatchMsgs=100, BatchElapsed=1s (lastPrint
 	//           starts zero, so this emits and Adds).
-	//   call 2: Done=200, BatchMsgs=100, BatchElapsed=1s (throttled
-	//           out by the 2s minInterval; not emitted, not Added).
-	//   call 3: Done=210, BatchMsgs=10, BatchElapsed=5s, isFinal
-	//           (Done==total, bypasses throttle; emits and Adds).
+	//   call 2: Done=200, BatchMsgs=100, BatchElapsed=1s.
+	//   call 3: Done=210, BatchMsgs=10, BatchElapsed=5s.
 	//
-	// After call 3 the window holds two samples: (100,1s) and
+	// After call 3 the window holds the last two samples: (100,1s) and
 	// (10,5s) → windowed rate = 110/6 ≈ 18.33 → printed "18 msg/s".
 	// The old cumulative implementation would have printed
 	// 210/RunElapsed=7s = 30 → "30 msg/s". Asserting on the final
@@ -543,5 +541,28 @@ func TestNewProgressPrinter_UsesWindowedRate(t *testing.T) {
 	}
 	if strings.Contains(finalLine, "30 msg/s") {
 		t.Errorf("final line shows cumulative rate `30 msg/s`; windowed implementation should not produce this:\n%s", finalLine)
+	}
+}
+
+func TestNewProgressPrinter_DoesNotBypassThrottleAfterInitialTotal(t *testing.T) {
+	var buf bytes.Buffer
+	print := newProgressPrinter(&buf, 2, 2)
+
+	print(embed.ProgressReport{
+		Done: 2, TotalPending: 2,
+		BatchMsgs: 2, BatchChars: 20,
+		BatchElapsed: 1 * time.Second,
+		RunElapsed:   1 * time.Second,
+	})
+	print(embed.ProgressReport{
+		Done: 3, TotalPending: 2,
+		BatchMsgs: 1, BatchChars: 10,
+		BatchElapsed: 1 * time.Second,
+		RunElapsed:   2 * time.Second,
+	})
+
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("progress emitted %d lines, want 1 throttled line after initial total:\n%s", len(lines), buf.String())
 	}
 }
