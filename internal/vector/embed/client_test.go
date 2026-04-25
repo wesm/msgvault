@@ -132,7 +132,9 @@ func TestClient_Embed_Does_Not_Retry_4xx(t *testing.T) {
 	var attempts atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts.Add(1)
-		http.Error(w, "bad request", http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"No models loaded"}`))
 	}))
 	defer srv.Close()
 
@@ -146,6 +148,9 @@ func TestClient_Embed_Does_Not_Retry_4xx(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "400") {
 		t.Errorf("error %q should include status 400", err.Error())
+	}
+	if !strings.Contains(err.Error(), "No models loaded") {
+		t.Errorf("error %q should include response body", err.Error())
 	}
 }
 
