@@ -428,4 +428,12 @@
   storeMessageList();
   setupMessageNav();
   setupFlashDismiss();
+
+  // Iframe auto-resize for message HTML rendering
+  window.addEventListener('message', function (e) {
+    if (e.data && e.data.type === 'resize') {
+      var frame = document.querySelector('.msg-body-frame');
+      if (frame) frame.style.height = e.data.height + 'px';
+    }
+  });
 })();
