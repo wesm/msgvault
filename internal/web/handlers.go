@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/wesm/msgvault/internal/mime"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/search"
 	"github.com/wesm/msgvault/internal/web/templates"
@@ -610,4 +611,99 @@ func sanitizeFilename(name string) string {
 		}
 	}
 	return b.String()
+}
+
+func (h *Handler) handleMessageHTML(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid message ID", http.StatusBadRequest)
+		return
+	}
+
+	msg, err := h.engine.GetMessage(ctx, id)
+	if err != nil {
+		slog.Error("failed to get message for HTML render", "error", err, "id", id)
+		http.Error(w, "Failed to load message", http.StatusInternalServerError)
+		return
+	}
+	if msg == nil {
+		http.Error(w, "Message not found", http.StatusNotFound)
+		return
+	}
+
+	var cidParts map[string]string
+	if msg.BodyHTML != "" && strings.Contains(msg.BodyHTML, "cid:") {
+		raw, rawErr := h.engine.GetMessageRaw(ctx, id)
+		if rawErr != nil {
+			slog.Warn("failed to get raw MIME for CID resolution", "error", rawErr, "id", id)
+		} else if raw != nil {
+			parsed, parseErr := mime.Parse(raw)
+			if parseErr != nil {
+				slog.Warn("failed to parse MIME for CID resolution", "error", parseErr, "id", id)
+			} else {
+				cidParts = make(map[string]string)
+				for _, att := range parsed.Attachments {
+					if att.ContentID != "" {
+						cidParts[att.ContentID] = att.ContentType
+					}
+				}
+			}
+		}
+	}
+
+	rendered := renderEmailHTML(id, msg.BodyText, msg.BodyHTML, cidParts)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(rendered))
+}
+
+func (h *Handler) handleMessageInline(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid message ID", http.StatusBadRequest)
+		return
+	}
+
+	cidParam := chi.URLParam(r, "cid")
+	if cidParam == "" {
+		http.Error(w, "Missing content ID", http.StatusBadRequest)
+		return
+	}
+
+	raw, err := h.engine.GetMessageRaw(ctx, id)
+	if err != nil {
+		slog.Error("failed to get raw MIME for inline part", "error", err, "id", id)
+		http.Error(w, "Failed to load message", http.StatusInternalServerError)
+		return
+	}
+	if raw == nil {
+		http.Error(w, "Message raw data not found", http.StatusNotFound)
+		return
+	}
+
+	parsed, err := mime.Parse(raw)
+	if err != nil {
+		slog.Error("failed to parse MIME for inline part", "error", err, "id", id)
+		http.Error(w, "Failed to parse message", http.StatusInternalServerError)
+		return
+	}
+
+	for _, att := range parsed.Attachments {
+		if att.ContentID == cidParam {
+			contentType := att.ContentType
+			if contentType == "" {
+				contentType = "application/octet-stream"
+			}
+			w.Header().Set("Content-Type", contentType)
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			_, _ = w.Write(att.Content)
+			return
+		}
+	}
+
+	http.Error(w, "Inline part not found", http.StatusNotFound)
 }

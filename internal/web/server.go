@@ -55,6 +55,8 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/browse/drill", h.handleDrill)
 	r.Get("/messages", h.handleMessages)
 	r.Get("/messages/{id}", h.handleMessageDetail)
+	r.Get("/messages/{id}/html", h.handleMessageHTML)
+	r.Get("/messages/{id}/inline/{cid}", h.handleMessageInline)
 	r.Get("/attachments/{id}/download", h.handleAttachmentDownload)
 	r.Get("/search", h.handleSearch)
 
