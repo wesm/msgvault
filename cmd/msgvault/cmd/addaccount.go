@@ -128,10 +128,19 @@ Examples:
 			if saErr != nil {
 				return fmt.Errorf("create source: %w", saErr)
 			}
+			// Persist the oauth_app binding (set or clear). Mirror the
+			// standard OAuth branch: when --oauth-app was explicitly
+			// changed and resolves to "", clear the stored binding so
+			// later syncs don't keep resolving credentials through the
+			// stale named-app pointer.
 			if resolvedApp != "" {
 				newApp := sql.NullString{String: resolvedApp, Valid: true}
 				if saErr := s.UpdateSourceOAuthApp(source.ID, newApp); saErr != nil {
 					return fmt.Errorf("update oauth app binding: %w", saErr)
+				}
+			} else if bindingChanged {
+				if saErr := s.UpdateSourceOAuthApp(source.ID, sql.NullString{}); saErr != nil {
+					return fmt.Errorf("clear oauth app binding: %w", saErr)
 				}
 			}
 			if accountDisplayName != "" {

@@ -224,8 +224,13 @@ Examples:
 	},
 }
 
-// buildAPIClient creates the appropriate gmail.API client for the given source.
-func buildAPIClient(ctx context.Context, src *store.Source, getOAuthMgr func(string) (*oauth.Manager, error)) (gmail.API, error) {
+// buildAPIClient creates the appropriate gmail.API client for the given
+// source. saScopes is used when the resolved oauth_app is backed by a
+// service account key; for browser-OAuth sources, scopes flow through the
+// caller-provided getOAuthMgr factory. Pass nil to use oauth.Scopes; pass
+// oauth.ScopesDeletion (or another set) for workflows that need elevated
+// access.
+func buildAPIClient(ctx context.Context, src *store.Source, getOAuthMgr func(string) (*oauth.Manager, error), saScopes []string) (gmail.API, error) {
 	switch src.SourceType {
 	case "gmail", "":
 		appName := sourceOAuthApp(src)
@@ -233,7 +238,11 @@ func buildAPIClient(ctx context.Context, src *store.Source, getOAuthMgr func(str
 
 		// Check for service account configuration
 		if saKeyPath := cfg.OAuth.ServiceAccountKeyFor(appName); saKeyPath != "" {
-			saMgr, err := oauth.NewServiceAccountManager(saKeyPath, oauth.Scopes)
+			scopes := saScopes
+			if len(scopes) == 0 {
+				scopes = oauth.Scopes
+			}
+			saMgr, err := oauth.NewServiceAccountManager(saKeyPath, scopes)
 			if err != nil {
 				return nil, fmt.Errorf("service account: %w", err)
 			}
@@ -321,7 +330,7 @@ func buildAPIClient(ctx context.Context, src *store.Source, getOAuthMgr func(str
 }
 
 func runFullSync(ctx context.Context, s *store.Store, getOAuthMgr func(string) (*oauth.Manager, error), src *store.Source, vf *vectorFeatures) error {
-	apiClient, err := buildAPIClient(ctx, src, getOAuthMgr)
+	apiClient, err := buildAPIClient(ctx, src, getOAuthMgr, nil)
 	if err != nil {
 		return err
 	}

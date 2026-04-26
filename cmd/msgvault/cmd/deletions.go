@@ -466,7 +466,13 @@ Examples:
 			}
 			return oauth.NewManagerWithScopes(secretsPath, cfg.TokensDir(), logger, scopes)
 		}
-		client, err := buildAPIClient(ctx, src, getOAuthMgr)
+		// For permanent deletion (not trash), service-account flows need the
+		// elevated mail.google.com scope; trash-only uses the standard set.
+		saScopes := oauth.Scopes
+		if !deleteTrash {
+			saScopes = oauth.ScopesDeletion
+		}
+		client, err := buildAPIClient(ctx, src, getOAuthMgr, saScopes)
 		if err != nil {
 			return err
 		}
