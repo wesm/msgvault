@@ -1,6 +1,7 @@
 package query
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/search"
@@ -1129,5 +1130,39 @@ func TestGetTotalStatsWithSearchQuery_Combined(t *testing.T) {
 	}
 	if stats.TotalSize != 2000 {
 		t.Errorf("SearchQuery+WithAttachments: expected total size 2000, got %d", stats.TotalSize)
+	}
+}
+
+func TestGetMessageRaw(t *testing.T) {
+	env := newTestEnv(t)
+	rawMIME := []byte("From: test@example.com\r\nSubject: Test\r\n\r\nHello")
+
+	msgID := env.AddMessage(dbtest.MessageOpts{Subject: "Raw Test", SentAt: "2024-06-01 12:00:00"})
+	_, err := env.DB.Exec(
+		`INSERT INTO message_raw (message_id, raw_data, raw_format, compression) VALUES (?, ?, 'mime', 'none')`,
+		msgID, rawMIME,
+	)
+	if err != nil {
+		t.Fatalf("insert message_raw: %v", err)
+	}
+
+	got, err := env.Engine.GetMessageRaw(env.Ctx, msgID)
+	if err != nil {
+		t.Fatalf("GetMessageRaw: %v", err)
+	}
+	if !bytes.Equal(got, rawMIME) {
+		t.Errorf("GetMessageRaw = %q, want %q", got, rawMIME)
+	}
+}
+
+func TestGetMessageRaw_NotFound(t *testing.T) {
+	env := newTestEnv(t)
+
+	got, err := env.Engine.GetMessageRaw(env.Ctx, 999999)
+	if err != nil {
+		t.Fatalf("GetMessageRaw unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("GetMessageRaw = %q, want nil", got)
 	}
 }

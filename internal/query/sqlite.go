@@ -837,6 +837,11 @@ func (e *SQLiteEngine) GetAttachment(ctx context.Context, id int64) (*Attachment
 	return &att, nil
 }
 
+// GetMessageRaw returns the decompressed raw MIME data for a message.
+func (e *SQLiteEngine) GetMessageRaw(ctx context.Context, id int64) ([]byte, error) {
+	return getMessageRawShared(ctx, e.db, "", id)
+}
+
 // ListAccounts returns all source accounts.
 func (e *SQLiteEngine) ListAccounts(ctx context.Context) ([]AccountInfo, error) {
 	rows, err := e.db.QueryContext(ctx, `

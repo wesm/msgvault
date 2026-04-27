@@ -164,6 +164,7 @@ func (s *Server) setupRouter() chi.Router {
 		// Messages
 		r.Get("/messages", s.handleListMessages)
 		r.Get("/messages/{id}", s.handleGetMessage)
+		r.Get("/messages/{id}/inline/{cid}", s.handleMessageInline)
 
 		// Search
 		r.Get("/search", s.handleSearch)
