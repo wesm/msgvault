@@ -196,16 +196,20 @@ func getMessageRawShared(ctx context.Context, db *sql.DB, tablePrefix string, me
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query message_raw for id %d: %w", messageID, err)
 	}
 
 	if compression.Valid && compression.String == "zlib" {
 		r, err := zlib.NewReader(bytes.NewReader(compressed))
 		if err != nil {
-			return nil, fmt.Errorf("zlib reader: %w", err)
+			return nil, fmt.Errorf("zlib reader for id %d: %w", messageID, err)
 		}
 		defer func() { _ = r.Close() }()
-		return io.ReadAll(r)
+		raw, err := io.ReadAll(r)
+		if err != nil {
+			return nil, fmt.Errorf("zlib decompress message_raw id %d: %w", messageID, err)
+		}
+		return raw, nil
 	}
 
 	return compressed, nil

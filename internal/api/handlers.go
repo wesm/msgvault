@@ -1643,17 +1643,20 @@ func (s *Server) handleMessageInline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, att := range parsed.Attachments {
-		if att.ContentID == cidParam {
-			contentType := att.ContentType
-			if contentType == "" {
-				contentType = "application/octet-stream"
-			}
-			w.Header().Set("Content-Type", contentType)
-			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-			w.Header().Set("X-Content-Type-Options", "nosniff")
-			_, _ = w.Write(att.Content)
+		if !att.IsInline || att.ContentID != cidParam {
+			continue
+		}
+		ct := strings.ToLower(strings.TrimSpace(att.ContentType))
+		if !strings.HasPrefix(ct, "image/") || strings.HasPrefix(ct, "image/svg") {
+			writeError(w, http.StatusUnsupportedMediaType, "unsupported_type", "Inline content type not permitted")
 			return
 		}
+		w.Header().Set("Content-Type", ct)
+		w.Header().Set("Content-Disposition", "inline")
+		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		_, _ = w.Write(att.Content)
+		return
 	}
 
 	writeError(w, http.StatusNotFound, "not_found", "Inline part not found")
