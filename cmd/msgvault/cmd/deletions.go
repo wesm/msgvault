@@ -421,30 +421,36 @@ Examples:
 
 		// For Gmail, handle scope escalation before building the client.
 		// buildAPIClient uses standard scopes; deletion may need elevated ones.
+		// Service-account flows get scopes via the JWT assertion (no stored
+		// token), so the scope-escalation prompt only applies to browser OAuth.
 		var clientSecretsPath string
 		if src.SourceType == "gmail" {
 			if !cfg.OAuth.HasAnyConfig() {
 				return errOAuthNotConfigured()
 			}
 			appName := sourceOAuthApp(src)
-			clientSecretsPath, err = cfg.OAuth.ClientSecretsFor(appName)
-			if err != nil {
-				return err
-			}
+			isServiceAccount := cfg.OAuth.ServiceAccountKeyFor(appName) != ""
 
-			needsBatchDelete := !deleteTrash
-			if needsBatchDelete {
-				requiredScopes := oauth.ScopesDeletion
-				oauthMgr, err := oauth.NewManagerWithScopes(clientSecretsPath, cfg.TokensDir(), logger, requiredScopes)
+			if !isServiceAccount {
+				clientSecretsPath, err = cfg.OAuth.ClientSecretsFor(appName)
 				if err != nil {
-					return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
+					return err
 				}
-				if !oauthMgr.HasScope(account, "https://mail.google.com/") && oauthMgr.HasScopeMetadata(account) {
-					if err := promptScopeEscalation(ctx, oauthMgr, account, needsBatchDelete, clientSecretsPath); err != nil {
-						if errors.Is(err, errUserCanceled) {
-							return nil
+
+				needsBatchDelete := !deleteTrash
+				if needsBatchDelete {
+					requiredScopes := oauth.ScopesDeletion
+					oauthMgr, err := oauth.NewManagerWithScopes(clientSecretsPath, cfg.TokensDir(), logger, requiredScopes)
+					if err != nil {
+						return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
+					}
+					if !oauthMgr.HasScope(account, "https://mail.google.com/") && oauthMgr.HasScopeMetadata(account) {
+						if err := promptScopeEscalation(ctx, oauthMgr, account, needsBatchDelete, clientSecretsPath); err != nil {
+							if errors.Is(err, errUserCanceled) {
+								return nil
+							}
+							return err
 						}
-						return err
 					}
 				}
 			}
