@@ -6,7 +6,8 @@ deciding how to modify the branch.
 
 **Supersedes:**
 
-- [`2026-04-25-account-collection-model-alignment.md`](./2026-04-25-account-collection-model-alignment.md)
+- [`2026-04-25-account-collection-model-alignment.md`](./2026-04-25-account-collection-model-alignment.md) — replaces the implementation-detail-driven model alignment.
+- [`2026-04-20-deduplicate-command.md`](./2026-04-20-deduplicate-command.md) — the original product framing. Its safety progression and product motivation are folded into this document; consult the original only for historical context.
 
 **Discussion sources:**
 
@@ -79,6 +80,14 @@ Collections are how msgvault offers a unified view across sources while
 keeping source provenance intact. Any operation that crosses account
 boundaries does so because the user selected a collection.
 
+The name "collection" matters. An earlier prototype used "merged
+account," which only described the moment of assembly, not the thing the
+user actually has afterward. Users don't think "I merged accounts." They
+think "this is all my work email" or "this is everything." A collection
+describes what the user has, not how they assembled it. It works at every
+scale — `All` is a collection, `work` is a collection — and it doesn't
+overload the word "account," which already means one ingest source.
+
 A future revision may introduce other identity or collection types (for
 example, device identities or saved-query collections). If that happens,
 renaming these objects to `account_identity` and `account_collection` would
@@ -93,8 +102,10 @@ cleans up repeated rows within one source. `deduplicate --collection` compares
 messages across the accounts the user deliberately grouped. `deduplicate` with no
 scope processes each account independently. Applying dedup hides redundant local
 copies from normal search, browse, stats, API, MCP, and vector/hybrid retrieval
-paths, but it does not destroy the archive or delete from source services unless
-the user explicitly chooses a separate remote deletion step.
+paths. It does not destroy data: hidden copies stay on disk and `--undo`
+restores them. Hard-deleting locally and deleting from a source server are
+separate, explicit steps the user must take on top of dedup; the system
+never escalates from one to the next on its own.
 
 The result is a model that supports both safety and usefulness: users can search
 and analyze a unified communication archive, but msgvault still knows which source
@@ -250,10 +261,19 @@ include:
 - OAuth or provider account metadata
 - user confirmation
 
-Global identity configuration is not part of the target model. If a global
-identity list exists during migration, it is legacy input that can seed
-per-account identity records with user-visible review. New identity behavior
-stores identities per account.
+Global identity configuration is not part of the target model.
+
+If a `[identity]` block exists in `config.toml` from an older msgvault
+version, the first startup after upgrade migrates its addresses into
+per-account confirmed identities for every existing account, logs a
+warning naming the migration, and prints a one-time CLI notice asking
+the user to review per-account identities (`msgvault list-identities`).
+The global config block is then no longer read. This preserves the
+old behavior across the upgrade while moving every account onto the
+per-account model.
+
+After migration, identity is stored per account. The global config block
+is legacy input only.
 
 ## Collection Behavior
 
@@ -322,19 +342,31 @@ prefers the copy that is most useful as the durable representative,
 evaluated in this priority order:
 
 1. source preference when configured
-2. sent-copy safety when identity or provider metadata indicates a sent message
-3. has raw MIME or complete original payload
-4. source metadata quality
-5. richer label or folder metadata
-6. earlier archived timestamp when meaningful
-7. stable row ID as the final tie-breaker
+2. has raw MIME or complete original payload
+3. source metadata quality
+4. richer label or folder metadata
+5. earlier archived timestamp when meaningful
+6. stable row ID as the final tie-breaker
 
 Earlier rules win outright; later rules only apply when all earlier ones
-tie. Sent-copy safety is ranked high because losing the sent signal
-silently changes user interpretation of the archive.
+tie. The exact policy should be documented and visible in dry-run output,
+so a user can read why one copy survived and another was hidden.
 
-The exact policy should be documented and visible in dry-run output, so a
-user can read why one copy survived and another was hidden.
+#### Sent-Message Safety Rule
+
+Sent-copy safety is an **eligibility filter**, not a tie-breaker. When any
+message in a duplicate group looks like a sent copy, only sent copies are
+eligible to survive. Received-copy candidates are removed from the group
+before the priority list above runs. Losing the sent signal silently
+changes user interpretation of the archive — "I sent this" is harder to
+recover than "I received this."
+
+A message looks like a sent copy when any of these signals fires (OR):
+
+- a Gmail `SENT` label on the message
+- an `is_from_me` flag on the message from ingest metadata
+- the `From` address matches a confirmed identity for the message's
+  account
 
 ### Effects
 
@@ -348,6 +380,35 @@ Applying dedup should:
 
 Dedup should not silently escalate from local hiding to local hard deletion or
 remote deletion.
+
+## Safety Progression
+
+Dedup is a ladder, not a single switch. Each rung is a separate, explicit
+user action. The system never escalates from one rung to the next on its
+own.
+
+1. **Scan.** Detect duplicates and report what would change. No data is
+   touched. Dry-run is the default.
+2. **Hide.** Apply dedup. Pruned copies are soft-deleted: hidden from
+   normal reads but kept on disk. `--undo <batch-id>` restores visibility.
+3. **Local hard delete.** A separate, opt-in action that permanently
+   removes hidden rows from the local archive. Dedup itself never does
+   this; the user runs it explicitly after a hide step they're confident
+   in.
+4. **Remote delete.** Deleting from the source server (Gmail, IMAP,
+   another service) is a further separate decision. The default is
+   trash-with-recovery (Gmail's ~30-day trash). Permanent remote deletion
+   requires explicit opt-in and interactive confirmation.
+
+The user controls every rung. "Apply dedup" never implies hard delete.
+"Hard delete locally" never implies remote delete. "Remote delete" never
+implies permanent remote delete.
+
+Attachment dedup is independent of message dedup: attachments are stored
+in a content-addressed pool, so identical files are stored once
+regardless of how many messages reference them. Hiding or hard-deleting a
+duplicate message does not delete the underlying attachment blob unless
+no remaining message references it.
 
 ## Live-Message Contract
 
@@ -429,20 +490,31 @@ Canonical user-facing language:
 
 Remote deletion is a separate operation from local dedup.
 
-Even when duplicate detection runs across a collection, remote deletion decisions
-remain source-specific. It is only valid to stage remote deletion when the
-survivor and loser belong to the same source and the source supports the requested
-remote deletion behavior.
+Even when duplicate detection runs across a collection, remote deletion
+decisions remain source-specific. It is only valid to stage remote
+deletion when the survivor and loser belong to the **same source** and
+that source supports the requested remote-deletion behavior.
 
 Rules:
 
-- Cross-source duplicate groups do not imply remote deletion.
-- Remote deletion manifests are source/account-specific.
-- Collection names should not be used as remote deletion manifest identities.
-- Permanent remote deletion requires explicit user intent beyond local dedup.
+- **Same-source constraint.** A remote-deletion entry is only staged when
+  the loser and the survivor share a `source_id`. Cross-source duplicate
+  groups produce no remote-deletion entries even when the dedup scope is
+  a collection that spans those sources.
+- **Source-scoped manifests.** Remote-deletion manifests, manifest
+  filenames, and reporting labels reflect the source, never the
+  collection name, even when dedup was invoked under `--collection`.
+- **Trash by default.** Where the source supports a trash or recoverable
+  state (e.g. Gmail's ~30-day trash), the default remote-deletion
+  behavior moves messages there rather than removing them outright.
+- **Permanent deletion is opt-in.** Permanent remote deletion requires an
+  explicit flag and interactive confirmation. It is never the default,
+  never inferred from dedup, and never applied in batch without the user
+  acknowledging the source and scope at the moment of the action.
 
-This preserves the distinction between "hide this redundant local row" and
-"delete something from Gmail/IMAP/another source service."
+This preserves the distinction between "hide this redundant local row,"
+"hard-delete it from the local archive," and "delete something from
+Gmail / IMAP / another source service."
 
 ## Schema And Persistence
 
@@ -471,13 +543,18 @@ These concepts belong together and should be designed as one coherent model:
 - Account/source as one ingest unit.
 - Collection as explicit grouping.
 - Default `All` collection.
-- Account-scoped identities.
+- Account-scoped identities, with one-time migration from any legacy
+  global identity config.
 - Collection identity as derived union.
 - Account-scoped dedup.
 - Collection-scoped dedup.
+- Sent-message safety as a survivor eligibility filter, not a tie-breaker.
 - Live-message filtering across normal reads.
+- Safety progression of scan → hide → local hard delete → remote delete,
+  with no automatic escalation between rungs.
 - Undo as local visibility restore, not full rollback.
-- Remote deletion as explicit source-scoped follow-up.
+- Remote deletion as explicit source-scoped follow-up, same-source-only,
+  trash-by-default with permanent deletion behind interactive confirmation.
 
 ### Implementation Slices
 
@@ -520,9 +597,10 @@ between the target model and the shipped code is visible:
 
 - **Already on the branch:** account-as-source vocabulary, `--account` and
   `--collection` flags on dedup, default `All` collection bootstrap,
-  per-account dedup, collection-scope dedup, undo as local-visibility
-  restore, source-scoped remote-deletion manifests, and per-account
-  identity records via `list-identities`.
+  per-account dedup, collection-scope dedup, sent-message safety in
+  survivor selection, undo as local-visibility restore, source-scoped
+  remote-deletion manifests with same-source-only staging, and
+  per-account identity records via `list-identities`.
 - **Partial:** live-message filtering (applied to SQLite and DuckDB read
   paths; coverage across vector/hybrid retrieval and MCP responses still
   needs an audit), name-collision errors between accounts and collections
@@ -530,7 +608,9 @@ between the target model and the shipped code is visible:
   collections as first-class query scopes outside dedup.
 - **Not yet on the branch:** identity discovery beyond ingest metadata,
   identity confirmation UX, derived collection identity used at read time,
-  and policy controls for survivor scoring.
+  policy controls for survivor scoring, the explicit local hard-delete
+  rung of the safety progression, and the legacy `[identity]` config
+  migration on first startup after upgrade.
 
 The implementation slices in the next section can be applied to the
 existing branch incrementally rather than as a single reshape.
@@ -543,10 +623,16 @@ Use this checklist before translating the design back into implementation tasks:
 - Is every cross-account operation expressed through a collection?
 - Can users tell from the command or UI when they are crossing account/source
   boundaries?
-- Are identities account-scoped rather than global?
+- Are identities account-scoped rather than global, with a defined
+  migration from any legacy global config?
 - Is `All` modeled as a collection?
 - Are collections first-class query scopes?
 - Are hidden duplicates excluded from every normal read path by contract?
-- Does dedup avoid remote deletion unless explicitly requested?
+- Does dedup honor sent-message eligibility before falling back to the
+  survivor priority list?
+- Does dedup keep scan / hide / local hard delete / remote delete as four
+  separate user actions, with no automatic escalation between them?
+- Does remote deletion stay same-source-only, trash-by-default, and
+  require explicit confirmation for permanent removal?
 - Does undo avoid promising exact rollback?
 - Are implementation slices allowed only when they preserve these semantics?
