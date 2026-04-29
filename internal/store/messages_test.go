@@ -177,3 +177,71 @@ func TestEnsureParticipantByPhone_IdentifierType(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateParticipantDisplayNameByEmail(t *testing.T) {
+	st := testutil.NewTestStore(t)
+
+	// Create an unnamed email participant (e.g. inserted by iMessage import
+	// for an Apple ID handle).
+	res, err := st.DB().Exec(
+		`INSERT INTO participants (email_address) VALUES (?)`,
+		"alice@example.com",
+	)
+	if err != nil {
+		t.Fatalf("insert participant: %v", err)
+	}
+	pid, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("LastInsertId: %v", err)
+	}
+
+	// Backfilling on an empty display_name succeeds.
+	updated, err := st.UpdateParticipantDisplayNameByEmail("alice@example.com", "Alice Example")
+	if err != nil {
+		t.Fatalf("UpdateParticipantDisplayNameByEmail: %v", err)
+	}
+	if !updated {
+		t.Fatal("expected backfill to update existing participant")
+	}
+
+	got := readDisplayName(t, st, pid)
+	if got != "Alice Example" {
+		t.Errorf("display_name = %q, want %q", got, "Alice Example")
+	}
+
+	// Lookup is case-insensitive on the email.
+	updatedMixed, err := st.UpdateParticipantDisplayNameByEmail("ALICE@example.com", "Should Not Overwrite")
+	if err != nil {
+		t.Fatalf("UpdateParticipantDisplayNameByEmail (case): %v", err)
+	}
+	if updatedMixed {
+		t.Error("second update should not modify a non-empty display_name")
+	}
+	if got := readDisplayName(t, st, pid); got != "Alice Example" {
+		t.Errorf("display_name overwritten: %q", got)
+	}
+
+	// Empty inputs are no-ops.
+	if updated, err := st.UpdateParticipantDisplayNameByEmail("", "X"); err != nil || updated {
+		t.Errorf("empty email: updated=%v err=%v", updated, err)
+	}
+	if updated, err := st.UpdateParticipantDisplayNameByEmail("x@y.com", ""); err != nil || updated {
+		t.Errorf("empty name: updated=%v err=%v", updated, err)
+	}
+
+	// Unknown email is a no-op (does not create rows).
+	if updated, err := st.UpdateParticipantDisplayNameByEmail("nobody@example.com", "Nobody"); err != nil || updated {
+		t.Errorf("unknown email: updated=%v err=%v", updated, err)
+	}
+}
+
+func readDisplayName(t *testing.T, st *store.Store, pid int64) string {
+	t.Helper()
+	var name sql.NullString
+	if err := st.DB().QueryRow(
+		`SELECT display_name FROM participants WHERE id = ?`, pid,
+	).Scan(&name); err != nil {
+		t.Fatalf("scan display_name: %v", err)
+	}
+	return name.String
+}

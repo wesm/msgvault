@@ -13,14 +13,16 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/imessage"
 	"github.com/wesm/msgvault/internal/store"
+	"github.com/wesm/msgvault/internal/vcard"
 )
 
 var (
-	importImessageDBPath string
-	importImessageBefore string
-	importImessageAfter  string
-	importImessageLimit  int
-	importImessageMe     string
+	importImessageDBPath   string
+	importImessageBefore   string
+	importImessageAfter    string
+	importImessageLimit    int
+	importImessageMe       string
+	importImessageContacts string
 )
 
 var importImessageCmd = &cobra.Command{
@@ -38,11 +40,17 @@ Date filters:
   --after 2024-01-01     Only messages on or after this date
   --before 2024-12-31    Only messages before this date
 
+Contact names:
+  chat.db only stores phone/email handles, not contact names. Pass
+  --contacts /path/to/contacts.vcf to backfill display names from a
+  vCard export (e.g. macOS Contacts.app → File → Export → Export vCard).
+
 Examples:
   msgvault import-imessage
   msgvault import-imessage --after 2024-01-01
   msgvault import-imessage --limit 100
-  msgvault import-imessage --db-path /path/to/chat.db`,
+  msgvault import-imessage --db-path /path/to/chat.db
+  msgvault import-imessage --contacts ~/contacts.vcf`,
 	RunE: runImportImessage,
 }
 
@@ -107,6 +115,9 @@ func runImportImessage(cmd *cobra.Command, _ []string) error {
 		if ctx.Err() != nil {
 			fmt.Println("\nImport interrupted.")
 			printImessageSummary(summary, startTime)
+			if importImessageContacts != "" {
+				applyImessageContacts(s, importImessageContacts)
+			}
 			rebuildCacheAfterWrite(cfg.DatabaseDSN())
 			return nil
 		}
@@ -114,8 +125,56 @@ func runImportImessage(cmd *cobra.Command, _ []string) error {
 	}
 
 	printImessageSummary(summary, startTime)
+
+	if importImessageContacts != "" {
+		applyImessageContacts(s, importImessageContacts)
+	}
+
 	rebuildCacheAfterWrite(cfg.DatabaseDSN())
 	return nil
+}
+
+// applyImessageContacts loads a vCard file and backfills display_name
+// for participants matched by phone or email. Only updates participants
+// that already exist (created during message import) and whose name is
+// currently empty — first-writer-wins from earlier sources is preserved.
+func applyImessageContacts(s *store.Store, vcfPath string) {
+	contacts, err := vcard.ParseFile(vcfPath)
+	if err != nil {
+		fmt.Printf("\nWarning: could not read contacts %s: %v\n", vcfPath, err)
+		return
+	}
+
+	var phoneMatches, emailMatches int
+	for _, c := range contacts {
+		if c.FullName == "" {
+			continue
+		}
+		for _, phone := range c.Phones {
+			updated, err := s.UpdateParticipantDisplayNameByPhone(phone, c.FullName)
+			if err != nil {
+				continue
+			}
+			if updated {
+				phoneMatches++
+			}
+		}
+		for _, email := range c.Emails {
+			updated, err := s.UpdateParticipantDisplayNameByEmail(email, c.FullName)
+			if err != nil {
+				continue
+			}
+			if updated {
+				emailMatches++
+			}
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("Contacts applied:")
+	fmt.Printf("  Source:           %s (%d entries)\n", vcfPath, len(contacts))
+	fmt.Printf("  Names backfilled: %d by phone, %d by email\n",
+		phoneMatches, emailMatches)
 }
 
 func openStoreAndInit() (*store.Store, error) {
@@ -271,6 +330,10 @@ func init() {
 	importImessageCmd.Flags().StringVar(
 		&importImessageMe, "me", "",
 		"your phone/email for recipient tracking (default: source identifier 'local')",
+	)
+	importImessageCmd.Flags().StringVar(
+		&importImessageContacts, "contacts", "",
+		"path to .vcf file used to backfill participant display names by phone/email",
 	)
 	rootCmd.AddCommand(importImessageCmd)
 }

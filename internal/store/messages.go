@@ -1236,6 +1236,31 @@ func (s *Store) UpdateParticipantDisplayNameByPhone(phone, displayName string) (
 	return rows > 0, nil
 }
 
+// UpdateParticipantDisplayNameByEmail updates the display_name for an
+// existing participant identified by email address. Only updates if
+// display_name is currently empty. Returns true if a participant was
+// found and updated, false if not found or name was already set. Does
+// NOT create new participants. The lookup is case-insensitive.
+func (s *Store) UpdateParticipantDisplayNameByEmail(email, displayName string) (bool, error) {
+	if email == "" || displayName == "" {
+		return false, nil
+	}
+
+	result, err := s.db.Exec(fmt.Sprintf(`
+		UPDATE participants SET display_name = ?, updated_at = %s
+		WHERE LOWER(email_address) = LOWER(?) AND (display_name IS NULL OR display_name = '')
+	`, s.dialect.Now()), displayName, email)
+	if err != nil {
+		return false, err
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
 // EnsureConversationParticipant adds a participant to a conversation.
 // Uses INSERT OR IGNORE to be idempotent.
 func (s *Store) EnsureConversationParticipant(conversationID, participantID int64, role string) error {
