@@ -498,7 +498,14 @@ These are valuable but do not need to define the first aligned implementation:
 
 - Import-time dedup with `--into`.
 - Automatic dedup when creating or adding to collections.
-- Exporting a collection to a clean account.
+- Exporting a deduplicated collection into a clean account. Once a
+  collection has been deduplicated, its survivors form a coherent unified
+  view across the member sources. A future operation should be able to
+  export those survivors into a single new account that becomes the
+  canonical archive going forward, while the original member accounts
+  remain intact for provenance. This gives users a path from "many
+  overlapping imports" to "one clean source of truth" without forcing them
+  to throw away the originals.
 - Identity-derived inbound/outbound classification across historical imports.
 - Rich identity review UI.
 - Policy controls for source preference and survivor scoring.
