@@ -101,6 +101,8 @@ and analyze a unified communication archive, but msgvault still knows which sour
 each message came from, which identities apply to which account, and when an
 operation is crossing account boundaries.
 
+![Deduplication concept diagram](./assets/deduplication-concept.png)
+
 
 
 ## Design Decisions From The Discussion
