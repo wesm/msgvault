@@ -27,7 +27,6 @@
     body {
       margin: 0;
       width: 1600px;
-      min-height: 980px;
       font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
       color: var(--ink);
       background: #ffffff;
@@ -35,8 +34,7 @@
 
     .slide {
       width: 1600px;
-      height: 980px;
-      padding: 76px 100px 60px;
+      padding: 76px 100px 76px;
     }
 
     .eyebrow {
@@ -311,7 +309,7 @@
 <body>
   <main class="slide">
     <div class="eyebrow">msgvault model</div>
-    <h1>Deduplication hides redundant copies. Originals stay in the archive.</h1>
+    <h1>Dedup hides redundant copies. Originals stay in the archive.</h1>
     <p class="subtitle">One survivor per duplicate group. The other copies are hidden from normal reads but kept on disk, and undo can restore them.</p>
 
     <section class="stage" aria-label="Before and after dedup">
@@ -378,6 +376,7 @@
         </div>
 
         <div class="footer-rule">Detection uses Message-ID, normalized content hashes, and provider IDs together — not as separate passes.</div>
+        <div class="identity-rule">Survivor selection is deterministic and visible in dry-run output, so the choice is auditable before anything is hidden.</div>
       </div>
 
       <div class="panel">
