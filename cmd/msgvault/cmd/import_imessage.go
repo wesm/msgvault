@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -120,11 +121,13 @@ func runImportImessage(cmd *cobra.Command, _ []string) error {
 
 func openStoreAndInit() (*store.Store, error) {
 	dbPath := cfg.DatabaseDSN()
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf(
-			"database not found: %s\nRun 'msgvault init-db' first",
-			dbPath,
-		)
+	if statPath := statPathForDSN(dbPath); statPath != "" {
+		if _, err := os.Stat(statPath); os.IsNotExist(err) {
+			return nil, fmt.Errorf(
+				"database not found: %s\nRun 'msgvault init-db' first",
+				dbPath,
+			)
+		}
 	}
 	s, err := store.Open(dbPath)
 	if err != nil {
@@ -165,6 +168,19 @@ func resolveChatDBPath() (string, error) {
 		)
 	}
 	return path, nil
+}
+
+func statPathForDSN(dsn string) string {
+	// cfg.DatabaseDSN() returns either a plain filesystem path or a file: URI.
+	// Plain paths can be passed to os.Stat directly.
+	if !strings.HasPrefix(dsn, "file:") {
+		return dsn
+	}
+	u, err := url.Parse(dsn)
+	if err != nil || u.Path == "" {
+		return ""
+	}
+	return u.Path
 }
 
 func buildImessageOpts() ([]imessage.ClientOption, error) {

@@ -44,6 +44,28 @@ func TestMigrateLegacyIdentityConfig_Basic(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacyIdentityConfig_MergesExistingSignal(t *testing.T) {
+	f := storetest.New(t)
+	st := f.Store
+
+	testutil.MustNoErr(t, st.AddAccountIdentity(f.Source.ID, "alice@example.com", "account-identifier"), "AddAccountIdentity")
+
+	applied, _, _, err := st.MigrateLegacyIdentityConfig([]string{"alice@example.com"})
+	testutil.MustNoErr(t, err, "MigrateLegacyIdentityConfig")
+	if !applied {
+		t.Fatal("applied should be true on first run")
+	}
+
+	ids, err := st.ListAccountIdentities(f.Source.ID)
+	testutil.MustNoErr(t, err, "ListAccountIdentities")
+	if len(ids) != 1 {
+		t.Fatalf("got %d identities, want 1", len(ids))
+	}
+	if ids[0].SourceSignal != "account-identifier,config_migration" {
+		t.Errorf("source_signal = %q, want account-identifier,config_migration", ids[0].SourceSignal)
+	}
+}
+
 func TestMigrateLegacyIdentityConfig_SecondCallNoOp(t *testing.T) {
 	f := storetest.New(t)
 	st := f.Store
@@ -61,6 +83,31 @@ func TestMigrateLegacyIdentityConfig_SecondCallNoOp(t *testing.T) {
 	}
 	if sources != 0 || addrs != 0 {
 		t.Errorf("second call counts = (%d, %d), want (0, 0)", sources, addrs)
+	}
+}
+
+func TestMigrateLegacyIdentityConfig_DeferredUntilSourceExists(t *testing.T) {
+	st := testutil.NewTestStore(t)
+
+	applied, sources, addrs, err := st.MigrateLegacyIdentityConfig([]string{"alice@example.com"})
+	testutil.MustNoErr(t, err, "first migration")
+	if applied {
+		t.Fatal("applied should be false before any sources exist")
+	}
+	if sources != 0 || addrs != 0 {
+		t.Fatalf("counts = (%d, %d), want (0, 0)", sources, addrs)
+	}
+
+	_, err = st.GetOrCreateSource("gmail", "alice@example.com")
+	testutil.MustNoErr(t, err, "GetOrCreateSource")
+
+	applied, sources, addrs, err = st.MigrateLegacyIdentityConfig([]string{"alice@example.com"})
+	testutil.MustNoErr(t, err, "second migration")
+	if !applied {
+		t.Fatal("applied should be true after a source exists")
+	}
+	if sources != 1 || addrs != 1 {
+		t.Fatalf("counts = (%d, %d), want (1, 1)", sources, addrs)
 	}
 }
 

@@ -49,11 +49,12 @@ func choosePasswordStrategy(
 }
 
 var (
-	imapHost     string
-	imapPort     int
-	imapUsername string
-	imapNoTLS    bool
-	imapSTARTTLS bool
+	imapHost                 string
+	imapPort                 int
+	imapUsername             string
+	imapNoTLS                bool
+	imapSTARTTLS             bool
+	noDefaultIdentityAddImap bool
 )
 
 var addIMAPCmd = &cobra.Command{
@@ -179,6 +180,10 @@ Examples:
 			return fmt.Errorf("set display name: %w", err)
 		}
 
+		if !noDefaultIdentityAddImap {
+			confirmDefaultIdentity(s, source.ID, imapUsername, imapUsername, "account-identifier")
+		}
+
 		fmt.Printf("\nIMAP account added successfully!\n")
 		fmt.Printf("  Identifier: %s\n", identifier)
 		fmt.Printf("  Note: Password stored on disk at %s\n", imapclient.CredentialsPath(cfg.TokensDir(), identifier))
@@ -234,5 +239,6 @@ func init() {
 	addIMAPCmd.Flags().StringVar(&imapUsername, "username", "", "IMAP username / email address (required)")
 	addIMAPCmd.Flags().BoolVar(&imapNoTLS, "no-tls", false, "Disable TLS (plain connection, not recommended)")
 	addIMAPCmd.Flags().BoolVar(&imapSTARTTLS, "starttls", false, "Use STARTTLS instead of implicit TLS")
+	addIMAPCmd.Flags().BoolVar(&noDefaultIdentityAddImap, "no-default-identity", false, noDefaultIdentityHelp)
 	rootCmd.AddCommand(addIMAPCmd)
 }

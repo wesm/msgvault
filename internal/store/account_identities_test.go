@@ -294,35 +294,3 @@ func TestRemoveAccountIdentity_Miss(t *testing.T) {
 		t.Error("removed=true on miss")
 	}
 }
-
-func TestListAllAccountIdentities(t *testing.T) {
-	f := storetest.New(t)
-	st := f.Store
-
-	src2, err := st.GetOrCreateSource("imap", "bob@example.com")
-	testutil.MustNoErr(t, err, "GetOrCreateSource")
-
-	testutil.MustNoErr(t, st.AddAccountIdentity(f.Source.ID, "alice@example.com", "account-identifier"), "add alice")
-	testutil.MustNoErr(t, st.AddAccountIdentity(f.Source.ID, "alice2@example.com", "manual"), "add alice2")
-	testutil.MustNoErr(t, st.AddAccountIdentity(src2.ID, "bob@example.com", "account-identifier"), "add bob")
-
-	rows, err := st.ListAllAccountIdentities()
-	testutil.MustNoErr(t, err, "ListAllAccountIdentities")
-	if len(rows) != 3 {
-		t.Fatalf("want 3 rows, got %d", len(rows))
-	}
-	// Order: source_id ASC, address ASC.
-	want := []struct {
-		srcID int64
-		addr  string
-	}{
-		{f.Source.ID, "alice2@example.com"},
-		{f.Source.ID, "alice@example.com"},
-		{src2.ID, "bob@example.com"},
-	}
-	for i, w := range want {
-		if rows[i].SourceID != w.srcID || rows[i].Address != w.addr {
-			t.Errorf("row %d: got (%d, %q), want (%d, %q)", i, rows[i].SourceID, rows[i].Address, w.srcID, w.addr)
-		}
-	}
-}

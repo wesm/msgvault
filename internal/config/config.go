@@ -127,21 +127,6 @@ type LogConfig struct {
 	SQLTrace bool `toml:"sql_trace"`
 }
 
-// IdentityAddressSet returns the configured identity addresses as a
-// normalized (lower-cased) set for O(1) lookup. Returns an empty map
-// (not nil) when no addresses are configured.
-func (c *Config) IdentityAddressSet() map[string]bool {
-	out := make(map[string]bool, len(c.Identity.Addresses))
-	for _, addr := range c.Identity.Addresses {
-		a := strings.ToLower(strings.TrimSpace(addr))
-		if a == "" {
-			continue
-		}
-		out[a] = true
-	}
-	return out
-}
-
 // DataConfig holds data storage configuration.
 type DataConfig struct {
 	DataDir     string `toml:"data_dir"`

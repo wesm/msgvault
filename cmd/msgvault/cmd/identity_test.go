@@ -390,6 +390,19 @@ func TestIdentityRemove_MissOnEmptyAccount(t *testing.T) {
 	}
 }
 
+func TestIdentityRemove_WhitespaceIdentifier(t *testing.T) {
+	_, root, _, _ := newIdentityCLITest(t)
+
+	root.SetArgs([]string{"identity", "remove", "alice@example.com", "   "})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected error for whitespace identifier")
+	}
+	if !strings.Contains(err.Error(), "identifier must not be empty") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestIdentityRemove_LastIdentifierWarns(t *testing.T) {
 	s, root, out, _ := newIdentityCLITest(t)
 	a, _ := s.GetOrCreateSource("gmail", "alice@example.com")

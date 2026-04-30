@@ -15,17 +15,15 @@ import (
 // errors.
 func runStartupMigrations(s *store.Store) error {
 	addrs := cfg.Identity.Addresses
-	if len(addrs) > 0 {
-		logger.Warn("legacy [identity] block in config detected",
-			"count", len(addrs),
-			"hint", "please review per-account identities via 'msgvault list-identities'")
-	}
 	notice, err := s.RunStartupMigrations(addrs)
 	if err != nil {
 		logger.Warn("startup migration failed", "error", err)
 		return err
 	}
 	if notice != "" {
+		logger.Warn("legacy [identity] block in config detected",
+			"count", len(addrs),
+			"hint", "please review per-account identities via 'msgvault identity list'")
 		logger.Warn("legacy identity migrated",
 			"addresses", len(addrs))
 		fmt.Fprintln(os.Stderr, notice)

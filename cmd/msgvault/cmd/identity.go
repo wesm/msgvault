@@ -48,10 +48,6 @@ func runIdentityList(cmd *cobra.Command, _ []string) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	if identityListAccount != "" && identityListCollection != "" {
-		return fmt.Errorf("--account and --collection are mutually exclusive")
-	}
-
 	var sourceIDs []int64
 	switch {
 	case identityListAccount != "":
@@ -332,6 +328,9 @@ func runIdentityRemove(cmd *cobra.Command, args []string) error {
 	defer func() { _ = st.Close() }()
 
 	identifier := strings.TrimSpace(args[1])
+	if identifier == "" {
+		return fmt.Errorf("identifier must not be empty")
+	}
 
 	scope, err := ResolveAccountFlag(st, args[0])
 	if err != nil {

@@ -16,11 +16,12 @@ import (
 )
 
 var (
-	importPhone       string
-	importMediaDir    string
-	importContacts    string
-	importLimit       int
-	importDisplayName string
+	importPhone                     string
+	importMediaDir                  string
+	importContacts                  string
+	importLimit                     int
+	importDisplayName               string
+	noDefaultIdentityImportWhatsApp bool
 )
 
 var importWhatsappCmd = &cobra.Command{
@@ -120,6 +121,10 @@ func runWhatsAppImport(cmd *cobra.Command, sourcePath string) error {
 			return nil
 		}
 		return fmt.Errorf("import failed: %w", err)
+	}
+
+	if !noDefaultIdentityImportWhatsApp && summary.Errors == 0 && summary.SourceID != 0 {
+		confirmDefaultIdentity(s, summary.SourceID, importPhone, importPhone, "phone-e164")
 	}
 
 	// Import contacts if provided.
@@ -252,6 +257,7 @@ func init() {
 	importWhatsappCmd.Flags().StringVar(&importContacts, "contacts", "", "path to contacts .vcf file for name resolution (optional)")
 	importWhatsappCmd.Flags().IntVar(&importLimit, "limit", 0, "limit number of messages (for testing)")
 	importWhatsappCmd.Flags().StringVar(&importDisplayName, "display-name", "", "display name for the phone owner")
+	importWhatsappCmd.Flags().BoolVar(&noDefaultIdentityImportWhatsApp, "no-default-identity", false, noDefaultIdentityHelp)
 	_ = importWhatsappCmd.MarkFlagRequired("phone")
 	rootCmd.AddCommand(importWhatsappCmd)
 

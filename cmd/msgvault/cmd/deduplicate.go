@@ -294,7 +294,11 @@ func runDeduplicatePerSource(
 		}
 
 		batchID := fmt.Sprintf(
-			"dedup-%s-%d-%s", time.Now().Format("20060102-150405"), src.ID, dedup.SanitizeFilenameComponent(src.Identifier),
+			"dedup-%s-%d-%s-%s",
+			time.Now().Format("20060102-150405"),
+			src.ID,
+			dedup.SanitizeFilenameComponent(src.Identifier),
+			randomBatchToken(),
 		)
 		summary, err := engineScoped.Execute(
 			cmd.Context(), report, batchID,
@@ -500,7 +504,7 @@ func init() {
 	deduplicateCmd.Flags().BoolVar(&dedupDryRun, "dry-run", false,
 		"Scan and report only; do not modify data")
 	deduplicateCmd.Flags().BoolVar(&dedupNoBackup, "no-backup", false,
-		"Skip database backup before merging")
+		"Skip database backup before merging (backup covers pre-dedup state for all sources, not per-batch)")
 	deduplicateCmd.Flags().StringVar(&dedupPrefer, "prefer", "",
 		"Comma-separated source type preference order "+
 			"(default: gmail,imap,mbox,emlx,hey)")
@@ -508,7 +512,7 @@ func init() {
 		"Also detect duplicates by normalized raw MIME content")
 	deduplicateCmd.Flags().StringArrayVar(&dedupUndo, "undo", nil,
 		"Undo a previous dedup run by batch ID "+
-			"(repeat to undo multiple batches)")
+			"(repeat to undo multiple batches; scope flags are ignored)")
 	deduplicateCmd.Flags().StringVar(&dedupAccount, "account", "",
 		"Scope dedup to one account; never crosses source boundaries")
 	deduplicateCmd.Flags().StringVar(&dedupCollection, "collection", "",

@@ -21,6 +21,7 @@ var (
 	importMboxNoResume           bool
 	importMboxCheckpointInterval int
 	importMboxNoAttachments      bool
+	noDefaultIdentityImportMbox  bool
 )
 
 type mboxCheckpoint struct {
@@ -243,6 +244,7 @@ Examples:
 			totalErrors        int64
 			totalBytes         int64
 			hadHardErrors      bool
+			sourceID           int64
 		)
 		type processedFile struct {
 			Path    string
@@ -271,6 +273,9 @@ Examples:
 			totalLabelsUpdated += summary.LabelsUpdated
 			totalErrors += summary.Errors
 			totalBytes += summary.BytesProcessed
+			if sourceID == 0 && summary.SourceID != 0 {
+				sourceID = summary.SourceID
+			}
 			if summary.HardErrors {
 				hadHardErrors = true
 			}
@@ -319,6 +324,13 @@ Examples:
 
 		rebuildCacheAfterWrite(dbPath)
 
+		if ctx.Err() == nil && !hadHardErrors && !noDefaultIdentityImportMbox {
+			if sourceID == 0 {
+				return nil
+			}
+			confirmDefaultIdentity(st, sourceID, identifier, identifier, "account-identifier")
+		}
+
 		if ctx.Err() == nil && hadHardErrors {
 			return fmt.Errorf("import completed with %d errors", totalErrors)
 		}
@@ -337,4 +349,5 @@ func init() {
 	importMboxCmd.Flags().BoolVar(&importMboxNoResume, "no-resume", false, "Do not resume from an interrupted import")
 	importMboxCmd.Flags().IntVar(&importMboxCheckpointInterval, "checkpoint-interval", 200, "Save progress every N messages")
 	importMboxCmd.Flags().BoolVar(&importMboxNoAttachments, "no-attachments", false, "Do not store attachments (disk or database). Messages will still be marked as having attachments. Note: rerunning later without --no-attachments will not backfill attachments for already-imported messages.")
+	importMboxCmd.Flags().BoolVar(&noDefaultIdentityImportMbox, "no-default-identity", false, noDefaultIdentityHelp)
 }

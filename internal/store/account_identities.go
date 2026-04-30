@@ -150,30 +150,6 @@ func (s *Store) RemoveAccountIdentity(sourceID int64, address string) (bool, err
 	return n > 0, nil
 }
 
-// ListAllAccountIdentities returns every confirmed identifier across every
-// source, ordered (source_id, address). Used by the `identity list` command
-// when no scope is specified.
-func (s *Store) ListAllAccountIdentities() ([]AccountIdentity, error) {
-	rows, err := s.db.Query(`
-		SELECT source_id, address, source_signal, confirmed_at
-		FROM account_identities
-		ORDER BY source_id, address
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("list all account identities: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var out []AccountIdentity
-	for rows.Next() {
-		var ai AccountIdentity
-		if err := rows.Scan(&ai.SourceID, &ai.Address, &ai.SourceSignal, &ai.ConfirmedAt); err != nil {
-			return nil, fmt.Errorf("scan: %w", err)
-		}
-		out = append(out, ai)
-	}
-	return out, rows.Err()
-}
-
 // GetIdentitiesForScope returns the union of confirmed identifier addresses
 // across the given source IDs. Empty input returns an empty map — no global
 // default; an explicit empty scope means no identity matching.

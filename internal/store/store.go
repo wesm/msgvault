@@ -521,12 +521,8 @@ func (s *Store) GetStatsForScope(sourceIDs []int64) (*Stats, error) {
 
 	if len(sourceIDs) == 0 {
 		// Unscoped: global catalog counts, matching pre-slice-3 semantics.
-		// MessageCount applies LiveMessagesWhere so dedup-hidden and
-		// source-deleted rows aren't reported as live messages.
-		// Conversations / attachments / labels keep catalog COUNT(*)
-		// because the previous output documented those numbers and a
-		// silent shift to "links to live messages only" would change
-		// what `msgvault stats` reports without warning.
+		// All message-linked counts apply LiveMessagesWhere so dedup-hidden
+		// and source-deleted rows aren't reported as live rows.
 		queries = []struct {
 			query string
 			args  []any
@@ -538,17 +534,23 @@ func (s *Store) GetStatsForScope(sourceIDs []int64) (*Stats, error) {
 				&stats.MessageCount,
 			},
 			{
-				"SELECT COUNT(*) FROM conversations",
+				"SELECT COUNT(*) FROM conversations WHERE EXISTS (" +
+					"SELECT 1 FROM messages m WHERE m.conversation_id = conversations.id AND " + LiveMessagesWhere("m") +
+					")",
 				nil,
 				&stats.ThreadCount,
 			},
 			{
-				"SELECT COUNT(*) FROM attachments",
+				"SELECT COUNT(*) FROM attachments a WHERE EXISTS (" +
+					"SELECT 1 FROM messages m WHERE m.id = a.message_id AND " + LiveMessagesWhere("m") +
+					")",
 				nil,
 				&stats.AttachmentCount,
 			},
 			{
-				"SELECT COUNT(*) FROM labels",
+				"SELECT COUNT(*) FROM labels l WHERE EXISTS (" +
+					"SELECT 1 FROM message_labels ml JOIN messages m ON m.id = ml.message_id WHERE ml.label_id = l.id AND " + LiveMessagesWhere("m") +
+					")",
 				nil,
 				&stats.LabelCount,
 			},
@@ -570,6 +572,11 @@ func (s *Store) GetStatsForScope(sourceIDs []int64) (*Stats, error) {
 		for i, id := range sourceIDs {
 			args[i] = id
 		}
+		cloneArgs := func() []any {
+			out := make([]any, len(args))
+			copy(out, args)
+			return out
+		}
 
 		queries = []struct {
 			query string
@@ -578,26 +585,26 @@ func (s *Store) GetStatsForScope(sourceIDs []int64) (*Stats, error) {
 		}{
 			{
 				"SELECT COUNT(*) FROM messages WHERE " + LiveMessagesWhere("") + " AND " + inClause,
-				args,
+				cloneArgs(),
 				&stats.MessageCount,
 			},
 			{
 				"SELECT COUNT(DISTINCT conversation_id) FROM messages WHERE " + LiveMessagesWhere("") + " AND " + inClause,
-				args,
+				cloneArgs(),
 				&stats.ThreadCount,
 			},
 			{
 				"SELECT COUNT(*) FROM attachments a WHERE EXISTS (" +
 					"SELECT 1 FROM messages m WHERE m.id = a.message_id AND " + LiveMessagesWhere("m") +
 					" AND m." + inClause + ")",
-				args,
+				cloneArgs(),
 				&stats.AttachmentCount,
 			},
 			{
 				"SELECT COUNT(DISTINCT ml.label_id) FROM message_labels ml " +
 					"JOIN messages m ON m.id = ml.message_id WHERE " + LiveMessagesWhere("m") +
 					" AND m." + inClause,
-				args,
+				cloneArgs(),
 				&stats.LabelCount,
 			},
 		}

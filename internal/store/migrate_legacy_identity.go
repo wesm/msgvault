@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -10,7 +11,9 @@ const migrationLegacyIdentity = "legacy_identity_to_per_account"
 // MigrateLegacyIdentityConfig migrates a list of legacy global identity
 // addresses into per-account confirmed records. It runs at most once:
 // subsequent calls are no-ops, marked by the
-// "legacy_identity_to_per_account" entry in applied_migrations.
+// "legacy_identity_to_per_account" entry in applied_migrations. An
+// empty or blank-only address list still marks the migration applied so
+// a later config change does not re-run the migration unexpectedly.
 //
 // Returns (applied bool, sourceCount int, addressCount int, err error).
 //
@@ -70,14 +73,51 @@ func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied bool, s
 	}
 
 	if err := s.withTx(func(tx *loggedTx) error {
+		var appliedMarker string
+		err := tx.QueryRow(
+			`SELECT name FROM applied_migrations WHERE name = ?`,
+			migrationLegacyIdentity,
+		).Scan(&appliedMarker)
+		switch {
+		case err == nil:
+			return nil
+		case err != sql.ErrNoRows:
+			return fmt.Errorf("check migration %q in tx: %w", migrationLegacyIdentity, err)
+		}
+
 		for _, src := range sources {
 			for _, addr := range normalized {
-				_, txErr := tx.Exec(
-					s.dialect.InsertOrIgnore(`INSERT OR IGNORE INTO account_identities (source_id, address, source_signal) VALUES (?, ?, ?)`),
-					src.ID, addr, "config_migration",
-				)
-				if txErr != nil {
-					return fmt.Errorf("insert identity (source=%d, addr=%s): %w", src.ID, addr, txErr)
+				var existing string
+				err := tx.QueryRow(
+					`SELECT source_signal FROM account_identities
+					 WHERE source_id = ? AND address = ?`,
+					src.ID, addr,
+				).Scan(&existing)
+				switch {
+				case err == sql.ErrNoRows:
+					_, txErr := tx.Exec(
+						`INSERT INTO account_identities (source_id, address, source_signal)
+						 VALUES (?, ?, ?)`,
+						src.ID, addr, "config_migration",
+					)
+					if txErr != nil {
+						return fmt.Errorf("insert identity (source=%d, addr=%s): %w", src.ID, addr, txErr)
+					}
+				case err != nil:
+					return fmt.Errorf("read existing identity (source=%d, addr=%s): %w", src.ID, addr, err)
+				default:
+					merged := mergeSignalSet(existing, "config_migration")
+					if merged != existing {
+						_, txErr := tx.Exec(
+							`UPDATE account_identities
+							 SET source_signal = ?
+							 WHERE source_id = ? AND address = ?`,
+							merged, src.ID, addr,
+						)
+						if txErr != nil {
+							return fmt.Errorf("update identity (source=%d, addr=%s): %w", src.ID, addr, txErr)
+						}
+					}
 				}
 			}
 		}
@@ -111,7 +151,7 @@ func (s *Store) RunStartupMigrations(legacyIdentityAddresses []string) (string, 
 	}
 	notice := fmt.Sprintf(
 		"Migrated legacy [identity] config to per-account identities (%d addresses across %d accounts).\n"+
-			"Run 'msgvault list-identities' to review per-account identities;\n"+
+			"Run 'msgvault identity list' to review per-account identities;\n"+
 			"the [identity] block in config.toml is no longer used.",
 		addrs, sources,
 	)

@@ -62,7 +62,11 @@ var collectionDeleteCmd = &cobra.Command{
 	RunE:  runCollectionDelete,
 }
 
-var collectionAccounts string
+var (
+	collectionCreateAccounts string
+	collectionAddAccounts    string
+	collectionRemoveAccounts string
+)
 
 func runCollectionCreate(_ *cobra.Command, args []string) error {
 	st, err := openStoreAndInit()
@@ -72,7 +76,7 @@ func runCollectionCreate(_ *cobra.Command, args []string) error {
 	defer func() { _ = st.Close() }()
 
 	name := args[0]
-	sourceIDs, err := resolveAccountList(st, collectionAccounts)
+	sourceIDs, err := resolveAccountList(st, collectionCreateAccounts)
 	if err != nil {
 		return err
 	}
@@ -134,7 +138,18 @@ func runCollectionShow(_ *cobra.Command, args []string) error {
 	fmt.Printf("Created: %s\n", coll.CreatedAt.Format("2006-01-02 15:04"))
 
 	if len(coll.SourceIDs) > 0 {
-		fmt.Println("\nMember source IDs:", coll.SourceIDs)
+		fmt.Println("\nMember sources:")
+		for _, sid := range coll.SourceIDs {
+			src, err := st.GetSourceByID(sid)
+			if err != nil {
+				return fmt.Errorf("get source %d: %w", sid, err)
+			}
+			label := src.Identifier
+			if src.DisplayName.Valid && src.DisplayName.String != "" {
+				label = src.DisplayName.String
+			}
+			fmt.Printf("- %s (id %d)\n", label, src.ID)
+		}
 	}
 	return nil
 }
@@ -146,7 +161,7 @@ func runCollectionAdd(_ *cobra.Command, args []string) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	sourceIDs, err := resolveAccountList(st, collectionAccounts)
+	sourceIDs, err := resolveAccountList(st, collectionAddAccounts)
 	if err != nil {
 		return err
 	}
@@ -165,7 +180,7 @@ func runCollectionRemove(_ *cobra.Command, args []string) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	sourceIDs, err := resolveAccountList(st, collectionAccounts)
+	sourceIDs, err := resolveAccountList(st, collectionRemoveAccounts)
 	if err != nil {
 		return err
 	}
@@ -204,6 +219,9 @@ func resolveAccountList(st *store.Store, accounts string) ([]int64, error) {
 		}
 		// Try as numeric ID first
 		if id, err := strconv.ParseInt(p, 10, 64); err == nil {
+			if _, err := st.GetSourceByID(id); err != nil {
+				return nil, fmt.Errorf("get source %d: %w", id, err)
+			}
 			ids = append(ids, id)
 			continue
 		}
@@ -229,10 +247,10 @@ func init() {
 	collectionCmd.AddCommand(collectionRemoveCmd)
 	collectionCmd.AddCommand(collectionDeleteCmd)
 
-	collectionCreateCmd.Flags().StringVar(&collectionAccounts,
+	collectionCreateCmd.Flags().StringVar(&collectionCreateAccounts,
 		"accounts", "", "Comma-separated account emails or source IDs")
-	collectionAddCmd.Flags().StringVar(&collectionAccounts,
+	collectionAddCmd.Flags().StringVar(&collectionAddAccounts,
 		"accounts", "", "Comma-separated account emails or source IDs")
-	collectionRemoveCmd.Flags().StringVar(&collectionAccounts,
+	collectionRemoveCmd.Flags().StringVar(&collectionRemoveAccounts,
 		"accounts", "", "Comma-separated account emails or source IDs")
 }

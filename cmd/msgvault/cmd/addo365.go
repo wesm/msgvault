@@ -10,7 +10,10 @@ import (
 	"github.com/wesm/msgvault/internal/store"
 )
 
-var o365TenantID string
+var (
+	o365TenantID             string
+	noDefaultIdentityAddO365 bool
+)
 
 var addO365Cmd = &cobra.Command{
 	Use:   "add-o365 <email>",
@@ -128,6 +131,10 @@ Examples:
 			return fmt.Errorf("set display name: %w", err)
 		}
 
+		if !noDefaultIdentityAddO365 {
+			confirmDefaultIdentity(s, source.ID, email, email, "account-identifier")
+		}
+
 		fmt.Printf("\nMicrosoft 365 account added successfully!\n")
 		fmt.Printf("  Email:      %s\n", email)
 		fmt.Printf("  Identifier: %s\n", identifier)
@@ -158,5 +165,6 @@ func isMicrosoftIMAPSource(src *store.Source, email string) bool {
 func init() {
 	addO365Cmd.Flags().StringVar(&o365TenantID, "tenant", "",
 		"Azure AD tenant ID (default: \"common\" for multi-tenant)")
+	addO365Cmd.Flags().BoolVar(&noDefaultIdentityAddO365, "no-default-identity", false, noDefaultIdentityHelp)
 	rootCmd.AddCommand(addO365Cmd)
 }

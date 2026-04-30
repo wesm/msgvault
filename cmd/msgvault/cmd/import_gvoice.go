@@ -14,9 +14,10 @@ import (
 )
 
 var (
-	importGvoiceBefore string
-	importGvoiceAfter  string
-	importGvoiceLimit  int
+	importGvoiceBefore            string
+	importGvoiceAfter             string
+	importGvoiceLimit             int
+	noDefaultIdentityImportGVoice bool
 )
 
 var importGvoiceCmd = &cobra.Command{
@@ -93,6 +94,11 @@ func runImportGvoice(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 		return fmt.Errorf("import failed: %w", err)
+	}
+
+	phone := client.Identifier()
+	if !noDefaultIdentityImportGVoice && strings.HasPrefix(phone, "+") {
+		confirmDefaultIdentity(s, src.ID, phone, phone, "phone-e164")
 	}
 
 	printGvoiceSummary(summary, startTime)
@@ -195,6 +201,10 @@ func init() {
 	importGvoiceCmd.Flags().IntVar(
 		&importGvoiceLimit, "limit", 0,
 		"limit number of messages (for testing)",
+	)
+	importGvoiceCmd.Flags().BoolVar(
+		&noDefaultIdentityImportGVoice, "no-default-identity", false,
+		noDefaultIdentityHelp,
 	)
 	rootCmd.AddCommand(importGvoiceCmd)
 }

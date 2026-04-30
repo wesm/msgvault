@@ -11,10 +11,11 @@ import (
 )
 
 var (
-	headless           bool
-	accountDisplayName string
-	forceReauth        bool
-	oauthAppName       string
+	headless                    bool
+	accountDisplayName          string
+	forceReauth                 bool
+	oauthAppName                string
+	noDefaultIdentityAddAccount bool
 )
 
 var addAccountCmd = &cobra.Command{
@@ -163,6 +164,9 @@ Examples:
 					return fmt.Errorf("set display name: %w", err)
 				}
 			}
+			if !noDefaultIdentityAddAccount {
+				confirmDefaultIdentity(s, source.ID, email, email, "account-identifier")
+			}
 			if bindingChanged {
 				fmt.Printf("Account %s: OAuth app binding updated to %q.\n", email, resolvedApp)
 			} else {
@@ -221,6 +225,9 @@ Examples:
 				return fmt.Errorf("set display name: %w", err)
 			}
 		}
+		if !noDefaultIdentityAddAccount {
+			confirmDefaultIdentity(s, source.ID, email, email, "account-identifier")
+		}
 
 		fmt.Printf("\nAccount %s authorized successfully!\n", email)
 		fmt.Println("You can now run: msgvault sync-full", email)
@@ -249,5 +256,6 @@ func init() {
 	addAccountCmd.Flags().BoolVar(&forceReauth, "force", false, "Delete existing token and re-authorize")
 	addAccountCmd.Flags().StringVar(&accountDisplayName, "display-name", "", "Display name for the account (e.g., \"Work\", \"Personal\")")
 	addAccountCmd.Flags().StringVar(&oauthAppName, "oauth-app", "", "Named OAuth app from config (for Google Workspace orgs)")
+	addAccountCmd.Flags().BoolVar(&noDefaultIdentityAddAccount, "no-default-identity", false, noDefaultIdentityHelp)
 	rootCmd.AddCommand(addAccountCmd)
 }
