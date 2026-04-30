@@ -172,6 +172,47 @@ func TestParseFile_QPSoftBreaks(t *testing.T) {
 	}
 }
 
+func TestParseFile_Base64PhotoEqualsPaddingDoesNotEatNextLine(t *testing.T) {
+	// Apple's modern vCard PHOTO blobs are base64 with '=' padding. The QP
+	// soft-break logic must NOT splice such lines into the following
+	// END:VCARD, or the contact gets silently dropped.
+	vcf := "BEGIN:VCARD\r\n" +
+		"VERSION:3.0\r\n" +
+		"N:Baum;Bryan;;;\r\n" +
+		"FN:Bryan Baum\r\n" +
+		"TEL;type=pref:+13052068533\r\n" +
+		"PHOTO;ENCODING=b;TYPE=JPEG:/9j/4AAQSkZJRgABAQAA=\r\n" +
+		"END:VCARD\r\n" +
+		"BEGIN:VCARD\r\n" +
+		"VERSION:3.0\r\n" +
+		"FN:Next Person\r\n" +
+		"TEL:+15550000001\r\n" +
+		"END:VCARD\r\n"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "photo.vcf")
+	if err := os.WriteFile(path, []byte(vcf), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	contacts, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile() error: %v", err)
+	}
+	if len(contacts) != 2 {
+		t.Fatalf("got %d contacts, want 2 — base64 '=' padding swallowed END:VCARD", len(contacts))
+	}
+	if contacts[0].FullName != "Bryan Baum" {
+		t.Errorf("contact 0 name = %q, want %q", contacts[0].FullName, "Bryan Baum")
+	}
+	if len(contacts[0].Phones) != 1 || contacts[0].Phones[0] != "+13052068533" {
+		t.Errorf("contact 0 phones = %v, want [+13052068533]", contacts[0].Phones)
+	}
+	if contacts[1].FullName != "Next Person" {
+		t.Errorf("contact 1 name = %q, want %q (next contact got merged into the photo)", contacts[1].FullName, "Next Person")
+	}
+}
+
 func TestParseFile_Emails(t *testing.T) {
 	vcf := "BEGIN:VCARD\r\n" +
 		"VERSION:3.0\r\n" +

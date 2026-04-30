@@ -48,11 +48,13 @@ func ParseFile(path string) ([]Contact, error) {
 
 	// Handle QUOTED-PRINTABLE soft line breaks: trailing '=' continues on
 	// the next line (vCard 2.1 convention). Scanner has already consumed
-	// the newline, so we rejoin here.
+	// the newline, so we rejoin here. Gated on isQuotedPrintable: base64
+	// PHOTO blobs commonly end with '=' padding and would otherwise
+	// swallow the following END:VCARD line, dropping the contact.
 	var qpJoined []string
 	for i := 0; i < len(rawLines); i++ {
 		line := rawLines[i]
-		for strings.HasSuffix(line, "=") && i+1 < len(rawLines) {
+		for strings.HasSuffix(line, "=") && isQuotedPrintable(line) && i+1 < len(rawLines) {
 			line = line[:len(line)-1] + rawLines[i+1]
 			i++
 		}
