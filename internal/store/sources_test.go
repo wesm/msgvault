@@ -320,6 +320,31 @@ func TestStore_AttachmentPathsUniqueToSource(t *testing.T) {
 	}
 }
 
+func TestStore_GetSourceByID(t *testing.T) {
+	f := storetest.New(t)
+
+	got, err := f.Store.GetSourceByID(f.Source.ID)
+	testutil.MustNoErr(t, err, "GetSourceByID")
+	if got == nil {
+		t.Fatal("expected non-nil source")
+	}
+	if got.ID != f.Source.ID {
+		t.Errorf("ID = %d, want %d", got.ID, f.Source.ID)
+	}
+	if got.Identifier != f.Source.Identifier {
+		t.Errorf("Identifier = %q, want %q", got.Identifier, f.Source.Identifier)
+	}
+}
+
+func TestStore_GetSourceByID_NotFound(t *testing.T) {
+	f := storetest.New(t)
+
+	_, err := f.Store.GetSourceByID(99999)
+	if err == nil {
+		t.Fatal("expected error for non-existent ID, got nil")
+	}
+}
+
 func TestStore_IsAttachmentPathReferenced(t *testing.T) {
 	f := storetest.New(t)
 

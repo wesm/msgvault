@@ -2,8 +2,29 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
+
+// GetSourceByID returns the source with the given ID, or an error if not found.
+func (s *Store) GetSourceByID(id int64) (*Source, error) {
+	row := s.db.QueryRow(`
+		SELECT id, source_type, identifier, display_name, google_user_id,
+		       last_sync_at, sync_cursor, sync_config, oauth_app,
+		       created_at, updated_at
+		FROM sources
+		WHERE id = ?
+	`, id)
+
+	source, err := scanSource(row)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("source %d not found", id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get source by id: %w", err)
+	}
+	return source, nil
+}
 
 // GetSourcesByIdentifier returns all sources matching an identifier,
 // regardless of source_type. Use this when the identifier may be
