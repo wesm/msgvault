@@ -11,8 +11,9 @@ import (
 
 // runStartupMigrations pulls legacy identity addresses from the global config
 // and runs the one-time migration. If migration was performed, the notice is
-// logged and printed to stderr. Always returns nil unless the migration itself
-// errors.
+// logged and printed to stderr. If the migration is deferred because no source
+// exists yet, it will be retried on a later command after a source has been
+// created. Always returns nil unless the migration itself errors.
 func runStartupMigrations(s *store.Store) error {
 	addrs := cfg.Identity.Addresses
 	notice, err := s.RunStartupMigrations(addrs)
