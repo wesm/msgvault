@@ -86,6 +86,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err := s.InitSchema(); err != nil {
 		return fmt.Errorf("init schema: %w", err)
 	}
+	if err := runStartupMigrations(s); err != nil {
+		return fmt.Errorf("startup migrations: %w", err)
+	}
 
 	// Set up cancellable context early so vector-backend initialization
 	// (which may open files and run migrations) respects Ctrl+C.

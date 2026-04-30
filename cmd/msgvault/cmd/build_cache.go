@@ -83,6 +83,10 @@ Use --full-rebuild to recreate all cache files from scratch.`,
 			_ = s.Close()
 			return fmt.Errorf("init schema: %w", err)
 		}
+		if err := runStartupMigrations(s); err != nil {
+			_ = s.Close()
+			return fmt.Errorf("startup migrations: %w", err)
+		}
 		_ = s.Close()
 
 		result, err := buildCache(dbPath, analyticsDir, fullRebuild)

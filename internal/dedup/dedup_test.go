@@ -472,3 +472,107 @@ func TestEngine_SurvivorTiebreakers(t *testing.T) {
 		}
 	})
 }
+
+// addMessageWithFrom is like addMessage but also sets FromEmail via the
+// message_recipients table so the dedup query can read it.
+func addMessageWithFrom(
+	t *testing.T,
+	st *store.Store,
+	source *store.Source,
+	srcMsgID, rfc822ID, fromEmail string,
+) int64 {
+	t.Helper()
+	convID, err := st.EnsureConversation(
+		source.ID, "thread-"+srcMsgID, "Subject",
+	)
+	testutil.MustNoErr(t, err, "EnsureConversation")
+	id, err := st.UpsertMessage(&store.Message{
+		ConversationID:  convID,
+		SourceID:        source.ID,
+		SourceMessageID: srcMsgID,
+		RFC822MessageID: sql.NullString{
+			String: rfc822ID, Valid: rfc822ID != "",
+		},
+		MessageType:  "email",
+		IsFromMe:     false, // no is_from_me so MatchedIdentity is the deciding signal
+		SizeEstimate: 1000,
+	})
+	testutil.MustNoErr(t, err, "UpsertMessage")
+	if fromEmail != "" {
+		pid, pErr := st.EnsureParticipant(fromEmail, "", "")
+		testutil.MustNoErr(t, pErr, "EnsureParticipant")
+		testutil.MustNoErr(t,
+			st.ReplaceMessageRecipients(id, "from", []int64{pid}, []string{""}),
+			"ReplaceMessageRecipients",
+		)
+	}
+	return id
+}
+
+// TestEngine_PerSourceIdentity verifies that identity matching is per-source:
+// an address confirmed only for source A does not count as "me" in source B.
+func TestEngine_PerSourceIdentity(t *testing.T) {
+	f := storetest.New(t)
+	st := f.Store
+	sourceA := f.Source // already created by storetest.New
+
+	sourceB, err := st.GetOrCreateSource("mbox", "bob@example.com-mbox")
+	testutil.MustNoErr(t, err, "GetOrCreateSource sourceB")
+
+	const me = "me@personal.com"
+	const rfc = "rfc-identity-perscource"
+
+	// Add me@personal.com as confirmed identity only for source A.
+	testutil.MustNoErr(t,
+		st.AddAccountIdentity(sourceA.ID, me, "test"),
+		"AddAccountIdentity sourceA",
+	)
+
+	// Two messages with same RFC822 ID, both From: me@personal.com,
+	// one in each source. Neither has HasSentLabel or IsFromMe.
+	idA := addMessageWithFrom(t, st, sourceA, "a-identity", rfc, me)
+	idB := addMessageWithFrom(t, st, sourceB, "b-identity", rfc, me)
+
+	identities := map[int64]map[string]struct{}{
+		sourceA.ID: {me: {}},
+		// sourceB intentionally omitted
+	}
+
+	eng := dedup.NewEngine(st, dedup.Config{
+		AccountSourceIDs:          []int64{sourceA.ID, sourceB.ID},
+		Account:                   "test",
+		IdentityAddressesBySource: identities,
+	}, nil)
+
+	report, err := eng.Scan(context.Background())
+	testutil.MustNoErr(t, err, "Scan")
+	if report.DuplicateGroups != 1 {
+		t.Fatalf("groups = %d, want 1", report.DuplicateGroups)
+	}
+
+	group := report.Groups[0]
+	// Find the message structs for each source.
+	var msgA, msgB dedup.DuplicateMessage
+	for _, m := range group.Messages {
+		switch m.ID {
+		case idA:
+			msgA = m
+		case idB:
+			msgB = m
+		}
+	}
+
+	if !msgA.MatchedIdentity {
+		t.Errorf("source A copy: MatchedIdentity = false, want true")
+	}
+	if msgB.MatchedIdentity {
+		t.Errorf("source B copy: MatchedIdentity = true, want false (identity not confirmed for source B)")
+	}
+
+	// Survivor should be the source A copy because it is the sent copy.
+	survivor := group.Messages[group.Survivor]
+	if survivor.ID != idA {
+		t.Errorf("survivor = %d (%s), want %d (source A, matched identity)",
+			survivor.ID, survivor.SourceIdentifier, idA)
+	}
+}

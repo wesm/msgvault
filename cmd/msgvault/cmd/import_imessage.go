@@ -134,6 +134,10 @@ func openStoreAndInit() (*store.Store, error) {
 		_ = s.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	if err := runStartupMigrations(s); err != nil {
+		_ = s.Close()
+		return nil, fmt.Errorf("startup migrations: %w", err)
+	}
 	return s, nil
 }
 

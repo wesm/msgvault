@@ -37,6 +37,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wesm/msgvault/internal/deletion"
@@ -91,12 +92,15 @@ type Config struct {
 	// are written. Required when DeleteDupsFromSourceServer is true.
 	DeletionsDir string
 
-	// IdentityAddresses lists lower-cased email addresses the
-	// user considers "me". When a pruned candidate's From:
-	// matches any of them, the survivor-selection rule treats
-	// the message as a sent copy — in addition to the existing
-	// Gmail SENT label and messages.is_from_me signals.
-	IdentityAddresses map[string]bool
+	// IdentityAddressesBySource maps each source ID to the set of
+	// confirmed "me" addresses for that source. When a pruned
+	// candidate's From: matches the address set for its source,
+	// the survivor-selection rule treats the message as a sent
+	// copy — in addition to the existing Gmail SENT label and
+	// messages.is_from_me signals. Per-source keying ensures that
+	// an address confirmed for one account is not treated as "me"
+	// for a different account.
+	IdentityAddressesBySource map[int64]map[string]struct{}
 }
 
 // DefaultSourcePreference is the default source-type authority order.
@@ -297,9 +301,10 @@ func (e *Engine) Scan(ctx context.Context) (*Report, error) {
 		}
 		for _, m := range msgs {
 			matched := false
-			if len(e.config.IdentityAddresses) > 0 &&
-				m.FromEmail != "" {
-				matched = e.config.IdentityAddresses[m.FromEmail]
+			if m.FromEmail != "" {
+				if addrs := e.config.IdentityAddressesBySource[m.SourceID]; addrs != nil {
+					_, matched = addrs[strings.ToLower(m.FromEmail)]
+				}
 			}
 			group.Messages = append(group.Messages, DuplicateMessage{
 				ID:               m.ID,
@@ -416,6 +421,8 @@ func (e *Engine) scanNormalizedHashGroups(
 
 	work := make(chan rawWorkItem, numWorkers*4)
 	results := make(chan hashResult, numWorkers*4)
+	const maxDecompressionWarns = 5
+	var decompressionFailures atomic.Int32
 
 	var wg sync.WaitGroup
 	for i := 0; i < numWorkers; i++ {
@@ -427,16 +434,20 @@ func (e *Engine) scanNormalizedHashGroups(
 				if item.compress == "zlib" {
 					r, err := zlib.NewReader(bytes.NewReader(raw))
 					if err != nil {
-						e.logger.Warn("content-hash: zlib open failed",
-							"message_id", item.candidate.ID, "err", err)
+						if decompressionFailures.Add(1) <= maxDecompressionWarns {
+							e.logger.Warn("content-hash: zlib open failed",
+								"message_id", item.candidate.ID, "err", err)
+						}
 						results <- hashResult{skipped: true}
 						continue
 					}
 					decompressed, err := io.ReadAll(r)
 					_ = r.Close()
 					if err != nil {
-						e.logger.Warn("content-hash: zlib read failed",
-							"message_id", item.candidate.ID, "err", err)
+						if decompressionFailures.Add(1) <= maxDecompressionWarns {
+							e.logger.Warn("content-hash: zlib read failed",
+								"message_id", item.candidate.ID, "err", err)
+						}
 						results <- hashResult{skipped: true}
 						continue
 					}
@@ -444,9 +455,10 @@ func (e *Engine) scanNormalizedHashGroups(
 				}
 
 				matched := false
-				if len(e.config.IdentityAddresses) > 0 &&
-					item.candidate.FromEmail != "" {
-					matched = e.config.IdentityAddresses[item.candidate.FromEmail]
+				if item.candidate.FromEmail != "" {
+					if addrs := e.config.IdentityAddressesBySource[item.candidate.SourceID]; addrs != nil {
+						_, matched = addrs[strings.ToLower(item.candidate.FromEmail)]
+					}
 				}
 
 				results <- hashResult{
@@ -530,6 +542,10 @@ func (e *Engine) scanNormalizedHashGroups(
 		}
 		e.selectSurvivor(&g)
 		groups = append(groups, g)
+	}
+	if skipped > maxDecompressionWarns {
+		e.logger.Warn("content-hash: additional zlib failures suppressed",
+			"suppressed", skipped-maxDecompressionWarns)
 	}
 	return groups, skipped, nil
 }
@@ -906,7 +922,7 @@ func (e *Engine) Undo(batchID string) (int64, []string, error) {
 	var cancelErrs []error
 	prefix := batchID + "-"
 	for _, m := range pending {
-		if !strings.HasPrefix(m.ID, prefix) && m.ID != batchID {
+		if !strings.HasPrefix(m.ID, prefix) {
 			continue
 		}
 		if err := mgr.CancelManifest(m.ID); err != nil {
@@ -916,7 +932,7 @@ func (e *Engine) Undo(batchID string) (int64, []string, error) {
 		}
 	}
 	for _, m := range inProgress {
-		if !strings.HasPrefix(m.ID, prefix) && m.ID != batchID {
+		if !strings.HasPrefix(m.ID, prefix) {
 			continue
 		}
 		stillExecuting = append(stillExecuting, m.ID)
@@ -1059,7 +1075,7 @@ func (e *Engine) FormatMethodology() string {
 		"from stored MIME\n")
 	sb.WriteString("  before the scan runs.")
 	if e.config.ContentHashFallback {
-		sb.WriteString(" Messages still without an ID are then compared via\n")
+		sb.WriteString(" Every remaining message with stored MIME is then compared via\n")
 		sb.WriteString("  a normalized raw-MIME hash that strips transport " +
 			"headers such as\n")
 		sb.WriteString("  Received, Delivered-To, X-Gmail-Labels, and " +
