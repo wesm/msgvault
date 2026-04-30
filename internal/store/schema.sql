@@ -397,8 +397,8 @@ CREATE INDEX IF NOT EXISTS idx_collection_sources_source_id
 -- source does not imply it is "me" in any other source.
 CREATE TABLE IF NOT EXISTS account_identities (
     source_id    INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
-    address      TEXT NOT NULL,             -- lowercased
-    source_signal TEXT NOT NULL DEFAULT '', -- e.g. 'config_migration', 'discovery', 'manual'
+    address      TEXT NOT NULL,             -- case-preserved
+    source_signal TEXT NOT NULL DEFAULT '', -- sorted comma-separated signal set, e.g. 'manual' or 'account-identifier,manual'
     confirmed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source_id, address)
 );

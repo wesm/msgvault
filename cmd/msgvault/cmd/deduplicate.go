@@ -460,7 +460,9 @@ func backupDatabase(st *store.Store, dst string) error {
 }
 
 // loadPerSourceIdentities builds a per-source identity map for the given
-// source IDs by calling GetIdentitiesForScope once per source.
+// source IDs by calling GetIdentitiesForScope once per source. Addresses are
+// lowercased so the dedup engine's strings.ToLower(FromEmail) lookups match
+// case-preserved identities stored in account_identities.
 func loadPerSourceIdentities(st *store.Store, sourceIDs []int64) (map[int64]map[string]struct{}, error) {
 	out := make(map[int64]map[string]struct{}, len(sourceIDs))
 	for _, id := range sourceIDs {
@@ -468,9 +470,14 @@ func loadPerSourceIdentities(st *store.Store, sourceIDs []int64) (map[int64]map[
 		if err != nil {
 			return nil, fmt.Errorf("get identities for source %d: %w", id, err)
 		}
-		if len(addrs) > 0 {
-			out[id] = addrs
+		if len(addrs) == 0 {
+			continue
 		}
+		lower := make(map[string]struct{}, len(addrs))
+		for addr := range addrs {
+			lower[strings.ToLower(addr)] = struct{}{}
+		}
+		out[id] = lower
 	}
 	return out, nil
 }

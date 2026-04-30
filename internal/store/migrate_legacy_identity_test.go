@@ -86,11 +86,11 @@ func TestMigrateLegacyIdentityConfig_EmptyAddresses(t *testing.T) {
 	}
 }
 
-func TestMigrateLegacyIdentityConfig_Lowercases(t *testing.T) {
+func TestMigrateLegacyIdentityConfig_TrimsWhitespace(t *testing.T) {
 	f := storetest.New(t)
 	st := f.Store
 
-	_, _, _, err := st.MigrateLegacyIdentityConfig([]string{"ME@Example.COM"})
+	_, _, _, err := st.MigrateLegacyIdentityConfig([]string{"  ME@Example.COM  "})
 	testutil.MustNoErr(t, err, "MigrateLegacyIdentityConfig")
 
 	ids, err := st.ListAccountIdentities(f.Source.ID)
@@ -98,7 +98,27 @@ func TestMigrateLegacyIdentityConfig_Lowercases(t *testing.T) {
 	if len(ids) != 1 {
 		t.Fatalf("got %d identities, want 1", len(ids))
 	}
-	if ids[0].Address != "me@example.com" {
-		t.Errorf("address = %q, want me@example.com", ids[0].Address)
+	if ids[0].Address != "ME@Example.COM" {
+		t.Errorf("address = %q, want ME@Example.COM", ids[0].Address)
+	}
+}
+
+func TestMigrateLegacyIdentityConfig_PreservesCase(t *testing.T) {
+	f := storetest.New(t)
+	st := f.Store
+
+	applied, _, _, err := st.MigrateLegacyIdentityConfig([]string{"Alice@Example.com"})
+	testutil.MustNoErr(t, err, "MigrateLegacyIdentityConfig")
+	if !applied {
+		t.Fatal("expected applied=true on first run")
+	}
+
+	rows, err := st.ListAccountIdentities(f.Source.ID)
+	testutil.MustNoErr(t, err, "ListAccountIdentities")
+	if len(rows) != 1 {
+		t.Fatalf("got %d identities, want 1", len(rows))
+	}
+	if rows[0].Address != "Alice@Example.com" {
+		t.Errorf("address = %q, want Alice@Example.com", rows[0].Address)
 	}
 }

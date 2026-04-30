@@ -32,11 +32,11 @@ func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied bool, s
 		return false, 0, 0, nil
 	}
 
-	// Normalize addresses: lowercase, trim, deduplicate, drop empties.
+	// Normalize addresses: trim whitespace, deduplicate, drop empties.
 	seen := make(map[string]struct{}, len(addresses))
 	var normalized []string
 	for _, addr := range addresses {
-		a := strings.ToLower(strings.TrimSpace(addr))
+		a := strings.TrimSpace(addr)
 		if a == "" {
 			continue
 		}
