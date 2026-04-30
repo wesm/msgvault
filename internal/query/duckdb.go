@@ -1558,10 +1558,7 @@ func (e *DuckDBEngine) Search(ctx context.Context, q *search.Query, limit, offse
 	}
 
 	// Account filter
-	if q.AccountID != nil {
-		conditions = append(conditions, "m.source_id = ?")
-		args = append(args, *q.AccountID)
-	}
+	conditions, args = appendSourceFilter(conditions, args, "m.", nil, q.AccountIDs)
 
 	// Hide-deleted filter
 	if q.HideDeleted {
@@ -2469,10 +2466,7 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 	}
 
 	// Account filter
-	if q.AccountID != nil {
-		conditions = append(conditions, "msg.source_id = ?")
-		args = append(args, *q.AccountID)
-	}
+	conditions, args = appendSourceFilter(conditions, args, "msg.", nil, q.AccountIDs)
 
 	// Default conditions if none specified
 	if len(conditions) == 0 {

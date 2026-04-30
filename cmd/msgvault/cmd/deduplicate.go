@@ -32,6 +32,10 @@ By default, deduplicate ONLY modifies the msgvault database. Your original
 source files and remote servers are never modified. Hidden rows can be
 restored with --undo, so a dedup run is fully reversible.
 
+Use --account <email> to scope dedup to one account.
+Use --collection <name> to dedup across all member accounts of a collection.
+Without either flag, dedup runs per-account independently for every source.
+
 Use --dry-run to scan and report without writing anything.
 Use --content-hash to also group messages by normalized raw MIME when
 Message-ID matching is insufficient.
@@ -46,6 +50,7 @@ var (
 	dedupContentHash          bool
 	dedupUndo                 []string
 	dedupAccount              string
+	dedupCollection           string
 	dedupDeleteFromSourceSrvr bool
 	dedupYes                  bool
 )
@@ -77,11 +82,13 @@ func runDeduplicate(cmd *cobra.Command, _ []string) error {
 	}
 
 	var (
-		accountSourceIDs []int64
-		canonicalAccount string
+		accountSourceIDs  []int64
+		canonicalAccount  string
+		scopeIsCollection bool
 	)
-	if dedupAccount != "" {
-		scope, err := ResolveAccount(st, dedupAccount)
+	switch {
+	case dedupAccount != "":
+		scope, err := ResolveAccountFlag(st, dedupAccount)
 		if err != nil {
 			return err
 		}
@@ -90,12 +97,17 @@ func runDeduplicate(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("--account %q resolved to zero sources", dedupAccount)
 		}
 		canonicalAccount = scope.DisplayName()
-	}
-
-	identityAddrs := cfg.IdentityAddressSet()
-	if len(identityAddrs) > 0 {
-		logger.Info("dedup identity addresses loaded",
-			"count", len(identityAddrs))
+	case dedupCollection != "":
+		scope, err := ResolveCollectionFlag(st, dedupCollection)
+		if err != nil {
+			return err
+		}
+		accountSourceIDs = scope.SourceIDs()
+		if len(accountSourceIDs) == 0 {
+			return fmt.Errorf("--collection %q has no member accounts", dedupCollection)
+		}
+		canonicalAccount = scope.DisplayName()
+		scopeIsCollection = true
 	}
 
 	config := dedup.Config{
@@ -106,7 +118,37 @@ func runDeduplicate(cmd *cobra.Command, _ []string) error {
 		Account:                    canonicalAccount,
 		DeleteDupsFromSourceServer: dedupDeleteFromSourceSrvr,
 		DeletionsDir:               deletionsDir,
-		IdentityAddresses:          identityAddrs,
+	}
+
+	if len(accountSourceIDs) > 0 {
+		bySource, err := loadPerSourceIdentities(st, accountSourceIDs)
+		if err != nil {
+			return fmt.Errorf("load per-source identities: %w", err)
+		}
+		config.IdentityAddressesBySource = bySource
+		if len(bySource) > 0 {
+			logger.Info("dedup per-source identities loaded",
+				"sources", len(bySource))
+		}
+	}
+
+	if scopeIsCollection {
+		allSources, err := st.ListSources("")
+		if err != nil {
+			return fmt.Errorf("list sources: %w", err)
+		}
+		idSet := make(map[int64]struct{}, len(accountSourceIDs))
+		for _, id := range accountSourceIDs {
+			idSet[id] = struct{}{}
+		}
+		var memberNames []string
+		for _, src := range allSources {
+			if _, ok := idSet[src.ID]; ok {
+				memberNames = append(memberNames, src.Identifier)
+			}
+		}
+		fmt.Printf("Deduping across collection %q (%d accounts: %s)\n",
+			canonicalAccount, len(memberNames), strings.Join(memberNames, ", "))
 	}
 
 	engine := dedup.NewEngine(st, config, logger)
@@ -169,6 +211,11 @@ func runDeduplicatePerSource(
 		cfgScoped := cfgBase
 		cfgScoped.AccountSourceIDs = []int64{src.ID}
 		cfgScoped.Account = src.Identifier
+		bySource, err := loadPerSourceIdentities(st, []int64{src.ID})
+		if err != nil {
+			return fmt.Errorf("load identities for %s: %w", src.Identifier, err)
+		}
+		cfgScoped.IdentityAddressesBySource = bySource
 		engineScoped := dedup.NewEngine(st, cfgScoped, logger)
 
 		fmt.Printf("--- %s (%s) ---\n", src.Identifier, src.SourceType)
@@ -226,6 +273,10 @@ func runDeduplicatePerSource(
 			cmd.Context(), report, batchID,
 		)
 		if err != nil {
+			if summary != nil && summary.GroupsMerged > 0 {
+				printDedupSummary(summary)
+				fmt.Println()
+			}
 			return fmt.Errorf("execute %s: %w", src.Identifier, err)
 		}
 		executedBatches = append(executedBatches, summary.BatchID)
@@ -310,6 +361,10 @@ func runDeduplicateOnce(
 	fmt.Println("Merging duplicates...")
 	summary, err := engine.Execute(cmd.Context(), report, batchID)
 	if err != nil {
+		if summary != nil && summary.GroupsMerged > 0 {
+			printDedupSummary(summary)
+			fmt.Println()
+		}
 		return fmt.Errorf("execute: %w", err)
 	}
 
@@ -377,6 +432,22 @@ func backupDatabase(st *store.Store, dst string) error {
 	return nil
 }
 
+// loadPerSourceIdentities builds a per-source identity map for the given
+// source IDs by calling GetIdentitiesForScope once per source.
+func loadPerSourceIdentities(st *store.Store, sourceIDs []int64) (map[int64]map[string]struct{}, error) {
+	out := make(map[int64]map[string]struct{}, len(sourceIDs))
+	for _, id := range sourceIDs {
+		addrs, err := st.GetIdentitiesForScope([]int64{id})
+		if err != nil {
+			return nil, fmt.Errorf("get identities for source %d: %w", id, err)
+		}
+		if len(addrs) > 0 {
+			out[id] = addrs
+		}
+	}
+	return out, nil
+}
+
 func printStillRunningWarning(ids []string) {
 	if len(ids) == 0 {
 		return
@@ -406,6 +477,9 @@ func init() {
 			"(repeat to undo multiple batches)")
 	deduplicateCmd.Flags().StringVar(&dedupAccount, "account", "",
 		"Dedup across all sources for this account")
+	deduplicateCmd.Flags().StringVar(&dedupCollection, "collection", "",
+		"Run dedup across all member accounts of one collection")
+	deduplicateCmd.MarkFlagsMutuallyExclusive("account", "collection")
 	deduplicateCmd.Flags().BoolVar(&dedupDeleteFromSourceSrvr,
 		"delete-dups-from-source-server", false,
 		"DESTRUCTIVE: stage pruned duplicates for remote deletion")

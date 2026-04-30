@@ -1290,10 +1290,7 @@ func (e *SQLiteEngine) buildSearchQueryParts(ctx context.Context, q *search.Quer
 	}
 
 	// Account filter
-	if q.AccountID != nil {
-		conditions = append(conditions, "m.source_id = ?")
-		args = append(args, *q.AccountID)
-	}
+	conditions, args = appendSourceFilter(conditions, args, "m.", nil, q.AccountIDs)
 
 	// Hide-deleted filter
 	if q.HideDeleted {
@@ -1436,7 +1433,7 @@ func MergeFilterIntoQuery(q *search.Query, filter MessageFilter) *search.Query {
 
 	// Account filter - always apply if set
 	if filter.SourceID != nil {
-		merged.AccountID = filter.SourceID
+		merged.AccountIDs = []int64{*filter.SourceID}
 	}
 
 	// Sender filter - append to existing from: filters

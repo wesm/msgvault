@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -15,11 +16,13 @@ import (
 )
 
 var (
-	identitiesAccount  string
-	identitiesJSON     bool
-	identitiesTOML     bool
-	identitiesMinCount int64
-	identitiesMatch    string
+	identitiesAccount    string
+	identitiesCollection string
+	identitiesJSON       bool
+	identitiesTOML       bool
+	identitiesMinCount   int64
+	identitiesMatch      string
+	identitiesConfirmed  bool
 )
 
 var listIdentitiesCmd = &cobra.Command{
@@ -33,12 +36,23 @@ Three independent signals are used for detection:
   sent-label      message carries a SENT label
   account-match   From: address matches the source identifier
 
+Use --account <email> or --collection <name> to restrict to a single account
+or all member accounts of a collection.
+
+Use --confirmed to show the persisted confirmed identities for the scope
+instead of the discovery output. For --collection scope, this shows the union
+of confirmed identities across all member accounts.
+
 Use --toml to generate a ready-to-paste [identity] config block for
 deduplicate's sent-copy detection.`,
 	RunE: runListIdentities,
 }
 
 func runListIdentities(_ *cobra.Command, _ []string) error {
+	if identitiesJSON && identitiesTOML {
+		return fmt.Errorf("--json and --toml are mutually exclusive")
+	}
+
 	st, err := openStoreAndInit()
 	if err != nil {
 		return err
@@ -47,8 +61,9 @@ func runListIdentities(_ *cobra.Command, _ []string) error {
 
 	var scopeIDs []int64
 	scopeLabel := "all"
-	if identitiesAccount != "" {
-		scope, err := ResolveAccount(st, identitiesAccount)
+	switch {
+	case identitiesAccount != "":
+		scope, err := ResolveAccountFlag(st, identitiesAccount)
 		if err != nil {
 			return err
 		}
@@ -57,6 +72,20 @@ func runListIdentities(_ *cobra.Command, _ []string) error {
 			return fmt.Errorf("--account %q resolved to zero sources", identitiesAccount)
 		}
 		scopeLabel = scope.DisplayName()
+	case identitiesCollection != "":
+		scope, err := ResolveCollectionFlag(st, identitiesCollection)
+		if err != nil {
+			return err
+		}
+		scopeIDs = scope.SourceIDs()
+		if len(scopeIDs) == 0 {
+			return fmt.Errorf("--collection %q has no member accounts", identitiesCollection)
+		}
+		scopeLabel = scope.DisplayName()
+	}
+
+	if identitiesConfirmed {
+		return runListConfirmedIdentities(st, scopeIDs, scopeLabel)
 	}
 
 	var matcher *regexp.Regexp
@@ -101,9 +130,6 @@ func runListIdentities(_ *cobra.Command, _ []string) error {
 		"count", len(candidates),
 		"duration_ms", time.Since(started).Milliseconds())
 
-	if identitiesJSON && identitiesTOML {
-		return fmt.Errorf("--json and --toml are mutually exclusive")
-	}
 	switch {
 	case identitiesJSON:
 		return writeIdentitiesJSON(candidates)
@@ -112,6 +138,31 @@ func runListIdentities(_ *cobra.Command, _ []string) error {
 	default:
 		return writeIdentitiesTable(candidates)
 	}
+}
+
+func runListConfirmedIdentities(st *store.Store, scopeIDs []int64, scopeLabel string) error {
+	addrs, err := st.GetIdentitiesForScope(scopeIDs)
+	if err != nil {
+		return fmt.Errorf("get confirmed identities: %w", err)
+	}
+	if len(addrs) == 0 {
+		fmt.Printf("No confirmed identities for scope %q.\n", scopeLabel)
+		fmt.Println("Run 'msgvault list-identities' to discover candidates, then confirm them.")
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "ADDRESS")
+	sorted := make([]string, 0, len(addrs))
+	for addr := range addrs {
+		sorted = append(sorted, addr)
+	}
+	sort.Strings(sorted)
+	for _, addr := range sorted {
+		_, _ = fmt.Fprintln(w, addr)
+	}
+	_ = w.Flush()
+	fmt.Printf("\n%d confirmed address(es) for scope %q\n", len(sorted), scopeLabel)
+	return nil
 }
 
 func writeIdentitiesTOML(candidates []store.IdentityCandidate) error {
@@ -192,13 +243,19 @@ func splitSignals(s store.IdentitySignal) []string {
 func init() {
 	listIdentitiesCmd.Flags().StringVar(&identitiesAccount,
 		"account", "", "Restrict to a single account")
+	listIdentitiesCmd.Flags().StringVar(&identitiesCollection,
+		"collection", "", "Restrict to all member accounts of one collection")
+	listIdentitiesCmd.MarkFlagsMutuallyExclusive("account", "collection")
 	listIdentitiesCmd.Flags().BoolVar(&identitiesJSON,
 		"json", false, "Output as JSON")
 	listIdentitiesCmd.Flags().BoolVar(&identitiesTOML,
 		"toml", false, "Output a ready-to-paste [identity] config block")
+	listIdentitiesCmd.MarkFlagsMutuallyExclusive("json", "toml")
 	listIdentitiesCmd.Flags().Int64Var(&identitiesMinCount,
 		"min-count", 0, "Drop addresses with fewer than N messages")
 	listIdentitiesCmd.Flags().StringVar(&identitiesMatch,
 		"match", "", "Filter by Go regex (case-insensitive)")
+	listIdentitiesCmd.Flags().BoolVar(&identitiesConfirmed,
+		"confirmed", false, "Show persisted confirmed identities instead of discovery output")
 	rootCmd.AddCommand(listIdentitiesCmd)
 }
