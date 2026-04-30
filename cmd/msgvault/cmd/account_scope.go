@@ -7,26 +7,26 @@ import (
 	"github.com/wesm/msgvault/internal/store"
 )
 
-// AccountScope is the result of resolving a user-supplied --account
-// flag against the store.
-type AccountScope struct {
+// Scope is the result of resolving a user-supplied --account or
+// --collection flag against the store.
+type Scope struct {
 	Input      string
 	Source     *store.Source
 	Collection *store.CollectionWithSources
 }
 
 // IsEmpty reports whether the scope resolved to nothing.
-func (s AccountScope) IsEmpty() bool {
+func (s Scope) IsEmpty() bool {
 	return s.Source == nil && s.Collection == nil
 }
 
 // IsCollection reports whether the scope refers to a collection.
-func (s AccountScope) IsCollection() bool {
+func (s Scope) IsCollection() bool {
 	return s.Collection != nil
 }
 
 // SourceIDs returns the source IDs that this scope expands to.
-func (s AccountScope) SourceIDs() []int64 {
+func (s Scope) SourceIDs() []int64 {
 	switch {
 	case s.Collection != nil:
 		return append([]int64(nil), s.Collection.SourceIDs...)
@@ -37,7 +37,7 @@ func (s AccountScope) SourceIDs() []int64 {
 }
 
 // DisplayName returns a human-readable label for the scope.
-func (s AccountScope) DisplayName() string {
+func (s Scope) DisplayName() string {
 	switch {
 	case s.Collection != nil:
 		return s.Collection.Name
@@ -47,44 +47,18 @@ func (s AccountScope) DisplayName() string {
 	return ""
 }
 
-// ResolveAccount resolves a user-supplied --account string against
-// the store. Collections are checked first, then sources.
-func ResolveAccount(
-	st *store.Store, input string,
-) (AccountScope, error) {
-	scope := AccountScope{Input: input}
+// ResolveAccountFlag resolves the value of an --account flag.
+// It rejects collection names with a hint to use --collection.
+func ResolveAccountFlag(st *store.Store, input string) (Scope, error) {
+	scope := Scope{Input: input}
 	if input == "" {
 		return scope, nil
 	}
 
-	// Try collection first.
-	coll, err := st.GetCollectionByName(input)
-	switch {
-	case err == nil:
-		scope.Collection = coll
-		return scope, nil
-	case errors.Is(err, store.ErrCollectionNotFound):
-		// Fall through to source lookup.
-	default:
-		return scope, fmt.Errorf(
-			"look up collection %q: %w", input, err,
-		)
-	}
-
-	// Source lookup.
+	// Try source resolution first.
 	sources, err := st.GetSourcesByIdentifierOrDisplayName(input)
 	if err != nil {
-		return scope, fmt.Errorf(
-			"look up source for %q: %w", input, err,
-		)
-	}
-	if len(sources) == 0 {
-		return scope, fmt.Errorf(
-			"no collection or source found for %q "+
-				"(try 'msgvault collections list' or "+
-				"'msgvault list-accounts')",
-			input,
-		)
+		return scope, fmt.Errorf("look up source for %q: %w", input, err)
 	}
 	if len(sources) > 1 {
 		names := make([]string, 0, len(sources))
@@ -99,6 +73,66 @@ func ResolveAccount(
 			input, names,
 		)
 	}
-	scope.Source = sources[0]
-	return scope, nil
+	if len(sources) == 1 {
+		scope.Source = sources[0]
+		return scope, nil
+	}
+
+	// No source match — check whether a collection exists with this name and
+	// reject with a helpful hint.
+	_, cerr := st.GetCollectionByName(input)
+	switch {
+	case cerr == nil:
+		return scope, fmt.Errorf(
+			"%q is a collection, not an account; use --collection %s",
+			input, input,
+		)
+	case errors.Is(cerr, store.ErrCollectionNotFound):
+		// Neither a source nor a collection.
+	default:
+		return scope, fmt.Errorf("look up collection %q: %w", input, cerr)
+	}
+
+	return scope, fmt.Errorf(
+		"no account found for %q (try 'msgvault list-accounts')",
+		input,
+	)
+}
+
+// ResolveCollectionFlag resolves the value of a --collection flag.
+// It rejects account identifiers with a hint to use --account.
+func ResolveCollectionFlag(st *store.Store, input string) (Scope, error) {
+	scope := Scope{Input: input}
+	if input == "" {
+		return scope, nil
+	}
+
+	// Try collection resolution first.
+	coll, err := st.GetCollectionByName(input)
+	switch {
+	case err == nil:
+		scope.Collection = coll
+		return scope, nil
+	case errors.Is(err, store.ErrCollectionNotFound):
+		// Fall through to source check.
+	default:
+		return scope, fmt.Errorf("look up collection %q: %w", input, err)
+	}
+
+	// No collection found — check whether any source matches and reject with a hint.
+	sources, serr := st.GetSourcesByIdentifierOrDisplayName(input)
+	if serr != nil {
+		return scope, fmt.Errorf("look up source for %q: %w", input, serr)
+	}
+	if len(sources) >= 1 {
+		return scope, fmt.Errorf(
+			"%q is an account, not a collection; use --account %s",
+			input, input,
+		)
+	}
+
+	return scope, fmt.Errorf(
+		"no collection named %q (try 'msgvault collections list')",
+		input,
+	)
 }

@@ -28,39 +28,10 @@ type CollectionWithSources struct {
 // ErrCollectionNotFound is returned when a collection lookup has no hits.
 var ErrCollectionNotFound = errors.New("collection not found")
 
-// ensureCollectionSchema creates the collections tables on demand.
-func (s *Store) ensureCollectionSchema() error {
-	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS collections (
-			id INTEGER PRIMARY KEY,
-			name TEXT NOT NULL UNIQUE,
-			description TEXT NOT NULL DEFAULT '',
-			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)`,
-		`CREATE TABLE IF NOT EXISTS collection_sources (
-			collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
-			source_id     INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
-			PRIMARY KEY (collection_id, source_id)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_collection_sources_source_id
-		 ON collection_sources(source_id)`,
-	}
-	for _, stmt := range stmts {
-		if _, err := s.db.Exec(stmt); err != nil {
-			return fmt.Errorf("create collections schema: %w", err)
-		}
-	}
-	return nil
-}
-
 // EnsureDefaultCollection creates the "All" collection if it doesn't
 // exist and adds all current sources to it. Safe to call on every
 // schema init.
 func (s *Store) EnsureDefaultCollection() error {
-	if err := s.ensureCollectionSchema(); err != nil {
-		return err
-	}
-
 	var id int64
 	err := s.db.QueryRow(
 		`SELECT id FROM collections WHERE name = 'All'`,
@@ -92,10 +63,6 @@ func (s *Store) EnsureDefaultCollection() error {
 func (s *Store) CreateCollection(
 	name, description string, sourceIDs []int64,
 ) (*Collection, error) {
-	if err := s.ensureCollectionSchema(); err != nil {
-		return nil, err
-	}
-
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, fmt.Errorf("collection name is required")
@@ -164,10 +131,6 @@ func (s *Store) CreateCollection(
 func (s *Store) GetCollectionByName(
 	name string,
 ) (*CollectionWithSources, error) {
-	if err := s.ensureCollectionSchema(); err != nil {
-		return nil, err
-	}
-
 	row := s.db.QueryRow(
 		`SELECT id, name, description, created_at
 		 FROM collections WHERE name = ?`, name,
@@ -185,10 +148,6 @@ func (s *Store) GetCollectionByName(
 // ListCollections returns every collection with source IDs and
 // message counts.
 func (s *Store) ListCollections() ([]*CollectionWithSources, error) {
-	if err := s.ensureCollectionSchema(); err != nil {
-		return nil, err
-	}
-
 	rows, err := s.db.Query(
 		`SELECT id, name, description, created_at
 		 FROM collections ORDER BY name`,
@@ -238,9 +197,6 @@ func (s *Store) getCollectionID(name string) (int64, error) {
 
 // AddSourcesToCollection attaches sources to a collection. Idempotent.
 func (s *Store) AddSourcesToCollection(name string, sourceIDs []int64) error {
-	if err := s.ensureCollectionSchema(); err != nil {
-		return err
-	}
 	if err := s.validateSourceIDs(sourceIDs); err != nil {
 		return err
 	}
@@ -265,9 +221,6 @@ func (s *Store) AddSourcesToCollection(name string, sourceIDs []int64) error {
 
 // RemoveSourcesFromCollection detaches sources. Idempotent.
 func (s *Store) RemoveSourcesFromCollection(name string, sourceIDs []int64) error {
-	if err := s.ensureCollectionSchema(); err != nil {
-		return err
-	}
 	if err := s.validateSourceIDs(sourceIDs); err != nil {
 		return err
 	}
@@ -291,9 +244,6 @@ func (s *Store) RemoveSourcesFromCollection(name string, sourceIDs []int64) erro
 
 // DeleteCollection drops the collection. Sources and messages untouched.
 func (s *Store) DeleteCollection(name string) error {
-	if err := s.ensureCollectionSchema(); err != nil {
-		return err
-	}
 	res, err := s.db.Exec(
 		`DELETE FROM collections WHERE name = ?`, name,
 	)

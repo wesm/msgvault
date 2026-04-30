@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -322,11 +323,17 @@ func (s *Store) GetOrCreateSource(sourceType, identifier string) (*Source, error
 	newSource.ID, _ = result.LastInsertId()
 
 	// Add to the default "All" collection if it exists.
-	_, _ = s.db.Exec(
+	if _, err := s.db.Exec(
 		`INSERT OR IGNORE INTO collection_sources (collection_id, source_id)
 		 SELECT id, ? FROM collections WHERE name = 'All'`,
 		newSource.ID,
-	)
+	); err != nil {
+		slog.Warn("failed to add source to default collection",
+			"source_id", newSource.ID,
+			"identifier", identifier,
+			"error", err,
+		)
+	}
 
 	return newSource, nil
 }

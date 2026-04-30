@@ -208,7 +208,7 @@ func resolveAccountList(st *store.Store, accounts string) ([]int64, error) {
 			continue
 		}
 		// Resolve by identifier
-		scope, err := ResolveAccount(st, p)
+		scope, err := ResolveAccountFlag(st, p)
 		if err != nil {
 			return nil, err
 		}
