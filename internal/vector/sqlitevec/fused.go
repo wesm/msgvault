@@ -129,7 +129,7 @@ WITH
   filtered AS (
     SELECT m.id
       FROM messages m
-     WHERE m.deleted_from_source_at IS NULL
+     WHERE m.deleted_at IS NULL AND m.deleted_from_source_at IS NULL
        AND (:source_ids IS NULL OR m.source_id IN (SELECT value FROM json_each(:source_ids)))
        %s
        %s
@@ -515,6 +515,11 @@ func (b *Backend) batchGetSubjects(ctx context.Context, ids []int64) (map[int64]
 		placeholders[i] = "?"
 		args[i] = id
 	}
+	// Liveness is already enforced upstream in the `filtered` CTE used
+	// for ranking; re-filtering here would silently drop the subject
+	// for any hit whose row is soft-deleted between ranking and
+	// hydration, leaving the caller with a ranked hit and an empty
+	// subject. Hydrate whatever was ranked.
 	q := fmt.Sprintf(`SELECT id, COALESCE(subject, '') FROM messages WHERE id IN (%s)`,
 		strings.Join(placeholders, ","))
 	rows, err := b.mainDB.QueryContext(ctx, q, args...)
