@@ -172,6 +172,32 @@ func TestParseFile_QPSoftBreaks(t *testing.T) {
 	}
 }
 
+func TestParseFile_QPSoftBreakWithFoldedContinuation(t *testing.T) {
+	vcf := "BEGIN:VCARD\r\n" +
+		"VERSION:2.1\r\n" +
+		"FN;ENCODING=QUOTED-PRINTABLE:Jo=C3=A3o da =\r\n" +
+		" Silva\r\n" +
+		"TEL;CELL:+5511999887766\r\n" +
+		"END:VCARD\r\n"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "qp-folded-soft.vcf")
+	if err := os.WriteFile(path, []byte(vcf), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	contacts, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile() error: %v", err)
+	}
+	if len(contacts) != 1 {
+		t.Fatalf("got %d contacts, want 1", len(contacts))
+	}
+	if contacts[0].FullName != "João da Silva" {
+		t.Errorf("QP folded soft break name = %q", contacts[0].FullName)
+	}
+}
+
 func TestParseFile_Base64PhotoEqualsPaddingDoesNotEatNextLine(t *testing.T) {
 	// Apple's modern vCard PHOTO blobs are base64 with '=' padding. The QP
 	// soft-break logic must NOT splice such lines into the following
@@ -255,6 +281,38 @@ func TestParseFile_Emails(t *testing.T) {
 	}
 }
 
+func TestParseFile_GroupedProperties(t *testing.T) {
+	vcf := "BEGIN:VCARD\r\n" +
+		"VERSION:3.0\r\n" +
+		"item1.FN:Grouped Person\r\n" +
+		"item2.TEL;TYPE=CELL:+15551234567\r\n" +
+		"item3.EMAIL;TYPE=INTERNET:Grouped@Example.com\r\n" +
+		"END:VCARD\r\n"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "grouped.vcf")
+	if err := os.WriteFile(path, []byte(vcf), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	contacts, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile() error: %v", err)
+	}
+	if len(contacts) != 1 {
+		t.Fatalf("got %d contacts, want 1", len(contacts))
+	}
+	if contacts[0].FullName != "Grouped Person" {
+		t.Errorf("grouped name = %q", contacts[0].FullName)
+	}
+	if len(contacts[0].Phones) != 1 || contacts[0].Phones[0] != "+15551234567" {
+		t.Errorf("grouped phones = %v", contacts[0].Phones)
+	}
+	if len(contacts[0].Emails) != 1 || contacts[0].Emails[0] != "grouped@example.com" {
+		t.Errorf("grouped emails = %v", contacts[0].Emails)
+	}
+}
+
 func TestDecodeQuotedPrintable(t *testing.T) {
 	tests := []struct {
 		input string
@@ -288,6 +346,25 @@ func TestExtractValue(t *testing.T) {
 	for _, tt := range tests {
 		if got := extractValue(tt.line); got != tt.want {
 			t.Errorf("extractValue(%q) = %q, want %q", tt.line, got, tt.want)
+		}
+	}
+}
+
+func TestNormalizedPropertyKey(t *testing.T) {
+	tests := []struct {
+		line string
+		want string
+	}{
+		{"FN:John Doe", "FN"},
+		{"FN;CHARSET=UTF-8:John Doe", "FN"},
+		{"item1.FN:John Doe", "FN"},
+		{"item2.TEL;TYPE=CELL:+447700900000", "TEL"},
+		{"item3.EMAIL;TYPE=INTERNET:alice@example.com", "EMAIL"},
+		{"NO_COLON", ""},
+	}
+	for _, tt := range tests {
+		if got := normalizedPropertyKey(tt.line); got != tt.want {
+			t.Errorf("normalizedPropertyKey(%q) = %q, want %q", tt.line, got, tt.want)
 		}
 	}
 }

@@ -36,7 +36,13 @@ func ParseFile(path string) ([]Contact, error) {
 		line := scanner.Text()
 		if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
 			if len(rawLines) > 0 {
-				rawLines[len(rawLines)-1] += strings.TrimLeft(line, " \t")
+				previous := rawLines[len(rawLines)-1]
+				continuation := strings.TrimLeft(line, " \t")
+				if strings.HasSuffix(previous, "=") && isQuotedPrintable(previous) {
+					rawLines[len(rawLines)-1] = previous[:len(previous)-1] + continuation
+				} else {
+					rawLines[len(rawLines)-1] += continuation
+				}
 				continue
 			}
 		}
@@ -68,6 +74,7 @@ func ParseFile(path string) ([]Contact, error) {
 	for _, line := range rawLines {
 		line = strings.TrimSpace(line)
 		upper := strings.ToUpper(line)
+		key := normalizedPropertyKey(line)
 
 		switch {
 		case upper == "BEGIN:VCARD":
@@ -82,7 +89,7 @@ func ParseFile(path string) ([]Contact, error) {
 		case current == nil:
 			continue
 
-		case strings.HasPrefix(upper, "FN:") || strings.HasPrefix(upper, "FN;"):
+		case key == "FN":
 			name := extractValue(line)
 			if isQuotedPrintable(line) {
 				name = decodeQuotedPrintable(name)
@@ -91,13 +98,13 @@ func ParseFile(path string) ([]Contact, error) {
 				current.FullName = name
 			}
 
-		case strings.HasPrefix(upper, "TEL"):
+		case key == "TEL":
 			phone := normalizePhone(extractValue(line))
 			if phone != "" {
 				current.Phones = append(current.Phones, phone)
 			}
 
-		case strings.HasPrefix(upper, "EMAIL"):
+		case key == "EMAIL":
 			email := strings.ToLower(strings.TrimSpace(extractValue(line)))
 			if email != "" && strings.Contains(email, "@") {
 				current.Emails = append(current.Emails, email)
@@ -116,6 +123,18 @@ func extractValue(line string) string {
 		return ""
 	}
 	return strings.TrimSpace(line[idx+1:])
+}
+
+func normalizedPropertyKey(line string) string {
+	end := strings.IndexAny(line, ":;")
+	if end < 0 {
+		return ""
+	}
+	key := line[:end]
+	if dot := strings.LastIndex(key, "."); dot >= 0 {
+		key = key[dot+1:]
+	}
+	return strings.ToUpper(key)
 }
 
 func isQuotedPrintable(line string) bool {
