@@ -210,7 +210,7 @@ func (s *Store) MergeDuplicates(
 				}
 				affected, _ := res.RowsAffected()
 				if affected > 0 {
-					result.RawMIMEBackfilled++
+					result.RawMIMEBackfilled += int(affected)
 					break
 				}
 			}
@@ -360,6 +360,67 @@ func (s *Store) UndoDedup(batchID string) (int64, error) {
 	return result.RowsAffected()
 }
 
+// PurgeBatch permanently deletes all hidden rows associated with a dedup
+// batch. Only deletes rows where deleted_at IS NOT NULL AND delete_batch_id =
+// batchID. Returns the number of rows deleted.
+//
+// This is irreversible. Caller is responsible for backups.
+// Attachments cascade-delete from the metadata row; on-disk blobs are
+// content-addressed and survive until separate cleanup.
+func (s *Store) PurgeBatch(batchID string) (int64, error) {
+	result, err := s.db.Exec(`
+		DELETE FROM messages
+		WHERE delete_batch_id = ? AND deleted_at IS NOT NULL
+	`, batchID)
+	if err != nil {
+		return 0, fmt.Errorf("purge batch %q: %w", batchID, err)
+	}
+	return result.RowsAffected()
+}
+
+// PurgeAllHidden permanently deletes every hidden row regardless of batch.
+// Returns the number of rows deleted and the number of distinct batches purged.
+//
+// This is irreversible. Caller is responsible for backups.
+// Attachments cascade-delete from the metadata row; on-disk blobs are
+// content-addressed and survive until separate cleanup.
+func (s *Store) PurgeAllHidden() (deleted int64, distinctBatches int64, err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, 0, fmt.Errorf("purge all hidden: begin tx: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if err = tx.QueryRow(`
+		SELECT COUNT(DISTINCT delete_batch_id)
+		FROM messages
+		WHERE deleted_at IS NOT NULL AND delete_batch_id IS NOT NULL
+	`).Scan(&distinctBatches); err != nil {
+		return 0, 0, fmt.Errorf("purge all hidden: count batches: %w", err)
+	}
+
+	result, err := tx.Exec(`
+		DELETE FROM messages
+		WHERE deleted_at IS NOT NULL AND delete_batch_id IS NOT NULL
+	`)
+	if err != nil {
+		return 0, 0, fmt.Errorf("purge all hidden: delete: %w", err)
+	}
+	deleted, err = result.RowsAffected()
+	if err != nil {
+		return 0, 0, fmt.Errorf("purge all hidden: rows affected: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return 0, 0, fmt.Errorf("purge all hidden: commit: %w", err)
+	}
+	return deleted, distinctBatches, nil
+}
+
 func (s *Store) CountActiveMessages(sourceIDs ...int64) (int64, error) {
 	query := "SELECT COUNT(*) FROM messages WHERE deleted_at IS NULL"
 	var args []any
@@ -458,6 +519,10 @@ func (s *Store) BackfillRFC822IDs(
 			break
 		}
 
+		updates := make([]struct {
+			id           int64
+			normalizedID string
+		}, 0, len(batchIDs))
 		for _, id := range batchIDs {
 			raw, err := s.GetMessageRaw(id)
 			if err != nil {
@@ -475,19 +540,39 @@ func (s *Store) BackfillRFC822IDs(
 				failed++
 				continue
 			}
-			if _, err := s.db.Exec(
-				"UPDATE messages SET rfc822_message_id = ? WHERE id = ?",
-				normalizedID, id,
-			); err != nil {
-				failed++
-				continue
-			}
-			updated++
+			updates = append(updates, struct {
+				id           int64
+				normalizedID string
+			}{
+				id:           id,
+				normalizedID: normalizedID,
+			})
 		}
+
+		var batchUpdated int64
+		err = s.withTx(func(tx *loggedTx) error {
+			for _, update := range updates {
+				if _, err := tx.Exec(
+					"UPDATE messages SET rfc822_message_id = ? WHERE id = ?",
+					update.normalizedID, update.id,
+				); err != nil {
+					return fmt.Errorf("update message %d: %w", update.id, err)
+				}
+				batchUpdated++
+			}
+			return nil
+		})
+		if err != nil {
+			return updated, failed, fmt.Errorf(
+				"apply backfill batch ending at %d: %w",
+				batchIDs[len(batchIDs)-1], err,
+			)
+		}
+		updated += batchUpdated
 
 		lastID = batchIDs[len(batchIDs)-1]
 		if progress != nil {
-			progress(updated, total)
+			progress(updated+failed, total)
 		}
 	}
 	return updated, failed, nil

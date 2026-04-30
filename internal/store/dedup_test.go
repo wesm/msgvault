@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"database/sql"
+	"fmt"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/store"
@@ -214,6 +215,49 @@ func TestStore_BackfillRFC822IDs_ParsesFromRawMIME(t *testing.T) {
 	testutil.MustNoErr(t, err, "CountMessagesWithoutRFC822ID after backfill")
 	if count != 0 {
 		t.Errorf("count after backfill = %d, want 0", count)
+	}
+}
+
+func TestStore_BackfillRFC822IDs_DoesNotOvercountRolledBackBatch(t *testing.T) {
+	f := storetest.New(t)
+
+	idA := newRFC822Message(t, f, "needs-backfill-a", "")
+	idB := newRFC822Message(t, f, "needs-backfill-b", "")
+
+	rawA := []byte("From: alice@example.com\r\nMessage-ID: <unique-a@example.com>\r\n\r\nBody")
+	rawB := []byte("From: bob@example.com\r\nMessage-ID: <unique-b@example.com>\r\n\r\nBody")
+	testutil.MustNoErr(t, f.Store.UpsertMessageRaw(idA, rawA), "UpsertMessageRaw A")
+	testutil.MustNoErr(t, f.Store.UpsertMessageRaw(idB, rawB), "UpsertMessageRaw B")
+
+	_, err := f.Store.DB().Exec(fmt.Sprintf(`
+		CREATE TRIGGER fail_backfill_second_message
+		BEFORE UPDATE OF rfc822_message_id ON messages
+		WHEN NEW.id = %d
+		BEGIN
+			SELECT RAISE(FAIL, 'forced backfill failure');
+		END
+	`, idB))
+	testutil.MustNoErr(t, err, "create trigger")
+
+	updated, failed, err := f.Store.BackfillRFC822IDs(nil, nil)
+	if err == nil {
+		t.Fatal("expected backfill error, got nil")
+	}
+	if updated != 0 {
+		t.Fatalf("updated = %d, want 0 after rollback", updated)
+	}
+	if failed != 0 {
+		t.Fatalf("failed = %d, want 0", failed)
+	}
+
+	var count int64
+	err = f.Store.DB().QueryRow(`
+		SELECT COUNT(*) FROM messages
+		WHERE rfc822_message_id IS NOT NULL AND rfc822_message_id != ''
+	`).Scan(&count)
+	testutil.MustNoErr(t, err, "count backfilled rows")
+	if count != 0 {
+		t.Fatalf("backfilled rows = %d, want 0 after rollback", count)
 	}
 }
 
