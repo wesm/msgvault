@@ -118,6 +118,7 @@ func runImportImessage(cmd *cobra.Command, _ []string) error {
 			if importImessageContacts != "" {
 				applyImessageContacts(s, importImessageContacts)
 			}
+			retitleImessageDirectChats(s)
 			rebuildCacheAfterWrite(cfg.DatabaseDSN())
 			return nil
 		}
@@ -130,8 +131,24 @@ func runImportImessage(cmd *cobra.Command, _ []string) error {
 		applyImessageContacts(s, importImessageContacts)
 	}
 
+	// Refresh stale 1:1 conversation titles whose stored title is still a
+	// raw phone/email — runs unconditionally so non-vcf imports also benefit
+	// when names came in from Gmail or another source.
+	retitleImessageDirectChats(s)
+
 	rebuildCacheAfterWrite(cfg.DatabaseDSN())
 	return nil
+}
+
+func retitleImessageDirectChats(s *store.Store) {
+	n, err := s.RetitleImessageDirectChats()
+	if err != nil {
+		fmt.Printf("\nWarning: could not refresh direct chat titles: %v\n", err)
+		return
+	}
+	if n > 0 {
+		fmt.Printf("Direct chat titles refreshed: %d\n", n)
+	}
 }
 
 // applyImessageContacts loads a vCard file and backfills display_name

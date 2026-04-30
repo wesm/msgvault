@@ -1272,6 +1272,50 @@ func (s *Store) UpdateImessageParticipantDisplayNameByPhone(phone, displayName s
 	return rows > 0, nil
 }
 
+// RetitleImessageDirectChats refreshes direct_chat titles on
+// apple_messages conversations whose stored title is still the other
+// party's phone or email but whose participant now has a real
+// display_name. iMessage import sets the title at conversation-create
+// time to the raw handle; once the participant later gets a name (from
+// Gmail, --contacts, etc.), the title goes stale until this runs.
+//
+// Returns the number of conversations whose title was changed.
+func (s *Store) RetitleImessageDirectChats() (int64, error) {
+	result, err := s.db.Exec(fmt.Sprintf(`
+		UPDATE conversations
+		SET title = (
+		    SELECT p.display_name
+		    FROM conversation_participants cp
+		    JOIN participants p ON p.id = cp.participant_id
+		    JOIN participant_identifiers pi ON pi.participant_id = p.id
+		    WHERE cp.conversation_id = conversations.id
+		      AND pi.identifier_type = 'imessage'
+		      AND p.display_name IS NOT NULL AND p.display_name != ''
+		      AND p.display_name != p.phone_number
+		      AND (conversations.title = p.phone_number OR conversations.title = p.email_address)
+		    LIMIT 1
+		),
+		updated_at = %s
+		WHERE conversation_type = 'direct_chat'
+		  AND source_id IN (SELECT id FROM sources WHERE source_type = 'apple_messages')
+		  AND EXISTS (
+		      SELECT 1
+		      FROM conversation_participants cp
+		      JOIN participants p ON p.id = cp.participant_id
+		      JOIN participant_identifiers pi ON pi.participant_id = p.id
+		      WHERE cp.conversation_id = conversations.id
+		        AND pi.identifier_type = 'imessage'
+		        AND p.display_name IS NOT NULL AND p.display_name != ''
+		        AND p.display_name != p.phone_number
+		        AND (conversations.title = p.phone_number OR conversations.title = p.email_address)
+		  )
+	`, s.dialect.Now()))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 // UpdateParticipantDisplayNameByEmail updates the display_name for an
 // existing participant identified by email address. Only updates if
 // display_name is currently empty. Returns true if a participant was

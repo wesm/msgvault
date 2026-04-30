@@ -302,6 +302,102 @@ func TestUpdateImessageParticipantDisplayNameByPhone(t *testing.T) {
 	}
 }
 
+func TestRetitleImessageDirectChats(t *testing.T) {
+	st := testutil.NewTestStore(t)
+
+	src, err := st.GetOrCreateSource("apple_messages", "local")
+	if err != nil {
+		t.Fatalf("source: %v", err)
+	}
+
+	otherSrc, err := st.GetOrCreateSource("whatsapp", "+15550000000")
+	if err != nil {
+		t.Fatalf("other source: %v", err)
+	}
+
+	// Named iMessage participant whose phone is the current title of a 1:1.
+	namedID, err := st.EnsureParticipantByPhone("+15551111111", "Alice Real", "imessage")
+	if err != nil {
+		t.Fatalf("seed alice: %v", err)
+	}
+
+	// iMessage participant whose name is still the phone (poisoned). Must
+	// not be used as a title.
+	poisonedID, err := st.EnsureParticipantByPhone("+15552222222", "+15552222222", "imessage")
+	if err != nil {
+		t.Fatalf("seed poisoned: %v", err)
+	}
+
+	// Non-iMessage participant whose phone is a conversation title — must
+	// not be touched even if a real name exists elsewhere.
+	whatsappID, err := st.EnsureParticipantByPhone("+15553333333", "Carol", "whatsapp")
+	if err != nil {
+		t.Fatalf("seed carol: %v", err)
+	}
+
+	// 1:1 with named participant — title is the phone, should be replaced.
+	convNamedID, err := st.EnsureConversationWithType(src.ID, "imsg-1", "direct_chat", "+15551111111")
+	if err != nil {
+		t.Fatalf("conv named: %v", err)
+	}
+	if err := st.EnsureConversationParticipant(convNamedID, namedID, "member"); err != nil {
+		t.Fatalf("link named: %v", err)
+	}
+
+	// 1:1 with poisoned participant — title equals phone but participant
+	// has no real name yet. Must remain unchanged.
+	convPoisonedID, err := st.EnsureConversationWithType(src.ID, "imsg-2", "direct_chat", "+15552222222")
+	if err != nil {
+		t.Fatalf("conv poisoned: %v", err)
+	}
+	if err := st.EnsureConversationParticipant(convPoisonedID, poisonedID, "member"); err != nil {
+		t.Fatalf("link poisoned: %v", err)
+	}
+
+	// Non-iMessage 1:1 — title is a phone, but the source isn't apple_messages.
+	convOtherID, err := st.EnsureConversationWithType(otherSrc.ID, "wa-1", "direct_chat", "+15553333333")
+	if err != nil {
+		t.Fatalf("conv other: %v", err)
+	}
+	if err := st.EnsureConversationParticipant(convOtherID, whatsappID, "member"); err != nil {
+		t.Fatalf("link other: %v", err)
+	}
+
+	n, err := st.RetitleImessageDirectChats()
+	if err != nil {
+		t.Fatalf("RetitleImessageDirectChats: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("rows updated = %d, want 1", n)
+	}
+
+	if got := readConvTitle(t, st, convNamedID); got != "Alice Real" {
+		t.Errorf("named conv title = %q, want %q", got, "Alice Real")
+	}
+	if got := readConvTitle(t, st, convPoisonedID); got != "+15552222222" {
+		t.Errorf("poisoned conv title = %q, want unchanged", got)
+	}
+	if got := readConvTitle(t, st, convOtherID); got != "+15553333333" {
+		t.Errorf("non-imessage conv title = %q, want unchanged", got)
+	}
+
+	// Idempotent: running again is a no-op.
+	if n2, err := st.RetitleImessageDirectChats(); err != nil || n2 != 0 {
+		t.Errorf("idempotent rerun: rows=%d err=%v", n2, err)
+	}
+}
+
+func readConvTitle(t *testing.T, st *store.Store, id int64) string {
+	t.Helper()
+	var title sql.NullString
+	if err := st.DB().QueryRow(
+		`SELECT title FROM conversations WHERE id = ?`, id,
+	).Scan(&title); err != nil {
+		t.Fatalf("scan title: %v", err)
+	}
+	return title.String
+}
+
 func readDisplayName(t *testing.T, st *store.Store, pid int64) string {
 	t.Helper()
 	var name sql.NullString
