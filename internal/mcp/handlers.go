@@ -188,7 +188,9 @@ func (h *handlers) searchMessages(ctx context.Context, req mcp.CallToolRequest) 
 	}
 
 	q := search.Parse(queryStr)
-	q.AccountID = sourceID
+	if sourceID != nil {
+		q.AccountIDs = []int64{*sourceID}
+	}
 
 	filter := query.MessageFilter{SourceID: sourceID}
 
@@ -888,7 +890,9 @@ func (h *handlers) stageDeletion(ctx context.Context, req mcp.CallToolRequest) (
 	if hasQuery {
 		// Query-based search
 		q := search.Parse(queryStr)
-		q.AccountID = sourceID
+		if sourceID != nil {
+			q.AccountIDs = []int64{*sourceID}
+		}
 
 		// Try fast search first
 		filter := query.MessageFilter{SourceID: sourceID}

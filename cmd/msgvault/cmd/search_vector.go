@@ -192,6 +192,11 @@ func hydrateHybridResults(ctx context.Context, db *sql.DB, hits []vector.FusedHi
 		args[i] = h.MessageID
 		orderIdx[h.MessageID] = i
 	}
+	// Liveness is enforced upstream in the sqlite-vec backend's filter
+	// CTE used for ranking; re-filtering here would silently drop hits
+	// whose row was soft-deleted between ranking and hydration,
+	// returning a result list shorter than the ranked hits. Hydrate
+	// whatever was ranked.
 	q := fmt.Sprintf(`
 		SELECT m.id, COALESCE(m.subject,''), COALESCE(p.email_address,''), m.sent_at
 		FROM messages m
@@ -202,6 +207,10 @@ func hydrateHybridResults(ctx context.Context, db *sql.DB, hits []vector.FusedHi
 		return nil, fmt.Errorf("query messages: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
+	// hits ranked by the vector engine may have been soft-deleted between
+	// ranking and hydration. Track which slots got filled so we can drop
+	// the empty ones and warn about the gap.
+	filled := make([]bool, len(hits))
 	out := make([]hybridResultRow, len(hits))
 	for rows.Next() {
 		var id int64
@@ -228,11 +237,25 @@ func hydrateHybridResults(ctx context.Context, db *sql.DB, hits []vector.FusedHi
 			row.SentAt = sentAt.Time
 		}
 		out[idx] = row
+		filled[idx] = true
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate messages: %w", err)
 	}
-	return out, nil
+	dropped := 0
+	compact := out[:0]
+	for i, ok := range filled {
+		if ok {
+			compact = append(compact, out[i])
+		} else {
+			dropped++
+		}
+	}
+	if dropped > 0 {
+		logger.Warn("hydration dropped hits (likely soft-deleted between rank and hydrate)",
+			"dropped", dropped, "ranked", len(hits))
+	}
+	return compact, nil
 }
 
 func outputHybridResultsTable(results []hybridResultRow, meta hybrid.ResultMeta, explain bool) error {

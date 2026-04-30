@@ -433,6 +433,7 @@ func (e *DuckDBEngine) TextSearch(
 		LEFT JOIN conversations c ON c.id = m.conversation_id
 		WHERE messages_fts MATCH ?
 		  AND m.message_type IN ('whatsapp','imessage','sms','google_voice_text')
+		  AND m.deleted_at IS NULL AND m.deleted_from_source_at IS NULL
 		ORDER BY m.sent_at DESC
 		LIMIT ? OFFSET ?
 	`

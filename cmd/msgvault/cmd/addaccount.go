@@ -80,6 +80,9 @@ Examples:
 		if err := s.InitSchema(); err != nil {
 			return fmt.Errorf("init schema: %w", err)
 		}
+		if err := runStartupMigrations(s); err != nil {
+			return fmt.Errorf("startup migrations: %w", err)
+		}
 
 		// Look up existing source to detect binding changes
 		existingSource, err := findGmailSource(s, email)

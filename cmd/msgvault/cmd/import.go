@@ -73,6 +73,9 @@ func runWhatsAppImport(cmd *cobra.Command, sourcePath string) error {
 	if err := s.InitSchema(); err != nil {
 		return fmt.Errorf("init schema: %w", err)
 	}
+	if err := runStartupMigrations(s); err != nil {
+		return fmt.Errorf("startup migrations: %w", err)
+	}
 
 	// Set up context with cancellation.
 	ctx, cancel := context.WithCancel(cmd.Context())

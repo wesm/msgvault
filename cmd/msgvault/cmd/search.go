@@ -14,12 +14,13 @@ import (
 )
 
 var (
-	searchLimit   int
-	searchOffset  int
-	searchJSON    bool
-	searchAccount string
-	searchMode    string
-	searchExplain bool
+	searchLimit      int
+	searchOffset     int
+	searchJSON       bool
+	searchAccount    string
+	searchCollection string
+	searchMode       string
+	searchExplain    bool
 )
 
 var searchCmd = &cobra.Command{
@@ -57,8 +58,8 @@ Examples:
 		// Join all args to form the query (allows unquoted multi-term searches)
 		queryStr := strings.Join(args, " ")
 
-		if queryStr == "" && searchAccount == "" {
-			return fmt.Errorf("provide a search query or --account flag")
+		if queryStr == "" && searchAccount == "" && searchCollection == "" {
+			return fmt.Errorf("provide a search query or --account/--collection flag")
 		}
 
 		// Use remote search if configured
@@ -67,6 +68,9 @@ Examples:
 				return fmt.Errorf(
 					"--account is not supported in remote mode",
 				)
+			}
+			if searchCollection != "" {
+				return fmt.Errorf("--collection is not supported in remote mode")
 			}
 			if searchMode != "fts" {
 				return fmt.Errorf("--mode is not supported in remote mode")
@@ -121,8 +125,8 @@ func runLocalSearch(cmd *cobra.Command, queryStr string) error {
 	q := search.Parse(queryStr)
 
 	// Fail fast on invalid queries before touching the database,
-	// unless --account is set (which requires a DB lookup to resolve).
-	if searchAccount == "" && q.IsEmpty() {
+	// unless a scope flag is set (which requires a DB lookup to resolve).
+	if searchAccount == "" && searchCollection == "" && q.IsEmpty() {
 		return fmt.Errorf("empty search query")
 	}
 
@@ -138,21 +142,50 @@ func runLocalSearch(cmd *cobra.Command, queryStr string) error {
 	if err := s.InitSchema(); err != nil {
 		return fmt.Errorf("init schema: %w", err)
 	}
+	if err := runStartupMigrations(s); err != nil {
+		return fmt.Errorf("startup migrations: %w", err)
+	}
 
-	// Resolve --account and recheck emptiness.
-	if searchAccount != "" {
-		src, err := s.GetSourceByIdentifier(searchAccount)
+	// Resolve --account / --collection and recheck emptiness.
+	var scope Scope
+	switch {
+	case searchAccount != "":
+		scope, err = ResolveAccountFlag(s, searchAccount)
 		if err != nil {
-			return fmt.Errorf("look up account: %w", err)
+			return err
 		}
-		if src == nil {
-			return fmt.Errorf("account %q not found", searchAccount)
+		if scope.IsEmpty() {
+			return fmt.Errorf("--account %q resolved to zero sources", searchAccount)
 		}
-		q.AccountID = &src.ID
+	case searchCollection != "":
+		scope, err = ResolveCollectionFlag(s, searchCollection)
+		if err != nil {
+			return err
+		}
+		if len(scope.SourceIDs()) == 0 {
+			return fmt.Errorf("--collection %q has no member accounts", searchCollection)
+		}
+	}
+	if !scope.IsEmpty() {
+		q.AccountIDs = scope.SourceIDs()
 	}
 
 	if q.IsEmpty() {
 		return fmt.Errorf("empty search query")
+	}
+
+	// Print a scope banner when searching a collection.
+	if searchCollection != "" && !scope.IsEmpty() {
+		members := scope.SourceIDs()
+		n := len(members)
+		suffix := "s"
+		if n == 1 {
+			suffix = ""
+		}
+		fmt.Fprintf(os.Stderr,
+			"Searching collection %q (%d account%s)\n",
+			scope.DisplayName(), n, suffix,
+		)
 	}
 
 	fmt.Fprintf(os.Stderr, "Searching...")
@@ -164,7 +197,7 @@ func runLocalSearch(cmd *cobra.Command, queryStr string) error {
 	// Log the search operation. Raw query text and account
 	// identifiers may contain PII — log coarse metadata at
 	// info and full values only at debug.
-	hasAccount := q.AccountID != nil
+	hasAccount := len(q.AccountIDs) > 0
 	logger.Info("search start",
 		"query_len", len(queryStr),
 		"has_account", hasAccount,
@@ -279,6 +312,9 @@ func init() {
 	searchCmd.Flags().IntVar(&searchOffset, "offset", 0, "Skip first N results")
 	searchCmd.Flags().BoolVar(&searchJSON, "json", false, "Output as JSON")
 	searchCmd.Flags().StringVar(&searchAccount, "account", "", "Limit results to a specific account (email address)")
+	searchCmd.Flags().StringVar(&searchCollection, "collection", "",
+		"Limit results to all member accounts of one collection")
+	searchCmd.MarkFlagsMutuallyExclusive("account", "collection")
 	searchCmd.Flags().StringVar(&searchMode, "mode", "fts", "Search mode: fts|vector|hybrid")
 	searchCmd.Flags().BoolVar(&searchExplain, "explain", false, "Include per-signal scores in output (hybrid/vector modes)")
 }

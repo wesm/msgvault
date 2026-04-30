@@ -83,6 +83,10 @@ Use --full-rebuild to recreate all cache files from scratch.`,
 			_ = s.Close()
 			return fmt.Errorf("init schema: %w", err)
 		}
+		if err := runStartupMigrations(s); err != nil {
+			_ = s.Close()
+			return fmt.Errorf("startup migrations: %w", err)
+		}
 		_ = s.Close()
 
 		result, err := buildCache(dbPath, analyticsDir, fullRebuild)
@@ -680,7 +684,7 @@ func setupSQLiteSource(duckDB *sql.DB, dbPath string) (cleanup func(), err error
 		query         string
 		typeOverrides string // DuckDB types parameter for read_csv_auto (empty = infer all)
 	}{
-		{"messages", "SELECT id, source_id, source_message_id, conversation_id, subject, snippet, sent_at, size_estimate, has_attachments, attachment_count, deleted_from_source_at, sender_id, message_type FROM messages WHERE sent_at IS NOT NULL",
+		{"messages", "SELECT id, source_id, source_message_id, conversation_id, subject, snippet, sent_at, size_estimate, has_attachments, attachment_count, deleted_from_source_at, sender_id, message_type FROM messages WHERE sent_at IS NOT NULL AND deleted_at IS NULL",
 			"types={'sent_at': 'TIMESTAMP', 'deleted_from_source_at': 'TIMESTAMP'}"},
 		{"message_recipients", "SELECT message_id, participant_id, recipient_type, display_name FROM message_recipients", ""},
 		{"message_labels", "SELECT message_id, label_id FROM message_labels", ""},

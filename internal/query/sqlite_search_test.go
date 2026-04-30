@@ -334,7 +334,7 @@ func TestMergeFilterIntoQuery(t *testing.T) {
 			name:     "SourceID",
 			initial:  &search.Query{},
 			filter:   MessageFilter{SourceID: &sourceID42},
-			expected: &search.Query{AccountID: &sourceID42},
+			expected: &search.Query{AccountIDs: []int64{sourceID42}},
 		},
 		{
 			name:     "SenderAppends",
@@ -386,7 +386,7 @@ func TestMergeFilterIntoQuery(t *testing.T) {
 				ToAddrs:       []string{"carol@example.com"},
 				Labels:        []string{"starred"},
 				HasAttachment: ptr.Bool(true),
-				AccountID:     &sourceID1,
+				AccountIDs:    []int64{sourceID1},
 			},
 		},
 	}

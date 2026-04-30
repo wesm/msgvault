@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/config"
 	"github.com/wesm/msgvault/internal/store"
 )
@@ -49,6 +50,7 @@ func captureStdout(t *testing.T) func() string {
 
 func resetSearchFlags() {
 	searchAccount = ""
+	searchCollection = ""
 	searchLimit = 50
 	searchOffset = 0
 	searchJSON = false
@@ -271,4 +273,27 @@ func TestSearchCmd_NoQueryNoAccount(t *testing.T) {
 	if !strings.Contains(err.Error(), "provide a search query") {
 		t.Errorf("error = %q, want 'provide a search query'", err)
 	}
+}
+
+// TestSearchCmd_MutualExclusion confirms --account and --collection are rejected together.
+func TestSearchCmd_MutualExclusion(t *testing.T) {
+	var a, b string
+	cmd := &cobra.Command{Use: "search-test", SilenceErrors: true}
+	sub := &cobra.Command{Use: "search", RunE: func(cmd *cobra.Command, args []string) error { return nil }}
+	sub.Flags().StringVar(&a, "account", "", "")
+	sub.Flags().StringVar(&b, "collection", "", "")
+	sub.MarkFlagsMutuallyExclusive("account", "collection")
+	cmd.AddCommand(sub)
+	cmd.SetArgs([]string{"search", "--account", "alpha@example.com", "--collection", "work"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when both --account and --collection are set, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "account") || !strings.Contains(msg, "collection") {
+		t.Errorf("error should mention both flag names; got: %q", msg)
+	}
+	_ = a
+	_ = b
 }

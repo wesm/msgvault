@@ -297,6 +297,11 @@ func (e *DuckDBEngine) parquetCTEs() string {
 	} else {
 		msgExtra = append(msgExtra, "'' AS message_type")
 	}
+	if e.hasCol("messages", "deleted_at") {
+		msgReplace = append(msgReplace, "TRY_CAST(deleted_at AS TIMESTAMP) AS deleted_at")
+	} else {
+		msgExtra = append(msgExtra, "NULL::TIMESTAMP AS deleted_at")
+	}
 	msgCTE := fmt.Sprintf("SELECT * REPLACE (\n\t\t\t\t%s\n\t\t\t)", strings.Join(msgReplace, ",\n\t\t\t\t"))
 	if len(msgExtra) > 0 {
 		msgCTE += ", " + strings.Join(msgExtra, ", ")
@@ -648,10 +653,8 @@ func (e *DuckDBEngine) buildWhereClause(opts AggregateOptions, keyColumns ...str
 	// message_type IS NULL and '' handle old data without the column.
 	conditions = append(conditions, "(msg.message_type = 'email' OR msg.message_type IS NULL OR msg.message_type = '')")
 
-	if opts.SourceID != nil {
-		conditions = append(conditions, "msg.source_id = ?")
-		args = append(args, *opts.SourceID)
-	}
+	conditions = append(conditions, "msg.deleted_at IS NULL")
+	conditions, args = appendSourceFilter(conditions, args, "msg.", opts.SourceID, opts.SourceIDs)
 
 	if opts.After != nil {
 		conditions = append(conditions, "msg.sent_at >= CAST(? AS TIMESTAMP)")
@@ -854,10 +857,8 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 	// message_type IS NULL and '' handle old data without the column.
 	conditions = append(conditions, "(msg.message_type = 'email' OR msg.message_type IS NULL OR msg.message_type = '')")
 
-	if filter.SourceID != nil {
-		conditions = append(conditions, "msg.source_id = ?")
-		args = append(args, *filter.SourceID)
-	}
+	conditions = append(conditions, "msg.deleted_at IS NULL")
+	conditions, args = appendSourceFilter(conditions, args, "msg.", filter.SourceID, filter.SourceIDs)
 
 	if filter.ConversationID != nil {
 		conditions = append(conditions, "msg.conversation_id = ?")
@@ -1117,10 +1118,8 @@ func (e *DuckDBEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 	// Restrict to email messages only; NULL and '' handle pre-message_type data.
 	conditions = append(conditions, emailOnlyFilterMsg)
 
-	if opts.SourceID != nil {
-		conditions = append(conditions, "msg.source_id = ?")
-		args = append(args, *opts.SourceID)
-	}
+	conditions = append(conditions, "msg.deleted_at IS NULL")
+	conditions, args = appendSourceFilter(conditions, args, "msg.", opts.SourceID, opts.SourceIDs)
 
 	if opts.WithAttachmentsOnly {
 		conditions = append(conditions, "msg.has_attachments = 1")
@@ -1470,7 +1469,8 @@ func (e *DuckDBEngine) Search(ctx context.Context, q *search.Query, limit, offse
 	var args []interface{}
 	var joins []string
 
-	// Include all messages (deleted messages shown with indicator in TUI)
+	// Exclude rows soft-deleted by deduplicate (sqlite_scan path).
+	conditions = append(conditions, "m.deleted_at IS NULL")
 
 	// From filter
 	if len(q.FromAddrs) > 0 {
@@ -1558,10 +1558,7 @@ func (e *DuckDBEngine) Search(ctx context.Context, q *search.Query, limit, offse
 	}
 
 	// Account filter
-	if q.AccountID != nil {
-		conditions = append(conditions, "m.source_id = ?")
-		args = append(args, *q.AccountID)
-	}
+	conditions, args = appendSourceFilter(conditions, args, "m.", nil, q.AccountIDs)
 
 	// Hide-deleted filter
 	if q.HideDeleted {
@@ -1670,16 +1667,9 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	var args []interface{}
 
 	// Always exclude deleted messages
+	conditions = append(conditions, "msg.deleted_at IS NULL")
 	conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
-
-	// Gmail scoping is handled by JOIN src in the query below — this function
-	// is used for Gmail-specific deletion/staging workflows and must not
-	// return WhatsApp or other source IDs.
-
-	if filter.SourceID != nil {
-		conditions = append(conditions, "msg.source_id = ?")
-		args = append(args, *filter.SourceID)
-	}
+	conditions, args = appendSourceFilter(conditions, args, "msg.", filter.SourceID, filter.SourceIDs)
 
 	// Use EXISTS subqueries for filtering (becomes semi-joins, no duplicates)
 	if filter.Sender != "" {
@@ -2319,10 +2309,8 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 	conditions = append(conditions, emailOnlyFilterMsg)
 
 	// Apply basic filter conditions (ignoring join flags for search - we handle those differently)
-	if filter.SourceID != nil {
-		conditions = append(conditions, "msg.source_id = ?")
-		args = append(args, *filter.SourceID)
-	}
+	conditions = append(conditions, "msg.deleted_at IS NULL")
+	conditions, args = appendSourceFilter(conditions, args, "msg.", filter.SourceID, filter.SourceIDs)
 	if filter.After != nil {
 		conditions = append(conditions, "msg.sent_at >= CAST(? AS TIMESTAMP)")
 		args = append(args, filter.After.Format("2006-01-02 15:04:05"))
@@ -2478,10 +2466,7 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 	}
 
 	// Account filter
-	if q.AccountID != nil {
-		conditions = append(conditions, "msg.source_id = ?")
-		args = append(args, *q.AccountID)
-	}
+	conditions, args = appendSourceFilter(conditions, args, "msg.", nil, q.AccountIDs)
 
 	// Default conditions if none specified
 	if len(conditions) == 0 {

@@ -2,11 +2,36 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/wesm/msgvault/internal/remote"
 	"github.com/wesm/msgvault/internal/store"
 )
+
+// runStartupMigrations pulls legacy identity addresses from the global config
+// and runs the one-time migration. If migration was performed, the notice is
+// logged and printed to stderr. Always returns nil unless the migration itself
+// errors.
+func runStartupMigrations(s *store.Store) error {
+	addrs := cfg.Identity.Addresses
+	if len(addrs) > 0 {
+		logger.Warn("legacy [identity] block in config detected",
+			"count", len(addrs),
+			"hint", "please review per-account identities via 'msgvault list-identities'")
+	}
+	notice, err := s.RunStartupMigrations(addrs)
+	if err != nil {
+		logger.Warn("startup migration failed", "error", err)
+		return err
+	}
+	if notice != "" {
+		logger.Warn("legacy identity migrated",
+			"addresses", len(addrs))
+		fmt.Fprintln(os.Stderr, notice)
+	}
+	return nil
+}
 
 // MessageStore is the interface for commands that need basic message operations.
 // Both store.Store and remote.Store implement this interface.
@@ -64,6 +89,25 @@ func OpenRemoteStore() (RemoteStore, error) {
 func openLocalStore() (*store.Store, error) {
 	dbPath := cfg.DatabaseDSN()
 	return store.Open(dbPath)
+}
+
+// openLocalStoreAndInit opens the local SQLite database, initializes the
+// schema, and runs startup migrations. Callers that previously called
+// store.Open + s.InitSchema separately should migrate to this helper.
+func openLocalStoreAndInit() (*store.Store, error) {
+	s, err := openLocalStore()
+	if err != nil {
+		return nil, err
+	}
+	if err := s.InitSchema(); err != nil {
+		_ = s.Close()
+		return nil, fmt.Errorf("init schema: %w", err)
+	}
+	if err := runStartupMigrations(s); err != nil {
+		_ = s.Close()
+		return nil, fmt.Errorf("startup migrations: %w", err)
+	}
+	return s, nil
 }
 
 // openRemoteStore creates a remote store client.

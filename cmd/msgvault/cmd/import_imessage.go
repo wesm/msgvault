@@ -120,6 +120,12 @@ func runImportImessage(cmd *cobra.Command, _ []string) error {
 
 func openStoreAndInit() (*store.Store, error) {
 	dbPath := cfg.DatabaseDSN()
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf(
+			"database not found: %s\nRun 'msgvault init-db' first",
+			dbPath,
+		)
+	}
 	s, err := store.Open(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -127,6 +133,10 @@ func openStoreAndInit() (*store.Store, error) {
 	if err := s.InitSchema(); err != nil {
 		_ = s.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
+	}
+	if err := runStartupMigrations(s); err != nil {
+		_ = s.Close()
+		return nil, fmt.Errorf("startup migrations: %w", err)
 	}
 	return s, nil
 }

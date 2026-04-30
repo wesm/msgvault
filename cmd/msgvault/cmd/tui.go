@@ -91,6 +91,9 @@ Remote Mode:
 			if err := s.InitSchema(); err != nil {
 				return fmt.Errorf("init schema: %w", err)
 			}
+			if err := runStartupMigrations(s); err != nil {
+				return fmt.Errorf("startup migrations: %w", err)
+			}
 
 			// Build FTS index in background — TUI uses DuckDB/Parquet for
 			// aggregates and only needs FTS for deep search (Tab to switch).
