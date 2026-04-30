@@ -302,7 +302,7 @@ func TestUpdateImessageParticipantDisplayNameByPhone(t *testing.T) {
 	}
 }
 
-func TestRetitleImessageDirectChats(t *testing.T) {
+func TestRetitleImessageChats(t *testing.T) {
 	st := testutil.NewTestStore(t)
 
 	src, err := st.GetOrCreateSource("apple_messages", "local")
@@ -319,6 +319,14 @@ func TestRetitleImessageDirectChats(t *testing.T) {
 	namedID, err := st.EnsureParticipantByPhone("+15551111111", "Alice Real", "imessage")
 	if err != nil {
 		t.Fatalf("seed alice: %v", err)
+	}
+
+	// Email-backed iMessage participants did not always get an iMessage
+	// participant_identifiers row, but the apple_messages conversation is
+	// still enough context to safely refresh the raw email title.
+	emailID, err := st.EnsureParticipant("alice@example.com", "Alice Email", "example.com")
+	if err != nil {
+		t.Fatalf("seed alice email: %v", err)
 	}
 
 	// iMessage participant whose name is still the phone (poisoned). Must
@@ -344,6 +352,15 @@ func TestRetitleImessageDirectChats(t *testing.T) {
 		t.Fatalf("link named: %v", err)
 	}
 
+	// 1:1 with email participant — title is the raw email, should be replaced.
+	convEmailID, err := st.EnsureConversationWithType(src.ID, "imsg-email-1", "direct_chat", "alice@example.com")
+	if err != nil {
+		t.Fatalf("conv email: %v", err)
+	}
+	if err := st.EnsureConversationParticipant(convEmailID, emailID, "member"); err != nil {
+		t.Fatalf("link email: %v", err)
+	}
+
 	// 1:1 with poisoned participant — title equals phone but participant
 	// has no real name yet. Must remain unchanged.
 	convPoisonedID, err := st.EnsureConversationWithType(src.ID, "imsg-2", "direct_chat", "+15552222222")
@@ -363,16 +380,60 @@ func TestRetitleImessageDirectChats(t *testing.T) {
 		t.Fatalf("link other: %v", err)
 	}
 
-	n, err := st.RetitleImessageDirectChats()
+	// Group chat whose title was generated from raw participant handles
+	// before contacts were backfilled. It should be regenerated with names.
+	bobID, err := st.EnsureParticipantByPhone("+15554444444", "Bob Real", "imessage")
 	if err != nil {
-		t.Fatalf("RetitleImessageDirectChats: %v", err)
+		t.Fatalf("seed bob: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("rows updated = %d, want 1", n)
+	carolID, err := st.EnsureParticipantByPhone("+15555555555", "Carol Real", "imessage")
+	if err != nil {
+		t.Fatalf("seed carol: %v", err)
+	}
+	daveID, err := st.EnsureParticipantByPhone("+15556666666", "Dave Real", "imessage")
+	if err != nil {
+		t.Fatalf("seed dave: %v", err)
+	}
+	convGroupID, err := st.EnsureConversationWithType(
+		src.ID, "imsg-group-1", "group_chat",
+		"+15551111111, +15554444444, +15555555555 +1 more",
+	)
+	if err != nil {
+		t.Fatalf("conv group: %v", err)
+	}
+	for _, pid := range []int64{namedID, bobID, carolID, daveID} {
+		if err := st.EnsureConversationParticipant(convGroupID, pid, "member"); err != nil {
+			t.Fatalf("link group participant %d: %v", pid, err)
+		}
+	}
+
+	// Named group chats must not be overwritten, even when the participant
+	// list would allow a generated title.
+	convNamedGroupID, err := st.EnsureConversationWithType(
+		src.ID, "imsg-group-2", "group_chat", "Road trip",
+	)
+	if err != nil {
+		t.Fatalf("conv named group: %v", err)
+	}
+	for _, pid := range []int64{namedID, bobID, carolID} {
+		if err := st.EnsureConversationParticipant(convNamedGroupID, pid, "member"); err != nil {
+			t.Fatalf("link named group participant %d: %v", pid, err)
+		}
+	}
+
+	n, err := st.RetitleImessageChats()
+	if err != nil {
+		t.Fatalf("RetitleImessageChats: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("rows updated = %d, want 3", n)
 	}
 
 	if got := readConvTitle(t, st, convNamedID); got != "Alice Real" {
 		t.Errorf("named conv title = %q, want %q", got, "Alice Real")
+	}
+	if got := readConvTitle(t, st, convEmailID); got != "Alice Email" {
+		t.Errorf("email conv title = %q, want %q", got, "Alice Email")
 	}
 	if got := readConvTitle(t, st, convPoisonedID); got != "+15552222222" {
 		t.Errorf("poisoned conv title = %q, want unchanged", got)
@@ -380,9 +441,15 @@ func TestRetitleImessageDirectChats(t *testing.T) {
 	if got := readConvTitle(t, st, convOtherID); got != "+15553333333" {
 		t.Errorf("non-imessage conv title = %q, want unchanged", got)
 	}
+	if got := readConvTitle(t, st, convGroupID); got != "Alice Real, Bob Real, Carol Real +1 more" {
+		t.Errorf("group conv title = %q, want refreshed generated title", got)
+	}
+	if got := readConvTitle(t, st, convNamedGroupID); got != "Road trip" {
+		t.Errorf("named group conv title = %q, want unchanged", got)
+	}
 
 	// Idempotent: running again is a no-op.
-	if n2, err := st.RetitleImessageDirectChats(); err != nil || n2 != 0 {
+	if n2, err := st.RetitleImessageChats(); err != nil || n2 != 0 {
 		t.Errorf("idempotent rerun: rows=%d err=%v", n2, err)
 	}
 }

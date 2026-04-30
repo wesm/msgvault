@@ -1272,27 +1272,46 @@ func (s *Store) UpdateImessageParticipantDisplayNameByPhone(phone, displayName s
 	return rows > 0, nil
 }
 
-// RetitleImessageDirectChats refreshes direct_chat titles on
-// apple_messages conversations whose stored title is still the other
-// party's phone or email but whose participant now has a real
-// display_name. iMessage import sets the title at conversation-create
-// time to the raw handle; once the participant later gets a name (from
-// Gmail, --contacts, etc.), the title goes stale until this runs.
+// RetitleImessageChats refreshes generated titles on apple_messages
+// conversations whose stored title is still based on raw phone/email
+// handles but whose participants now have real display_names.
+//
+// Direct-chat titles are updated when the title exactly matches the
+// other participant's phone or email. Group-chat titles are updated only
+// when the title matches the importer-generated "Alice, Bob +N more"
+// shape, preserving named group chats from Messages.app.
 //
 // Returns the number of conversations whose title was changed.
-func (s *Store) RetitleImessageDirectChats() (int64, error) {
+func (s *Store) RetitleImessageChats() (int64, error) {
+	direct, err := s.retitleImessageDirectChats()
+	if err != nil {
+		return 0, err
+	}
+	groups, err := s.retitleImessageGroupChats()
+	if err != nil {
+		return 0, err
+	}
+	return direct + groups, nil
+}
+
+func (s *Store) retitleImessageDirectChats() (int64, error) {
 	result, err := s.db.Exec(fmt.Sprintf(`
 		UPDATE conversations
 		SET title = (
 		    SELECT p.display_name
 		    FROM conversation_participants cp
 		    JOIN participants p ON p.id = cp.participant_id
-		    JOIN participant_identifiers pi ON pi.participant_id = p.id
 		    WHERE cp.conversation_id = conversations.id
-		      AND pi.identifier_type = 'imessage'
 		      AND p.display_name IS NOT NULL AND p.display_name != ''
-		      AND p.display_name != p.phone_number
-		      AND (conversations.title = p.phone_number OR conversations.title = p.email_address)
+		      AND p.display_name != COALESCE(p.phone_number, '')
+		      AND LOWER(p.display_name) != LOWER(COALESCE(p.email_address, ''))
+		      AND (
+		          (p.phone_number IS NOT NULL AND p.phone_number != ''
+		              AND conversations.title = p.phone_number)
+		          OR (p.email_address IS NOT NULL AND p.email_address != ''
+		              AND LOWER(conversations.title) = LOWER(p.email_address))
+		      )
+		    ORDER BY p.id
 		    LIMIT 1
 		),
 		updated_at = %s
@@ -1302,18 +1321,203 @@ func (s *Store) RetitleImessageDirectChats() (int64, error) {
 		      SELECT 1
 		      FROM conversation_participants cp
 		      JOIN participants p ON p.id = cp.participant_id
-		      JOIN participant_identifiers pi ON pi.participant_id = p.id
 		      WHERE cp.conversation_id = conversations.id
-		        AND pi.identifier_type = 'imessage'
 		        AND p.display_name IS NOT NULL AND p.display_name != ''
-		        AND p.display_name != p.phone_number
-		        AND (conversations.title = p.phone_number OR conversations.title = p.email_address)
+		        AND p.display_name != COALESCE(p.phone_number, '')
+		        AND LOWER(p.display_name) != LOWER(COALESCE(p.email_address, ''))
+		        AND (
+		            (p.phone_number IS NOT NULL AND p.phone_number != ''
+		                AND conversations.title = p.phone_number)
+		            OR (p.email_address IS NOT NULL AND p.email_address != ''
+		                AND LOWER(conversations.title) = LOWER(p.email_address))
+		        )
 		  )
 	`, s.dialect.Now()))
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+func (s *Store) retitleImessageGroupChats() (int64, error) {
+	rows, err := s.db.Query(`
+		SELECT id, title
+		FROM conversations
+		WHERE conversation_type = 'group_chat'
+		  AND source_id IN (SELECT id FROM sources WHERE source_type = 'apple_messages')
+		  AND title IS NOT NULL AND title != ''
+	`)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	type groupConversation struct {
+		id    int64
+		title string
+	}
+	var groups []groupConversation
+	for rows.Next() {
+		var group groupConversation
+		if err := rows.Scan(&group.id, &group.title); err != nil {
+			return 0, err
+		}
+		groups = append(groups, group)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	var updated int64
+	for _, group := range groups {
+		participants, err := s.imessageTitleParticipants(group.id)
+		if err != nil {
+			return updated, err
+		}
+		if len(participants) == 0 {
+			continue
+		}
+
+		newTitle := buildImessageGroupTitle(participants)
+		if newTitle == "" || newTitle == group.title {
+			continue
+		}
+		candidates := generatedImessageGroupTitleCandidates(participants)
+		if _, ok := candidates[group.title]; !ok {
+			continue
+		}
+
+		result, err := s.db.Exec(fmt.Sprintf(`
+			UPDATE conversations SET title = ?, updated_at = %s
+			WHERE id = ? AND title = ?
+		`, s.dialect.Now()), newTitle, group.id, group.title)
+		if err != nil {
+			return updated, err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return updated, err
+		}
+		updated += n
+	}
+	return updated, nil
+}
+
+type imessageTitleParticipant struct {
+	displayName string
+	phone       string
+	email       string
+}
+
+func (s *Store) imessageTitleParticipants(conversationID int64) ([]imessageTitleParticipant, error) {
+	rows, err := s.db.Query(`
+		SELECT
+			COALESCE(NULLIF(p.display_name, ''), ''),
+			COALESCE(NULLIF(p.phone_number, ''), ''),
+			COALESCE(NULLIF(p.email_address, ''), '')
+		FROM conversation_participants cp
+		JOIN participants p ON p.id = cp.participant_id
+		WHERE cp.conversation_id = ?
+		  AND COALESCE(p.email_address, '') != 'me@imessage.local'
+		  AND COALESCE(p.display_name, '') != 'Me'
+		ORDER BY p.id
+	`, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var participants []imessageTitleParticipant
+	for rows.Next() {
+		var p imessageTitleParticipant
+		if err := rows.Scan(&p.displayName, &p.phone, &p.email); err != nil {
+			return nil, err
+		}
+		participants = append(participants, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return participants, nil
+}
+
+func generatedImessageGroupTitleCandidates(participants []imessageTitleParticipant) map[string]struct{} {
+	candidates := make(map[string]struct{})
+	shown := min(3, len(participants))
+	if shown == 0 {
+		return candidates
+	}
+
+	var walk func(int, []string)
+	walk = func(index int, labels []string) {
+		if index == shown {
+			candidates[formatImessageGroupTitle(labels, len(participants))] = struct{}{}
+			return
+		}
+
+		rawLabel := participants[index].rawTitleLabel()
+		walk(index+1, append(labels, rawLabel))
+
+		displayLabel := participants[index].displayTitleLabel()
+		if displayLabel != rawLabel {
+			walk(index+1, append(labels, displayLabel))
+		}
+	}
+	walk(0, nil)
+	return candidates
+}
+
+func buildImessageGroupTitle(participants []imessageTitleParticipant) string {
+	shown := min(3, len(participants))
+	if shown == 0 {
+		return ""
+	}
+	labels := make([]string, 0, shown)
+	for _, p := range participants[:shown] {
+		labels = append(labels, p.displayTitleLabel())
+	}
+	return formatImessageGroupTitle(labels, len(participants))
+}
+
+func formatImessageGroupTitle(labels []string, total int) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	title := strings.Join(labels, ", ")
+	if total > len(labels) {
+		title += fmt.Sprintf(" +%d more", total-len(labels))
+	}
+	return title
+}
+
+func (p imessageTitleParticipant) displayTitleLabel() string {
+	if p.hasRealDisplayName() {
+		return p.displayName
+	}
+	return p.rawTitleLabel()
+}
+
+func (p imessageTitleParticipant) rawTitleLabel() string {
+	if p.phone != "" {
+		return p.phone
+	}
+	if p.email != "" {
+		return p.email
+	}
+	if p.displayName != "" {
+		return p.displayName
+	}
+	return "?"
+}
+
+func (p imessageTitleParticipant) hasRealDisplayName() bool {
+	if p.displayName == "" {
+		return false
+	}
+	if p.phone != "" && p.displayName == p.phone {
+		return false
+	}
+	return p.email == "" || !strings.EqualFold(p.displayName, p.email)
 }
 
 // UpdateParticipantDisplayNameByEmail updates the display_name for an

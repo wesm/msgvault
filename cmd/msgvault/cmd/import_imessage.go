@@ -127,8 +127,8 @@ func runImportImessage(cmd *cobra.Command, _ []string) error {
 }
 
 // finishImessageImport runs the post-import name backfill, refreshes
-// 1:1 titles, and triggers an analytics cache rebuild that picks up the
-// participant/conversation changes (the default staleness check only
+// generated chat titles, and triggers an analytics cache rebuild that picks up
+// the participant/conversation changes (the default staleness check only
 // notices new/deleted messages, not title or display_name updates).
 func finishImessageImport(s *store.Store) {
 	mutated := false
@@ -139,7 +139,7 @@ func finishImessageImport(s *store.Store) {
 		}
 	}
 
-	if retitleImessageDirectChats(s) {
+	if retitleImessageChats(s) {
 		mutated = true
 	}
 
@@ -161,14 +161,14 @@ func finishImessageImport(s *store.Store) {
 	rebuildCacheAfterWrite(dbPath)
 }
 
-func retitleImessageDirectChats(s *store.Store) bool {
-	n, err := s.RetitleImessageDirectChats()
+func retitleImessageChats(s *store.Store) bool {
+	n, err := s.RetitleImessageChats()
 	if err != nil {
-		fmt.Printf("\nWarning: could not refresh direct chat titles: %v\n", err)
+		fmt.Printf("\nWarning: could not refresh iMessage chat titles: %v\n", err)
 		return false
 	}
 	if n > 0 {
-		fmt.Printf("Direct chat titles refreshed: %d\n", n)
+		fmt.Printf("iMessage chat titles refreshed: %d\n", n)
 		return true
 	}
 	return false
