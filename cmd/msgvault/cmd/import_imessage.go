@@ -115,51 +115,75 @@ func runImportImessage(cmd *cobra.Command, _ []string) error {
 		if ctx.Err() != nil {
 			fmt.Println("\nImport interrupted.")
 			printImessageSummary(summary, startTime)
-			if importImessageContacts != "" {
-				applyImessageContacts(s, importImessageContacts)
-			}
-			retitleImessageDirectChats(s)
-			rebuildCacheAfterWrite(cfg.DatabaseDSN())
+			finishImessageImport(s)
 			return nil
 		}
 		return fmt.Errorf("import failed: %w", err)
 	}
 
 	printImessageSummary(summary, startTime)
-
-	if importImessageContacts != "" {
-		applyImessageContacts(s, importImessageContacts)
-	}
-
-	// Refresh stale 1:1 conversation titles whose stored title is still a
-	// raw phone/email — runs unconditionally so non-vcf imports also benefit
-	// when names came in from Gmail or another source.
-	retitleImessageDirectChats(s)
-
-	rebuildCacheAfterWrite(cfg.DatabaseDSN())
+	finishImessageImport(s)
 	return nil
 }
 
-func retitleImessageDirectChats(s *store.Store) {
+// finishImessageImport runs the post-import name backfill, refreshes
+// 1:1 titles, and triggers an analytics cache rebuild that picks up the
+// participant/conversation changes (the default staleness check only
+// notices new/deleted messages, not title or display_name updates).
+func finishImessageImport(s *store.Store) {
+	mutated := false
+
+	if importImessageContacts != "" {
+		if applyImessageContacts(s, importImessageContacts) {
+			mutated = true
+		}
+	}
+
+	if retitleImessageDirectChats(s) {
+		mutated = true
+	}
+
+	dbPath := cfg.DatabaseDSN()
+	if mutated {
+		// Title/display_name updates aren't visible to the message-id-keyed
+		// staleness check, so the standard rebuildCacheAfterWrite would skip.
+		// Force a full rebuild so conversations.parquet and
+		// participants.parquet are re-exported and the TUI sees the new names.
+		if _, err := buildCache(dbPath, cfg.AnalyticsDir(), true); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"Warning: cache rebuild failed: %v\n", err)
+			fmt.Fprintf(os.Stderr,
+				"Run 'msgvault build-cache --full-rebuild' to retry.\n")
+		}
+		return
+	}
+
+	rebuildCacheAfterWrite(dbPath)
+}
+
+func retitleImessageDirectChats(s *store.Store) bool {
 	n, err := s.RetitleImessageDirectChats()
 	if err != nil {
 		fmt.Printf("\nWarning: could not refresh direct chat titles: %v\n", err)
-		return
+		return false
 	}
 	if n > 0 {
 		fmt.Printf("Direct chat titles refreshed: %d\n", n)
+		return true
 	}
+	return false
 }
 
 // applyImessageContacts loads a vCard file and backfills display_name
 // for participants matched by phone or email. Only updates participants
 // that already exist (created during message import) and whose name is
 // currently empty — first-writer-wins from earlier sources is preserved.
-func applyImessageContacts(s *store.Store, vcfPath string) {
+// Returns true if any participant was updated.
+func applyImessageContacts(s *store.Store, vcfPath string) bool {
 	contacts, err := vcard.ParseFile(vcfPath)
 	if err != nil {
 		fmt.Printf("\nWarning: could not read contacts %s: %v\n", vcfPath, err)
-		return
+		return false
 	}
 
 	var phoneMatches, emailMatches int
@@ -195,6 +219,7 @@ func applyImessageContacts(s *store.Store, vcfPath string) {
 	fmt.Printf("  Source:           %s (%d entries)\n", vcfPath, len(contacts))
 	fmt.Printf("  Names backfilled: %d by phone, %d by email\n",
 		phoneMatches, emailMatches)
+	return phoneMatches > 0 || emailMatches > 0
 }
 
 func openStoreAndInit() (*store.Store, error) {
