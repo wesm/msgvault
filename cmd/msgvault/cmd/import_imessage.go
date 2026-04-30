@@ -151,7 +151,10 @@ func applyImessageContacts(s *store.Store, vcfPath string) {
 			continue
 		}
 		for _, phone := range c.Phones {
-			updated, err := s.UpdateParticipantDisplayNameByPhone(phone, c.FullName)
+			// Use the iMessage-scoped variant so legacy participants
+			// whose display_name was poisoned with the raw phone string
+			// (older import-imessage runs) get cleared and replaced.
+			updated, err := s.UpdateImessageParticipantDisplayNameByPhone(phone, c.FullName)
 			if err != nil {
 				continue
 			}

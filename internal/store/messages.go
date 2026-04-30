@@ -1236,6 +1236,42 @@ func (s *Store) UpdateParticipantDisplayNameByPhone(phone, displayName string) (
 	return rows > 0, nil
 }
 
+// UpdateImessageParticipantDisplayNameByPhone backfills display_name for
+// an iMessage-imported participant, treating the legacy "display_name =
+// phone_number" placeholder as empty. Earlier versions of import-imessage
+// stored the raw phone string as display_name, which the regular
+// UpdateParticipantDisplayNameByPhone update guard refuses to overwrite.
+//
+// Updates only when display_name is NULL/empty or equals phone_number,
+// AND the participant has an "imessage" identifier — so contact-driven
+// names from other sources (Gmail, WhatsApp, Google Voice) are preserved.
+// Returns true if a participant was updated.
+func (s *Store) UpdateImessageParticipantDisplayNameByPhone(phone, displayName string) (bool, error) {
+	if phone == "" || displayName == "" {
+		return false, nil
+	}
+
+	result, err := s.db.Exec(fmt.Sprintf(`
+		UPDATE participants SET display_name = ?, updated_at = %s
+		WHERE phone_number = ?
+		  AND (display_name IS NULL OR display_name = '' OR display_name = phone_number)
+		  AND EXISTS (
+		      SELECT 1 FROM participant_identifiers pi
+		      WHERE pi.participant_id = participants.id
+		        AND pi.identifier_type = 'imessage'
+		  )
+	`, s.dialect.Now()), displayName, phone)
+	if err != nil {
+		return false, err
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
 // UpdateParticipantDisplayNameByEmail updates the display_name for an
 // existing participant identified by email address. Only updates if
 // display_name is currently empty. Returns true if a participant was

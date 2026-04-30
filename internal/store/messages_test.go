@@ -235,6 +235,73 @@ func TestUpdateParticipantDisplayNameByEmail(t *testing.T) {
 	}
 }
 
+func TestUpdateImessageParticipantDisplayNameByPhone(t *testing.T) {
+	st := testutil.NewTestStore(t)
+
+	// Case 1: legacy iMessage participant with display_name = phone_number.
+	// Should be overwritten by the contact name.
+	legacyID, err := st.EnsureParticipantByPhone("+15551111111", "+15551111111", "imessage")
+	if err != nil {
+		t.Fatalf("seed legacy: %v", err)
+	}
+
+	// Case 2: iMessage participant already named by another source. Real
+	// name must be preserved.
+	namedID, err := st.EnsureParticipantByPhone("+15552222222", "Bob From Gmail", "imessage")
+	if err != nil {
+		t.Fatalf("seed named: %v", err)
+	}
+
+	// Case 3: WhatsApp-only participant with display_name = phone_number.
+	// Not iMessage, must NOT be touched (no imessage identifier exists).
+	otherID, err := st.EnsureParticipantByPhone("+15553333333", "+15553333333", "whatsapp")
+	if err != nil {
+		t.Fatalf("seed other: %v", err)
+	}
+
+	// Apply contact-name backfill.
+	updated, err := st.UpdateImessageParticipantDisplayNameByPhone("+15551111111", "Alice Real")
+	if err != nil {
+		t.Fatalf("backfill legacy: %v", err)
+	}
+	if !updated {
+		t.Error("legacy placeholder should be replaced")
+	}
+	if got := readDisplayName(t, st, legacyID); got != "Alice Real" {
+		t.Errorf("legacy display_name = %q, want %q", got, "Alice Real")
+	}
+
+	updated, err = st.UpdateImessageParticipantDisplayNameByPhone("+15552222222", "Should Not Win")
+	if err != nil {
+		t.Fatalf("backfill named: %v", err)
+	}
+	if updated {
+		t.Error("real name from another source should be preserved")
+	}
+	if got := readDisplayName(t, st, namedID); got != "Bob From Gmail" {
+		t.Errorf("named display_name = %q, want %q", got, "Bob From Gmail")
+	}
+
+	updated, err = st.UpdateImessageParticipantDisplayNameByPhone("+15553333333", "Not Allowed")
+	if err != nil {
+		t.Fatalf("backfill other: %v", err)
+	}
+	if updated {
+		t.Error("non-iMessage participant should not be touched")
+	}
+	if got := readDisplayName(t, st, otherID); got != "+15553333333" {
+		t.Errorf("non-iMessage display_name = %q, want %q", got, "+15553333333")
+	}
+
+	// Empty inputs are no-ops.
+	if updated, err := st.UpdateImessageParticipantDisplayNameByPhone("", "X"); err != nil || updated {
+		t.Errorf("empty phone: updated=%v err=%v", updated, err)
+	}
+	if updated, err := st.UpdateImessageParticipantDisplayNameByPhone("+15551111111", ""); err != nil || updated {
+		t.Errorf("empty name: updated=%v err=%v", updated, err)
+	}
+}
+
 func readDisplayName(t *testing.T, st *store.Store, pid int64) string {
 	t.Helper()
 	var name sql.NullString
