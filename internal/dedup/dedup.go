@@ -330,9 +330,24 @@ func (e *Engine) Scan(ctx context.Context) (*Report, error) {
 	}
 
 	if e.config.ContentHashFallback {
+		// Exclude only losers (messages already selected for pruning) from
+		// the content-hash pass, not survivors. A message missing
+		// Message-ID can legitimately match the content of a survivor that
+		// anchored a Message-ID group; survivors stay eligible so the
+		// second pass can link orphan rows back to that anchor.
+		//
+		// Survivors are tracked separately so we can guarantee a survivor
+		// of a Message-ID group cannot be demoted to a loser by the
+		// content-hash pass (which would silently prune it after labels
+		// from the Message-ID group's losers were already merged in).
 		excludeIDs := make(map[int64]bool, len(report.Groups)*2)
+		messageIDSurvivors := make(map[int64]bool, len(report.Groups))
 		for _, g := range report.Groups {
-			for _, m := range g.Messages {
+			for j, m := range g.Messages {
+				if j == g.Survivor {
+					messageIDSurvivors[m.ID] = true
+					continue
+				}
 				excludeIDs[m.ID] = true
 			}
 		}
@@ -345,6 +360,21 @@ func (e *Engine) Scan(ctx context.Context) (*Report, error) {
 		}
 		report.SkippedDecompressionErrors = skipped
 		for _, g := range contentHashGroups {
+			// If this content-hash group contains a Message-ID survivor
+			// that did not win the content-hash survivor selection, force
+			// the Message-ID survivor to win. Demoting a survivor that
+			// has already absorbed labels from its Message-ID losers
+			// would silently destroy that union when MergeDuplicates
+			// soft-deletes the demoted survivor.
+			for j, m := range g.Messages {
+				if j == g.Survivor {
+					continue
+				}
+				if messageIDSurvivors[m.ID] {
+					g.Survivor = j
+					break
+				}
+			}
 			report.Groups = append(report.Groups, g)
 			report.ContentHashGroups++
 			report.BySourcePair[sourcePairKey(g.Messages)]++

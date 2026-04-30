@@ -132,7 +132,7 @@ func ResolveCollectionFlag(st *store.Store, input string) (Scope, error) {
 	}
 
 	return scope, fmt.Errorf(
-		"no collection named %q (try 'msgvault collections list')",
+		"no collection named %q (try 'msgvault collection list')",
 		input,
 	)
 }

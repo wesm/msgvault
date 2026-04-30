@@ -59,6 +59,16 @@ func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied bool, s
 		return false, 0, 0, fmt.Errorf("list sources for identity migration: %w", err)
 	}
 
+	// If the user has legacy [identity] addresses configured but no
+	// sources exist yet (typical at init-db time, or before the first
+	// `add-account`), defer the migration. Marking it applied now would
+	// permanently drop the addresses on the floor: the next account the
+	// user adds would never receive them. Leave the sentinel unmarked
+	// and let the next command run after a source exists pick it up.
+	if len(sources) == 0 {
+		return false, 0, 0, nil
+	}
+
 	if err := s.withTx(func(tx *loggedTx) error {
 		for _, src := range sources {
 			for _, addr := range normalized {

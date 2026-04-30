@@ -11,8 +11,8 @@ import (
 	"github.com/wesm/msgvault/internal/store"
 )
 
-var collectionsCmd = &cobra.Command{
-	Use:   "collections",
+var collectionCmd = &cobra.Command{
+	Use:   "collection",
 	Short: "Manage named groups of accounts",
 	Long: `Collections are named groupings of accounts that let you view and
 deduplicate across multiple sources as one unified archive.
@@ -21,50 +21,50 @@ A default "All" collection is created automatically and includes
 every account.`,
 }
 
-var collectionsCreateCmd = &cobra.Command{
+var collectionCreateCmd = &cobra.Command{
 	Use:   "create <name> --accounts <email1,email2,...>",
 	Short: "Create a new collection",
 	Args:  cobra.ExactArgs(1),
-	RunE:  runCollectionsCreate,
+	RunE:  runCollectionCreate,
 }
 
-var collectionsListCmd = &cobra.Command{
+var collectionListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all collections",
-	RunE:  runCollectionsList,
+	RunE:  runCollectionList,
 }
 
-var collectionsShowCmd = &cobra.Command{
+var collectionShowCmd = &cobra.Command{
 	Use:   "show <name>",
 	Short: "Show collection details",
 	Args:  cobra.ExactArgs(1),
-	RunE:  runCollectionsShow,
+	RunE:  runCollectionShow,
 }
 
-var collectionsAddCmd = &cobra.Command{
+var collectionAddCmd = &cobra.Command{
 	Use:   "add <name> --accounts <email1,email2,...>",
 	Short: "Add accounts to a collection",
 	Args:  cobra.ExactArgs(1),
-	RunE:  runCollectionsAdd,
+	RunE:  runCollectionAdd,
 }
 
-var collectionsRemoveCmd = &cobra.Command{
+var collectionRemoveCmd = &cobra.Command{
 	Use:   "remove <name> --accounts <email1,email2,...>",
 	Short: "Remove accounts from a collection",
 	Args:  cobra.ExactArgs(1),
-	RunE:  runCollectionsRemove,
+	RunE:  runCollectionRemove,
 }
 
-var collectionsDeleteCmd = &cobra.Command{
+var collectionDeleteCmd = &cobra.Command{
 	Use:   "delete <name>",
 	Short: "Delete a collection (sources and messages are untouched)",
 	Args:  cobra.ExactArgs(1),
-	RunE:  runCollectionsDelete,
+	RunE:  runCollectionDelete,
 }
 
-var collectionsAccounts string
+var collectionAccounts string
 
-func runCollectionsCreate(_ *cobra.Command, args []string) error {
+func runCollectionCreate(_ *cobra.Command, args []string) error {
 	st, err := openStoreAndInit()
 	if err != nil {
 		return err
@@ -72,7 +72,7 @@ func runCollectionsCreate(_ *cobra.Command, args []string) error {
 	defer func() { _ = st.Close() }()
 
 	name := args[0]
-	sourceIDs, err := resolveAccountList(st, collectionsAccounts)
+	sourceIDs, err := resolveAccountList(st, collectionAccounts)
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func runCollectionsCreate(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runCollectionsList(_ *cobra.Command, _ []string) error {
+func runCollectionList(_ *cobra.Command, _ []string) error {
 	st, err := openStoreAndInit()
 	if err != nil {
 		return err
@@ -113,7 +113,7 @@ func runCollectionsList(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runCollectionsShow(_ *cobra.Command, args []string) error {
+func runCollectionShow(_ *cobra.Command, args []string) error {
 	st, err := openStoreAndInit()
 	if err != nil {
 		return err
@@ -139,14 +139,14 @@ func runCollectionsShow(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runCollectionsAdd(_ *cobra.Command, args []string) error {
+func runCollectionAdd(_ *cobra.Command, args []string) error {
 	st, err := openStoreAndInit()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = st.Close() }()
 
-	sourceIDs, err := resolveAccountList(st, collectionsAccounts)
+	sourceIDs, err := resolveAccountList(st, collectionAccounts)
 	if err != nil {
 		return err
 	}
@@ -158,14 +158,14 @@ func runCollectionsAdd(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runCollectionsRemove(_ *cobra.Command, args []string) error {
+func runCollectionRemove(_ *cobra.Command, args []string) error {
 	st, err := openStoreAndInit()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = st.Close() }()
 
-	sourceIDs, err := resolveAccountList(st, collectionsAccounts)
+	sourceIDs, err := resolveAccountList(st, collectionAccounts)
 	if err != nil {
 		return err
 	}
@@ -177,7 +177,7 @@ func runCollectionsRemove(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runCollectionsDelete(_ *cobra.Command, args []string) error {
+func runCollectionDelete(_ *cobra.Command, args []string) error {
 	st, err := openStoreAndInit()
 	if err != nil {
 		return err
@@ -221,18 +221,18 @@ func resolveAccountList(st *store.Store, accounts string) ([]int64, error) {
 }
 
 func init() {
-	rootCmd.AddCommand(collectionsCmd)
-	collectionsCmd.AddCommand(collectionsCreateCmd)
-	collectionsCmd.AddCommand(collectionsListCmd)
-	collectionsCmd.AddCommand(collectionsShowCmd)
-	collectionsCmd.AddCommand(collectionsAddCmd)
-	collectionsCmd.AddCommand(collectionsRemoveCmd)
-	collectionsCmd.AddCommand(collectionsDeleteCmd)
+	rootCmd.AddCommand(collectionCmd)
+	collectionCmd.AddCommand(collectionCreateCmd)
+	collectionCmd.AddCommand(collectionListCmd)
+	collectionCmd.AddCommand(collectionShowCmd)
+	collectionCmd.AddCommand(collectionAddCmd)
+	collectionCmd.AddCommand(collectionRemoveCmd)
+	collectionCmd.AddCommand(collectionDeleteCmd)
 
-	collectionsCreateCmd.Flags().StringVar(&collectionsAccounts,
+	collectionCreateCmd.Flags().StringVar(&collectionAccounts,
 		"accounts", "", "Comma-separated account emails or source IDs")
-	collectionsAddCmd.Flags().StringVar(&collectionsAccounts,
+	collectionAddCmd.Flags().StringVar(&collectionAccounts,
 		"accounts", "", "Comma-separated account emails or source IDs")
-	collectionsRemoveCmd.Flags().StringVar(&collectionsAccounts,
+	collectionRemoveCmd.Flags().StringVar(&collectionAccounts,
 		"accounts", "", "Comma-separated account emails or source IDs")
 }

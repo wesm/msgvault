@@ -8,7 +8,7 @@ import (
 	"github.com/wesm/msgvault/internal/testutil/storetest"
 )
 
-func TestCollections_CRUD(t *testing.T) {
+func TestCollection_CRUD(t *testing.T) {
 	f := storetest.New(t)
 	st := f.Store
 
@@ -89,7 +89,7 @@ func TestCollections_CRUD(t *testing.T) {
 	}
 }
 
-func TestCollections_DefaultAll(t *testing.T) {
+func TestCollection_DefaultAll(t *testing.T) {
 	f := storetest.New(t)
 	st := f.Store
 
@@ -111,7 +111,7 @@ func TestCollections_DefaultAll(t *testing.T) {
 	testutil.MustNoErr(t, err, "EnsureDefaultCollection (2nd call)")
 }
 
-func TestCollections_Validation(t *testing.T) {
+func TestCollection_Validation(t *testing.T) {
 	f := storetest.New(t)
 	st := f.Store
 
@@ -144,7 +144,7 @@ func TestCollections_Validation(t *testing.T) {
 	})
 }
 
-func TestCollections_Idempotent(t *testing.T) {
+func TestCollection_Idempotent(t *testing.T) {
 	f := storetest.New(t)
 	st := f.Store
 
@@ -169,7 +169,7 @@ func TestCollections_Idempotent(t *testing.T) {
 	})
 }
 
-func TestCollections_DefaultAllIncremental(t *testing.T) {
+func TestCollection_DefaultAllIncremental(t *testing.T) {
 	f := storetest.New(t)
 	st := f.Store
 

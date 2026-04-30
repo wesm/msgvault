@@ -85,6 +85,21 @@ func runListIdentities(_ *cobra.Command, _ []string) error {
 	}
 
 	if identitiesConfirmed {
+		// Default to the union across all sources when no scope is set.
+		// GetIdentitiesForScope deliberately returns an empty map for an
+		// empty input slice (an "explicit empty scope" means no match);
+		// here the user is asking for "all confirmed identities," so
+		// expand to every source.
+		if len(scopeIDs) == 0 {
+			sources, err := st.ListSources("")
+			if err != nil {
+				return fmt.Errorf("list sources: %w", err)
+			}
+			scopeIDs = make([]int64, len(sources))
+			for i, src := range sources {
+				scopeIDs[i] = src.ID
+			}
+		}
 		return runListConfirmedIdentities(st, scopeIDs, scopeLabel)
 	}
 

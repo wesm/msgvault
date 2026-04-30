@@ -1431,8 +1431,13 @@ func MergeFilterIntoQuery(q *search.Query, filter MessageFilter) *search.Query {
 	merged.SubjectTerms = append([]string(nil), q.SubjectTerms...)
 	merged.Labels = append([]string(nil), q.Labels...)
 
-	// Account filter - always apply if set
-	if filter.SourceID != nil {
+	// Account filter - always apply if set. Multi-source SourceIDs takes
+	// precedence over single SourceID, matching appendSourceFilter
+	// semantics elsewhere in the package, so a future caller that sets
+	// the multi-source field on MessageFilter does not silently lose it.
+	if len(filter.SourceIDs) > 0 {
+		merged.AccountIDs = append([]int64(nil), filter.SourceIDs...)
+	} else if filter.SourceID != nil {
 		merged.AccountIDs = []int64{*filter.SourceID}
 	}
 

@@ -18,8 +18,9 @@ import (
 )
 
 var deduplicateCmd = &cobra.Command{
-	Use:   "deduplicate",
-	Short: "Find and merge duplicate messages within an account",
+	Use:     "deduplicate",
+	Aliases: []string{"dedup", "dedupe"},
+	Short:   "Find and merge duplicate messages within an account",
 	Long: `Find and merge duplicate messages that were ingested through multiple paths
 for the same account (for example, Gmail API sync plus an mbox export of the
 same mailbox, or an IMAP sync plus an emlx import).
@@ -32,9 +33,22 @@ By default, deduplicate ONLY modifies the msgvault database. Your original
 source files and remote servers are never modified. Hidden rows can be
 restored with --undo, so a dedup run is fully reversible.
 
-Use --account <email> to scope dedup to one account.
-Use --collection <name> to dedup across all member accounts of a collection.
-Without either flag, dedup runs per-account independently for every source.
+Scope:
+  --account <email>     Scope dedup to one account. Never crosses source
+                        boundaries.
+  --collection <name>   Dedup across every member account of a collection.
+                        This is the only way to compare messages across
+                        sources, and it is an explicit user opt-in:
+                        a duplicate Message-ID or matching content hash
+                        across two accounts in the collection will hide
+                        the loser locally. Use --dry-run first to
+                        review what would be merged. Cross-source pruning
+                        is local-only and reversible with --undo;
+                        --delete-dups-from-source-server only stages
+                        remote deletion when the loser and the survivor
+                        share a source (same-source-only).
+  (no flag)             Dedup runs per-account independently for every
+                        source. Source boundaries are never crossed.
 
 Use --dry-run to scan and report without writing anything.
 Use --content-hash to also group messages by normalized raw MIME when
@@ -149,6 +163,19 @@ func runDeduplicate(cmd *cobra.Command, _ []string) error {
 		}
 		fmt.Printf("Deduping across collection %q (%d accounts: %s)\n",
 			canonicalAccount, len(memberNames), strings.Join(memberNames, ", "))
+		// When the collection spans more than one account, dedup is
+		// crossing source boundaries — a duplicate Message-ID or matching
+		// content hash between two accounts will hide the loser locally.
+		// Print a one-line hint so the user can confirm they meant to
+		// cross those boundaries (and remind them that --dry-run would
+		// preview without writing).
+		if len(memberNames) > 1 {
+			fmt.Println(
+				"  Note: cross-source dedup is reversible (--undo); " +
+					"remote deletion stays same-source-only. " +
+					"Re-run with --dry-run to preview.",
+			)
+		}
 	}
 
 	engine := dedup.NewEngine(st, config, logger)
@@ -476,10 +503,14 @@ func init() {
 		"Undo a previous dedup run by batch ID "+
 			"(repeat to undo multiple batches)")
 	deduplicateCmd.Flags().StringVar(&dedupAccount, "account", "",
-		"Dedup across all sources for this account")
+		"Scope dedup to one account; never crosses source boundaries")
 	deduplicateCmd.Flags().StringVar(&dedupCollection, "collection", "",
-		"Run dedup across all member accounts of one collection")
+		"Dedup across every member of a collection; opts into "+
+			"cross-source comparison (use --dry-run to preview)")
 	deduplicateCmd.MarkFlagsMutuallyExclusive("account", "collection")
+	// --undo executes a write; --dry-run promises no writes. Reject the
+	// combination explicitly rather than silently letting --undo win.
+	deduplicateCmd.MarkFlagsMutuallyExclusive("dry-run", "undo")
 	deduplicateCmd.Flags().BoolVar(&dedupDeleteFromSourceSrvr,
 		"delete-dups-from-source-server", false,
 		"DESTRUCTIVE: stage pruned duplicates for remote deletion")
