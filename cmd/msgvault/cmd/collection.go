@@ -225,7 +225,7 @@ func resolveAccountList(st *store.Store, accounts string) ([]int64, error) {
 		// on phone numbers. Restrict the numeric branch to tokens
 		// whose first byte is a decimal digit so signed inputs fall
 		// through to identifier resolution.
-		if len(p) > 0 && p[0] >= '0' && p[0] <= '9' {
+		if p[0] >= '0' && p[0] <= '9' {
 			if id, err := strconv.ParseInt(p, 10, 64); err == nil {
 				if _, err := st.GetSourceByID(id); err != nil {
 					return nil, fmt.Errorf("get source %d: %w", id, err)
