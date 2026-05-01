@@ -158,11 +158,9 @@ func (e *PostgreSQLEngine) GetTotalStats(ctx context.Context, opts StatsOptions)
 	// attachments belonging to filtered-out messages don't leak into totals.
 	msgConds := []string{"m.message_type = 'email' OR m.message_type IS NULL OR m.message_type = ''"}
 	var args []interface{}
-	argIdx := 1
 	if opts.SourceID != nil {
-		msgConds = append(msgConds, fmt.Sprintf("m.source_id = $%d", argIdx))
+		msgConds = append(msgConds, fmt.Sprintf("m.source_id = $%d", len(args)+1))
 		args = append(args, *opts.SourceID)
-		argIdx++
 	}
 	if opts.WithAttachmentsOnly {
 		msgConds = append(msgConds, "m.has_attachments = TRUE")
