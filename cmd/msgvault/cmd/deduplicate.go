@@ -165,6 +165,7 @@ func runDeduplicate(cmd *cobra.Command, _ []string) error {
 		DryRun:                     dedupDryRun,
 		AccountSourceIDs:           accountSourceIDs,
 		Account:                    canonicalAccount,
+		ScopeIsCollection:          scopeIsCollection,
 		DeleteDupsFromSourceServer: dedupDeleteFromSourceSrvr,
 		DeletionsDir:               deletionsDir,
 	}

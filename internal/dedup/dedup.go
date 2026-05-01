@@ -70,6 +70,12 @@ type Config struct {
 	// deletion manifests and in the methodology output.
 	Account string
 
+	// ScopeIsCollection is true when AccountSourceIDs spans multiple
+	// distinct accounts via --collection. The methodology output
+	// branches on this: collection mode intentionally crosses account
+	// boundaries, while account/per-source modes do not.
+	ScopeIsCollection bool
+
 	// DeleteDupsFromSourceServer, when true, writes pending
 	// deletion manifests for pruned duplicates that meet ALL of:
 	//   1. the pruned copy lives in a remote source whose type
@@ -1085,18 +1091,26 @@ func (e *Engine) FormatMethodology() string {
 	sb.WriteString("\n=== Deduplication Methodology ===\n\n")
 
 	sb.WriteString("Scope:\n")
-	if e.config.Account != "" {
+	switch {
+	case e.config.ScopeIsCollection:
+		fmt.Fprintf(&sb,
+			"  Scoped to collection: %s (%d source(s) across "+
+				"multiple accounts).\n"+
+				"  Cross-account dedup is enabled within this "+
+				"collection.\n",
+			e.config.Account, len(e.config.AccountSourceIDs))
+	case e.config.Account != "":
 		fmt.Fprintf(&sb,
 			"  Scoped to account: %s (%d source(s)). "+
 				"Cross-source dedup is enabled\n"+
 				"  within this account.\n",
 			e.config.Account, len(e.config.AccountSourceIDs))
-	} else if len(e.config.AccountSourceIDs) > 0 {
+	case len(e.config.AccountSourceIDs) > 0:
 		fmt.Fprintf(&sb,
 			"  Scoped to %d source(s). Cross-source dedup is "+
 				"enabled within that set.\n",
 			len(e.config.AccountSourceIDs))
-	} else {
+	default:
 		sb.WriteString(
 			"  No account specified — only messages that appear " +
 				"twice in the\n" +
@@ -1138,16 +1152,34 @@ func (e *Engine) FormatMethodology() string {
 		"earlier archived_at > lower id.\n\n")
 
 	sb.WriteString("Sent messages:\n")
-	sb.WriteString(
-		"  Dedup NEVER merges messages across different " +
-			"accounts. A message that\n" +
-			"  alice sent to bob is two distinct mailbox " +
-			"copies — one in alice's\n" +
-			"  Sent folder and one in bob's Inbox. Both are " +
-			"preserved independently\n" +
-			"  because deleting either would alter the other " +
-			"user's archive.\n\n",
-	)
+	if e.config.ScopeIsCollection {
+		sb.WriteString(
+			"  Collection mode INTENTIONALLY merges messages " +
+				"across the accounts in this\n" +
+				"  collection. A message alice sent to bob will " +
+				"have one copy in alice's\n" +
+				"  Sent folder and one in bob's Inbox; if both " +
+				"accounts are members of\n" +
+				"  this collection, the loser will be hidden " +
+				"locally (reversible via\n" +
+				"  --undo). Remote deletion remains " +
+				"same-source-only and will not\n" +
+				"  touch a different account's mailbox. Only " +
+				"add accounts to a collection\n" +
+				"  when you actually want their copies merged.\n\n",
+		)
+	} else {
+		sb.WriteString(
+			"  Dedup NEVER merges messages across different " +
+				"accounts. A message that\n" +
+				"  alice sent to bob is two distinct mailbox " +
+				"copies — one in alice's\n" +
+				"  Sent folder and one in bob's Inbox. Both are " +
+				"preserved independently\n" +
+				"  because deleting either would alter the other " +
+				"user's archive.\n\n",
+		)
+	}
 
 	sb.WriteString("Merge behaviour:\n")
 	sb.WriteString("  - Labels from every copy are unioned onto " +
