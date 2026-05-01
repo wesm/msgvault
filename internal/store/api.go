@@ -600,7 +600,7 @@ func (s *Store) searchMessagesLike(query string, offset, limit int) ([]APIMessag
 
 // scanMessageRows scans the standard 8-column message row set.
 // Uses string scanning for dates to handle all SQLite datetime formats robustly.
-func scanMessageRows(rows *sql.Rows) ([]APIMessage, []int64, error) {
+func scanMessageRows(rows *loggedRows) ([]APIMessage, []int64, error) {
 	var messages []APIMessage
 	var ids []int64
 	for rows.Next() {

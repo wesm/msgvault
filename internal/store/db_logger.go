@@ -89,19 +89,32 @@ func identityRebind(q string) string { return q }
 // sql.DB.Query semantics.
 func (d *loggedDB) Query(
 	query string, args ...any,
-) (*sql.Rows, error) {
+) (*loggedRows, error) {
 	return d.QueryContext(context.Background(), query, args...)
 }
 
-// QueryContext logs the statement and delegates.
+// QueryContext returns a *loggedRows whose Close emits the
+// real wall-clock duration of prepare + scan. The immediate
+// post-Query log line is emitted only on error, because the
+// success-case duration that matters is the one measured at
+// Close — most queries return *sql.Rows in microseconds and
+// then spend their real time inside rows.Next.
 func (d *loggedDB) QueryContext(
 	ctx context.Context, query string, args ...any,
-) (*sql.Rows, error) {
+) (*loggedRows, error) {
 	query = d.rebind(query)
 	start := time.Now()
 	rows, err := d.DB.QueryContext(ctx, query, args...)
-	logStmt("query", query, len(args), err, time.Since(start))
-	return rows, err
+	if err != nil {
+		logStmt("query", query, len(args), err, time.Since(start))
+		return nil, err
+	}
+	return &loggedRows{
+		Rows:  rows,
+		query: query,
+		nargs: len(args),
+		start: start,
+	}, nil
 }
 
 // QueryRow logs and delegates. sql.Row does not expose its error
@@ -198,18 +211,45 @@ func (t *loggedTx) ExecContext(
 	return t.Tx.ExecContext(ctx, t.rebind(query), args...)
 }
 
-// Query rebinds before delegating.
+// Query rebinds and returns *loggedRows so transactional
+// queries also get accurate scan-close timing. The wrapper
+// only logs on Close; if Query itself fails we surface the
+// error without a wrapper since there are no rows to scan.
 func (t *loggedTx) Query(
 	query string, args ...any,
-) (*sql.Rows, error) {
-	return t.Tx.Query(t.rebind(query), args...)
+) (*loggedRows, error) {
+	query = t.rebind(query)
+	start := time.Now()
+	rows, err := t.Tx.Query(query, args...)
+	if err != nil {
+		logStmt("query", query, len(args), err, time.Since(start))
+		return nil, err
+	}
+	return &loggedRows{
+		Rows:  rows,
+		query: query,
+		nargs: len(args),
+		start: start,
+	}, nil
 }
 
-// QueryContext rebinds before delegating.
+// QueryContext rebinds and returns *loggedRows.
 func (t *loggedTx) QueryContext(
 	ctx context.Context, query string, args ...any,
-) (*sql.Rows, error) {
-	return t.Tx.QueryContext(ctx, t.rebind(query), args...)
+) (*loggedRows, error) {
+	query = t.rebind(query)
+	start := time.Now()
+	rows, err := t.Tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		logStmt("query", query, len(args), err, time.Since(start))
+		return nil, err
+	}
+	return &loggedRows{
+		Rows:  rows,
+		query: query,
+		nargs: len(args),
+		start: start,
+	}, nil
 }
 
 // QueryRow rebinds before delegating.
@@ -224,6 +264,42 @@ func (t *loggedTx) QueryRowContext(
 	ctx context.Context, query string, args ...any,
 ) *sql.Row {
 	return t.Tx.QueryRowContext(ctx, t.rebind(query), args...)
+}
+
+// loggedRows wraps *sql.Rows so the timing log emitted for a
+// streaming query reflects total wall-clock time (prepare +
+// scan), not just the time db.Query took to return. Without
+// this wrapper, every duration_ms reported for a SELECT was
+// effectively the cost of preparing the statement and reading
+// the first row from the driver — typically sub-millisecond
+// even when the full scan took hundreds of milliseconds.
+//
+// loggedRows embeds *sql.Rows so callers continue to use it
+// like a raw *sql.Rows: Next, Scan, Err, and Columns are all
+// satisfied by the embedded pointer. Only Close is overridden,
+// to record the elapsed time and emit the log line. Close is
+// idempotent — repeated calls (e.g. an early-return defer plus
+// an explicit close before that) only emit one log line.
+type loggedRows struct {
+	*sql.Rows
+	query  string
+	nargs  int
+	start  time.Time
+	closed bool
+}
+
+// Close records the total elapsed time since Query returned
+// and emits the SQL log line. Mirrors the threshold and
+// full-trace behaviour of logStmt so a streaming query that
+// runs slowly inside Next still gets promoted to WARN.
+func (r *loggedRows) Close() error {
+	err := r.Rows.Close()
+	if r.closed {
+		return err
+	}
+	r.closed = true
+	logStmt("query", r.query, r.nargs, err, time.Since(r.start))
+	return err
 }
 
 // logStmt is the common emitter used by Query / Exec / QueryRow.

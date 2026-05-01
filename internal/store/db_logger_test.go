@@ -167,6 +167,103 @@ func TestLoggedDB_QueryRowLogsButNoError(t *testing.T) {
 	}
 }
 
+// TestLoggedRows_LogsAtClose verifies that the timing log line
+// for a streaming Query is emitted on Close, not at QueryContext
+// return. This is the behaviour change that gives streaming queries
+// honest duration_ms numbers.
+func TestLoggedRows_LogsAtClose(t *testing.T) {
+	ConfigureSQLLogging(SQLLogOptions{FullTrace: true})
+	t.Cleanup(func() { ConfigureSQLLogging(SQLLogOptions{}) })
+
+	buf := captureSlog(t, slog.LevelDebug)
+	db := openLoggedMem(t)
+	if _, err := db.Exec(
+		"INSERT INTO t (val) VALUES ('a'), ('b'), ('c')",
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Reset buffer so we only see the post-Query log line(s).
+	buf.Reset()
+
+	rows, err := db.Query("SELECT val FROM t ORDER BY id")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if findLogLineByMsg(t, buf, "sql") != nil {
+		t.Fatalf("query log emitted before Close; want only at Close. buf=%s",
+			buf.String())
+	}
+
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	rec := findLogLine(t, buf, "sql")
+	if rec["kind"] != "query" {
+		t.Errorf("kind = %v, want query", rec["kind"])
+	}
+}
+
+// TestLoggedRows_CloseIdempotent verifies that double-Close
+// (e.g. an early-return defer plus an explicit close) does not
+// emit two log lines.
+func TestLoggedRows_CloseIdempotent(t *testing.T) {
+	ConfigureSQLLogging(SQLLogOptions{FullTrace: true})
+	t.Cleanup(func() { ConfigureSQLLogging(SQLLogOptions{}) })
+
+	buf := captureSlog(t, slog.LevelDebug)
+	db := openLoggedMem(t)
+	rows, err := db.Query("SELECT 1")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	for rows.Next() {
+		var n int
+		_ = rows.Scan(&n)
+	}
+	_ = rows.Close()
+	_ = rows.Close()
+
+	count := 0
+	for _, rec := range decodeAll(t, buf) {
+		if rec["msg"] == "sql" && rec["kind"] == "query" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("got %d query log lines, want 1", count)
+	}
+}
+
+// TestLoggedRows_QueryErrorLogsImmediately verifies that an
+// error returned from db.Query (e.g. bad SQL, no such table)
+// is logged at the QueryContext call site, not deferred to a
+// Close call that would never happen because no rows handle
+// is returned.
+func TestLoggedRows_QueryErrorLogsImmediately(t *testing.T) {
+	ConfigureSQLLogging(SQLLogOptions{})
+	buf := captureSlog(t, slog.LevelDebug)
+	db := openLoggedMem(t)
+
+	_, err := db.Query("SELECT * FROM no_such_table")
+	if err == nil {
+		t.Fatal("expected query error")
+	}
+	rec := findLogLineByMsg(t, buf, "sql error")
+	if rec == nil {
+		t.Fatalf("no sql error line; buf=%s", buf.String())
+	}
+}
+
 func TestNormalizeStmt_CollapsesWhitespace(t *testing.T) {
 	in := "SELECT\n  *\nFROM\n\tt WHERE id = ?"
 	got := normalizeStmt(in, 0)

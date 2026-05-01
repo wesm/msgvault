@@ -338,7 +338,7 @@ func (s *Store) UpdateSourceSyncCursor(sourceID int64, cursor string) error {
 // ListSources returns all sources, optionally filtered by source type.
 // Pass an empty string to return all sources.
 func (s *Store) ListSources(sourceType string) ([]*Source, error) {
-	var rows *sql.Rows
+	var rows *loggedRows
 	var err error
 
 	if sourceType != "" {

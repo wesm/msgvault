@@ -71,7 +71,7 @@ func (s *Store) MessageExistsBatch(sourceID int64, sourceMessageIDs []string) (m
 	result := make(map[string]int64)
 	err := queryInChunks(s.db, sourceMessageIDs, []interface{}{sourceID},
 		`SELECT source_message_id, id FROM messages WHERE source_id = ? AND source_message_id IN (%s)`,
-		func(rows *sql.Rows) error {
+		func(rows *loggedRows) error {
 			var srcID string
 			var id int64
 			if err := rows.Scan(&srcID, &id); err != nil {
@@ -138,7 +138,7 @@ func (s *Store) MessageExistsWithRawBatch(sourceID int64, sourceMessageIDs []str
 		 FROM messages m
 		 JOIN message_raw mr ON mr.message_id = m.id
 		 WHERE m.source_id = ? AND m.source_message_id IN (%s)`,
-		func(rows *sql.Rows) error {
+		func(rows *loggedRows) error {
 			var srcID string
 			var id int64
 			if err := rows.Scan(&srcID, &id); err != nil {
@@ -418,7 +418,7 @@ func (s *Store) EnsureParticipantsBatch(addresses []mime.Address) (map[string]in
 
 	err := queryInChunks(s.db, emails, nil,
 		`SELECT email_address, id FROM participants WHERE email_address IN (%s)`,
-		func(rows *sql.Rows) error {
+		func(rows *loggedRows) error {
 			var email string
 			var id int64
 			if err := rows.Scan(&email, &id); err != nil {

@@ -262,15 +262,15 @@ func (s *Store) withTx(fn func(tx *loggedTx) error) error {
 // SQLite's parameter limit. queryTemplate must contain a single %s placeholder
 // for the comma-separated "?" list. The prefix args are prepended before each
 // chunk's args (e.g., a source_id filter).
-// chunkQuerier abstracts the subset of *sql.DB that queryInChunks
-// and execInChunks actually use, so the helpers accept either a
-// raw *sql.DB (tests) or the logging wrapper (production path).
+// chunkQuerier abstracts the subset of *loggedDB that queryInChunks
+// and execInChunks actually use. The Query path returns *loggedRows
+// so streaming-query timing reflects scan-close, not just prepare.
 type chunkQuerier interface {
-	Query(query string, args ...any) (*sql.Rows, error)
+	Query(query string, args ...any) (*loggedRows, error)
 	Exec(query string, args ...any) (sql.Result, error)
 }
 
-func queryInChunks[T any](db chunkQuerier, ids []T, prefixArgs []interface{}, queryTemplate string, fn func(*sql.Rows) error) error {
+func queryInChunks[T any](db chunkQuerier, ids []T, prefixArgs []interface{}, queryTemplate string, fn func(*loggedRows) error) error {
 	const chunkSize = 500
 	for i := 0; i < len(ids); i += chunkSize {
 		end := i + chunkSize
