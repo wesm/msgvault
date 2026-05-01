@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // SQLLogOptions controls the store-level SQL logging behaviour.
@@ -107,7 +108,7 @@ func (d *loggedDB) QueryContext(
 	start := time.Now()
 	rows, err := d.DB.QueryContext(ctx, query, args...)
 	if err != nil {
-		logStmt("query", query, args, err, time.Since(start))
+		logStmtWith("query", query, args, err, time.Since(start))
 		return nil, err
 	}
 	return &loggedRows{
@@ -133,7 +134,7 @@ func (d *loggedDB) QueryRowContext(
 	query = d.rebind(query)
 	start := time.Now()
 	row := d.DB.QueryRowContext(ctx, query, args...)
-	logStmt("queryrow", query, args, nil, time.Since(start))
+	logStmtWith("queryrow", query, args, nil, time.Since(start))
 	return row
 }
 
@@ -223,7 +224,7 @@ func (t *loggedTx) Query(
 	start := time.Now()
 	rows, err := t.Tx.Query(query, args...)
 	if err != nil {
-		logStmt("query", query, args, err, time.Since(start))
+		logStmtWith("query", query, args, err, time.Since(start))
 		return nil, err
 	}
 	return &loggedRows{
@@ -242,7 +243,7 @@ func (t *loggedTx) QueryContext(
 	start := time.Now()
 	rows, err := t.Tx.QueryContext(ctx, query, args...)
 	if err != nil {
-		logStmt("query", query, args, err, time.Since(start))
+		logStmtWith("query", query, args, err, time.Since(start))
 		return nil, err
 	}
 	return &loggedRows{
@@ -294,21 +295,13 @@ type loggedRows struct {
 // full-trace behaviour of logStmt so a streaming query that
 // runs slowly inside Next still gets promoted to WARN.
 func (r *loggedRows) Close() error {
-	err := r.Rows.Close()
 	if r.closed {
-		return err
+		return nil
 	}
 	r.closed = true
-	logStmt("query", r.query, r.args, err, time.Since(r.start))
+	err := r.Rows.Close()
+	logStmtWith("query", r.query, r.args, err, time.Since(r.start))
 	return err
-}
-
-// logStmt is the common emitter used by Query / Exec / QueryRow.
-func logStmt(
-	kind, query string, args []any,
-	err error, elapsed time.Duration,
-) {
-	logStmtWith(kind, query, args, err, elapsed)
 }
 
 // logStmtWith is the explicit form that lets callers add extra
@@ -384,8 +377,16 @@ func formatArgs(args []any) string {
 		switch v := a.(type) {
 		case string:
 			s := v
-			if len(s) > 64 {
-				s = s[:64] + "..."
+			if utf8.RuneCountInString(s) > 64 {
+				// Back up to a rune boundary at the 64-rune mark.
+				n := 0
+				for i := range s {
+					if n == 64 {
+						s = s[:i] + "..."
+						break
+					}
+					n++
+				}
 			}
 			b.WriteByte('"')
 			b.WriteString(s)
