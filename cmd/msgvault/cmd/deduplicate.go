@@ -548,4 +548,15 @@ func init() {
 			"(execution requires MSGVAULT_ENABLE_REMOTE_DELETE=1)")
 	deduplicateCmd.Flags().BoolVarP(&dedupYes, "yes", "y", false,
 		"Skip confirmation prompt")
+	// --undo restores rows from a recorded batch; none of the
+	// scan/merge/stage flags below apply. Reject the combinations
+	// explicitly so a user invoking
+	// `msgvault deduplicate --undo X --delete-dups-from-source-server`
+	// gets an error instead of having the destructive flag silently
+	// ignored.
+	deduplicateCmd.MarkFlagsMutuallyExclusive("undo", "delete-dups-from-source-server")
+	deduplicateCmd.MarkFlagsMutuallyExclusive("undo", "prefer")
+	deduplicateCmd.MarkFlagsMutuallyExclusive("undo", "content-hash")
+	deduplicateCmd.MarkFlagsMutuallyExclusive("undo", "no-backup")
+	deduplicateCmd.MarkFlagsMutuallyExclusive("undo", "yes")
 }

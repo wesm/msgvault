@@ -217,13 +217,22 @@ func resolveAccountList(st *store.Store, accounts string) ([]int64, error) {
 		if p == "" {
 			continue
 		}
-		// Try as numeric ID first
-		if id, err := strconv.ParseInt(p, 10, 64); err == nil {
-			if _, err := st.GetSourceByID(id); err != nil {
-				return nil, fmt.Errorf("get source %d: %w", id, err)
+		// Try as numeric ID first, but only for plain digit tokens.
+		// strconv.ParseInt accepts a leading '+' or '-' sign, so an
+		// E.164 phone identifier like "+15551234567" would parse as
+		// the integer 15551234567 and be treated as a source ID,
+		// silently breaking WhatsApp/Google Voice accounts that key
+		// on phone numbers. Restrict the numeric branch to tokens
+		// whose first byte is a decimal digit so signed inputs fall
+		// through to identifier resolution.
+		if len(p) > 0 && p[0] >= '0' && p[0] <= '9' {
+			if id, err := strconv.ParseInt(p, 10, 64); err == nil {
+				if _, err := st.GetSourceByID(id); err != nil {
+					return nil, fmt.Errorf("get source %d: %w", id, err)
+				}
+				ids = append(ids, id)
+				continue
 			}
-			ids = append(ids, id)
-			continue
 		}
 		// Resolve by identifier
 		scope, err := ResolveAccountFlag(st, p)

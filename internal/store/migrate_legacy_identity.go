@@ -72,8 +72,11 @@ func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied, deferr
 	// permanently drop the addresses on the floor: the next account the
 	// user adds would never receive them. Leave the sentinel unmarked
 	// and let the next command run after a source exists pick it up.
+	//
+	// Report the post-normalization address count so the deferred
+	// notice doesn't overstate (raw input may include blanks/dupes).
 	if len(sources) == 0 {
-		return false, true, 0, 0, nil
+		return false, true, 0, len(normalized), nil
 	}
 
 	if err := s.withTx(func(tx *loggedTx) error {
@@ -158,7 +161,7 @@ func (s *Store) RunStartupMigrations(legacyIdentityAddresses []string) (string, 
 			"Notice: legacy [identity] config has %d address(es) but no accounts exist yet.\n"+
 				"The migration will run on the next command after you add an account\n"+
 				"(e.g. 'msgvault add-account ...').",
-			len(legacyIdentityAddresses),
+			addrs,
 		), nil
 	}
 	if !applied {

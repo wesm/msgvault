@@ -18,11 +18,31 @@ const noDefaultIdentityHelp = "Suppress auto-default-identity at account creatio
 // so a partially failed identity write never breaks ingest. Empty identifiers
 // are a silent no-op.
 //
+// Skips the write when the source already has at least one identity row.
+// add-account / add-imap / add-o365 / import-* commands all call this on
+// every invocation (including reruns and rebinds), so without this guard
+// an identity the user explicitly removed via `identity remove` would be
+// re-added on the next ingest re-run, silently affecting dedup sent-copy
+// detection. The guard preserves the documented "freshly created source"
+// intent while degrading gracefully if the user has removed every
+// identity (in which case the default is restored, which is desirable).
+//
 // account is the user-facing account name shown in the confirmation message.
 // Callers should gate this behind the per-command --no-default-identity flag.
 func confirmDefaultIdentity(s *store.Store, sourceID int64, account, identifier, signal string) {
 	id := strings.TrimSpace(identifier)
 	if id == "" {
+		return
+	}
+	existing, err := s.ListAccountIdentities(sourceID)
+	if err != nil {
+		logger.Warn("auto-default-identity precheck failed",
+			"source_id", sourceID,
+			"account", account,
+			"error", err.Error())
+		return
+	}
+	if len(existing) > 0 {
 		return
 	}
 	if err := s.AddAccountIdentity(sourceID, id, signal); err != nil {

@@ -100,8 +100,12 @@ func TestMigrateLegacyIdentityConfig_DeferredUntilSourceExists(t *testing.T) {
 	if !deferred {
 		t.Fatal("deferred should be true when addresses exist but no sources")
 	}
-	if sources != 0 || addrs != 0 {
-		t.Fatalf("counts = (%d, %d), want (0, 0)", sources, addrs)
+	// On the deferred path we report the post-normalization address
+	// count so the user-facing notice doesn't overstate (raw input may
+	// include blanks/dupes). Sources is still 0 because nothing was
+	// written.
+	if sources != 0 || addrs != 1 {
+		t.Fatalf("counts = (%d, %d), want (0, 1)", sources, addrs)
 	}
 
 	_, err = st.GetOrCreateSource("gmail", "alice@example.com")
