@@ -29,7 +29,8 @@ before a PostgreSQL connection can successfully insert a single row.
   `InsertOrIgnoreSuffix()`, `FTSSearchClause()`, `UpdateOrIgnore()`
 - `PostgreSQLDialect` error-code classification (23505, 42701, 42P01)
 - `Open("postgres://...")` establishes a connection with pool settings
-- `OpenReadOnly` for PostgreSQL sets `default_transaction_read_only = ON`
+- `OpenReadOnly` for PostgreSQL enforces `default_transaction_read_only=on`
+  via pgx `RuntimeParams` (set on every pooled connection at startup)
 - Unit tests for dialect string methods pass without a live Postgres
 - SQLite regression: all existing tests pass unmodified
 
@@ -72,9 +73,11 @@ before a PostgreSQL connection can successfully insert a single row.
 7. **`SET statement_timeout` runs on only one pool connection**: Move to
    pgx connection string or `AfterConnect` hook.
 
-8. **`openPostgresReadOnly` enforcement is pool-fragile**: Same issue
-   as #7; `SET default_transaction_read_only = ON` runs once and does
-   not propagate to new connections.
+8. **(Resolved)** `openPostgresReadOnly` now sets
+   `default_transaction_read_only=on` via pgx `RuntimeParams`, so the
+   parameter is applied during the startup packet of every pooled
+   connection rather than once via `db.Exec("SET …")`. The same pattern
+   should be used for `statement_timeout` (item #7).
 
 9. **`GetStats` calls `os.Stat(s.dbPath)`**: For PostgreSQL, `dbPath` is
    a URL, not a file. `DatabaseSize` silently reports 0. Either skip

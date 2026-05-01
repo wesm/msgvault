@@ -8,10 +8,11 @@
 //   - tsvector/@@/ts_rank instead of FTS5 MATCH/rank
 //
 // This implementation is scaffolded to compile and handle the simpler
-// read paths (GetMessage, GetAttachment, ListAccounts). The aggregate
-// and search methods that depend on SQLite-specific constructs return
-// a clearly-marked error pending follow-up work to parameterize the
-// shared query builders.
+// read paths (GetAttachment, ListAccounts, GetTotalStats without search).
+// Methods whose SQLite versions depend on FTS5, the shared query builder,
+// or multi-table assembly (GetMessage*, ListMessages, Aggregate, Search*,
+// GetGmailIDsByFilter) return ErrNotImplemented pending follow-up work to
+// parameterize the shared query builders.
 package query
 
 import (
@@ -43,28 +44,6 @@ func (e *PostgreSQLEngine) Close() error {
 	return nil
 }
 
-// rebind converts ? placeholders to $1, $2, ... for PostgreSQL.
-// Correctly handles quoted strings — only converts ? outside single quotes.
-func rebindPg(query string) string {
-	var b strings.Builder
-	b.Grow(len(query) + 16)
-	n := 1
-	inQuote := false
-	for i := 0; i < len(query); i++ {
-		ch := query[i]
-		if ch == '\'' {
-			inQuote = !inQuote
-			b.WriteByte(ch)
-		} else if ch == '?' && !inQuote {
-			fmt.Fprintf(&b, "$%d", n)
-			n++
-		} else {
-			b.WriteByte(ch)
-		}
-	}
-	return b.String()
-}
-
 // Aggregate performs grouping based on the provided ViewType.
 // Requires dialect-aware time expression handling; see ErrNotImplemented.
 func (e *PostgreSQLEngine) Aggregate(ctx context.Context, groupBy ViewType, opts AggregateOptions) ([]AggregateRow, error) {
@@ -82,61 +61,21 @@ func (e *PostgreSQLEngine) ListMessages(ctx context.Context, filter MessageFilte
 }
 
 // GetMessage retrieves a full message by internal ID.
+//
+// Returns ErrNotImplemented: the SQLite path also fetches participants,
+// labels, attachments, ReceivedAt, and a raw-MIME body fallback. Returning
+// a partially-populated MessageDetail would silently violate the Engine
+// contract for callers, so the partial implementation is held back until
+// the full PostgreSQL message-detail path lands.
 func (e *PostgreSQLEngine) GetMessage(ctx context.Context, id int64) (*MessageDetail, error) {
-	return e.getMessageByQuery(ctx, "m.id = ?", id)
+	return nil, ErrNotImplemented
 }
 
 // GetMessageBySourceID retrieves a full message by source message ID.
+//
+// Returns ErrNotImplemented for the same reasons as GetMessage.
 func (e *PostgreSQLEngine) GetMessageBySourceID(ctx context.Context, sourceMessageID string) (*MessageDetail, error) {
-	return e.getMessageByQuery(ctx, "m.source_message_id = ?", sourceMessageID)
-}
-
-func (e *PostgreSQLEngine) getMessageByQuery(ctx context.Context, whereClause string, args ...interface{}) (*MessageDetail, error) {
-	query := rebindPg(fmt.Sprintf(`
-		SELECT
-			m.id,
-			m.source_message_id,
-			m.conversation_id,
-			COALESCE(conv.source_conversation_id, ''),
-			COALESCE(m.subject, ''),
-			COALESCE(m.snippet, ''),
-			m.sent_at,
-			COALESCE(m.size_estimate, 0),
-			m.has_attachments,
-			COALESCE(mb.body_text, ''),
-			COALESCE(mb.body_html, '')
-		FROM messages m
-		LEFT JOIN conversations conv ON conv.id = m.conversation_id
-		LEFT JOIN message_bodies mb ON mb.message_id = m.id
-		WHERE %s
-		LIMIT 1
-	`, whereClause))
-
-	var msg MessageDetail
-	var sentAt sql.NullTime
-	err := e.db.QueryRowContext(ctx, query, args...).Scan(
-		&msg.ID,
-		&msg.SourceMessageID,
-		&msg.ConversationID,
-		&msg.SourceConversationID,
-		&msg.Subject,
-		&msg.Snippet,
-		&sentAt,
-		&msg.SizeEstimate,
-		&msg.HasAttachments,
-		&msg.BodyText,
-		&msg.BodyHTML,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get message: %w", err)
-	}
-	if sentAt.Valid {
-		msg.SentAt = sentAt.Time
-	}
-	return &msg, nil
+	return nil, ErrNotImplemented
 }
 
 // GetAttachment retrieves attachment metadata by ID.
@@ -214,40 +153,40 @@ func (e *PostgreSQLEngine) GetTotalStats(ctx context.Context, opts StatsOptions)
 		return nil, ErrNotImplemented
 	}
 
-	// Message stats
-	msgConds := []string{"(message_type = 'email' OR message_type IS NULL OR message_type = '')"}
+	// Build message-level filters once and reuse for both the message stats
+	// query and the attachment stats query (joined on messages) so that
+	// attachments belonging to filtered-out messages don't leak into totals.
+	msgConds := []string{"m.message_type = 'email' OR m.message_type IS NULL OR m.message_type = ''"}
 	var args []interface{}
 	argIdx := 1
 	if opts.SourceID != nil {
-		msgConds = append(msgConds, fmt.Sprintf("source_id = $%d", argIdx))
+		msgConds = append(msgConds, fmt.Sprintf("m.source_id = $%d", argIdx))
 		args = append(args, *opts.SourceID)
 		argIdx++
 	}
 	if opts.WithAttachmentsOnly {
-		msgConds = append(msgConds, "has_attachments = TRUE")
+		msgConds = append(msgConds, "m.has_attachments = TRUE")
 	}
 	if opts.HideDeletedFromSource {
-		msgConds = append(msgConds, "deleted_from_source_at IS NULL")
+		msgConds = append(msgConds, "m.deleted_from_source_at IS NULL")
 	}
+	whereClause := strings.Join(msgConds, " AND ")
 
-	msgQuery := fmt.Sprintf(`SELECT COUNT(*), COALESCE(SUM(size_estimate), 0) FROM messages WHERE %s`,
-		strings.Join(msgConds, " AND "))
+	// Message stats
+	msgQuery := fmt.Sprintf(`SELECT COUNT(*), COALESCE(SUM(m.size_estimate), 0) FROM messages m WHERE %s`,
+		whereClause)
 	if err := e.db.QueryRowContext(ctx, msgQuery, args...).Scan(&stats.MessageCount, &stats.TotalSize); err != nil {
 		return nil, fmt.Errorf("message stats: %w", err)
 	}
 
-	// Attachment stats
-	attQuery := `SELECT COUNT(*), COALESCE(SUM(size), 0) FROM attachments`
-	if opts.SourceID != nil {
-		attQuery = `SELECT COUNT(*), COALESCE(SUM(a.size), 0) FROM attachments a
-			JOIN messages m ON m.id = a.message_id WHERE m.source_id = $1`
-		if err := e.db.QueryRowContext(ctx, attQuery, *opts.SourceID).Scan(&stats.AttachmentCount, &stats.AttachmentSize); err != nil {
-			return nil, fmt.Errorf("attachment stats: %w", err)
-		}
-	} else {
-		if err := e.db.QueryRowContext(ctx, attQuery).Scan(&stats.AttachmentCount, &stats.AttachmentSize); err != nil {
-			return nil, fmt.Errorf("attachment stats: %w", err)
-		}
+	// Attachment stats — join messages and apply the same filters so that
+	// counts and sizes don't include attachments for soft-deleted messages,
+	// other accounts, or other filtered-out rows.
+	attQuery := fmt.Sprintf(`SELECT COUNT(*), COALESCE(SUM(a.size), 0)
+		FROM attachments a JOIN messages m ON m.id = a.message_id
+		WHERE %s`, whereClause)
+	if err := e.db.QueryRowContext(ctx, attQuery, args...).Scan(&stats.AttachmentCount, &stats.AttachmentSize); err != nil {
+		return nil, fmt.Errorf("attachment stats: %w", err)
 	}
 
 	// Label count

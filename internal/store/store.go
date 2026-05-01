@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/mattn/go-sqlite3"
 )
 
@@ -196,29 +198,44 @@ func OpenReadOnly(dbPath string) (*Store, error) {
 }
 
 // openPostgresReadOnly opens a PostgreSQL database in read-only mode.
+//
+// Read-only enforcement uses pgx's RuntimeParams so that
+// default_transaction_read_only=on is sent in the startup packet of every
+// connection in the pool, not just the first one. Setting it via
+// `db.Exec("SET ...")` on a pooled *sql.DB only affects whichever connection
+// happened to serve the Exec — subsequent operations on a different pooled
+// connection would run as writable.
 func openPostgresReadOnly(dbURL string) (*Store, error) {
-	db, err := sql.Open("pgx", dbURL)
+	connConfig, err := pgx.ParseConfig(dbURL)
 	if err != nil {
+		return nil, fmt.Errorf("parse PostgreSQL URL: %w", err)
+	}
+	if connConfig.RuntimeParams == nil {
+		connConfig.RuntimeParams = map[string]string{}
+	}
+	connConfig.RuntimeParams["default_transaction_read_only"] = "on"
+
+	dsn := stdlib.RegisterConnConfig(connConfig)
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		stdlib.UnregisterConnConfig(dsn)
 		return nil, fmt.Errorf("open PostgreSQL (read-only): %w", err)
 	}
 
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
+		stdlib.UnregisterConnConfig(dsn)
 		return nil, fmt.Errorf("ping PostgreSQL: %w", err)
 	}
 
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(5)
 
-	// Set transaction to read-only for safety
 	dialect := &PostgreSQLDialect{}
 	if err := dialect.InitConn(db); err != nil {
 		_ = db.Close()
+		stdlib.UnregisterConnConfig(dsn)
 		return nil, fmt.Errorf("init PostgreSQL connection: %w", err)
-	}
-	if _, err := db.Exec("SET default_transaction_read_only = ON"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("set read-only mode: %w", err)
 	}
 
 	s := &Store{
