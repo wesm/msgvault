@@ -294,25 +294,33 @@ type loggedRows struct {
 // and emits the SQL log line. Mirrors the threshold and
 // full-trace behaviour of logStmt so a streaming query that
 // runs slowly inside Next still gets promoted to WARN.
+//
+// If Close itself returns nil, we also surface any iteration
+// error from Rows.Err() — context cancellation or driver-level
+// scan failures land there, not on Close. Without this the log
+// would record a slow/failing scan as a successful query.
 func (r *loggedRows) Close() error {
 	if r.closed {
 		return nil
 	}
 	r.closed = true
 	err := r.Rows.Close()
-	logStmtWith("query", r.query, r.args, err, time.Since(r.start))
+	logErr := err
+	if logErr == nil {
+		logErr = r.Rows.Err()
+	}
+	logStmtWith("query", r.query, r.args, logErr, time.Since(r.start))
 	return err
 }
 
 // logStmtWith is the explicit form that lets callers add extra
 // structured attributes (used by Exec to report rows_affected).
 //
-// args is attached only to WARN-level lines (slow + error). On
-// Info/Debug the count alone is enough; full args on every line
-// would be a large volume of PII (subjects, addresses, IDs) and
-// noisy in --verbose / --full-trace mode where the existing
-// nargs is sufficient. On the WARN paths args are essential —
-// a slow or failing query is unreproducible without them.
+// On WARN-level lines (slow + error) we attach a redacted shape
+// summary of the bound args (type + length, no raw values) so
+// the query is debuggable without persisting subjects, body
+// excerpts, addresses, tokens, or other potentially sensitive
+// values. Info/Debug get only nargs.
 func logStmtWith(
 	kind, query string, args []any,
 	err error, elapsed time.Duration, extra ...slog.Attr,
@@ -341,11 +349,11 @@ func logStmtWith(
 			// spam WARN in the per-run log for every startup.
 			slog.Debug("sql benign error", attrs...)
 		} else {
-			attrs = append(attrs, "args", formatArgs(args))
+			attrs = append(attrs, "args_shape", formatArgsShape(args))
 			slog.Warn("sql error", attrs...)
 		}
 	case slowMs > 0 && ms >= slowMs:
-		attrs = append(attrs, "args", formatArgs(args))
+		attrs = append(attrs, "args_shape", formatArgsShape(args))
 		slog.Warn("sql slow", attrs...)
 	case fullTrace:
 		slog.Info("sql", attrs...)
@@ -357,48 +365,33 @@ func logStmtWith(
 	}
 }
 
-// formatArgs renders a query's bound parameters as a compact,
-// single-line slog attr value. Strings are quoted and truncated
-// at 64 characters so a long subject or body excerpt doesn't
-// dominate the log line; non-strings use their Go default
-// representation. Returns "" for the no-args case so the attr
-// is still present (consistent shape) but visually empty.
-func formatArgs(args []any) string {
+// formatArgsShape renders bound parameters as a redacted shape
+// summary — type plus, where meaningful, length — without ever
+// emitting the raw value. Strings, []byte, and nil are shaped;
+// numerics and bools are shown as their type name only. Lets a
+// slow/failing query be diagnosed (placeholder count, a NULL
+// bind in the wrong slot, an unexpectedly huge string) without
+// persisting addresses, subjects, tokens, or message bodies.
+func formatArgsShape(args []any) string {
 	if len(args) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	b.Grow(len(args) * 16)
+	b.Grow(len(args) * 12)
 	b.WriteByte('[')
 	for i, a := range args {
 		if i > 0 {
 			b.WriteByte(' ')
 		}
 		switch v := a.(type) {
-		case string:
-			s := v
-			if utf8.RuneCountInString(s) > 64 {
-				// Back up to a rune boundary at the 64-rune mark.
-				n := 0
-				for i := range s {
-					if n == 64 {
-						s = s[:i] + "..."
-						break
-					}
-					n++
-				}
-			}
-			b.WriteByte('"')
-			b.WriteString(s)
-			b.WriteByte('"')
-		case []byte:
-			// Don't dump raw bytes; show length so a
-			// blob-bound query is still recognizable.
-			fmt.Fprintf(&b, "<%d bytes>", len(v))
 		case nil:
 			b.WriteString("nil")
+		case string:
+			fmt.Fprintf(&b, "string(len=%d)", utf8.RuneCountInString(v))
+		case []byte:
+			fmt.Fprintf(&b, "bytes(len=%d)", len(v))
 		default:
-			fmt.Fprintf(&b, "%v", v)
+			fmt.Fprintf(&b, "%T", v)
 		}
 	}
 	b.WriteByte(']')
@@ -421,16 +414,21 @@ func isBenignMigrationError(err error) bool {
 }
 
 // normalizeStmt collapses whitespace in a SQL statement and
-// truncates it to maxChars. When truncation is needed it keeps
-// roughly the first 60% and last 40% of the budget joined by
-// " ... ", so the WHERE / GROUP BY / ORDER BY tail — usually
-// the part that distinguishes one logged query from another —
-// survives. Intended for human log reading; not for
-// reconstructing the exact SQL.
+// truncates it to maxChars (measured in runes, not bytes, so
+// multi-byte UTF-8 in literals or comments is never split).
+// When truncation is needed it keeps roughly the first 60% and
+// last 40% of the budget joined by " ... ", so the WHERE /
+// GROUP BY / ORDER BY tail — usually the part that
+// distinguishes one logged query from another — survives.
+// Intended for human log reading; not for reconstructing the
+// exact SQL.
 func normalizeStmt(q string, maxChars int) string {
 	// Fast path: if there's no whitespace to collapse AND the
-	// statement is within budget, skip the allocation.
-	if len(q) <= maxChars && !strings.ContainsAny(q, "\n\t") {
+	// statement is within budget (by rune count), skip the
+	// allocation. utf8.RuneCountInString is O(n) on the bytes
+	// but no allocation, same as strings.ContainsAny.
+	if !strings.ContainsAny(q, "\n\t") &&
+		(maxChars <= 0 || utf8.RuneCountInString(q) <= maxChars) {
 		return strings.TrimSpace(q)
 	}
 
@@ -450,17 +448,21 @@ func normalizeStmt(q string, maxChars int) string {
 		}
 	}
 	s := strings.TrimSpace(b.String())
-	if maxChars <= 0 || len(s) <= maxChars {
+	if maxChars <= 0 {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= maxChars {
 		return s
 	}
 	const sep = " ... "
 	// Refuse the head+tail split if the budget can't carry both
 	// ends meaningfully; fall back to head-only truncation.
 	if maxChars <= len(sep)+8 {
-		return s[:maxChars] + "..."
+		return string(runes[:maxChars]) + "..."
 	}
 	budget := maxChars - len(sep)
 	headLen := budget * 6 / 10
 	tailLen := budget - headLen
-	return s[:headLen] + sep + s[len(s)-tailLen:]
+	return string(runes[:headLen]) + sep + string(runes[len(runes)-tailLen:])
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -264,11 +265,49 @@ func TestLoggedRows_QueryErrorLogsImmediately(t *testing.T) {
 	}
 }
 
-// TestLogStmt_SlowQueryIncludesArgs verifies that a slow query
-// renders bound parameters as an "args" attr so the log line is
-// reproducible. Without this, only nargs is recorded and a slow
-// query is unidentifiable in production.
-func TestLogStmt_SlowQueryIncludesArgs(t *testing.T) {
+// TestLoggedRows_IterationErrorSurfacedOnClose verifies that a
+// context cancellation discovered during rows.Next() is logged
+// as an error on Close, even when Rows.Close() itself returns
+// nil. Without checking Rows.Err(), a cancelled scan would log
+// as a successful query.
+func TestLoggedRows_IterationErrorSurfacedOnClose(t *testing.T) {
+	ConfigureSQLLogging(SQLLogOptions{})
+	buf := captureSlog(t, slog.LevelDebug)
+	db := openLoggedMem(t)
+	if _, err := db.Exec(
+		"INSERT INTO t (val) VALUES ('a'), ('b'), ('c')",
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	buf.Reset()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	rows, err := db.QueryContext(ctx, "SELECT val FROM t ORDER BY id")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	// Cancel before iterating; Next() will see the cancellation
+	// and stop, leaving the error on Rows.Err(), not Close().
+	cancel()
+	for rows.Next() {
+	}
+	_ = rows.Close()
+
+	rec := findLogLineByMsg(t, buf, "sql error")
+	if rec == nil {
+		t.Fatalf("expected sql error line for cancelled scan; buf=%s", buf.String())
+	}
+	if errStr, _ := rec["error"].(string); errStr == "" {
+		t.Errorf("error attr missing or empty: %v", rec)
+	}
+}
+
+// TestLogStmt_SlowQueryIncludesArgsShape verifies that a slow
+// query attaches an "args_shape" attr describing each bound
+// parameter's type and length, but never the raw value. Raw
+// values can carry PII (addresses, subjects, tokens) and must
+// not be persisted in logs by default.
+func TestLogStmt_SlowQueryIncludesArgsShape(t *testing.T) {
 	ConfigureSQLLogging(SQLLogOptions{SlowMs: 50})
 	t.Cleanup(func() { ConfigureSQLLogging(SQLLogOptions{}) })
 
@@ -283,19 +322,33 @@ func TestLogStmt_SlowQueryIncludesArgs(t *testing.T) {
 	if rec == nil {
 		t.Fatalf("no sql slow line; buf=%s", buf.String())
 	}
-	gotArgs, ok := rec["args"].(string)
+	gotShape, ok := rec["args_shape"].(string)
 	if !ok {
-		t.Fatalf("args attr missing or wrong type: %v", rec["args"])
+		t.Fatalf("args_shape attr missing or wrong type: %v", rec["args_shape"])
 	}
-	if !strings.Contains(gotArgs, "42") || !strings.Contains(gotArgs, "gmail") {
-		t.Errorf("args missing values: %q", gotArgs)
+	// Type info present.
+	if !strings.Contains(gotShape, "int64") {
+		t.Errorf("args_shape missing int64 type: %q", gotShape)
+	}
+	if !strings.Contains(gotShape, "string(len=5)") {
+		t.Errorf("args_shape missing string length: %q", gotShape)
+	}
+	// Raw values must not appear.
+	if strings.Contains(gotShape, "42") {
+		t.Errorf("args_shape leaked numeric value: %q", gotShape)
+	}
+	if strings.Contains(gotShape, "gmail") {
+		t.Errorf("args_shape leaked string value: %q", gotShape)
+	}
+	// Legacy "args" attr must not be present.
+	if _, present := rec["args"]; present {
+		t.Errorf("legacy args attr should not be set: %v", rec)
 	}
 }
 
 // TestLogStmt_FullTraceOmitsArgs verifies that --full-trace mode
-// does not attach args. nargs is enough at high-volume Info level;
-// args carry PII (subjects, addresses) and would be a privacy
-// regression if logged on every successful query.
+// does not attach args or args_shape. nargs is enough at
+// high-volume Info level.
 func TestLogStmt_FullTraceOmitsArgs(t *testing.T) {
 	ConfigureSQLLogging(SQLLogOptions{FullTrace: true})
 	t.Cleanup(func() { ConfigureSQLLogging(SQLLogOptions{}) })
@@ -311,32 +364,39 @@ func TestLogStmt_FullTraceOmitsArgs(t *testing.T) {
 	if _, present := rec["args"]; present {
 		t.Errorf("args should not be present on info/full-trace lines: %v", rec)
 	}
+	if _, present := rec["args_shape"]; present {
+		t.Errorf("args_shape should not be present on info/full-trace lines: %v", rec)
+	}
 	if rec["nargs"].(float64) != 1 {
 		t.Errorf("nargs = %v, want 1", rec["nargs"])
 	}
 }
 
-// TestFormatArgs_TruncatesLongStrings ensures a multi-KB string
-// argument (e.g. a body excerpt or large IN-list element) does
-// not blow up the log line.
-func TestFormatArgs_TruncatesLongStrings(t *testing.T) {
+// TestFormatArgsShape_RedactsValues ensures the shape formatter
+// emits type and length only, never raw values, even for long
+// strings that could carry sensitive content.
+func TestFormatArgsShape_RedactsValues(t *testing.T) {
 	long := strings.Repeat("x", 200)
-	got := formatArgs([]any{long})
-	if !strings.Contains(got, "...") {
-		t.Errorf("expected truncation marker in %q", got)
+	got := formatArgsShape([]any{long, "secret-token", []byte("hello world"), nil, int64(42)})
+	if strings.Contains(got, "x") || strings.Contains(got, "secret-token") {
+		t.Errorf("shape leaked raw string: %q", got)
 	}
-	if len(got) > 100 {
-		t.Errorf("formatted args too long: %d chars", len(got))
+	if strings.Contains(got, "hello world") {
+		t.Errorf("shape leaked raw bytes: %q", got)
 	}
-}
-
-// TestFormatArgs_HandlesByteSlices ensures raw blob arguments
-// don't dump binary into the log; we only show the length.
-func TestFormatArgs_HandlesByteSlices(t *testing.T) {
-	got := formatArgs([]any{[]byte("hello world")})
-	want := "[<11 bytes>]"
-	if got != want {
-		t.Errorf("got %q want %q", got, want)
+	if strings.Contains(got, "42") {
+		t.Errorf("shape leaked raw numeric: %q", got)
+	}
+	for _, want := range []string{
+		"string(len=200)",
+		"string(len=12)",
+		"bytes(len=11)",
+		"nil",
+		"int64",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("shape missing %q: %q", want, got)
+		}
 	}
 }
 
@@ -394,6 +454,24 @@ func TestNormalizeStmt_TinyBudgetFallsBackToHead(t *testing.T) {
 	}
 	if strings.Contains(got, " ... ") {
 		t.Errorf("did not expect head+tail split on tiny budget; got %q", got)
+	}
+}
+
+// TestNormalizeStmt_UTF8Safe ensures truncation respects rune
+// boundaries — multi-byte characters in SQL literals or comments
+// must not be split, which would emit invalid UTF-8 to logs.
+func TestNormalizeStmt_UTF8Safe(t *testing.T) {
+	// Each "café — 漢" is 13 bytes / 7 runes; repeat to exceed
+	// any reasonable budget.
+	in := strings.Repeat("café — 漢 ", 30)
+	got := normalizeStmt(in, 50)
+	if !utf8.ValidString(got) {
+		t.Errorf("normalizeStmt returned invalid UTF-8: %q", got)
+	}
+	// Tiny-budget head-only path.
+	got2 := normalizeStmt(in, 8)
+	if !utf8.ValidString(got2) {
+		t.Errorf("tiny-budget normalizeStmt returned invalid UTF-8: %q", got2)
 	}
 }
 
