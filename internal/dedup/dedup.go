@@ -229,6 +229,19 @@ type remoteKey struct {
 // AccountSourceIDs must be non-empty to prevent accidental cross-account
 // grouping; the CLI ensures this by iterating sources one at a time when
 // no explicit --account is given.
+//
+// Side effect (non-dry-run only): if the scoped sources contain messages
+// with no rfc822_message_id but with stored MIME, Scan calls
+// store.BackfillRFC822IDs to derive the column from the stored headers
+// before grouping. The backfill is idempotent metadata derivation — it
+// fills a previously-NULL column from data already on the row, never
+// overwrites a non-NULL value, and changes no message content. It happens
+// during scan (rather than during merge) because the duplicate groups it
+// surfaces are needed for the report the user is shown before the merge
+// confirmation. The dedup-batch backup-before-merge contract still holds:
+// the backup is sized for the merge (which soft-deletes losers and
+// transfers labels), not for this metadata catch-up. Dry-run mode skips
+// the backfill and reports the count as a "would-backfill" preview.
 func (e *Engine) Scan(ctx context.Context) (*Report, error) {
 	if len(e.config.AccountSourceIDs) == 0 {
 		return nil, fmt.Errorf("AccountSourceIDs must be non-empty; use per-source iteration for unscoped dedup")

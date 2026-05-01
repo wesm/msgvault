@@ -276,6 +276,20 @@ func runDeduplicatePerSource(
 		}
 
 		if !dedupYes {
+			// See runDeduplicateOnce for the rationale on the
+			// rfc822-backfill note: scan already performed it
+			// (idempotent metadata derivation) regardless of the
+			// answer below, so the prompt explicitly scopes "hide N
+			// duplicates" to the merge that follows.
+			if report.BackfilledCount > 0 {
+				fmt.Printf(
+					"\nNote: scan already backfilled %d "+
+						"rfc822_message_id value(s) for %s from "+
+						"stored MIME. This is metadata derivation "+
+						"and is kept regardless of your answer.\n",
+					report.BackfilledCount, src.Identifier,
+				)
+			}
 			fmt.Printf(
 				"\nProceed with deduplication for %s? "+
 					"This will hide %d duplicates "+
@@ -369,6 +383,21 @@ func runDeduplicateOnce(
 	}
 
 	if !dedupYes {
+		// Surface the rfc822 backfill that scan already performed so
+		// the user knows what state the database is in before they
+		// answer. The backfill is idempotent metadata derivation
+		// (fills a previously-NULL column from stored MIME, never
+		// overwrites or changes content) and is kept regardless of
+		// this answer; the prompt and the backup that follows are
+		// scoped to the dedup merge itself.
+		if report.BackfilledCount > 0 {
+			fmt.Printf(
+				"\nNote: scan already backfilled %d rfc822_message_id "+
+					"value(s) from stored MIME. This is metadata "+
+					"derivation and is kept regardless of your answer.\n",
+				report.BackfilledCount,
+			)
+		}
 		fmt.Printf(
 			"\nProceed with deduplication? This will hide %d "+
 				"duplicates (reversible with --undo). [y/N]: ",
