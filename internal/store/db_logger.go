@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync/atomic"
@@ -106,13 +107,13 @@ func (d *loggedDB) QueryContext(
 	start := time.Now()
 	rows, err := d.DB.QueryContext(ctx, query, args...)
 	if err != nil {
-		logStmt("query", query, len(args), err, time.Since(start))
+		logStmt("query", query, args, err, time.Since(start))
 		return nil, err
 	}
 	return &loggedRows{
 		Rows:  rows,
 		query: query,
-		nargs: len(args),
+		args:  args,
 		start: start,
 	}, nil
 }
@@ -132,7 +133,7 @@ func (d *loggedDB) QueryRowContext(
 	query = d.rebind(query)
 	start := time.Now()
 	row := d.DB.QueryRowContext(ctx, query, args...)
-	logStmt("queryrow", query, len(args), nil, time.Since(start))
+	logStmt("queryrow", query, args, nil, time.Since(start))
 	return row
 }
 
@@ -158,7 +159,7 @@ func (d *loggedDB) ExecContext(
 			rowsAffected = n
 		}
 	}
-	logStmtWith("exec", query, len(args), err, elapsed,
+	logStmtWith("exec", query, args, err, elapsed,
 		slog.Int64("rows_affected", rowsAffected),
 	)
 	return res, err
@@ -222,13 +223,13 @@ func (t *loggedTx) Query(
 	start := time.Now()
 	rows, err := t.Tx.Query(query, args...)
 	if err != nil {
-		logStmt("query", query, len(args), err, time.Since(start))
+		logStmt("query", query, args, err, time.Since(start))
 		return nil, err
 	}
 	return &loggedRows{
 		Rows:  rows,
 		query: query,
-		nargs: len(args),
+		args:  args,
 		start: start,
 	}, nil
 }
@@ -241,13 +242,13 @@ func (t *loggedTx) QueryContext(
 	start := time.Now()
 	rows, err := t.Tx.QueryContext(ctx, query, args...)
 	if err != nil {
-		logStmt("query", query, len(args), err, time.Since(start))
+		logStmt("query", query, args, err, time.Since(start))
 		return nil, err
 	}
 	return &loggedRows{
 		Rows:  rows,
 		query: query,
-		nargs: len(args),
+		args:  args,
 		start: start,
 	}, nil
 }
@@ -283,7 +284,7 @@ func (t *loggedTx) QueryRowContext(
 type loggedRows struct {
 	*sql.Rows
 	query  string
-	nargs  int
+	args   []any
 	start  time.Time
 	closed bool
 }
@@ -298,22 +299,29 @@ func (r *loggedRows) Close() error {
 		return err
 	}
 	r.closed = true
-	logStmt("query", r.query, r.nargs, err, time.Since(r.start))
+	logStmt("query", r.query, r.args, err, time.Since(r.start))
 	return err
 }
 
 // logStmt is the common emitter used by Query / Exec / QueryRow.
 func logStmt(
-	kind, query string, nargs int,
+	kind, query string, args []any,
 	err error, elapsed time.Duration,
 ) {
-	logStmtWith(kind, query, nargs, err, elapsed)
+	logStmtWith(kind, query, args, err, elapsed)
 }
 
 // logStmtWith is the explicit form that lets callers add extra
 // structured attributes (used by Exec to report rows_affected).
+//
+// args is attached only to WARN-level lines (slow + error). On
+// Info/Debug the count alone is enough; full args on every line
+// would be a large volume of PII (subjects, addresses, IDs) and
+// noisy in --verbose / --full-trace mode where the existing
+// nargs is sufficient. On the WARN paths args are essential —
+// a slow or failing query is unreproducible without them.
 func logStmtWith(
-	kind, query string, nargs int,
+	kind, query string, args []any,
 	err error, elapsed time.Duration, extra ...slog.Attr,
 ) {
 	stmt := normalizeStmt(query, int(sqlLogMaxChars.Load()))
@@ -325,7 +333,7 @@ func logStmtWith(
 	attrs := []any{
 		"kind", kind,
 		"stmt", stmt,
-		"nargs", nargs,
+		"nargs", len(args),
 		"duration_ms", ms,
 	}
 	for _, a := range extra {
@@ -340,9 +348,11 @@ func logStmtWith(
 			// spam WARN in the per-run log for every startup.
 			slog.Debug("sql benign error", attrs...)
 		} else {
+			attrs = append(attrs, "args", formatArgs(args))
 			slog.Warn("sql error", attrs...)
 		}
 	case slowMs > 0 && ms >= slowMs:
+		attrs = append(attrs, "args", formatArgs(args))
 		slog.Warn("sql slow", attrs...)
 	case fullTrace:
 		slog.Info("sql", attrs...)
@@ -352,6 +362,46 @@ func logStmtWith(
 		// when the handler short-circuits on Enabled().
 		slog.Debug("sql", attrs...)
 	}
+}
+
+// formatArgs renders a query's bound parameters as a compact,
+// single-line slog attr value. Strings are quoted and truncated
+// at 64 characters so a long subject or body excerpt doesn't
+// dominate the log line; non-strings use their Go default
+// representation. Returns "" for the no-args case so the attr
+// is still present (consistent shape) but visually empty.
+func formatArgs(args []any) string {
+	if len(args) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(args) * 16)
+	b.WriteByte('[')
+	for i, a := range args {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		switch v := a.(type) {
+		case string:
+			s := v
+			if len(s) > 64 {
+				s = s[:64] + "..."
+			}
+			b.WriteByte('"')
+			b.WriteString(s)
+			b.WriteByte('"')
+		case []byte:
+			// Don't dump raw bytes; show length so a
+			// blob-bound query is still recognizable.
+			fmt.Fprintf(&b, "<%d bytes>", len(v))
+		case nil:
+			b.WriteString("nil")
+		default:
+			fmt.Fprintf(&b, "%v", v)
+		}
+	}
+	b.WriteByte(']')
+	return b.String()
 }
 
 // isBenignMigrationError returns true for SQLite errors that the
@@ -370,9 +420,12 @@ func isBenignMigrationError(err error) bool {
 }
 
 // normalizeStmt collapses whitespace in a SQL statement and
-// truncates it to maxChars. Truncation is marked with an
-// ellipsis so the log consumer can tell. Intended for human log
-// reading — not for reconstructing the exact SQL.
+// truncates it to maxChars. When truncation is needed it keeps
+// roughly the first 60% and last 40% of the budget joined by
+// " ... ", so the WHERE / GROUP BY / ORDER BY tail — usually
+// the part that distinguishes one logged query from another —
+// survives. Intended for human log reading; not for
+// reconstructing the exact SQL.
 func normalizeStmt(q string, maxChars int) string {
 	// Fast path: if there's no whitespace to collapse AND the
 	// statement is within budget, skip the allocation.
@@ -396,8 +449,17 @@ func normalizeStmt(q string, maxChars int) string {
 		}
 	}
 	s := strings.TrimSpace(b.String())
-	if maxChars > 0 && len(s) > maxChars {
-		s = s[:maxChars] + "..."
+	if maxChars <= 0 || len(s) <= maxChars {
+		return s
 	}
-	return s
+	const sep = " ... "
+	// Refuse the head+tail split if the budget can't carry both
+	// ends meaningfully; fall back to head-only truncation.
+	if maxChars <= len(sep)+8 {
+		return s[:maxChars] + "..."
+	}
+	budget := maxChars - len(sep)
+	headLen := budget * 6 / 10
+	tailLen := budget - headLen
+	return s[:headLen] + sep + s[len(s)-tailLen:]
 }

@@ -88,7 +88,7 @@ func TestLogStmt_SlowQueryPromotedToWarn(t *testing.T) {
 
 	buf := captureSlog(t, slog.LevelDebug)
 	logStmtWith(
-		"exec", "INSERT INTO t VALUES (?)", 1,
+		"exec", "INSERT INTO t VALUES (?)", []any{"v"},
 		nil, 100*time.Millisecond,
 	)
 
@@ -264,6 +264,82 @@ func TestLoggedRows_QueryErrorLogsImmediately(t *testing.T) {
 	}
 }
 
+// TestLogStmt_SlowQueryIncludesArgs verifies that a slow query
+// renders bound parameters as an "args" attr so the log line is
+// reproducible. Without this, only nargs is recorded and a slow
+// query is unidentifiable in production.
+func TestLogStmt_SlowQueryIncludesArgs(t *testing.T) {
+	ConfigureSQLLogging(SQLLogOptions{SlowMs: 50})
+	t.Cleanup(func() { ConfigureSQLLogging(SQLLogOptions{}) })
+
+	buf := captureSlog(t, slog.LevelDebug)
+	logStmtWith(
+		"query", "SELECT * FROM t WHERE id = ? AND src = ?",
+		[]any{int64(42), "gmail"},
+		nil, 100*time.Millisecond,
+	)
+
+	rec := findLogLineByMsg(t, buf, "sql slow")
+	if rec == nil {
+		t.Fatalf("no sql slow line; buf=%s", buf.String())
+	}
+	gotArgs, ok := rec["args"].(string)
+	if !ok {
+		t.Fatalf("args attr missing or wrong type: %v", rec["args"])
+	}
+	if !strings.Contains(gotArgs, "42") || !strings.Contains(gotArgs, "gmail") {
+		t.Errorf("args missing values: %q", gotArgs)
+	}
+}
+
+// TestLogStmt_FullTraceOmitsArgs verifies that --full-trace mode
+// does not attach args. nargs is enough at high-volume Info level;
+// args carry PII (subjects, addresses) and would be a privacy
+// regression if logged on every successful query.
+func TestLogStmt_FullTraceOmitsArgs(t *testing.T) {
+	ConfigureSQLLogging(SQLLogOptions{FullTrace: true})
+	t.Cleanup(func() { ConfigureSQLLogging(SQLLogOptions{}) })
+
+	buf := captureSlog(t, slog.LevelDebug)
+	logStmtWith(
+		"query", "SELECT * FROM t WHERE id = ?",
+		[]any{int64(42)},
+		nil, 1*time.Millisecond,
+	)
+
+	rec := findLogLine(t, buf, "sql")
+	if _, present := rec["args"]; present {
+		t.Errorf("args should not be present on info/full-trace lines: %v", rec)
+	}
+	if rec["nargs"].(float64) != 1 {
+		t.Errorf("nargs = %v, want 1", rec["nargs"])
+	}
+}
+
+// TestFormatArgs_TruncatesLongStrings ensures a multi-KB string
+// argument (e.g. a body excerpt or large IN-list element) does
+// not blow up the log line.
+func TestFormatArgs_TruncatesLongStrings(t *testing.T) {
+	long := strings.Repeat("x", 200)
+	got := formatArgs([]any{long})
+	if !strings.Contains(got, "...") {
+		t.Errorf("expected truncation marker in %q", got)
+	}
+	if len(got) > 100 {
+		t.Errorf("formatted args too long: %d chars", len(got))
+	}
+}
+
+// TestFormatArgs_HandlesByteSlices ensures raw blob arguments
+// don't dump binary into the log; we only show the length.
+func TestFormatArgs_HandlesByteSlices(t *testing.T) {
+	got := formatArgs([]any{[]byte("hello world")})
+	want := "[<11 bytes>]"
+	if got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+}
+
 func TestNormalizeStmt_CollapsesWhitespace(t *testing.T) {
 	in := "SELECT\n  *\nFROM\n\tt WHERE id = ?"
 	got := normalizeStmt(in, 0)
@@ -274,11 +350,50 @@ func TestNormalizeStmt_CollapsesWhitespace(t *testing.T) {
 }
 
 func TestNormalizeStmt_TruncatesLong(t *testing.T) {
+	// Long uniform input gets a head + " ... " + tail split.
+	// The truncation budget includes the separator, so the
+	// final string is exactly maxChars long.
 	in := strings.Repeat("a", 500)
 	got := normalizeStmt(in, 100)
-	if len(got) != 103 || !strings.HasSuffix(got, "...") {
-		t.Errorf("bad truncation: len=%d tail=%q",
-			len(got), got[len(got)-3:])
+	const sep = " ... "
+	if !strings.Contains(got, sep) {
+		t.Errorf("missing separator: %q", got)
+	}
+	if len(got) != 100 {
+		t.Errorf("bad length: len=%d want=%d", len(got), 100)
+	}
+}
+
+// TestNormalizeStmt_KeepsWhereClause is the guard for the bug
+// that motivated head+tail truncation: a long SELECT whose only
+// distinguishing feature is the WHERE clause must remain
+// distinguishable in the logs.
+func TestNormalizeStmt_KeepsWhereClause(t *testing.T) {
+	in := "SELECT m.id, m.source_id, s.source_type, s.identifier, " +
+		"m.source_message_id, COALESCE(m.subject, ''), m.sent_at, " +
+		"m.archived_at, (CASE WHEN mr.message_id IS NOT NULL THEN 1 " +
+		"ELSE 0 END) AS has_raw, (SELECT COUNT(*) FROM message_labels " +
+		"ml WHERE ml.message_id = m.id) AS label_count, " +
+		"COALESCE(m.is_from_me, 0) AS is_from_me " +
+		"FROM messages m JOIN sources s ON s.id = m.source_id " +
+		"WHERE m.rfc822_message_id = ? AND m.deleted_at IS NULL"
+	got := normalizeStmt(in, 300)
+	if !strings.Contains(got, "WHERE m.rfc822_message_id") {
+		t.Errorf("WHERE clause missing from truncated stmt: %q", got)
+	}
+}
+
+// TestNormalizeStmt_TinyBudgetFallsBackToHead protects the
+// edge case where the budget is too small for a meaningful
+// head+tail split.
+func TestNormalizeStmt_TinyBudgetFallsBackToHead(t *testing.T) {
+	in := strings.Repeat("a", 50)
+	got := normalizeStmt(in, 8)
+	if !strings.HasSuffix(got, "...") {
+		t.Errorf("expected trailing ellipsis on tiny budget; got %q", got)
+	}
+	if strings.Contains(got, " ... ") {
+		t.Errorf("did not expect head+tail split on tiny budget; got %q", got)
 	}
 }
 
