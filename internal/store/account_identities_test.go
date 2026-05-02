@@ -67,9 +67,13 @@ func TestAddAccountIdentity_Idempotent(t *testing.T) {
 	}
 }
 
-// TestAddAccountIdentity_CaseSensitive replaces the old Lowercases test.
-// The store now preserves case; mixed-case and lowercase addresses are distinct rows.
-func TestAddAccountIdentity_CaseSensitive(t *testing.T) {
+// TestAddAccountIdentity_PreservesCase verifies that the first
+// add of an email-shaped identifier wins the stored casing. Subsequent
+// adds with different cases merge into the same row (case-insensitive
+// match) rather than producing duplicate rows. This preserves the
+// "case-preserved storage, email-case-insensitive logical identity"
+// contract that the add/remove paths share.
+func TestAddAccountIdentity_PreservesCase(t *testing.T) {
 	f := storetest.New(t)
 	st := f.Store
 
@@ -82,8 +86,12 @@ func TestAddAccountIdentity_CaseSensitive(t *testing.T) {
 
 	rows, err := st.ListAccountIdentities(f.Source.ID)
 	testutil.MustNoErr(t, err, "ListAccountIdentities")
-	if len(rows) != 2 {
-		t.Fatalf("want 2 distinct case-preserved rows, got %d: %+v", len(rows), rows)
+	if len(rows) != 1 {
+		t.Fatalf("want 1 row (email is case-insensitive), got %d: %+v", len(rows), rows)
+	}
+	if rows[0].Address != "Alice@Example.com" {
+		t.Errorf("address = %q, want first-write 'Alice@Example.com' (case-preserved)",
+			rows[0].Address)
 	}
 }
 
@@ -316,6 +324,60 @@ func TestRemoveAccountIdentity_EmailIsCaseInsensitive(t *testing.T) {
 	testutil.MustNoErr(t, err, "ListAccountIdentities")
 	if len(rows) != 0 {
 		t.Errorf("want empty, got %+v", rows)
+	}
+}
+
+// TestAddAccountIdentity_EmailIsCaseInsensitive verifies that a second
+// add with different casing merges signals into the existing row
+// instead of inserting a duplicate. This pairs with
+// TestRemoveAccountIdentity_EmailIsCaseInsensitive: add/remove must
+// agree on case-folding for "@"-shaped identifiers, otherwise an
+// 'identity add Foo@x.com' followed by 'identity remove foo@x.com'
+// could leave (or remove) the wrong row.
+func TestAddAccountIdentity_EmailIsCaseInsensitive(t *testing.T) {
+	f := storetest.New(t)
+	st := f.Store
+
+	testutil.MustNoErr(t,
+		st.AddAccountIdentity(f.Source.ID, "alice@example.com", "manual"),
+		"first add (lowercase)")
+	testutil.MustNoErr(t,
+		st.AddAccountIdentity(f.Source.ID, "ALICE@Example.com", "is_from_me"),
+		"second add (different case)")
+
+	rows, err := st.ListAccountIdentities(f.Source.ID)
+	testutil.MustNoErr(t, err, "ListAccountIdentities")
+	if len(rows) != 1 {
+		t.Fatalf("len(rows) = %d, want 1 (case-folded merge expected); rows=%+v", len(rows), rows)
+	}
+	if rows[0].Address != "alice@example.com" {
+		t.Errorf("address = %q, want first-write 'alice@example.com'", rows[0].Address)
+	}
+	if !strings.Contains(rows[0].SourceSignal, "manual") ||
+		!strings.Contains(rows[0].SourceSignal, "is_from_me") {
+		t.Errorf("source_signal = %q, want both 'manual' and 'is_from_me' merged",
+			rows[0].SourceSignal)
+	}
+}
+
+// TestAddAccountIdentity_NonEmailStaysCaseSensitive guards the
+// chat-handle invariant: synthetic identifiers can be case-significant
+// so two distinct cases must produce two rows.
+func TestAddAccountIdentity_NonEmailStaysCaseSensitive(t *testing.T) {
+	f := storetest.New(t)
+	st := f.Store
+
+	testutil.MustNoErr(t,
+		st.AddAccountIdentity(f.Source.ID, "AliceHandle", "manual"),
+		"first add")
+	testutil.MustNoErr(t,
+		st.AddAccountIdentity(f.Source.ID, "alicehandle", "manual"),
+		"second add (different case)")
+
+	rows, err := st.ListAccountIdentities(f.Source.ID)
+	testutil.MustNoErr(t, err, "ListAccountIdentities")
+	if len(rows) != 2 {
+		t.Fatalf("len(rows) = %d, want 2 distinct rows for non-email; rows=%+v", len(rows), rows)
 	}
 }
 

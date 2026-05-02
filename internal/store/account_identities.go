@@ -45,14 +45,30 @@ func (s *Store) AddAccountIdentity(sourceID int64, address, signal string) error
 	if strings.Contains(signal, ",") {
 		return fmt.Errorf("signal names cannot contain commas: %q", signal)
 	}
+	// Email-shaped tokens match case-insensitively to keep the
+	// add/remove paths symmetric (RemoveAccountIdentity also folds
+	// case for "@"-shaped values). Synthetic identifiers stay
+	// case-sensitive because chat handles can be case-significant.
+	emailShaped := strings.Contains(addr, "@")
 
 	return s.withTx(func(tx *loggedTx) error {
-		var existing string
-		err := tx.QueryRow(
-			`SELECT source_signal FROM account_identities
-			 WHERE source_id = ? AND address = ?`,
-			sourceID, addr,
-		).Scan(&existing)
+		var (
+			existing string
+			err      error
+		)
+		if emailShaped {
+			err = tx.QueryRow(
+				`SELECT source_signal FROM account_identities
+				 WHERE source_id = ? AND LOWER(address) = LOWER(?)`,
+				sourceID, addr,
+			).Scan(&existing)
+		} else {
+			err = tx.QueryRow(
+				`SELECT source_signal FROM account_identities
+				 WHERE source_id = ? AND address = ?`,
+				sourceID, addr,
+			).Scan(&existing)
+		}
 		switch {
 		case err == sql.ErrNoRows:
 			_, txErr := tx.Exec(
@@ -72,12 +88,22 @@ func (s *Store) AddAccountIdentity(sourceID int64, address, signal string) error
 		if merged == existing {
 			return nil
 		}
-		if _, txErr := tx.Exec(
-			`UPDATE account_identities SET source_signal = ?
-			 WHERE source_id = ? AND address = ?`,
-			merged, sourceID, addr,
-		); txErr != nil {
-			return fmt.Errorf("update source_signal: %w", txErr)
+		var updateErr error
+		if emailShaped {
+			_, updateErr = tx.Exec(
+				`UPDATE account_identities SET source_signal = ?
+				 WHERE source_id = ? AND LOWER(address) = LOWER(?)`,
+				merged, sourceID, addr,
+			)
+		} else {
+			_, updateErr = tx.Exec(
+				`UPDATE account_identities SET source_signal = ?
+				 WHERE source_id = ? AND address = ?`,
+				merged, sourceID, addr,
+			)
+		}
+		if updateErr != nil {
+			return fmt.Errorf("update source_signal: %w", updateErr)
 		}
 		return nil
 	})

@@ -94,14 +94,29 @@ func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied, deferr
 
 		for _, src := range sources {
 			for _, addr := range normalized {
+				// Email-shaped tokens match case-insensitively to keep
+				// the migration consistent with AddAccountIdentity:
+				// a legacy 'Foo@x.com' shouldn't insert a duplicate
+				// row when 'foo@x.com' is already confirmed for the
+				// same source.
+				emailShaped := strings.Contains(addr, "@")
 				var existing string
-				err := tx.QueryRow(
-					`SELECT source_signal FROM account_identities
-					 WHERE source_id = ? AND address = ?`,
-					src.ID, addr,
-				).Scan(&existing)
+				var qerr error
+				if emailShaped {
+					qerr = tx.QueryRow(
+						`SELECT source_signal FROM account_identities
+						 WHERE source_id = ? AND LOWER(address) = LOWER(?)`,
+						src.ID, addr,
+					).Scan(&existing)
+				} else {
+					qerr = tx.QueryRow(
+						`SELECT source_signal FROM account_identities
+						 WHERE source_id = ? AND address = ?`,
+						src.ID, addr,
+					).Scan(&existing)
+				}
 				switch {
-				case err == sql.ErrNoRows:
+				case qerr == sql.ErrNoRows:
 					_, txErr := tx.Exec(
 						`INSERT INTO account_identities (source_id, address, source_signal)
 						 VALUES (?, ?, ?)`,
@@ -110,19 +125,29 @@ func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied, deferr
 					if txErr != nil {
 						return fmt.Errorf("insert identity (source=%d, addr=%s): %w", src.ID, addr, txErr)
 					}
-				case err != nil:
-					return fmt.Errorf("read existing identity (source=%d, addr=%s): %w", src.ID, addr, err)
+				case qerr != nil:
+					return fmt.Errorf("read existing identity (source=%d, addr=%s): %w", src.ID, addr, qerr)
 				default:
 					merged := mergeSignalSet(existing, "config_migration")
 					if merged != existing {
-						_, txErr := tx.Exec(
-							`UPDATE account_identities
-							 SET source_signal = ?
-							 WHERE source_id = ? AND address = ?`,
-							merged, src.ID, addr,
-						)
-						if txErr != nil {
-							return fmt.Errorf("update identity (source=%d, addr=%s): %w", src.ID, addr, txErr)
+						var uerr error
+						if emailShaped {
+							_, uerr = tx.Exec(
+								`UPDATE account_identities
+								 SET source_signal = ?
+								 WHERE source_id = ? AND LOWER(address) = LOWER(?)`,
+								merged, src.ID, addr,
+							)
+						} else {
+							_, uerr = tx.Exec(
+								`UPDATE account_identities
+								 SET source_signal = ?
+								 WHERE source_id = ? AND address = ?`,
+								merged, src.ID, addr,
+							)
+						}
+						if uerr != nil {
+							return fmt.Errorf("update identity (source=%d, addr=%s): %w", src.ID, addr, uerr)
 						}
 					}
 				}
