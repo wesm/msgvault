@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -120,15 +119,13 @@ func runImportImessage(cmd *cobra.Command, _ []string) error {
 }
 
 func openStoreAndInit() (*store.Store, error) {
+	// Shared by 15 commands (deduplicate, identity, collection,
+	// import-imessage/gvoice, delete-deduped, …). store.Open + InitSchema
+	// create the database file on first use, which is the right behavior
+	// for a freshly-installed CLI: a missing file is not an error here.
+	// init-db remains the explicit setup command for users who want to
+	// pre-create the DB.
 	dbPath := cfg.DatabaseDSN()
-	if statPath := statPathForDSN(dbPath); statPath != "" {
-		if _, err := os.Stat(statPath); os.IsNotExist(err) {
-			return nil, fmt.Errorf(
-				"database not found: %s\nRun 'msgvault init-db' first",
-				dbPath,
-			)
-		}
-	}
 	s, err := store.Open(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -168,19 +165,6 @@ func resolveChatDBPath() (string, error) {
 		)
 	}
 	return path, nil
-}
-
-func statPathForDSN(dsn string) string {
-	// cfg.DatabaseDSN() returns either a plain filesystem path or a file: URI.
-	// Plain paths can be passed to os.Stat directly.
-	if !strings.HasPrefix(dsn, "file:") {
-		return dsn
-	}
-	u, err := url.Parse(dsn)
-	if err != nil || u.Path == "" {
-		return ""
-	}
-	return u.Path
 }
 
 func buildImessageOpts() ([]imessage.ClientOption, error) {

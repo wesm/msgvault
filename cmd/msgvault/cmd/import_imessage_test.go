@@ -7,12 +7,6 @@ import (
 	"github.com/wesm/msgvault/internal/store"
 )
 
-func TestStatPathForDSN_InvalidFileURI(t *testing.T) {
-	if got := statPathForDSN("file:%"); got != "" {
-		t.Fatalf("statPathForDSN returned %q, want empty string", got)
-	}
-}
-
 // TestImportIMessage_NoAutoDefaultIdentity pins the documented behavior: the
 // apple_messages source uses identifier "local" and the spec explicitly excludes
 // this ingest path from auto-default-identity. After source creation via
