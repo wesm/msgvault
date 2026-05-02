@@ -54,17 +54,26 @@ func runDeleteDeduped(cmd *cobra.Command, _ []string) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	dbPath := cfg.DatabaseDSN()
-
 	// compute pre-delete stats and totalN before prompting.
 	var totalN int64
 	if deleteDedupedAllHidden {
+		// Match DeleteAllDeduped's predicates exactly: row count
+		// covers every dedup-hidden row (including any batchless ones)
+		// while distinct-batch count is restricted to rows that have a
+		// batch ID. Otherwise the prompt under-reports vs. the actual
+		// rows deleted.
 		var distinctBatches int64
 		err = st.DB().QueryRow(
-			st.Rebind("SELECT COUNT(*), COUNT(DISTINCT delete_batch_id) FROM messages WHERE deleted_at IS NOT NULL AND delete_batch_id IS NOT NULL"),
-		).Scan(&totalN, &distinctBatches)
+			st.Rebind("SELECT COUNT(*) FROM messages WHERE deleted_at IS NOT NULL"),
+		).Scan(&totalN)
 		if err != nil {
 			return fmt.Errorf("count hidden messages: %w", err)
+		}
+		err = st.DB().QueryRow(
+			st.Rebind("SELECT COUNT(DISTINCT delete_batch_id) FROM messages WHERE deleted_at IS NOT NULL AND delete_batch_id IS NOT NULL"),
+		).Scan(&distinctBatches)
+		if err != nil {
+			return fmt.Errorf("count distinct batches: %w", err)
 		}
 		fmt.Printf("Will permanently delete %d hidden message(s) from %d distinct batch(es).\n",
 			totalN, distinctBatches)
@@ -111,9 +120,17 @@ func runDeleteDeduped(cmd *cobra.Command, _ []string) error {
 	}
 
 	if !deleteDedupedNoBackup {
+		// Resolve the DSN to a real filesystem path so backups work
+		// when [data].database_url is a "file:" URI; reject non-file
+		// DSNs (postgres://, etc.) which the VACUUM INTO backup path
+		// can't operate on.
+		dbFilePath, err := cfg.DatabasePath()
+		if err != nil {
+			return fmt.Errorf("resolve database path: %w", err)
+		}
 		backupPath := filepath.Join(
-			filepath.Dir(dbPath),
-			filepath.Base(dbPath)+".delete-deduped-backup-"+time.Now().Format("20060102-150405"),
+			filepath.Dir(dbFilePath),
+			filepath.Base(dbFilePath)+".delete-deduped-backup-"+time.Now().Format("20060102-150405"),
 		)
 		fmt.Printf("Backing up database to %s...\n", filepath.Base(backupPath))
 		if err := backupDatabase(st, backupPath); err != nil {
