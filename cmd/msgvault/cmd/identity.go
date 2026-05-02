@@ -287,9 +287,13 @@ func runIdentityAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("list existing: %w", err)
 	}
+	// Match the SQL-side LOWER() rule used by AddAccountIdentity so a
+	// re-add of "Foo@x.com" against a stored "foo@x.com" hits the
+	// "already confirmed" / "additional signal" branches instead of
+	// silently looking new at the CLI layer.
 	var prevSignals []string
 	for _, ai := range existing {
-		if ai.Address == identifier {
+		if store.EqualIdentifier(ai.Address, identifier) {
 			prevSignals = splitSignalSet(ai.SourceSignal)
 			break
 		}
@@ -345,7 +349,11 @@ func runIdentityRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("remove identity: %w", err)
 	}
 	if !removed {
-		existing, _ := st.ListAccountIdentities(scope.Source.ID)
+		existing, listErr := st.ListAccountIdentities(scope.Source.ID)
+		if listErr != nil {
+			return fmt.Errorf("%s is not in %s's identity (and looking up the current set failed: %w)",
+				identifier, scope.Source.Identifier, listErr)
+		}
 		var have []string
 		for _, ai := range existing {
 			have = append(have, ai.Address)
@@ -359,8 +367,11 @@ func runIdentityRemove(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Removed %s from %s.\n", identifier, scope.Source.Identifier)
 
-	rest, _ := st.ListAccountIdentities(scope.Source.ID)
-	if len(rest) == 0 {
+	// Best-effort post-remove warning. If the lookup errors we suppress
+	// the warning rather than risk a misleading "no identity left"
+	// message — the remove itself already succeeded and was reported.
+	rest, listErr := st.ListAccountIdentities(scope.Source.ID)
+	if listErr == nil && len(rest) == 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), "Warning: %s now has no confirmed identity. "+
 			"Dedup sent-copy detection for this account will rely on is_from_me "+
 			"and SENT label signals only.\n", scope.Source.Identifier)

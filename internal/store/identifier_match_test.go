@@ -2,6 +2,39 @@ package store
 
 import "testing"
 
+// TestEqualIdentifier asserts that the in-memory comparison rule
+// matches the SQL-side LOWER() rule encoded by identifierMatch:
+// email-shaped tokens compare case-insensitively, everything else
+// compares case-sensitively. The CLI uses this to look up prior
+// rows in already-loaded identity slices before calling
+// AddAccountIdentity, which is what surfaces the "already confirmed"
+// UX message correctly when the user re-supplies an email with
+// different casing.
+func TestEqualIdentifier(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b string
+		want bool
+	}{
+		{"email_same_case", "foo@x.com", "foo@x.com", true},
+		{"email_mixed_case", "Foo@X.COM", "foo@x.com", true},
+		{"email_distinct", "alice@x.com", "bob@x.com", false},
+		{"non_email_same", "AliceHandle", "AliceHandle", true},
+		{"non_email_case_diff", "AliceHandle", "alicehandle", false},
+		{"matrix_mxid_case_diff", "@Alice:matrix.org", "@alice:matrix.org", false},
+		{"phone_same", "+15551234567", "+15551234567", true},
+		{"empty_both", "", "", true},
+		{"one_email_one_handle", "foo@x.com", "AliceHandle", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := EqualIdentifier(tc.a, tc.b); got != tc.want {
+				t.Errorf("EqualIdentifier(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestIdentifierMatch_TableDriven asserts the SQL-composition contract
 // of newIdentifierMatch for representative inputs. Email-shaped tokens
 // produce a LOWER()-wrapped predicate; everything else produces a

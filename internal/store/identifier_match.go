@@ -1,6 +1,29 @@
 package store
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
+
+// EqualIdentifier reports whether two identifiers refer to the same
+// row under the comparison rules used by AddAccountIdentity /
+// RemoveAccountIdentity / MigrateLegacyIdentityConfig: email-shaped
+// tokens compare case-insensitively, everything else compares
+// case-sensitively.
+//
+// Use this when a caller has already loaded identity rows and needs
+// to find the row that corresponds to a user-supplied identifier in
+// memory — e.g., to read prior signals before calling
+// AddAccountIdentity. Routing through this function keeps the CLI's
+// in-memory matching consistent with the SQL-side LOWER() compare so
+// case-mismatched re-adds do not silently bypass "already confirmed"
+// UX.
+func EqualIdentifier(a, b string) bool {
+	if looksLikeEmail(a) || looksLikeEmail(b) {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
 
 // identifierMatch carries the comparison rule for one identifier in
 // account_identities. It exists so the email-vs-other branch lives in
