@@ -381,6 +381,28 @@ func TestAddAccountIdentity_NonEmailStaysCaseSensitive(t *testing.T) {
 	}
 }
 
+// TestAddAccountIdentity_MatrixMXIDStaysCaseSensitive guards against an
+// over-broad email heuristic: Matrix MXIDs like "@user:server.org" start
+// with "@" and contain a "." but are not emails. Two distinct cases must
+// produce two distinct rows.
+func TestAddAccountIdentity_MatrixMXIDStaysCaseSensitive(t *testing.T) {
+	f := storetest.New(t)
+	st := f.Store
+
+	testutil.MustNoErr(t,
+		st.AddAccountIdentity(f.Source.ID, "@Alice:matrix.org", "manual"),
+		"first add (Matrix MXID, mixed case)")
+	testutil.MustNoErr(t,
+		st.AddAccountIdentity(f.Source.ID, "@alice:matrix.org", "manual"),
+		"second add (Matrix MXID, lower case)")
+
+	rows, err := st.ListAccountIdentities(f.Source.ID)
+	testutil.MustNoErr(t, err, "ListAccountIdentities")
+	if len(rows) != 2 {
+		t.Fatalf("len(rows) = %d, want 2 distinct rows for Matrix MXID; rows=%+v", len(rows), rows)
+	}
+}
+
 // TestRemoveAccountIdentity_NonEmailIsCaseSensitive guards the
 // case-preserving path for synthetic identifiers (chat handles, etc.):
 // removing with different casing on a non-email value must not match.

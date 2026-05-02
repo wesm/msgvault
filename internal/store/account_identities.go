@@ -16,6 +16,21 @@ type AccountIdentity struct {
 	ConfirmedAt  time.Time
 }
 
+// looksLikeEmail returns true for tokens that have the shape of an
+// email address. Emails are matched case-insensitively in the identity
+// store; other identifier shapes (phone E.164, Matrix MXIDs like
+// "@user:server.org", Slack/IRC handles) preserve case. The check is:
+// at least one "@" not at index 0 and the substring after the last "@"
+// contains a ".". This excludes Matrix MXIDs (which start with "@")
+// and bare handles, and accepts conventional emails.
+func looksLikeEmail(addr string) bool {
+	at := strings.LastIndex(addr, "@")
+	if at <= 0 || at == len(addr)-1 {
+		return false
+	}
+	return strings.Contains(addr[at+1:], ".")
+}
+
 // AddAccountIdentity confirms an identifier for one source.
 //
 // Behavior:
@@ -46,10 +61,10 @@ func (s *Store) AddAccountIdentity(sourceID int64, address, signal string) error
 		return fmt.Errorf("signal names cannot contain commas: %q", signal)
 	}
 	// Email-shaped tokens match case-insensitively to keep the
-	// add/remove paths symmetric (RemoveAccountIdentity also folds
-	// case for "@"-shaped values). Synthetic identifiers stay
-	// case-sensitive because chat handles can be case-significant.
-	emailShaped := strings.Contains(addr, "@")
+	// add/remove paths symmetric. Synthetic identifiers (phones,
+	// Matrix MXIDs, chat handles) stay case-sensitive — see
+	// looksLikeEmail for the precise shape check.
+	emailShaped := looksLikeEmail(addr)
 
 	return s.withTx(func(tx *loggedTx) error {
 		var (
@@ -162,17 +177,18 @@ func (s *Store) ListAccountIdentities(sourceID int64) ([]AccountIdentity, error)
 // RemoveAccountIdentity deletes one (source_id, address) row.
 // Returns (true, nil) if a row was removed, (false, nil) if no row matched.
 //
-// Email-shaped identifiers (those containing "@") match case-insensitively
-// because email is case-insensitive in practice; this avoids the UX trap
-// where a row was inserted as foo@x.com but the user types Foo@x.com on
-// remove. Synthetic identifiers (chat handles, phone numbers) match
-// case-sensitively because case can be significant there.
+// Email-shaped identifiers match case-insensitively because email is
+// case-insensitive in practice; this avoids the UX trap where a row was
+// inserted as foo@x.com but the user types Foo@x.com on remove.
+// Synthetic identifiers (Matrix MXIDs, chat handles, phone numbers)
+// match case-sensitively because case can be significant there. The
+// shape check is in looksLikeEmail.
 func (s *Store) RemoveAccountIdentity(sourceID int64, address string) (bool, error) {
 	var (
 		query string
 		arg   any
 	)
-	if strings.Contains(address, "@") {
+	if looksLikeEmail(address) {
 		query = `DELETE FROM account_identities WHERE source_id = ? AND LOWER(address) = LOWER(?)`
 		arg = address
 	} else {

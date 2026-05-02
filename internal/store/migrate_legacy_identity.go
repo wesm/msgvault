@@ -98,8 +98,10 @@ func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied, deferr
 				// the migration consistent with AddAccountIdentity:
 				// a legacy 'Foo@x.com' shouldn't insert a duplicate
 				// row when 'foo@x.com' is already confirmed for the
-				// same source.
-				emailShaped := strings.Contains(addr, "@")
+				// same source. Non-email synthetic identifiers (phone
+				// E.164, Matrix MXIDs, chat handles) preserve case;
+				// looksLikeEmail handles the discrimination.
+				emailShaped := looksLikeEmail(addr)
 				var existing string
 				var qerr error
 				if emailShaped {
