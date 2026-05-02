@@ -96,58 +96,75 @@ Examples:
 		// so FTS, vector, and hybrid all see the same SourceIDs. Earlier,
 		// scope was resolved inside runLocalSearch only and the vector
 		// path applied --account directly while ignoring --collection.
-		scope, err := resolveSearchScope(searchAccount, searchCollection)
+		scope, scopedStore, err := resolveSearchScope(searchAccount, searchCollection)
 		if err != nil {
 			return err
 		}
 
 		if searchMode != "fts" {
+			// Hybrid/vector path opens its own sql.DB directly; the store
+			// returned by scope resolution isn't needed there.
+			if scopedStore != nil {
+				_ = scopedStore.Close()
+			}
 			return runHybridSearch(cmd, queryStr, searchMode, searchExplain, scope)
 		}
-		return runLocalSearch(cmd, queryStr, scope)
+		return runLocalSearch(cmd, queryStr, scope, scopedStore)
 	},
 }
 
 // resolveSearchScope opens the local store just long enough to resolve
 // the user-supplied --account/--collection flag into a Scope. Returning
 // the Scope (rather than just SourceIDs) lets callers print a banner
-// using its DisplayName.
-func resolveSearchScope(account, collection string) (Scope, error) {
+// using its DisplayName. The opened store is returned so a caller that
+// needs it (runLocalSearch) can reuse it instead of re-running
+// InitSchema + runStartupMigrations a second time. Callers that don't
+// need the store must Close it themselves.
+//
+// When no scope flag was supplied, returns (Scope{}, nil, nil) and the
+// caller is responsible for opening its own store.
+func resolveSearchScope(account, collection string) (Scope, *store.Store, error) {
 	if account == "" && collection == "" {
-		return Scope{}, nil
+		return Scope{}, nil, nil
 	}
 	s, err := store.Open(cfg.DatabaseDSN())
 	if err != nil {
-		return Scope{}, fmt.Errorf("open database: %w", err)
+		return Scope{}, nil, fmt.Errorf("open database: %w", err)
 	}
-	defer func() { _ = s.Close() }()
 	if err := s.InitSchema(); err != nil {
-		return Scope{}, fmt.Errorf("init schema: %w", err)
+		_ = s.Close()
+		return Scope{}, nil, fmt.Errorf("init schema: %w", err)
 	}
 	if err := runStartupMigrations(s); err != nil {
-		return Scope{}, fmt.Errorf("startup migrations: %w", err)
+		_ = s.Close()
+		return Scope{}, nil, fmt.Errorf("startup migrations: %w", err)
 	}
 	switch {
 	case account != "":
 		scope, err := ResolveAccountFlag(s, account)
 		if err != nil {
-			return Scope{}, err
+			_ = s.Close()
+			return Scope{}, nil, err
 		}
 		if scope.IsEmpty() {
-			return Scope{}, fmt.Errorf("--account %q resolved to zero sources", account)
+			_ = s.Close()
+			return Scope{}, nil, fmt.Errorf("--account %q resolved to zero sources", account)
 		}
-		return scope, nil
+		return scope, s, nil
 	case collection != "":
 		scope, err := ResolveCollectionFlag(s, collection)
 		if err != nil {
-			return Scope{}, err
+			_ = s.Close()
+			return Scope{}, nil, err
 		}
 		if len(scope.SourceIDs()) == 0 {
-			return Scope{}, fmt.Errorf("--collection %q has no member accounts", collection)
+			_ = s.Close()
+			return Scope{}, nil, fmt.Errorf("--collection %q has no member accounts", collection)
 		}
-		return scope, nil
+		return scope, s, nil
 	}
-	return Scope{}, nil
+	_ = s.Close()
+	return Scope{}, nil, nil
 }
 
 // runRemoteSearch performs a search against the remote API.
@@ -179,8 +196,13 @@ func runRemoteSearch(queryStr string) error {
 
 // runLocalSearch performs a search against the local database. The
 // caller is expected to have resolved scope already; an empty Scope
-// means no --account or --collection was supplied.
-func runLocalSearch(cmd *cobra.Command, queryStr string, scope Scope) error {
+// means no --account or --collection was supplied. If scopedStore is
+// non-nil it carries an already-initialized store from scope
+// resolution; runLocalSearch reuses it (avoiding a second
+// InitSchema + runStartupMigrations pass). When scopedStore is nil
+// (no scope flag supplied), runLocalSearch opens and initializes
+// its own store.
+func runLocalSearch(cmd *cobra.Command, queryStr string, scope Scope, scopedStore *store.Store) error {
 	// Parse the query and apply any pre-resolved scope before the
 	// emptiness check so a bare --account/--collection is enough to
 	// produce a non-empty query.
@@ -189,26 +211,31 @@ func runLocalSearch(cmd *cobra.Command, queryStr string, scope Scope) error {
 		q.AccountIDs = scope.SourceIDs()
 	}
 	if q.IsEmpty() {
+		if scopedStore != nil {
+			_ = scopedStore.Close()
+		}
 		return fmt.Errorf("empty search query")
 	}
 
-	// Open database
-	dbPath := cfg.DatabaseDSN()
-	s, err := store.Open(dbPath)
-	if err != nil {
-		return fmt.Errorf("open database: %w", err)
+	var s *store.Store
+	if scopedStore != nil {
+		s = scopedStore
+	} else {
+		var err error
+		s, err = store.Open(cfg.DatabaseDSN())
+		if err != nil {
+			return fmt.Errorf("open database: %w", err)
+		}
+		if err := s.InitSchema(); err != nil {
+			_ = s.Close()
+			return fmt.Errorf("init schema: %w", err)
+		}
+		if err := runStartupMigrations(s); err != nil {
+			_ = s.Close()
+			return fmt.Errorf("startup migrations: %w", err)
+		}
 	}
 	defer func() { _ = s.Close() }()
-
-	// Schema/migrations were already applied during scope resolution
-	// when scope was non-empty, but remote-skipping bare-query searches
-	// reach here without that init pass; run it idempotently here.
-	if err := s.InitSchema(); err != nil {
-		return fmt.Errorf("init schema: %w", err)
-	}
-	if err := runStartupMigrations(s); err != nil {
-		return fmt.Errorf("startup migrations: %w", err)
-	}
 
 	// Print a scope banner when searching a collection.
 	if scope.IsCollection() {
