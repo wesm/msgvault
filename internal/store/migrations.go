@@ -1,8 +1,6 @@
 package store
 
 import (
-	"database/sql"
-	"errors"
 	"fmt"
 )
 
@@ -25,7 +23,7 @@ func (s *Store) MarkMigrationApplied(name string) error {
 		s.dialect.InsertOrIgnore(`INSERT OR IGNORE INTO applied_migrations (name) VALUES (?)`),
 		name,
 	)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil {
 		return fmt.Errorf("mark migration %q applied: %w", name, err)
 	}
 	return nil
