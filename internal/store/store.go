@@ -442,6 +442,7 @@ func (s *Store) InitSchema() error {
 		{`ALTER TABLE messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'email'`, "message_type"},
 		{`ALTER TABLE messages ADD COLUMN attachment_count INTEGER DEFAULT 0`, "attachment_count"},
 		{`ALTER TABLE messages ADD COLUMN deleted_from_source_at DATETIME`, "deleted_from_source_at"},
+		{`ALTER TABLE messages ADD COLUMN deleted_at DATETIME`, "deleted_at"},
 		{`ALTER TABLE messages ADD COLUMN delete_batch_id TEXT`, "delete_batch_id"},
 		{`ALTER TABLE conversations ADD COLUMN title TEXT`, "title"},
 		{`ALTER TABLE conversations ADD COLUMN conversation_type TEXT NOT NULL DEFAULT 'email_thread'`, "conversation_type"},
