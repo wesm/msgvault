@@ -392,6 +392,32 @@ func TestEngine_FormatMethodology_MentionsSentPolicy(t *testing.T) {
 	}
 }
 
+// TestEngine_FormatMethodology_SingleMemberCollection asserts that a
+// `--collection` invocation with only one resolved source does NOT
+// describe itself as cross-account. Regression test for iter14
+// claude Low: ScopeIsCollection alone gated the cross-account
+// wording, even when len(AccountSourceIDs) == 1 made cross-account
+// merging impossible.
+func TestEngine_FormatMethodology_SingleMemberCollection(t *testing.T) {
+	f := storetest.New(t)
+	eng := dedup.NewEngine(f.Store, dedup.Config{
+		Account:           "myCollection",
+		AccountSourceIDs:  []int64{f.Source.ID},
+		ScopeIsCollection: true,
+	}, nil)
+	out := eng.FormatMethodology()
+	lower := strings.ToLower(out)
+	if strings.Contains(lower, "cross-account dedup\n  is enabled") {
+		t.Errorf("single-member collection should not advertise cross-account dedup; got:\n%s", out)
+	}
+	if strings.Contains(lower, "intentionally merges messages") {
+		t.Errorf("single-member collection should not describe intentional cross-account merging; got:\n%s", out)
+	}
+	if !strings.Contains(lower, "never merges messages across different") {
+		t.Errorf("single-member collection should fall to the same-account guarantee; got:\n%s", out)
+	}
+}
+
 func TestEngine_SurvivorTiebreakers(t *testing.T) {
 	t.Run("raw MIME wins over no raw MIME", func(t *testing.T) {
 		f := storetest.New(t)

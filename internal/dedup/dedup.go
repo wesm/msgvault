@@ -1181,12 +1181,21 @@ func (e *Engine) FormatMethodology() string {
 
 	sb.WriteString("Scope:\n")
 	switch {
-	case e.config.ScopeIsCollection:
+	case e.config.ScopeIsCollection && len(e.config.AccountSourceIDs) > 1:
 		fmt.Fprintf(&sb,
 			"  Scoped to collection: %s (%d account(s)). "+
 				"Cross-account dedup\n"+
 				"  is enabled within this collection.\n",
 			e.config.Account, len(e.config.AccountSourceIDs))
+	case e.config.ScopeIsCollection:
+		// Single-member collection — wording matches the
+		// account-scope branch since no cross-account merging can
+		// happen with one source.
+		fmt.Fprintf(&sb,
+			"  Scoped to collection: %s (1 account). Source "+
+				"boundaries are\n  never crossed (collection has "+
+				"only one member).\n",
+			e.config.Account)
 	case e.config.Account != "":
 		fmt.Fprintf(&sb,
 			"  Scoped to account: %s. Source boundaries are "+
@@ -1240,7 +1249,7 @@ func (e *Engine) FormatMethodology() string {
 		"earlier archived_at > lower id.\n\n")
 
 	sb.WriteString("Sent messages:\n")
-	if e.config.ScopeIsCollection {
+	if e.config.ScopeIsCollection && len(e.config.AccountSourceIDs) > 1 {
 		sb.WriteString(
 			"  Collection mode INTENTIONALLY merges messages " +
 				"across the accounts in this\n" +

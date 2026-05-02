@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -225,15 +226,22 @@ func resolveAccountList(st *store.Store, accounts string) ([]int64, error) {
 		// on phone numbers. Restrict the numeric branch to tokens
 		// whose first byte is a decimal digit so signed inputs fall
 		// through to identifier resolution. If the numeric lookup
-		// misses (no source with that ID), fall through to
-		// ResolveAccountFlag — the digit string may be a numeric
-		// identifier (e.g. unprefixed phone number, account name)
-		// rather than a source ID.
+		// returns ErrSourceNotFound, fall through to ResolveAccountFlag
+		// — the digit string may be a numeric identifier (e.g.
+		// unprefixed phone number, account name) rather than a source
+		// ID. Surface any other error (real DB failure) so it isn't
+		// masked as a "not found".
 		if p[0] >= '0' && p[0] <= '9' {
 			if id, err := strconv.ParseInt(p, 10, 64); err == nil {
-				if _, err := st.GetSourceByID(id); err == nil {
+				_, lookupErr := st.GetSourceByID(id)
+				switch {
+				case lookupErr == nil:
 					ids = append(ids, id)
 					continue
+				case errors.Is(lookupErr, store.ErrSourceNotFound):
+					// fall through to identifier resolution
+				default:
+					return nil, fmt.Errorf("get source %d: %w", id, lookupErr)
 				}
 			}
 		}
