@@ -94,29 +94,17 @@ func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied, deferr
 
 		for _, src := range sources {
 			for _, addr := range normalized {
-				// Email-shaped tokens match case-insensitively to keep
-				// the migration consistent with AddAccountIdentity:
-				// a legacy 'Foo@x.com' shouldn't insert a duplicate
-				// row when 'foo@x.com' is already confirmed for the
-				// same source. Non-email synthetic identifiers (phone
-				// E.164, Matrix MXIDs, chat handles) preserve case;
-				// looksLikeEmail handles the discrimination.
-				emailShaped := looksLikeEmail(addr)
+				// Comparison rule (email-shaped → case-insensitive;
+				// everything else → case-sensitive) is shared with
+				// AddAccountIdentity via identifierMatch — see
+				// identifier_match.go.
+				match := newIdentifierMatch(addr)
 				var existing string
-				var qerr error
-				if emailShaped {
-					qerr = tx.QueryRow(
-						`SELECT source_signal FROM account_identities
-						 WHERE source_id = ? AND LOWER(address) = LOWER(?)`,
-						src.ID, addr,
-					).Scan(&existing)
-				} else {
-					qerr = tx.QueryRow(
-						`SELECT source_signal FROM account_identities
-						 WHERE source_id = ? AND address = ?`,
-						src.ID, addr,
-					).Scan(&existing)
-				}
+				qerr := tx.QueryRow(
+					`SELECT source_signal FROM account_identities
+					 WHERE source_id = ? AND `+match.WhereClause("address"),
+					src.ID, match.BindValue(),
+				).Scan(&existing)
 				switch {
 				case qerr == sql.ErrNoRows:
 					_, txErr := tx.Exec(
@@ -132,22 +120,12 @@ func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied, deferr
 				default:
 					merged := mergeSignalSet(existing, "config_migration")
 					if merged != existing {
-						var uerr error
-						if emailShaped {
-							_, uerr = tx.Exec(
-								`UPDATE account_identities
-								 SET source_signal = ?
-								 WHERE source_id = ? AND LOWER(address) = LOWER(?)`,
-								merged, src.ID, addr,
-							)
-						} else {
-							_, uerr = tx.Exec(
-								`UPDATE account_identities
-								 SET source_signal = ?
-								 WHERE source_id = ? AND address = ?`,
-								merged, src.ID, addr,
-							)
-						}
+						_, uerr := tx.Exec(
+							`UPDATE account_identities
+							 SET source_signal = ?
+							 WHERE source_id = ? AND `+match.WhereClause("address"),
+							merged, src.ID, match.BindValue(),
+						)
 						if uerr != nil {
 							return fmt.Errorf("update identity (source=%d, addr=%s): %w", src.ID, addr, uerr)
 						}
