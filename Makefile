@@ -58,6 +58,15 @@ test:
 test-v:
 	go test -tags "$(BUILD_TAGS)" -v ./...
 
+# Run tests against PostgreSQL (set MSGVAULT_TEST_DB first)
+# Example: MSGVAULT_TEST_DB=postgres://user:pass@localhost:5432/db make test-pg
+test-pg:
+	@if [ -z "$$MSGVAULT_TEST_DB" ]; then \
+		echo "MSGVAULT_TEST_DB must be set, e.g., postgres://user:pass@localhost:5432/db" >&2; \
+		exit 1; \
+	fi
+	go test -tags fts5 ./...
+
 # Format code
 fmt:
 	go fmt ./...
