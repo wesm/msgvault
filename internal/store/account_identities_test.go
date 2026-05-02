@@ -294,3 +294,45 @@ func TestRemoveAccountIdentity_Miss(t *testing.T) {
 		t.Error("removed=true on miss")
 	}
 }
+
+// TestRemoveAccountIdentity_EmailIsCaseInsensitive verifies that an
+// email-shaped identifier removed with different casing matches the
+// stored row, since email addresses are case-insensitive in practice.
+func TestRemoveAccountIdentity_EmailIsCaseInsensitive(t *testing.T) {
+	f := storetest.New(t)
+	st := f.Store
+
+	testutil.MustNoErr(t,
+		st.AddAccountIdentity(f.Source.ID, "alice@Example.com", "manual"),
+		"add identity")
+
+	removed, err := st.RemoveAccountIdentity(f.Source.ID, "ALICE@example.com")
+	testutil.MustNoErr(t, err, "RemoveAccountIdentity")
+	if !removed {
+		t.Fatal("removed=false, want true (email match should be case-insensitive)")
+	}
+
+	rows, err := st.ListAccountIdentities(f.Source.ID)
+	testutil.MustNoErr(t, err, "ListAccountIdentities")
+	if len(rows) != 0 {
+		t.Errorf("want empty, got %+v", rows)
+	}
+}
+
+// TestRemoveAccountIdentity_NonEmailIsCaseSensitive guards the
+// case-preserving path for synthetic identifiers (chat handles, etc.):
+// removing with different casing on a non-email value must not match.
+func TestRemoveAccountIdentity_NonEmailIsCaseSensitive(t *testing.T) {
+	f := storetest.New(t)
+	st := f.Store
+
+	testutil.MustNoErr(t,
+		st.AddAccountIdentity(f.Source.ID, "AliceHandle", "manual"),
+		"add identity")
+
+	removed, err := st.RemoveAccountIdentity(f.Source.ID, "alicehandle")
+	testutil.MustNoErr(t, err, "RemoveAccountIdentity")
+	if removed {
+		t.Fatal("removed=true on case-mismatch for non-email identifier")
+	}
+}

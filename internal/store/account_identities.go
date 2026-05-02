@@ -135,11 +135,25 @@ func (s *Store) ListAccountIdentities(sourceID int64) ([]AccountIdentity, error)
 
 // RemoveAccountIdentity deletes one (source_id, address) row.
 // Returns (true, nil) if a row was removed, (false, nil) if no row matched.
+//
+// Email-shaped identifiers (those containing "@") match case-insensitively
+// because email is case-insensitive in practice; this avoids the UX trap
+// where a row was inserted as foo@x.com but the user types Foo@x.com on
+// remove. Synthetic identifiers (chat handles, phone numbers) match
+// case-sensitively because case can be significant there.
 func (s *Store) RemoveAccountIdentity(sourceID int64, address string) (bool, error) {
-	res, err := s.db.Exec(
-		`DELETE FROM account_identities WHERE source_id = ? AND address = ?`,
-		sourceID, address,
+	var (
+		query string
+		arg   any
 	)
+	if strings.Contains(address, "@") {
+		query = `DELETE FROM account_identities WHERE source_id = ? AND LOWER(address) = LOWER(?)`
+		arg = address
+	} else {
+		query = `DELETE FROM account_identities WHERE source_id = ? AND address = ?`
+		arg = address
+	}
+	res, err := s.db.Exec(query, sourceID, arg)
 	if err != nil {
 		return false, fmt.Errorf("remove account identity: %w", err)
 	}
