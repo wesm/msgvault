@@ -1604,6 +1604,31 @@ func TestDatabasePath(t *testing.T) {
 		}
 	})
 
+	t.Run("file: URI decodes percent-encoded path", func(t *testing.T) {
+		cfg := &Config{}
+		cfg.Data.DatabaseURL = "file:/var/lib/my%20vault.db"
+		got, err := cfg.DatabasePath()
+		if err != nil {
+			t.Fatalf("DatabasePath: %v", err)
+		}
+		if got != "/var/lib/my vault.db" {
+			t.Errorf("DatabasePath() = %q, want '/var/lib/my vault.db'", got)
+		}
+	})
+
+	t.Run("file: URI relative path (Opaque)", func(t *testing.T) {
+		// SQLite accepts file:rel/path; url.Parse routes that into u.Opaque.
+		cfg := &Config{}
+		cfg.Data.DatabaseURL = "file:msgvault.db"
+		got, err := cfg.DatabasePath()
+		if err != nil {
+			t.Fatalf("DatabasePath: %v", err)
+		}
+		if got != "msgvault.db" {
+			t.Errorf("DatabasePath() = %q, want 'msgvault.db'", got)
+		}
+	})
+
 	t.Run("postgres:// is rejected", func(t *testing.T) {
 		cfg := &Config{}
 		cfg.Data.DatabaseURL = "postgres://user@host:5432/db"

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -336,25 +337,30 @@ func (c *Config) DatabaseDSN() string {
 
 // DatabasePath returns the on-disk SQLite filesystem path for backup
 // operations (VACUUM INTO, copies). It accepts the plain filesystem
-// path and the SQLite "file:" URI form, stripping any URI query string.
-// Returns an error for non-file DSNs (e.g. "postgres://..."), which
-// the SQLite-only backup helpers cannot operate on.
+// path and the SQLite "file:" URI form, decoding any percent-encoded
+// bytes (e.g. "file:/var/lib/my%20vault.db" -> "/var/lib/my vault.db")
+// and dropping the URI query string. Returns an error for non-file
+// DSNs (e.g. "postgres://..."), which the SQLite-only backup helpers
+// cannot operate on.
 func (c *Config) DatabasePath() (string, error) {
 	dsn := c.DatabaseDSN()
-	switch {
-	case strings.HasPrefix(dsn, "file:"):
-		// file: URI: strip scheme and any "?query" suffix.
-		// SQLite accepts file:/abs/path and file:rel/path; both are
-		// just filesystem paths once the scheme is removed.
-		path := strings.TrimPrefix(dsn, "file:")
-		if i := strings.IndexByte(path, '?'); i >= 0 {
-			path = path[:i]
+	if strings.HasPrefix(dsn, "file:") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return "", fmt.Errorf("parse file: URI %q: %w", dsn, err)
+		}
+		// SQLite accepts both file:/abs/path (Path) and file:rel/path
+		// (Opaque) shapes; url.Parse decodes percent-encoding for both.
+		path := u.Path
+		if path == "" {
+			path = u.Opaque
 		}
 		if path == "" {
 			return "", fmt.Errorf("empty file: URI in database DSN: %q", dsn)
 		}
 		return path, nil
-	case strings.Contains(dsn, "://"):
+	}
+	if strings.Contains(dsn, "://") {
 		// postgres://, mysql://, etc. — non-file DSN; backup is
 		// SQLite-specific and the caller can't operate on these.
 		return "", fmt.Errorf(
@@ -362,9 +368,8 @@ func (c *Config) DatabasePath() (string, error) {
 				"got non-file DSN %q (set [data].database_url to a "+
 				"plain filesystem path or file: URI)", dsn,
 		)
-	default:
-		return dsn, nil
 	}
+	return dsn, nil
 }
 
 // AttachmentsDir returns the path to the attachments directory.
