@@ -265,6 +265,117 @@ func TestLoggedRows_QueryErrorLogsImmediately(t *testing.T) {
 	}
 }
 
+// TestLoggedRows_FinalizesAtEndOfScan verifies that duration_ms
+// is captured when iteration ends (Next returns false), not when
+// Close is eventually called. Most callers defer Close, so any
+// time spent between the last row and the deferred Close (count
+// queries, batchPopulate, unrelated work) would otherwise be
+// charged to the streaming query. The end-of-Next finalizer
+// keeps the timing honest.
+func TestLoggedRows_FinalizesAtEndOfScan(t *testing.T) {
+	ConfigureSQLLogging(SQLLogOptions{FullTrace: true})
+	t.Cleanup(func() { ConfigureSQLLogging(SQLLogOptions{}) })
+
+	buf := captureSlog(t, slog.LevelDebug)
+	db := openLoggedMem(t)
+	if _, err := db.Exec(
+		"INSERT INTO t (val) VALUES ('a'), ('b'), ('c')",
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	buf.Reset()
+
+	rows, err := db.Query("SELECT val FROM t ORDER BY id")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+	}
+	// The log line must be emitted by the time Next returns
+	// false, before any deferred Close fires.
+	rec := findLogLine(t, buf, "sql")
+	if rec["kind"] != "query" {
+		t.Errorf("kind = %v, want query", rec["kind"])
+	}
+	durAtEndOfScan := rec["duration_ms"].(float64)
+
+	// Simulate caller doing unrelated work between end-of-scan
+	// and the deferred Close. The log line must not be re-emitted
+	// and the duration must already be recorded.
+	time.Sleep(50 * time.Millisecond)
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	count := 0
+	var lastDuration float64
+	for _, r := range decodeAll(t, buf) {
+		if r["msg"] == "sql" && r["kind"] == "query" {
+			count++
+			lastDuration = r["duration_ms"].(float64)
+		}
+	}
+	if count != 1 {
+		t.Errorf("got %d query log lines, want exactly 1", count)
+	}
+	// Duration recorded at end-of-scan must not include the 50ms
+	// of post-iteration work — give a generous ceiling so a slow
+	// CI host doesn't flake.
+	if lastDuration != durAtEndOfScan {
+		t.Errorf("duration_ms changed after Close: %v -> %v",
+			durAtEndOfScan, lastDuration)
+	}
+	if lastDuration >= 40 {
+		t.Errorf("duration_ms %v includes post-iteration sleep; "+
+			"finalizer should run at end-of-Next", lastDuration)
+	}
+}
+
+// TestLoggedRows_EarlyExitFinalizesOnClose covers the path where
+// the caller breaks out of the Next loop without exhausting rows.
+// The finalizer must run from Close on that path so the log line
+// is still emitted exactly once.
+func TestLoggedRows_EarlyExitFinalizesOnClose(t *testing.T) {
+	ConfigureSQLLogging(SQLLogOptions{FullTrace: true})
+	t.Cleanup(func() { ConfigureSQLLogging(SQLLogOptions{}) })
+
+	buf := captureSlog(t, slog.LevelDebug)
+	db := openLoggedMem(t)
+	if _, err := db.Exec(
+		"INSERT INTO t (val) VALUES ('a'), ('b'), ('c')",
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	buf.Reset()
+
+	rows, err := db.Query("SELECT val FROM t ORDER BY id")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	// Read a single row and break — finalizer should not fire yet.
+	if !rows.Next() {
+		t.Fatalf("expected at least one row")
+	}
+	var v string
+	if err := rows.Scan(&v); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if findLogLineByMsg(t, buf, "sql") != nil {
+		t.Fatalf("log line emitted before Close on early-exit path")
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	rec := findLogLine(t, buf, "sql")
+	if rec["kind"] != "query" {
+		t.Errorf("kind = %v, want query", rec["kind"])
+	}
+}
+
 // TestLoggedRows_IterationErrorSurfacedOnClose verifies that a
 // context cancellation discovered during rows.Next() is logged
 // as an error on Close, even when Rows.Close() itself returns

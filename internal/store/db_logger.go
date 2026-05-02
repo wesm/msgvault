@@ -277,40 +277,70 @@ func (t *loggedTx) QueryRowContext(
 // even when the full scan took hundreds of milliseconds.
 //
 // loggedRows embeds *sql.Rows so callers continue to use it
-// like a raw *sql.Rows: Next, Scan, Err, and Columns are all
-// satisfied by the embedded pointer. Only Close is overridden,
-// to record the elapsed time and emit the log line. Close is
-// idempotent — repeated calls (e.g. an early-return defer plus
-// an explicit close before that) only emit one log line.
+// like a raw *sql.Rows: Scan, Err, and Columns are satisfied
+// by the embedded pointer. Next and Close are overridden:
+//
+//   - Next finalizes the timing log when iteration ends
+//     (Next returns false), so duration_ms reflects scan
+//     completion rather than whatever happens between the last
+//     row and the deferred Close (count queries, batchPopulate,
+//     etc).
+//   - Close finalizes too, covering early returns where the
+//     caller breaks out of the loop before exhausting rows.
+//
+// Both paths route through finalize, which is idempotent — only
+// the first caller emits a log line.
 type loggedRows struct {
 	*sql.Rows
-	query  string
-	args   []any
-	start  time.Time
-	closed bool
+	query     string
+	args      []any
+	start     time.Time
+	finalized bool
 }
 
-// Close records the total elapsed time since Query returned
-// and emits the SQL log line. Mirrors the threshold and
-// full-trace behaviour of logStmt so a streaming query that
-// runs slowly inside Next still gets promoted to WARN.
-//
-// If Close itself returns nil, we also surface any iteration
-// error from Rows.Err() — context cancellation or driver-level
-// scan failures land there, not on Close. Without this the log
-// would record a slow/failing scan as a successful query.
-func (r *loggedRows) Close() error {
-	if r.closed {
-		return nil
+// Next delegates to the embedded *sql.Rows but, on the first
+// false return, runs the timing finalizer so duration_ms is
+// captured at end-of-scan rather than at deferred Close. The
+// caller's existing Close defer still fires; the finalizer
+// guard makes that a no-op.
+func (r *loggedRows) Next() bool {
+	if r.Rows == nil {
+		return false
 	}
-	r.closed = true
+	if r.Rows.Next() {
+		return true
+	}
+	r.finalize(nil)
+	return false
+}
+
+// Close finalizes timing for the early-exit path (caller broke
+// out of the Next loop) and always closes the underlying Rows.
+// Repeated calls remain safe: finalize is idempotent and
+// *sql.Rows.Close is documented to be safe to call multiple
+// times.
+func (r *loggedRows) Close() error {
 	err := r.Rows.Close()
-	logErr := err
+	r.finalize(err)
+	return err
+}
+
+// finalize emits the timing log line exactly once. closeErr is
+// the error returned by Rows.Close on the explicit-Close path
+// and nil on the end-of-scan path; either way, when no close
+// error is present we still consult Rows.Err() so iteration
+// failures (context cancellation, driver scan errors) get
+// logged as "sql error" instead of as a successful query.
+func (r *loggedRows) finalize(closeErr error) {
+	if r.finalized {
+		return
+	}
+	r.finalized = true
+	logErr := closeErr
 	if logErr == nil {
 		logErr = r.Rows.Err()
 	}
 	logStmtWith("query", r.query, r.args, logErr, time.Since(r.start))
-	return err
 }
 
 // logStmtWith is the explicit form that lets callers add extra
