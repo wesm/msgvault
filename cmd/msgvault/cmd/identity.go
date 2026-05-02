@@ -142,13 +142,21 @@ func collectIdentityRows(st *store.Store, sourceIDs []int64) ([]identityRow, err
 
 // splitSignalSet parses a stored source_signal field into a sorted slice.
 // Empty input returns an empty slice (so JSON encoding emits [], not null).
+// Empty parts (from stray commas in legacy data) are filtered to mirror
+// mergeSignalSet's producer-side normalization.
 func splitSignalSet(s string) []string {
 	if s == "" {
 		return []string{}
 	}
 	parts := strings.Split(s, ",")
-	sort.Strings(parts)
-	return parts
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func writeIdentityTable(w io.Writer, rows []identityRow) error {
