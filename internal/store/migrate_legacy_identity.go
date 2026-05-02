@@ -39,7 +39,11 @@ func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied, deferr
 		return false, false, 0, 0, nil
 	}
 
-	// Normalize addresses: trim whitespace, deduplicate, drop empties.
+	// Normalize addresses: trim whitespace, drop empties, deduplicate
+	// using the same case-aware rule as the rest of the identity
+	// subsystem (NormalizeIdentifierForCompare). Preserves first-seen
+	// casing for storage so synthetic identifiers (Matrix MXIDs, chat
+	// handles) keep their original case.
 	seen := make(map[string]struct{}, len(addresses))
 	var normalized []string
 	for _, addr := range addresses {
@@ -47,10 +51,11 @@ func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied, deferr
 		if a == "" {
 			continue
 		}
-		if _, dup := seen[a]; dup {
+		key := NormalizeIdentifierForCompare(a)
+		if _, dup := seen[key]; dup {
 			continue
 		}
-		seen[a] = struct{}{}
+		seen[key] = struct{}{}
 		normalized = append(normalized, a)
 	}
 

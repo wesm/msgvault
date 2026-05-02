@@ -1437,10 +1437,14 @@ func MergeFilterIntoQuery(q *search.Query, filter MessageFilter) *search.Query {
 
 	// Account filter - always apply if set. Multi-source SourceIDs takes
 	// precedence over single SourceID, matching appendSourceFilter
-	// semantics elsewhere in the package, so a future caller that sets
-	// the multi-source field on MessageFilter does not silently lose it.
-	if len(filter.SourceIDs) > 0 {
-		merged.AccountIDs = append([]int64(nil), filter.SourceIDs...)
+	// semantics elsewhere in the package: a non-nil but empty SourceIDs
+	// slice is "match nothing" (the caller explicitly scoped to no
+	// sources) and must clear any AccountIDs the original query carried.
+	// Allocate a fresh slice (not append-from-nil, which would collapse
+	// an explicit empty back to nil and lose the match-nothing signal).
+	if filter.SourceIDs != nil {
+		merged.AccountIDs = make([]int64, len(filter.SourceIDs))
+		copy(merged.AccountIDs, filter.SourceIDs)
 	} else if filter.SourceID != nil {
 		merged.AccountIDs = []int64{*filter.SourceID}
 	}

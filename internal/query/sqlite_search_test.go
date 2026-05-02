@@ -412,6 +412,37 @@ func TestMergeFilterIntoQuery_DoesNotMutateOriginal(t *testing.T) {
 	}
 }
 
+// TestMergeFilterIntoQuery_EmptySourceIDsClearsAccountScope verifies that
+// an explicit empty (non-nil) SourceIDs slice is treated as match-nothing,
+// matching appendSourceFilter's contract. Previously the code only
+// applied SourceIDs when len > 0, so an explicit empty slice silently
+// fell through and let the original query's AccountIDs leak through.
+func TestMergeFilterIntoQuery_EmptySourceIDsClearsAccountScope(t *testing.T) {
+	q := &search.Query{AccountIDs: []int64{1, 2, 3}}
+	filter := MessageFilter{SourceIDs: []int64{}} // non-nil, len=0
+
+	merged := MergeFilterIntoQuery(q, filter)
+	if merged.AccountIDs == nil {
+		t.Fatal("merged.AccountIDs is nil; want non-nil empty slice (match-nothing)")
+	}
+	if len(merged.AccountIDs) != 0 {
+		t.Errorf("merged.AccountIDs = %v; want empty (match-nothing)", merged.AccountIDs)
+	}
+}
+
+// TestMergeFilterIntoQuery_NilSourceIDsPreservesAccountScope verifies the
+// flip-side: a nil SourceIDs slice is "no override", and the original
+// query's AccountIDs survive unchanged.
+func TestMergeFilterIntoQuery_NilSourceIDsPreservesAccountScope(t *testing.T) {
+	q := &search.Query{AccountIDs: []int64{1, 2, 3}}
+	filter := MessageFilter{} // SourceIDs is nil
+
+	merged := MergeFilterIntoQuery(q, filter)
+	if len(merged.AccountIDs) != 3 {
+		t.Errorf("merged.AccountIDs = %v; want [1 2 3]", merged.AccountIDs)
+	}
+}
+
 func TestMergeFilterIntoQuery_SliceAliasingMutation(t *testing.T) {
 	backing := make([]string, 1, 10)
 	backing[0] = "original@example.com"

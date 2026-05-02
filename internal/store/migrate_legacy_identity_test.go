@@ -182,3 +182,50 @@ func TestMigrateLegacyIdentityConfig_PreservesCase(t *testing.T) {
 		t.Errorf("address = %q, want Alice@Example.com", rows[0].Address)
 	}
 }
+
+// TestMigrateLegacyIdentityConfig_DedupesEmailCaseVariants verifies that
+// the migration's input-list dedupe applies the same case-aware rule as
+// the rest of the identity subsystem. Email-shaped variants like
+// `Alice@Example.com` and `alice@example.com` should collapse to a single
+// row per source. Synthetic identifiers (Matrix MXIDs, chat handles)
+// remain case-sensitive and are NOT collapsed by dedupe.
+func TestMigrateLegacyIdentityConfig_DedupesEmailCaseVariants(t *testing.T) {
+	f := storetest.New(t)
+	st := f.Store
+
+	// Email variants: should dedupe to one row, preserving first-seen case.
+	// Synthetic identifier variants: should NOT dedupe — they're stored
+	// case-sensitively in the rest of the system.
+	addresses := []string{
+		"Alice@Example.com",
+		"alice@example.com",
+		"ALICE@EXAMPLE.COM",
+		"@user:matrix.org",
+		"@User:matrix.org",
+	}
+
+	applied, _, _, addrs, err := st.MigrateLegacyIdentityConfig(addresses)
+	testutil.MustNoErr(t, err, "MigrateLegacyIdentityConfig")
+	if !applied {
+		t.Fatal("expected applied=true on first run")
+	}
+	// Want: 1 email (first-seen), 2 distinct MXIDs.
+	if addrs != 3 {
+		t.Errorf("addrs = %d, want 3 (1 email collapse + 2 distinct MXIDs)", addrs)
+	}
+
+	rows, err := st.ListAccountIdentities(f.Source.ID)
+	testutil.MustNoErr(t, err, "ListAccountIdentities")
+	if len(rows) != 3 {
+		t.Fatalf("got %d identities, want 3: %+v", len(rows), rows)
+	}
+	got := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		got[r.Address] = true
+	}
+	for _, want := range []string{"Alice@Example.com", "@user:matrix.org", "@User:matrix.org"} {
+		if !got[want] {
+			t.Errorf("missing identity %q (have %v)", want, got)
+		}
+	}
+}
