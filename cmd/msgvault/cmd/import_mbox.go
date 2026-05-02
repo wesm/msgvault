@@ -122,13 +122,13 @@ Examples:
 		}
 
 		// If we're resuming, start from the active file in a multi-file zip export.
+		// Source creation here is for resume detection only; the post-import
+		// runPostSourceCreateMigrations call below covers both resume and
+		// --no-resume paths.
 		if !importMboxNoResume {
 			src, err := st.GetOrCreateSource(importMboxSourceType, identifier)
 			if err != nil {
 				return fmt.Errorf("get/create source: %w", err)
-			}
-			if err := runPostSourceCreateMigrations(st); err != nil {
-				return fmt.Errorf("post-source-create migrations: %w", err)
 			}
 			active, err := st.GetActiveSync(src.ID)
 			if err != nil {
