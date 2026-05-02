@@ -356,7 +356,7 @@ func runIdentityRemove(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("remove identity: %w", err)
 	}
-	if !removed {
+	if removed == 0 {
 		existing, listErr := st.ListAccountIdentities(scope.Source.ID)
 		if listErr != nil {
 			return fmt.Errorf("%s is not in %s's identity (and looking up the current set failed: %w)",
@@ -373,7 +373,16 @@ func runIdentityRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%s is not in %s's identity. Currently confirmed: %s",
 			identifier, scope.Source.Identifier, strings.Join(have, ", "))
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Removed %s from %s.\n", identifier, scope.Source.Identifier)
+	switch removed {
+	case 1:
+		fmt.Fprintf(cmd.OutOrStdout(), "Removed %s from %s.\n", identifier, scope.Source.Identifier)
+	default:
+		// >1 means a legacy database held case-variant duplicates of an
+		// email-shaped identifier; the case-fold remove cleaned them up
+		// in one call. Report the count so the user knows.
+		fmt.Fprintf(cmd.OutOrStdout(), "Removed %d entries matching %s from %s.\n",
+			removed, identifier, scope.Source.Identifier)
+	}
 
 	// Best-effort post-remove warning. If the lookup errors we suppress
 	// the warning rather than risk a misleading "no identity left"

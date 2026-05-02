@@ -154,29 +154,31 @@ func (s *Store) ListAccountIdentities(sourceID int64) ([]AccountIdentity, error)
 	return out, rows.Err()
 }
 
-// RemoveAccountIdentity deletes one (source_id, address) row.
-// Returns (true, nil) if a row was removed, (false, nil) if no row matched.
+// RemoveAccountIdentity deletes (source_id, address) rows that match
+// under the helper's case-aware rule. Returns the number of rows
+// deleted (typically 0 or 1, but can be >1 in legacy databases that
+// hold case-variant duplicates pre-dating the case-folding work).
 //
 // Email-shaped identifiers match case-insensitively because email is
-// case-insensitive in practice; this avoids the UX trap where a row was
-// inserted as foo@x.com but the user types Foo@x.com on remove.
+// case-insensitive in practice; this avoids the UX trap where a row
+// was inserted as foo@x.com but the user types Foo@x.com on remove.
 // Synthetic identifiers (Matrix MXIDs, chat handles, phone numbers)
 // match case-sensitively because case can be significant there. The
 // shape check is in looksLikeEmail.
-func (s *Store) RemoveAccountIdentity(sourceID int64, address string) (bool, error) {
+func (s *Store) RemoveAccountIdentity(sourceID int64, address string) (int64, error) {
 	match := newIdentifierMatch(address)
 	res, err := s.db.Exec(
 		`DELETE FROM account_identities WHERE source_id = ? AND `+match.WhereClause("address"),
 		sourceID, match.BindValue(),
 	)
 	if err != nil {
-		return false, fmt.Errorf("remove account identity: %w", err)
+		return 0, fmt.Errorf("remove account identity: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return false, fmt.Errorf("rows affected: %w", err)
+		return 0, fmt.Errorf("rows affected: %w", err)
 	}
-	return n > 0, nil
+	return n, nil
 }
 
 // GetIdentitiesForScope returns the union of confirmed identifier addresses

@@ -282,8 +282,8 @@ func TestRemoveAccountIdentity_Hit(t *testing.T) {
 	testutil.MustNoErr(t, st.AddAccountIdentity(f.Source.ID, "alice@example.com", "manual"), "add identity")
 	removed, err := st.RemoveAccountIdentity(f.Source.ID, "alice@example.com")
 	testutil.MustNoErr(t, err, "RemoveAccountIdentity")
-	if !removed {
-		t.Error("removed=false, want true")
+	if removed != 1 {
+		t.Errorf("removed=%d, want 1", removed)
 	}
 	rows, err := st.ListAccountIdentities(f.Source.ID)
 	testutil.MustNoErr(t, err, "ListAccountIdentities")
@@ -298,8 +298,8 @@ func TestRemoveAccountIdentity_Miss(t *testing.T) {
 
 	removed, err := st.RemoveAccountIdentity(f.Source.ID, "nope@example.com")
 	testutil.MustNoErr(t, err, "RemoveAccountIdentity")
-	if removed {
-		t.Error("removed=true on miss")
+	if removed != 0 {
+		t.Errorf("removed=%d, want 0 on miss", removed)
 	}
 }
 
@@ -316,8 +316,8 @@ func TestRemoveAccountIdentity_EmailIsCaseInsensitive(t *testing.T) {
 
 	removed, err := st.RemoveAccountIdentity(f.Source.ID, "ALICE@example.com")
 	testutil.MustNoErr(t, err, "RemoveAccountIdentity")
-	if !removed {
-		t.Fatal("removed=false, want true (email match should be case-insensitive)")
+	if removed != 1 {
+		t.Fatalf("removed=%d, want 1 (email match should be case-insensitive)", removed)
 	}
 
 	rows, err := st.ListAccountIdentities(f.Source.ID)
@@ -416,7 +416,7 @@ func TestRemoveAccountIdentity_NonEmailIsCaseSensitive(t *testing.T) {
 
 	removed, err := st.RemoveAccountIdentity(f.Source.ID, "alicehandle")
 	testutil.MustNoErr(t, err, "RemoveAccountIdentity")
-	if removed {
-		t.Fatal("removed=true on case-mismatch for non-email identifier")
+	if removed != 0 {
+		t.Fatalf("removed=%d, want 0 on case-mismatch for non-email identifier", removed)
 	}
 }
