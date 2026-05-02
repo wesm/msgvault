@@ -164,18 +164,11 @@ func (s *Store) ListAccountIdentities(sourceID int64) ([]AccountIdentity, error)
 // match case-sensitively because case can be significant there. The
 // shape check is in looksLikeEmail.
 func (s *Store) RemoveAccountIdentity(sourceID int64, address string) (bool, error) {
-	var (
-		query string
-		arg   any
+	match := newIdentifierMatch(address)
+	res, err := s.db.Exec(
+		`DELETE FROM account_identities WHERE source_id = ? AND `+match.WhereClause("address"),
+		sourceID, match.BindValue(),
 	)
-	if looksLikeEmail(address) {
-		query = `DELETE FROM account_identities WHERE source_id = ? AND LOWER(address) = LOWER(?)`
-		arg = address
-	} else {
-		query = `DELETE FROM account_identities WHERE source_id = ? AND address = ?`
-		arg = address
-	}
-	res, err := s.db.Exec(query, sourceID, arg)
 	if err != nil {
 		return false, fmt.Errorf("remove account identity: %w", err)
 	}
