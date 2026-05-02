@@ -47,7 +47,7 @@ Examples:
 }
 
 func runImportImessage(cmd *cobra.Command, _ []string) error {
-	s, err := openStoreAndInit()
+	s, err := openStoreAndInitForIngest()
 	if err != nil {
 		return err
 	}
@@ -128,6 +128,20 @@ func openStoreAndInit() (*store.Store, error) {
 	// for a freshly-installed CLI: a missing file is not an error here.
 	// init-db remains the explicit setup command for users who want to
 	// pre-create the DB.
+	return openStoreAndInitWith(runStartupMigrations)
+}
+
+// openStoreAndInitForIngest is the ingest-command variant of
+// openStoreAndInit. It uses runStartupMigrationsForIngest so that, on a
+// fresh install with [identity] addresses configured but no source yet,
+// the misleading "migration will run on the next command" notice does
+// not fire. The post-source-create migration call run by ingest commands
+// after GetOrCreateSource emits the accurate "applied" notice once.
+func openStoreAndInitForIngest() (*store.Store, error) {
+	return openStoreAndInitWith(runStartupMigrationsForIngest)
+}
+
+func openStoreAndInitWith(migrate func(*store.Store) error) (*store.Store, error) {
 	dbPath := cfg.DatabaseDSN()
 	s, err := store.Open(dbPath)
 	if err != nil {
@@ -137,7 +151,7 @@ func openStoreAndInit() (*store.Store, error) {
 		_ = s.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
-	if err := runStartupMigrations(s); err != nil {
+	if err := migrate(s); err != nil {
 		_ = s.Close()
 		return nil, fmt.Errorf("startup migrations: %w", err)
 	}

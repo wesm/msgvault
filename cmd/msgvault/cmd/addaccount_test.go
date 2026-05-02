@@ -924,7 +924,8 @@ func TestAddAccount_DeferredLegacyIdentityMigrationFires(t *testing.T) {
 			Addresses: []string{"alias@example.com", "alt@work.com"},
 		},
 	}
-	logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+	var logBuf strings.Builder
+	logger = slog.New(slog.NewTextHandler(&logBuf, nil))
 
 	testCmd := &cobra.Command{
 		Use:  "add-account <email>",
@@ -945,6 +946,18 @@ func TestAddAccount_DeferredLegacyIdentityMigrationFires(t *testing.T) {
 
 	if err := root.Execute(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The user-facing notice must only describe the applied path.
+	// Emitting the "deferred — will run on the next command" notice
+	// inside an invocation that DID apply the migration is misleading
+	// and a regression of the iter10 polish fix.
+	logs := logBuf.String()
+	if strings.Contains(logs, "migration deferred until a source exists") {
+		t.Errorf("deferred notice fired in same invocation that applied the migration; logs:\n%s", logs)
+	}
+	if !strings.Contains(logs, "legacy identity migrated") {
+		t.Errorf("expected applied notice in logs; got:\n%s", logs)
 	}
 
 	s, err := store.Open(dbPath)

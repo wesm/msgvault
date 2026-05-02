@@ -40,7 +40,7 @@ Examples:
 func runImportGvoice(cmd *cobra.Command, args []string) error {
 	takeoutDir := args[0]
 
-	s, err := openStoreAndInit()
+	s, err := openStoreAndInitForIngest()
 	if err != nil {
 		return err
 	}

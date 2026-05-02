@@ -44,6 +44,27 @@ func runStartupMigrations(s *store.Store) error {
 	return nil
 }
 
+// runStartupMigrationsForIngest is a variant for ingest commands that are
+// about to create the first source. If no source exists yet, the legacy
+// identity migration would just defer with a "will run on the next command"
+// notice that is no longer accurate (the post-source-create call below
+// will fire on the same invocation). Skip the pre-source call entirely in
+// that case; runPostSourceCreateMigrations does all the work and emits
+// the accurate "applied" notice.
+//
+// When sources already exist (steady state), behaves exactly like
+// runStartupMigrations.
+func runStartupMigrationsForIngest(s *store.Store) error {
+	srcs, err := s.ListSources("")
+	if err != nil {
+		return fmt.Errorf("list sources: %w", err)
+	}
+	if len(srcs) == 0 {
+		return nil
+	}
+	return runStartupMigrations(s)
+}
+
 // runPostSourceCreateMigrations re-runs startup migrations after the caller
 // has just created a source. The legacy identity migration defers when no
 // source exists at startup, so on a fresh install the very first
