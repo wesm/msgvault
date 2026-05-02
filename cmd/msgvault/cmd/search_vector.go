@@ -16,7 +16,6 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/search"
-	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/vector"
 	"github.com/wesm/msgvault/internal/vector/embed"
 	"github.com/wesm/msgvault/internal/vector/hybrid"
@@ -26,7 +25,9 @@ import (
 // runHybridSearch executes a vector or hybrid search against the local
 // msgvault archive using the sqlite-vec backend and configured embedding
 // endpoint. Invoked from search.go when --mode is "vector" or "hybrid".
-func runHybridSearch(cmd *cobra.Command, queryStr, mode string, explain bool) error {
+// scope carries any resolved --account/--collection scope; an empty
+// Scope means no scope flag was supplied.
+func runHybridSearch(cmd *cobra.Command, queryStr, mode string, explain bool, scope Scope) error {
 	if queryStr == "" {
 		return fmt.Errorf("empty search query")
 	}
@@ -93,27 +94,22 @@ func runHybridSearch(cmd *cobra.Command, queryStr, mode string, explain bool) er
 		return fmt.Errorf("build filter: %w", err)
 	}
 
-	// Resolve --account to a SourceID so vector/hybrid respects
-	// account scoping the same way FTS mode does. A missing account
-	// must return a clear error rather than silently searching the
-	// whole corpus.
-	if searchAccount != "" {
-		s, err := store.Open(cfg.DatabaseDSN())
-		if err != nil {
-			return fmt.Errorf("open store for account lookup: %w", err)
+	// Apply resolved --account/--collection scope so vector and hybrid
+	// modes honour the same scope as FTS. Earlier this branch only
+	// looked at --account directly and silently ignored --collection.
+	if !scope.IsEmpty() {
+		filter.SourceIDs = scope.SourceIDs()
+		if scope.IsCollection() {
+			n := len(filter.SourceIDs)
+			suffix := "s"
+			if n == 1 {
+				suffix = ""
+			}
+			fmt.Fprintf(os.Stderr,
+				"Searching collection %q (%d account%s)\n",
+				scope.DisplayName(), n, suffix,
+			)
 		}
-		src, err := s.GetSourceByIdentifier(searchAccount)
-		closeErr := s.Close()
-		if err != nil {
-			return fmt.Errorf("look up account: %w", err)
-		}
-		if closeErr != nil {
-			return fmt.Errorf("close store: %w", closeErr)
-		}
-		if src == nil {
-			return fmt.Errorf("account %q not found", searchAccount)
-		}
-		filter.SourceIDs = []int64{src.ID}
 	}
 
 	freeText := strings.Join(q.TextTerms, " ")

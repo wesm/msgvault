@@ -151,8 +151,8 @@ func TestSearchCmd_VectorMode_UnknownAccount(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown --account, got nil")
 	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("error = %q, want substring 'not found'", err)
+	if !strings.Contains(err.Error(), "no account found") {
+		t.Errorf("error = %q, want substring 'no account found'", err)
 	}
 }
 
@@ -189,6 +189,67 @@ func TestSearchCmd_VectorMode_AccountScopingResolves(t *testing.T) {
 	}
 }
 
+// TestSearchCmd_VectorMode_CollectionScopingResolves verifies that
+// --collection is plumbed through to filter.SourceIDs in the vector
+// path. Earlier the vector branch only looked at --account directly
+// and silently ignored --collection.
+func TestSearchCmd_VectorMode_CollectionScopingResolves(t *testing.T) {
+	srv := fakeEmbedServer(t, 4)
+	defer srv.Close()
+
+	s, restore := newVectorSearchTestEnv(t, srv.URL)
+	defer restore()
+	src, err := s.GetOrCreateSource("gmail", "alice@example.com")
+	if err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	if _, err := s.CreateCollection("alice-only", "", []int64{src.ID}); err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	done := captureStdout(t)
+	root := newTestRootCmd()
+	root.AddCommand(searchCmd)
+	root.SetArgs([]string{
+		"search", "--mode", "vector",
+		"--collection", "alice-only",
+		"hello",
+	})
+	err = root.Execute()
+	out := done()
+	if err != nil {
+		t.Fatalf("expected no error for known collection, got %v (out=%s)", err, out)
+	}
+	if !strings.Contains(out, "No messages found") {
+		t.Errorf("expected 'No messages found' (empty index), got: %s", out)
+	}
+}
+
+// TestSearchCmd_VectorMode_CollectionUnknown mirrors the FTS path's
+// unknown-collection rejection.
+func TestSearchCmd_VectorMode_CollectionUnknown(t *testing.T) {
+	srv := fakeEmbedServer(t, 4)
+	defer srv.Close()
+
+	_, restore := newVectorSearchTestEnv(t, srv.URL)
+	defer restore()
+
+	root := newTestRootCmd()
+	root.AddCommand(searchCmd)
+	root.SetArgs([]string{
+		"search", "--mode", "vector",
+		"--collection", "does-not-exist",
+		"hello",
+	})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected error for unknown --collection, got nil")
+	}
+	if !strings.Contains(err.Error(), "no collection") {
+		t.Errorf("error = %q, want substring 'no collection'", err)
+	}
+}
+
 // TestSearchCmd_HybridMode_UnknownAccount mirrors the vector test for
 // mode=hybrid, since the account-lookup path is shared.
 func TestSearchCmd_HybridMode_UnknownAccount(t *testing.T) {
@@ -209,7 +270,7 @@ func TestSearchCmd_HybridMode_UnknownAccount(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown --account, got nil")
 	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("error = %q, want substring 'not found'", err)
+	if !strings.Contains(err.Error(), "no account found") {
+		t.Errorf("error = %q, want substring 'no account found'", err)
 	}
 }
