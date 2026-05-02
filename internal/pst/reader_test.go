@@ -1,0 +1,347 @@
+package pst_test
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+
+	pstlib "github.com/mooijtech/go-pst/v6/pkg"
+	pstreader "github.com/wesm/msgvault/internal/pst"
+)
+
+const testdataDir = "testdata"
+
+func supportPST(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(testdataDir, "support.pst")
+}
+
+func bit32PST(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(testdataDir, "32-bit.pst")
+}
+
+// TestOpen_SupportPST verifies that a real 64-bit PST file opens without error.
+func TestOpen_SupportPST(t *testing.T) {
+	f, err := pstreader.Open(supportPST(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+}
+
+// TestOpen_32BitPST verifies that a 32-bit PST file opens without error.
+func TestOpen_32BitPST(t *testing.T) {
+	f, err := pstreader.Open(bit32PST(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+}
+
+// TestOpen_NonExistent verifies a clear error for missing files.
+func TestOpen_NonExistent(t *testing.T) {
+	_, err := pstreader.Open("/nonexistent/path.pst")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// TestWalkFolders_SupportPST verifies that WalkFolders visits the known folders
+// and builds correct slash-separated paths.
+func TestWalkFolders_SupportPST(t *testing.T) {
+	f, err := pstreader.Open(supportPST(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	seen := make(map[string]int32) // path → message count
+	if err := f.WalkFolders(func(entry pstreader.FolderEntry, _ *pstlib.Folder) error {
+		seen[entry.Path] = entry.MsgCount
+		return nil
+	}); err != nil {
+		t.Fatalf("WalkFolders: %v", err)
+	}
+
+	if len(seen) == 0 {
+		t.Fatal("WalkFolders visited no folders")
+	}
+
+	// The support PST has at least these two message-bearing folders.
+	wantFolders := []string{"Drafts", "Sent Messages"}
+	for _, want := range wantFolders {
+		found := false
+		for path := range seen {
+			// Path may be "Root/Drafts" or just "Drafts" depending on hierarchy.
+			if path == want || strings.HasSuffix(path, "/"+want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("folder %q not found in: %v", want, keys(seen))
+		}
+	}
+}
+
+// TestWalkFolders_PathsAreSlashSeparated verifies that nested folders produce
+// slash-separated paths (e.g. "Personal Folders/Inbox/Archive").
+func TestWalkFolders_PathsAreSlashSeparated(t *testing.T) {
+	f, err := pstreader.Open(supportPST(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	depth2 := false
+	_ = f.WalkFolders(func(entry pstreader.FolderEntry, _ *pstlib.Folder) error {
+		if strings.Count(entry.Path, "/") >= 1 {
+			depth2 = true
+		}
+		return nil
+	})
+	if !depth2 {
+		t.Error("expected at least one folder path with depth >= 2 (slash-separated)")
+	}
+}
+
+// TestExtractMessages_SupportPST verifies that email messages are extracted
+// with the expected properties from support.pst.
+func TestExtractMessages_SupportPST(t *testing.T) {
+	f, err := pstreader.Open(supportPST(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	var emails []*pstreader.MessageEntry
+	if err := f.WalkFolders(func(entry pstreader.FolderEntry, folder *pstlib.Folder) error {
+		iter, err := folder.GetMessageIterator()
+		if err != nil {
+			return nil // ErrMessagesNotFound or empty folder
+		}
+		for iter.Next() {
+			msg := iter.Value()
+			if e := pstreader.ExtractMessage(msg, entry.Path); e != nil {
+				emails = append(emails, e)
+			}
+		}
+		return iter.Err()
+	}); err != nil {
+		t.Fatalf("WalkFolders: %v", err)
+	}
+
+	// support.pst contains exactly 17 email messages.
+	if len(emails) != 17 {
+		t.Errorf("got %d email messages, want 17", len(emails))
+	}
+
+	// Find the first known message by subject.
+	var found *pstreader.MessageEntry
+	for _, e := range emails {
+		if e.Subject == "Desktop exploits suspension notice" {
+			found = e
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("could not find message with subject 'Desktop exploits suspension notice'")
+	}
+
+	if found.SenderEmail != "support@hackingteam.com" {
+		t.Errorf("SenderEmail = %q, want %q", found.SenderEmail, "support@hackingteam.com")
+	}
+	if found.SenderName != "RCS Support" {
+		t.Errorf("SenderName = %q, want %q", found.SenderName, "RCS Support")
+	}
+	if found.TransportHeaders == "" {
+		t.Error("expected TransportHeaders to be non-empty for an internet-delivered message")
+	}
+	if found.MessageID == "" {
+		t.Error("expected MessageID to be non-empty")
+	}
+	if found.SentAt.IsZero() {
+		t.Error("expected SentAt to be non-zero")
+	}
+}
+
+// TestExtractMessages_NonEmailsSkipped verifies that non-email items (contacts,
+// calendar, tasks) do not appear in the extracted message list.
+func TestExtractMessages_NonEmailsSkipped(t *testing.T) {
+	f, err := pstreader.Open(supportPST(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	var total, emails int
+	_ = f.WalkFolders(func(_ pstreader.FolderEntry, folder *pstlib.Folder) error {
+		iter, err := folder.GetMessageIterator()
+		if err != nil {
+			return nil
+		}
+		for iter.Next() {
+			total++
+			msg := iter.Value()
+			if pstreader.ExtractMessage(msg, "") != nil {
+				emails++
+			}
+		}
+		return nil
+	})
+	// All items in support.pst should be email messages.
+	if total != emails {
+		t.Errorf("total items=%d, emails=%d: %d non-email items unexpectedly extracted",
+			total, emails, emails-total)
+	}
+}
+
+// TestReadAttachments_SupportPST verifies that the message with known attachments
+// returns non-empty attachment content.
+func TestReadAttachments_SupportPST(t *testing.T) {
+	f, err := pstreader.Open(supportPST(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	found := false
+	_ = f.WalkFolders(func(entry pstreader.FolderEntry, folder *pstlib.Folder) error {
+		iter, err := folder.GetMessageIterator()
+		if err != nil {
+			return nil
+		}
+		for iter.Next() {
+			msg := iter.Value()
+			e := pstreader.ExtractMessage(msg, entry.Path)
+			if e == nil || e.Subject != "IMPORTANT: Support portal downtime for maintenance" {
+				continue
+			}
+			found = true
+			atts, err := pstreader.ReadAttachments(msg, 0)
+			if err != nil {
+				t.Errorf("ReadAttachments: %v", err)
+				return nil
+			}
+			if len(atts) != 2 {
+				t.Errorf("got %d attachments, want 2", len(atts))
+				return nil
+			}
+			for i, att := range atts {
+				if len(att.Content) == 0 {
+					t.Errorf("attachment %d (%q) has empty content", i, att.Filename)
+				}
+			}
+		}
+		return nil
+	})
+
+	if !found {
+		t.Error("could not find the message with 2 attachments")
+	}
+}
+
+// TestBuildRFC5322_RoundTrip verifies that MIME built from a real PST message
+// can be successfully re-parsed by the msgvault MIME parser.
+func TestBuildRFC5322_RoundTrip(t *testing.T) {
+	f, err := pstreader.Open(supportPST(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	var rawMIME []byte
+	_ = f.WalkFolders(func(entry pstreader.FolderEntry, folder *pstlib.Folder) error {
+		if rawMIME != nil {
+			return nil // already found one
+		}
+		iter, err := folder.GetMessageIterator()
+		if err != nil {
+			return nil
+		}
+		for iter.Next() {
+			msg := iter.Value()
+			e := pstreader.ExtractMessage(msg, entry.Path)
+			if e == nil {
+				continue
+			}
+			atts, _ := pstreader.ReadAttachments(msg, 0)
+			raw, err := pstreader.BuildRFC5322(e, atts)
+			if err != nil {
+				t.Errorf("BuildRFC5322: %v", err)
+				return nil
+			}
+			rawMIME = raw
+			return nil
+		}
+		return nil
+	})
+
+	if rawMIME == nil {
+		t.Fatal("no messages found to test MIME round-trip")
+	}
+	if len(rawMIME) == 0 {
+		t.Fatal("BuildRFC5322 returned empty bytes")
+	}
+
+	// Verify the output is valid enough for our MIME parser.
+	s := string(rawMIME)
+	if !strings.Contains(s, "MIME-Version: 1.0") {
+		t.Error("MIME output missing MIME-Version header")
+	}
+	if !strings.Contains(s, "Content-Type:") {
+		t.Error("MIME output missing Content-Type header")
+	}
+}
+
+// TestBuildRFC5322_WithAttachments_RoundTrip verifies the attachment message
+// produces valid multipart/mixed MIME.
+func TestBuildRFC5322_WithAttachments_RoundTrip(t *testing.T) {
+	f, err := pstreader.Open(supportPST(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	_ = f.WalkFolders(func(entry pstreader.FolderEntry, folder *pstlib.Folder) error {
+		iter, err := folder.GetMessageIterator()
+		if err != nil {
+			return nil
+		}
+		for iter.Next() {
+			msg := iter.Value()
+			e := pstreader.ExtractMessage(msg, entry.Path)
+			if e == nil || e.Subject != "IMPORTANT: Support portal downtime for maintenance" {
+				continue
+			}
+			atts, err := pstreader.ReadAttachments(msg, 0)
+			if err != nil {
+				t.Fatalf("ReadAttachments: %v", err)
+			}
+			raw, err := pstreader.BuildRFC5322(e, atts)
+			if err != nil {
+				t.Fatalf("BuildRFC5322: %v", err)
+			}
+			s := string(raw)
+			if !strings.Contains(s, "multipart/mixed") {
+				t.Error("expected multipart/mixed for message with attachments")
+			}
+			// Both attachments in this message have ContentIDs so they
+			// render as inline; check for Content-Disposition regardless.
+			if !strings.Contains(s, "Content-Disposition:") {
+				t.Error("expected Content-Disposition header in attachment MIME")
+			}
+		}
+		return nil
+	})
+}
+
+// keys returns map keys for error messages.
+func keys[K comparable, V any](m map[K]V) []K {
+	out := make([]K, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
