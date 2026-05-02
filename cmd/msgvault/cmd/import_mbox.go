@@ -302,6 +302,17 @@ Examples:
 			}
 		}
 
+		// Auto-default-identity must run BEFORE the legacy migration
+		// retry — see comment in account_identity.go. Earlier shape
+		// ran the migration first and confirmDefaultIdentity later,
+		// which suppressed the source's own account identifier
+		// whenever the legacy [identity] block had populated rows.
+		if ctx.Err() == nil && !hadHardErrors && !noDefaultIdentityImportMbox {
+			if sourceID != 0 {
+				confirmDefaultIdentity(st, sourceID, identifier, identifier, "account-identifier")
+			}
+		}
+
 		// Re-run startup migrations after the importer has had a chance
 		// to create the first source. Required when the deferred legacy
 		// identity migration parked at startup because no source existed.
@@ -336,13 +347,6 @@ Examples:
 		_, _ = fmt.Fprintf(out, "  Bytes:          %.2f MB\n", float64(totalBytes)/(1024*1024))
 
 		rebuildCacheAfterWrite(dbPath)
-
-		if ctx.Err() == nil && !hadHardErrors && !noDefaultIdentityImportMbox {
-			if sourceID == 0 {
-				return nil
-			}
-			confirmDefaultIdentity(st, sourceID, identifier, identifier, "account-identifier")
-		}
 
 		if ctx.Err() == nil && hadHardErrors {
 			return fmt.Errorf("import completed with %d errors", totalErrors)

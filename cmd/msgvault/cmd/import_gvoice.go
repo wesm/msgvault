@@ -63,9 +63,6 @@ func runImportGvoice(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("get or create source: %w", err)
 	}
-	if err := runPostSourceCreateMigrations(s); err != nil {
-		return fmt.Errorf("post-source-create migrations: %w", err)
-	}
 
 	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
@@ -100,8 +97,13 @@ func runImportGvoice(cmd *cobra.Command, args []string) error {
 	}
 
 	phone := client.Identifier()
+	// Auto-default-identity must run BEFORE the legacy migration
+	// retry — see comment in account_identity.go.
 	if !noDefaultIdentityImportGVoice && strings.HasPrefix(phone, "+") {
 		confirmDefaultIdentity(s, src.ID, phone, phone, "phone-e164")
+	}
+	if err := runPostSourceCreateMigrations(s); err != nil {
+		return fmt.Errorf("post-source-create migrations: %w", err)
 	}
 
 	printGvoiceSummary(summary, startTime)

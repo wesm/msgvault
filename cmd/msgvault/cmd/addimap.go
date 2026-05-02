@@ -165,9 +165,6 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("create source: %w", err)
 		}
-		if err := runPostSourceCreateMigrations(s); err != nil {
-			return fmt.Errorf("post-source-create migrations: %w", err)
-		}
 
 		// Store config JSON
 		cfgJSON, err := imapCfg.ToJSON()
@@ -183,8 +180,13 @@ Examples:
 			return fmt.Errorf("set display name: %w", err)
 		}
 
+		// Auto-default-identity must run BEFORE the legacy migration
+		// retry — see comment in account_identity.go.
 		if !noDefaultIdentityAddImap {
 			confirmDefaultIdentity(s, source.ID, imapUsername, imapUsername, "account-identifier")
+		}
+		if err := runPostSourceCreateMigrations(s); err != nil {
+			return fmt.Errorf("post-source-create migrations: %w", err)
 		}
 
 		fmt.Printf("\nIMAP account added successfully!\n")

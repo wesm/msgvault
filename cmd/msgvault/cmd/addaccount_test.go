@@ -1001,3 +1001,113 @@ func TestAddAccount_DeferredLegacyIdentityMigrationFires(t *testing.T) {
 		t.Error("migration sentinel should be set after first successful add-account")
 	}
 }
+
+// TestAddAccount_LegacyMigrationDoesNotSuppressDefaultIdentity verifies
+// that the legacy [identity] migration writing rows DOES NOT suppress
+// the auto-default-identity write for the source's own account
+// identifier. Regression test for iter15 codex Medium: previously,
+// runPostSourceCreateMigrations ran BEFORE confirmDefaultIdentity, so
+// the legacy migration populated account_identities first, then
+// confirmDefaultIdentity's `len(existing) > 0` guard skipped the
+// account-identifier write entirely — leaving the source without its
+// own identifier and breaking dedup sent-copy detection.
+func TestAddAccount_LegacyMigrationDoesNotSuppressDefaultIdentity(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "msgvault.db")
+
+	tokensDir := filepath.Join(tmpDir, "tokens")
+	if err := os.MkdirAll(tokensDir, 0700); err != nil {
+		t.Fatalf("mkdir tokens: %v", err)
+	}
+	tokenData, _ := json.Marshal(map[string]string{
+		"access_token":  "fake-access",
+		"refresh_token": "fake-refresh",
+		"token_type":    "Bearer",
+		"client_id":     "test.apps.googleusercontent.com",
+	})
+	if err := os.WriteFile(filepath.Join(tokensDir, "user@example.com.json"), tokenData, 0600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	secretsPath := filepath.Join(tmpDir, "secret.json")
+	if err := os.WriteFile(secretsPath, []byte(fakeClientSecrets), 0600); err != nil {
+		t.Fatalf("write secrets: %v", err)
+	}
+
+	savedCfg := cfg
+	savedLogger := logger
+	savedOAuthApp := oauthAppName
+	savedNoDefault := noDefaultIdentityAddAccount
+	defer func() {
+		cfg = savedCfg
+		logger = savedLogger
+		oauthAppName = savedOAuthApp
+		noDefaultIdentityAddAccount = savedNoDefault
+	}()
+
+	cfg = &config.Config{
+		HomeDir: tmpDir,
+		Data:    config.DataConfig{DataDir: tmpDir},
+		OAuth:   config.OAuthConfig{ClientSecrets: secretsPath},
+		// Legacy [identity] block with two addresses, neither of which
+		// is the account being added. The migration must fire BUT also
+		// the auto-default identity must be written for user@example.com.
+		Identity: config.IdentityConfig{
+			Addresses: []string{"alias@example.com", "alt@work.com"},
+		},
+	}
+	logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	testCmd := &cobra.Command{
+		Use:  "add-account <email>",
+		Args: cobra.ExactArgs(1),
+		RunE: addAccountCmd.RunE,
+	}
+	testCmd.Flags().StringVar(&oauthAppName, "oauth-app", "", "")
+	testCmd.Flags().BoolVar(&headless, "headless", false, "")
+	testCmd.Flags().BoolVar(&forceReauth, "force", false, "")
+	testCmd.Flags().StringVar(&accountDisplayName, "display-name", "", "")
+	testCmd.Flags().BoolVar(&noDefaultIdentityAddAccount, "no-default-identity", false, "")
+
+	root := newTestRootCmd()
+	root.AddCommand(testCmd)
+	// Note: NOT passing --no-default-identity. The bug only manifests
+	// when the auto-default write is supposed to fire.
+	root.SetArgs([]string{"add-account", "user@example.com"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	src, err := findGmailSource(s, "user@example.com")
+	if err != nil {
+		t.Fatalf("find source: %v", err)
+	}
+	if src == nil {
+		t.Fatal("source not found")
+	}
+
+	ids, err := s.ListAccountIdentities(src.ID)
+	if err != nil {
+		t.Fatalf("ListAccountIdentities: %v", err)
+	}
+	// Want 3 rows: 2 legacy-migrated + 1 account-identifier.
+	if len(ids) != 3 {
+		t.Fatalf("expected 3 identity rows (2 legacy + 1 account-identifier), got %d: %+v", len(ids), ids)
+	}
+	got := make(map[string]bool, len(ids))
+	for _, ai := range ids {
+		got[ai.Address] = true
+	}
+	for _, want := range []string{"alias@example.com", "alt@work.com", "user@example.com"} {
+		if !got[want] {
+			t.Errorf("missing identity row for %q (have %v)", want, got)
+		}
+	}
+}

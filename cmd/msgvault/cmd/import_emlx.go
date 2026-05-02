@@ -203,17 +203,19 @@ func importSingleAccount(
 		return err
 	}
 
-	if summary.SourceID != 0 {
-		if err := runPostSourceCreateMigrations(st); err != nil {
-			return fmt.Errorf("post-source-create migrations: %w", err)
-		}
-	}
-
+	// Auto-default-identity must run BEFORE the legacy migration
+	// retry — see comment in account_identity.go.
 	if ctx.Err() == nil && !summary.HardErrors && !noDefaultIdentityImportEmlx {
 		if summary.SourceID != 0 {
 			confirmDefaultIdentity(st, summary.SourceID, identifier, identifier, "account-identifier")
 		} else {
 			logger.Warn("auto-default-identity: missing source id", "identifier", identifier)
+		}
+	}
+
+	if summary.SourceID != 0 {
+		if err := runPostSourceCreateMigrations(st); err != nil {
+			return fmt.Errorf("post-source-create migrations: %w", err)
 		}
 	}
 
@@ -331,13 +333,8 @@ func importAutoAccounts(
 			continue
 		}
 
-		if summary.SourceID != 0 {
-			if err := runPostSourceCreateMigrations(st); err != nil {
-				importErrors = append(importErrors, fmt.Errorf("%s: post-source-create migrations: %w", identifier, err))
-				continue
-			}
-		}
-
+		// Auto-default-identity must run BEFORE the legacy migration
+		// retry — see comment in account_identity.go.
 		if ctx.Err() == nil && !summary.HardErrors && !noDefaultIdentityImportEmlx {
 			accountDisplay := account.Identifier()
 			if account.Email != "" {
@@ -347,6 +344,13 @@ func importAutoAccounts(
 				confirmDefaultIdentity(st, summary.SourceID, accountDisplay, identifier, "account-identifier")
 			} else {
 				logger.Warn("auto-default-identity: missing source id", "identifier", identifier)
+			}
+		}
+
+		if summary.SourceID != 0 {
+			if err := runPostSourceCreateMigrations(st); err != nil {
+				importErrors = append(importErrors, fmt.Errorf("%s: post-source-create migrations: %w", identifier, err))
+				continue
 			}
 		}
 

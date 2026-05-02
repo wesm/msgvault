@@ -152,9 +152,6 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("create source: %w", err)
 			}
-			if err := runPostSourceCreateMigrations(s); err != nil {
-				return fmt.Errorf("post-source-create migrations: %w", err)
-			}
 			// Update oauth_app binding if it changed or was newly specified
 			if bindingChanged || (resolvedApp != "" && !source.OAuthApp.Valid) {
 				newApp := sql.NullString{String: resolvedApp, Valid: resolvedApp != ""}
@@ -167,8 +164,17 @@ Examples:
 					return fmt.Errorf("set display name: %w", err)
 				}
 			}
+			// Auto-default-identity must run BEFORE the legacy migration
+			// retry (runPostSourceCreateMigrations). The migration's
+			// set-semantics merge handles the case where the legacy
+			// [identity] block contains the same address. Reverse order
+			// would leave the source without its own account identifier
+			// because confirmDefaultIdentity skips on any existing rows.
 			if !noDefaultIdentityAddAccount {
 				confirmDefaultIdentity(s, source.ID, email, email, "account-identifier")
+			}
+			if err := runPostSourceCreateMigrations(s); err != nil {
+				return fmt.Errorf("post-source-create migrations: %w", err)
 			}
 			if bindingChanged {
 				fmt.Printf("Account %s: OAuth app binding updated to %q.\n", email, resolvedApp)
@@ -209,9 +215,6 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("create source: %w", err)
 		}
-		if err := runPostSourceCreateMigrations(s); err != nil {
-			return fmt.Errorf("post-source-create migrations: %w", err)
-		}
 
 		// Update oauth_app binding (set or clear)
 		if resolvedApp != "" {
@@ -231,8 +234,13 @@ Examples:
 				return fmt.Errorf("set display name: %w", err)
 			}
 		}
+		// Auto-default-identity must run BEFORE the legacy migration
+		// retry — see comment on the token-reusable path above.
 		if !noDefaultIdentityAddAccount {
 			confirmDefaultIdentity(s, source.ID, email, email, "account-identifier")
+		}
+		if err := runPostSourceCreateMigrations(s); err != nil {
+			return fmt.Errorf("post-source-create migrations: %w", err)
 		}
 
 		fmt.Printf("\nAccount %s authorized successfully!\n", email)

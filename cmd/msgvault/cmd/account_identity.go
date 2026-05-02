@@ -27,6 +27,16 @@ const noDefaultIdentityHelp = "Suppress auto-default-identity at account creatio
 // intent while degrading gracefully if the user has removed every
 // identity (in which case the default is restored, which is desirable).
 //
+// **Ordering note:** ingest commands MUST call confirmDefaultIdentity
+// BEFORE runPostSourceCreateMigrations on the same invocation. The
+// legacy [identity] migration uses set-semantics merge, so calling the
+// default-identity write first and the migration second produces the
+// correct merged state. Calling them in the other order populates
+// account_identities with the legacy addresses first, then the
+// `len(existing) > 0` guard suppresses the source's own account
+// identifier entirely (regression caught in iter15). See the per-ingest
+// command order in addaccount.go etc.
+//
 // account is the user-facing account name shown in the confirmation message.
 // Callers should gate this behind the per-command --no-default-identity flag.
 func confirmDefaultIdentity(s *store.Store, sourceID int64, account, identifier, signal string) {
