@@ -522,9 +522,13 @@ func backupDatabase(st *store.Store, dst string) error {
 }
 
 // loadPerSourceIdentities builds a per-source identity map for the given
-// source IDs by calling GetIdentitiesForScope once per source. Addresses are
-// lowercased so the dedup engine's strings.ToLower(FromEmail) lookups match
-// case-preserved identities stored in account_identities.
+// source IDs by calling GetIdentitiesForScope once per source. Addresses
+// are normalized via store.NormalizeIdentifierForCompare so the dedup
+// engine's lookup uses the same case-aware rule as the store layer:
+// email-shaped identities lowercase, synthetic identifiers (Matrix
+// MXIDs, chat handles, phone E.164) preserve case. Without this,
+// blanket-lowercasing would misclassify case-sensitive synthetic
+// identifiers as sent copies.
 func loadPerSourceIdentities(st *store.Store, sourceIDs []int64) (map[int64]map[string]struct{}, error) {
 	out := make(map[int64]map[string]struct{}, len(sourceIDs))
 	for _, id := range sourceIDs {
@@ -535,11 +539,11 @@ func loadPerSourceIdentities(st *store.Store, sourceIDs []int64) (map[int64]map[
 		if len(addrs) == 0 {
 			continue
 		}
-		lower := make(map[string]struct{}, len(addrs))
+		normalized := make(map[string]struct{}, len(addrs))
 		for addr := range addrs {
-			lower[strings.ToLower(addr)] = struct{}{}
+			normalized[store.NormalizeIdentifierForCompare(addr)] = struct{}{}
 		}
-		out[id] = lower
+		out[id] = normalized
 	}
 	return out, nil
 }

@@ -25,6 +25,24 @@ func EqualIdentifier(a, b string) bool {
 	return a == b
 }
 
+// NormalizeIdentifierForCompare returns the comparison-canonical form
+// of an identifier under the same rules as EqualIdentifier and the
+// SQL-side LOWER() shape: email-shaped tokens are lowercased,
+// everything else is returned unchanged.
+//
+// Use this when building a map keyed by identifier (e.g., the dedup
+// engine's per-source identity lookup) so the same value can be used
+// to insert and to look up. Calling NormalizeIdentifierForCompare on
+// both the stored side and the lookup side keeps Matrix MXIDs and
+// other case-sensitive synthetic identifiers intact while still
+// matching email-shaped identities case-insensitively.
+func NormalizeIdentifierForCompare(s string) string {
+	if looksLikeEmail(s) {
+		return strings.ToLower(s)
+	}
+	return s
+}
+
 // identifierMatch carries the comparison rule for one identifier in
 // account_identities. It exists so the email-vs-other branch lives in
 // one place: every call site that compares an identifier against

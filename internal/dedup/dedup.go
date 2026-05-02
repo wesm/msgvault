@@ -354,7 +354,7 @@ func (e *Engine) Scan(ctx context.Context) (*Report, error) {
 			matched := false
 			if m.FromEmail != "" {
 				if addrs := e.config.IdentityAddressesBySource[m.SourceID]; addrs != nil {
-					_, matched = addrs[strings.ToLower(m.FromEmail)]
+					_, matched = addrs[store.NormalizeIdentifierForCompare(m.FromEmail)]
 				}
 			}
 			group.Messages = append(group.Messages, DuplicateMessage{
@@ -546,7 +546,7 @@ func (e *Engine) scanNormalizedHashGroups(
 				matched := false
 				if item.candidate.FromEmail != "" {
 					if addrs := e.config.IdentityAddressesBySource[item.candidate.SourceID]; addrs != nil {
-						_, matched = addrs[strings.ToLower(item.candidate.FromEmail)]
+						_, matched = addrs[store.NormalizeIdentifierForCompare(item.candidate.FromEmail)]
 					}
 				}
 

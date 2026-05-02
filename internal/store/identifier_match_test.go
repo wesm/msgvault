@@ -2,6 +2,34 @@ package store
 
 import "testing"
 
+// TestNormalizeIdentifierForCompare locks down the identity-map
+// canonicalization rule used by the dedup engine's per-source
+// identity lookup. Email-shaped tokens lowercase; everything else
+// passes through. Calling it on both sides of a map insertion and
+// lookup gives the same case-aware semantics as EqualIdentifier
+// without paying for pairwise comparison on the hot path.
+func TestNormalizeIdentifierForCompare(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"email_lower", "foo@x.com", "foo@x.com"},
+		{"email_mixed", "Foo@X.COM", "foo@x.com"},
+		{"matrix_mxid_preserves_case", "@Alice:matrix.org", "@Alice:matrix.org"},
+		{"handle_preserves_case", "AliceHandle", "AliceHandle"},
+		{"phone_preserves", "+15551234567", "+15551234567"},
+		{"empty", "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NormalizeIdentifierForCompare(tc.in); got != tc.want {
+				t.Errorf("NormalizeIdentifierForCompare(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestEqualIdentifier asserts that the in-memory comparison rule
 // matches the SQL-side LOWER() rule encoded by identifierMatch:
 // email-shaped tokens compare case-insensitively, everything else
