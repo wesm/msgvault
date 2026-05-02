@@ -111,7 +111,7 @@ func (s *Store) GetDuplicateGroupMessages(
 		             AND (l.source_label_id = 'SENT' OR UPPER(l.name) = 'SENT')
 		       ) AS INTEGER) AS has_sent_label,
 		       COALESCE((
-		           SELECT LOWER(p_from.email_address)
+		           SELECT p_from.email_address
 		           FROM message_recipients mr_from
 		           JOIN participants p_from
 		             ON p_from.id = mr_from.participant_id
@@ -243,7 +243,7 @@ func (s *Store) GetAllRawMIMECandidates(
 		             AND (l.source_label_id = 'SENT' OR UPPER(l.name) = 'SENT')
 		       ) AS INTEGER) AS has_sent_label,
 		       COALESCE((
-		           SELECT LOWER(p_from.email_address)
+		           SELECT p_from.email_address
 		           FROM message_recipients mr_from
 		           JOIN participants p_from
 		             ON p_from.id = mr_from.participant_id

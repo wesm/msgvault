@@ -224,14 +224,17 @@ func resolveAccountList(st *store.Store, accounts string) ([]int64, error) {
 		// silently breaking WhatsApp/Google Voice accounts that key
 		// on phone numbers. Restrict the numeric branch to tokens
 		// whose first byte is a decimal digit so signed inputs fall
-		// through to identifier resolution.
+		// through to identifier resolution. If the numeric lookup
+		// misses (no source with that ID), fall through to
+		// ResolveAccountFlag — the digit string may be a numeric
+		// identifier (e.g. unprefixed phone number, account name)
+		// rather than a source ID.
 		if p[0] >= '0' && p[0] <= '9' {
 			if id, err := strconv.ParseInt(p, 10, 64); err == nil {
-				if _, err := st.GetSourceByID(id); err != nil {
-					return nil, fmt.Errorf("get source %d: %w", id, err)
+				if _, err := st.GetSourceByID(id); err == nil {
+					ids = append(ids, id)
+					continue
 				}
-				ids = append(ids, id)
-				continue
 			}
 		}
 		// Resolve by identifier

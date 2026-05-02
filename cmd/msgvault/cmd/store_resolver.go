@@ -25,16 +25,16 @@ func runStartupMigrations(s *store.Store) error {
 		logger.Warn("startup migration failed", "error", err)
 		return err
 	}
+	// Success cases log at Info (the operation succeeded; res.Notice is
+	// the user-facing surface on stderr). Reserved Warn for the actual
+	// error path above.
 	switch {
 	case res.Deferred:
-		logger.Warn("legacy [identity] block in config detected (migration deferred until a source exists)",
+		logger.Info("legacy [identity] block in config detected (migration deferred until a source exists)",
 			"address_count", res.AddressCount,
 			"hint", "run 'msgvault add-account ...' to create a source; the migration will retry on the next command")
 	case res.Applied:
-		logger.Warn("legacy [identity] block in config detected",
-			"address_count", res.AddressCount,
-			"hint", "please review per-account identities via 'msgvault identity list'")
-		logger.Warn("legacy identity migrated",
+		logger.Info("legacy identity migrated",
 			"addresses", res.AddressCount,
 			"sources", res.SourceCount)
 	}

@@ -292,3 +292,39 @@ func TestStore_MergeDuplicates_BackfillsRawMIME(t *testing.T) {
 		t.Error("survivor raw MIME should not be empty after backfill")
 	}
 }
+
+// TestStore_GetDuplicateGroupMessages_PreservesFromCase verifies that the
+// FromEmail field returned by GetDuplicateGroupMessages preserves the
+// original case of the sender's address. The query layer must NOT
+// blanket-lowercase the address — synthetic identifiers like Matrix
+// MXIDs (`@Alice:matrix.org`) and chat handles are case-sensitive in
+// the rest of the identity subsystem (NormalizeIdentifierForCompare
+// preserves case for non-email shapes), so any pre-lowering in SQL
+// would prevent dedup's per-source identity match from finding a
+// stored case-mixed identity. Regression test for iter12 codex Medium.
+func TestStore_GetDuplicateGroupMessages_PreservesFromCase(t *testing.T) {
+	f := storetest.New(t)
+
+	mxid := "@Alice:matrix.org"
+	pid := f.EnsureParticipant(mxid, "", "")
+
+	id := newRFC822Message(t, f, "msg-mxid", "rfc822-mxid")
+
+	if _, err := f.Store.DB().Exec(
+		f.Store.Rebind(`INSERT INTO message_recipients
+			(message_id, participant_id, recipient_type)
+			VALUES (?, ?, 'from')`),
+		id, pid,
+	); err != nil {
+		t.Fatalf("insert from recipient: %v", err)
+	}
+
+	rows, err := f.Store.GetDuplicateGroupMessages("rfc822-mxid")
+	testutil.MustNoErr(t, err, "GetDuplicateGroupMessages")
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if rows[0].FromEmail != mxid {
+		t.Errorf("FromEmail = %q, want %q (case must be preserved)", rows[0].FromEmail, mxid)
+	}
+}
