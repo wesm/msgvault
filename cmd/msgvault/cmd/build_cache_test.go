@@ -1889,6 +1889,60 @@ func TestCacheNeedsBuild_IgnoresAlreadyProcessedUpdatedSyncRun(t *testing.T) {
 	}
 }
 
+// TestCacheNeedsBuild_DedupHidesAfterLastSync covers the regression
+// where dedup-hidden rows (deleted_at) added after the cache was built
+// silently stayed in Parquet because the staleness check only watched
+// deleted_from_source_at. The check now treats dedup hides the same
+// way: any row whose deleted_at is at or after LastSyncAt forces a
+// full rebuild.
+func TestCacheNeedsBuild_DedupHidesAfterLastSync(t *testing.T) {
+	tmpDir, cleanup := setupTestSQLiteEmpty(t)
+	defer cleanup()
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	analyticsDir := filepath.Join(tmpDir, "analytics")
+
+	stateTime := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
+	writeSyncStateAt(t, analyticsDir, 5, stateTime)
+	createFakeParquet(t, analyticsDir)
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Insert one live row and one row dedup-hidden after LastSyncAt.
+	if _, err := db.Exec(
+		`INSERT INTO messages
+			(id, source_id, source_message_id, sent_at, deleted_at)
+		 VALUES (1, 1, 'msg1', datetime('now'), NULL)`,
+	); err != nil {
+		t.Fatalf("insert live row: %v", err)
+	}
+	hiddenAt := stateTime.Add(1 * time.Hour).
+		Format("2006-01-02 15:04:05")
+	if _, err := db.Exec(
+		`INSERT INTO messages
+			(id, source_id, source_message_id, sent_at, deleted_at)
+		 VALUES (2, 1, 'msg2', datetime('now'), ?)`,
+		hiddenAt,
+	); err != nil {
+		t.Fatalf("insert dedup-hidden row: %v", err)
+	}
+
+	got := cacheNeedsBuild(dbPath, analyticsDir)
+	if !got.NeedsBuild {
+		t.Fatalf("cacheNeedsBuild() = %+v, want NeedsBuild=true after dedup hide", got)
+	}
+	if !got.FullRebuild {
+		t.Fatalf("cacheNeedsBuild() = %+v, want FullRebuild=true after dedup hide", got)
+	}
+	if !strings.Contains(got.Reason, "dedup-hidden") {
+		t.Errorf("Reason = %q, want substring 'dedup-hidden'", got.Reason)
+	}
+}
+
 func TestBuildCache_RecordsLastCompletedSyncRunID(t *testing.T) {
 	tmpDir, cleanup := setupTestSQLite(t)
 	defer cleanup()

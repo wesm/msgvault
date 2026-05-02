@@ -447,8 +447,9 @@ func runDeduplicateOnce(
 	}
 
 	printDedupSummary(summary)
-	fmt.Println("\nTo update analytics cache: " +
-		"msgvault build-cache --full-rebuild")
+	// The analytics cache picks up dedup hides on the next TUI launch
+	// (cacheNeedsBuild detects deleted_at after LastSyncAt and forces a
+	// full rebuild). No manual rebuild required.
 	return nil
 }
 

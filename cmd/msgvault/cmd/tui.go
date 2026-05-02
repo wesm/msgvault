@@ -287,6 +287,29 @@ func cacheNeedsBuild(dbPath, analyticsDir string) cacheStaleness {
 			fmt.Sprintf("%d deletions", deletedSinceBuild))
 	}
 
+	// Dedup-hidden rows (deleted_at) are excluded from the messages
+	// Parquet export, so a dedup run after the last cache build leaves
+	// stale duplicate rows in the cache. Detect that by counting hides
+	// since LastSyncAt and force a full rebuild if any are present.
+	var hiddenSinceBuild int64
+	err = db.DB().QueryRow(`
+		SELECT COUNT(*) FROM messages
+		WHERE deleted_at IS NOT NULL
+		  AND deleted_at >= ?
+	`, syncAtStr).Scan(&hiddenSinceBuild)
+	if err != nil {
+		return cacheStaleness{
+			NeedsBuild: true, FullRebuild: true,
+			Reason: "cannot verify dedup state",
+		}
+	}
+	if hiddenSinceBuild > 0 {
+		result.HasDeleted = true
+		result.FullRebuild = true
+		reasons = append(reasons,
+			fmt.Sprintf("%d dedup-hidden", hiddenSinceBuild))
+	}
+
 	var hasSyncRunsTable int
 	err = db.DB().QueryRow(`
 		SELECT COUNT(*) FROM sqlite_master
