@@ -211,14 +211,14 @@ msgvault cancel-deletion <batch-id>
 # List staged batches without executing (always allowed)
 msgvault delete-staged --list
 
-# Execute pending deletions (gated; permanent, fast — no recovery)
+# Execute pending deletions (gated; default = trash, recoverable for 30 days)
 MSGVAULT_ENABLE_REMOTE_DELETE=1 msgvault delete-staged --yes
 
 # Execute a specific batch
 MSGVAULT_ENABLE_REMOTE_DELETE=1 msgvault delete-staged <batch-id>
 
-# Move to trash instead (recoverable for 30 days, slower)
-MSGVAULT_ENABLE_REMOTE_DELETE=1 msgvault delete-staged --trash
+# Permanently delete via batch API (fast, no recovery — opt-in)
+MSGVAULT_ENABLE_REMOTE_DELETE=1 msgvault delete-staged --permanent
 
 # Dry run — show what would be deleted without doing it (always allowed)
 msgvault delete-staged --dry-run
@@ -232,8 +232,10 @@ inspecting, and dry-running deletion batches works without the gate;
 executing against Gmail requires `MSGVAULT_ENABLE_REMOTE_DELETE=1` in the
 environment.
 
-**Warning:** `delete-staged` without `--trash` permanently deletes messages from
-Gmail. This is irreversible. Always verify with `--dry-run` first.
+**Warning:** `delete-staged --permanent` permanently deletes messages from
+Gmail with no Gmail-side recovery. The default mode moves messages to Gmail
+trash, which is recoverable for 30 days. Always verify with `--dry-run`
+first regardless of mode.
 
 ## Verify archive integrity
 

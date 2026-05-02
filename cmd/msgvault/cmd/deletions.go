@@ -201,11 +201,17 @@ Examples:
 }
 
 var (
-	deleteTrash   bool // Use trash instead of permanent delete
-	deleteYes     bool
-	deleteDryRun  bool
-	deleteList    bool
-	deleteAccount string
+	// deletePermanent opts in to permanent batch deletion. Default is
+	// trash (30-day Gmail recovery), which is the safer choice for the
+	// v1 release: every other rung of the deletion progression
+	// (dedup-hide, local hard delete) is locally reversible, so the
+	// remote rung should be too unless the user explicitly says
+	// otherwise.
+	deletePermanent bool
+	deleteYes       bool
+	deleteDryRun    bool
+	deleteList      bool
+	deleteAccount   string
 )
 
 // remoteDeleteEnvVar gates execution of staged deletions against Gmail
@@ -223,8 +229,11 @@ var deleteStagedCmd = &cobra.Command{
 	Short: "Execute staged deletions",
 	Long: `Execute pending deletion batches.
 
-By default, messages are permanently deleted using batch API (fast, no recovery).
-Use --trash to move messages to Gmail trash instead (recoverable for 30 days, slower).
+By default, messages are moved to Gmail trash (recoverable for 30 days).
+Use --permanent for batch-API permanent deletion (fast, no recovery).
+The default is trash because every other rung of the deletion progression
+in msgvault is locally reversible; the remote rung is too unless the user
+explicitly opts out of recoverability.
 
 Execution is gated for the v1 release. Set MSGVAULT_ENABLE_REMOTE_DELETE=1 to
 opt in. Read-only modes (--list, --dry-run) work without the gate.
@@ -234,7 +243,7 @@ Examples:
   msgvault delete-staged --dry-run      # Preview without executing (always allowed)
   MSGVAULT_ENABLE_REMOTE_DELETE=1 msgvault delete-staged
   MSGVAULT_ENABLE_REMOTE_DELETE=1 msgvault delete-staged batch-123
-  MSGVAULT_ENABLE_REMOTE_DELETE=1 msgvault delete-staged --trash
+  MSGVAULT_ENABLE_REMOTE_DELETE=1 msgvault delete-staged --permanent
   MSGVAULT_ENABLE_REMOTE_DELETE=1 msgvault delete-staged --yes`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		deletionsDir := filepath.Join(cfg.Data.DataDir, "deletions")
@@ -299,9 +308,9 @@ Examples:
 		}
 
 		// Show summary
-		method := "PERMANENT DELETE (fast, no recovery)"
-		if deleteTrash {
-			method = "trash (30-day recovery, slower)"
+		method := "trash (30-day recovery)"
+		if deletePermanent {
+			method = "PERMANENT DELETE (fast, no recovery)"
 		}
 
 		fmt.Printf("Deletion Summary:\n")
@@ -461,7 +470,7 @@ Examples:
 				return err
 			}
 
-			needsBatchDelete := !deleteTrash
+			needsBatchDelete := deletePermanent
 			if needsBatchDelete {
 				requiredScopes := oauth.ScopesDeletion
 				oauthMgr, err := oauth.NewManagerWithScopes(clientSecretsPath, cfg.TokensDir(), logger, requiredScopes)
@@ -490,7 +499,7 @@ Examples:
 				}
 			}
 			scopes := oauth.Scopes
-			if !deleteTrash {
+			if deletePermanent {
 				scopes = oauth.ScopesDeletion
 			}
 			return oauth.NewManagerWithScopes(secretsPath, cfg.TokensDir(), logger, scopes)
@@ -515,8 +524,8 @@ Examples:
 
 			var execErr error
 			// For in-progress manifests, honor the stored method to avoid
-			// accidentally switching from trash to permanent delete mid-batch
-			useTrash := deleteTrash
+			// accidentally switching between trash and permanent mid-batch.
+			useTrash := !deletePermanent
 			if m.Status == deletion.StatusInProgress && m.Execution != nil {
 				useTrash = (m.Execution.Method == deletion.MethodTrash)
 			}
@@ -723,7 +732,7 @@ func promptScopeEscalation(ctx context.Context, oauthMgr *oauth.Manager, account
 	_, _ = fmt.Scanln(&response)
 	if response != "y" && response != "Y" {
 		if batchDelete {
-			fmt.Println("Cancelled. Use --trash for slower deletion without elevated permissions.")
+			fmt.Println("Cancelled. Drop --permanent to use trash deletion without elevated permissions.")
 		} else {
 			fmt.Println("Cancelled.")
 		}
@@ -764,7 +773,7 @@ func isInsufficientScopeError(err error) bool {
 }
 
 func init() {
-	deleteStagedCmd.Flags().BoolVar(&deleteTrash, "trash", false, "Move to trash instead of permanent delete (slower)")
+	deleteStagedCmd.Flags().BoolVar(&deletePermanent, "permanent", false, "DESTRUCTIVE: permanently delete via batch API instead of moving to trash (fast, no recovery)")
 	deleteStagedCmd.Flags().BoolVarP(&deleteYes, "yes", "y", false, "Skip confirmation")
 	deleteStagedCmd.Flags().BoolVar(&deleteDryRun, "dry-run", false, "Show what would be deleted")
 	deleteStagedCmd.Flags().BoolVarP(&deleteList, "list", "l", false, "List staged batches without executing")
