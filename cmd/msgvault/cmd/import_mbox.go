@@ -127,6 +127,9 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("get/create source: %w", err)
 			}
+			if err := runPostSourceCreateMigrations(st); err != nil {
+				return fmt.Errorf("post-source-create migrations: %w", err)
+			}
 			active, err := st.GetActiveSync(src.ID)
 			if err != nil {
 				return fmt.Errorf("check active sync: %w", err)
@@ -296,6 +299,16 @@ Examples:
 			// skipping the failed file's unprocessed messages.
 			if summary.HardErrors {
 				break
+			}
+		}
+
+		// Re-run startup migrations after the importer has had a chance
+		// to create the first source. Required when the deferred legacy
+		// identity migration parked at startup because no source existed.
+		// Cheap no-op once the migration sentinel is set.
+		if sourceID != 0 {
+			if err := runPostSourceCreateMigrations(st); err != nil {
+				return fmt.Errorf("post-source-create migrations: %w", err)
 			}
 		}
 

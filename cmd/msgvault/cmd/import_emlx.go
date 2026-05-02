@@ -203,6 +203,12 @@ func importSingleAccount(
 		return err
 	}
 
+	if summary.SourceID != 0 {
+		if err := runPostSourceCreateMigrations(st); err != nil {
+			return fmt.Errorf("post-source-create migrations: %w", err)
+		}
+	}
+
 	if ctx.Err() == nil && !summary.HardErrors && !noDefaultIdentityImportEmlx {
 		if summary.SourceID != 0 {
 			confirmDefaultIdentity(st, summary.SourceID, identifier, identifier, "account-identifier")
@@ -323,6 +329,13 @@ func importAutoAccounts(
 		if summary.MailboxesTotal == 0 {
 			_, _ = fmt.Fprintf(out, "Skipping %s: no mailboxes found\n", identifier)
 			continue
+		}
+
+		if summary.SourceID != 0 {
+			if err := runPostSourceCreateMigrations(st); err != nil {
+				importErrors = append(importErrors, fmt.Errorf("%s: post-source-create migrations: %w", identifier, err))
+				continue
+			}
 		}
 
 		if ctx.Err() == nil && !summary.HardErrors && !noDefaultIdentityImportEmlx {

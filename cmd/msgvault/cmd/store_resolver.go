@@ -13,7 +13,11 @@ import (
 // and runs the one-time migration. If migration was performed, the notice is
 // logged and printed to stderr. If the migration is deferred because no source
 // exists yet, it will be retried on a later command after a source has been
-// created. Always returns nil unless the migration itself errors.
+// created — and ingest commands that create the first source should call
+// runPostSourceCreateMigrations after GetOrCreateSource so the deferred
+// migration applies on the same invocation.
+//
+// Always returns nil unless the migration itself errors.
 func runStartupMigrations(s *store.Store) error {
 	addrs := cfg.Identity.Addresses
 	res, err := s.RunStartupMigrations(addrs)
@@ -38,6 +42,17 @@ func runStartupMigrations(s *store.Store) error {
 		fmt.Fprintln(os.Stderr, res.Notice)
 	}
 	return nil
+}
+
+// runPostSourceCreateMigrations re-runs startup migrations after the caller
+// has just created a source. The legacy identity migration defers when no
+// source exists at startup, so on a fresh install the very first
+// add-account / add-imap / add-o365 / import-* invocation needs a second
+// pass to actually apply the migration on the same invocation that created
+// the first source. Subsequent calls are O(1) — once the migration sentinel
+// is set, MigrateLegacyIdentityConfig short-circuits.
+func runPostSourceCreateMigrations(s *store.Store) error {
+	return runStartupMigrations(s)
 }
 
 // MessageStore is the interface for commands that need basic message operations.

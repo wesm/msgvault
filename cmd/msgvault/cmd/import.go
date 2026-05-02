@@ -123,6 +123,12 @@ func runWhatsAppImport(cmd *cobra.Command, sourcePath string) error {
 		return fmt.Errorf("import failed: %w", err)
 	}
 
+	if summary.SourceID != 0 {
+		if err := runPostSourceCreateMigrations(s); err != nil {
+			return fmt.Errorf("post-source-create migrations: %w", err)
+		}
+	}
+
 	if !noDefaultIdentityImportWhatsApp && summary.Errors == 0 && summary.SourceID != 0 {
 		confirmDefaultIdentity(s, summary.SourceID, importPhone, importPhone, "phone-e164")
 	}

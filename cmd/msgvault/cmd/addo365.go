@@ -119,6 +119,9 @@ Examples:
 				return fmt.Errorf("create source: %w", err)
 			}
 		}
+		if err := runPostSourceCreateMigrations(s); err != nil {
+			return fmt.Errorf("post-source-create migrations: %w", err)
+		}
 
 		cfgJSON, err := imapCfg.ToJSON()
 		if err != nil {

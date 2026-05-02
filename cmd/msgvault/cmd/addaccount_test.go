@@ -874,3 +874,117 @@ func TestAddAccount_NoDefaultIdentitySuppresses(t *testing.T) {
 		t.Fatalf("expected 0 identity rows with --no-default-identity, got %d", len(ids))
 	}
 }
+
+// TestAddAccount_DeferredLegacyIdentityMigrationFires verifies that legacy
+// [identity] addresses configured before any source exists are migrated
+// onto the first source created in the same add-account invocation.
+// Regression test for iter10: previously, runStartupMigrations ran before
+// GetOrCreateSource, so the deferred migration parked at startup and only
+// applied on the *next* command — leaving the new source without its
+// configured identities until then.
+func TestAddAccount_DeferredLegacyIdentityMigrationFires(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "msgvault.db")
+
+	tokensDir := filepath.Join(tmpDir, "tokens")
+	if err := os.MkdirAll(tokensDir, 0700); err != nil {
+		t.Fatalf("mkdir tokens: %v", err)
+	}
+	tokenData, _ := json.Marshal(map[string]string{
+		"access_token":  "fake-access",
+		"refresh_token": "fake-refresh",
+		"token_type":    "Bearer",
+		"client_id":     "test.apps.googleusercontent.com",
+	})
+	if err := os.WriteFile(filepath.Join(tokensDir, "user@example.com.json"), tokenData, 0600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	secretsPath := filepath.Join(tmpDir, "secret.json")
+	if err := os.WriteFile(secretsPath, []byte(fakeClientSecrets), 0600); err != nil {
+		t.Fatalf("write secrets: %v", err)
+	}
+
+	savedCfg := cfg
+	savedLogger := logger
+	savedOAuthApp := oauthAppName
+	savedNoDefault := noDefaultIdentityAddAccount
+	defer func() {
+		cfg = savedCfg
+		logger = savedLogger
+		oauthAppName = savedOAuthApp
+		noDefaultIdentityAddAccount = savedNoDefault
+	}()
+
+	cfg = &config.Config{
+		HomeDir: tmpDir,
+		Data:    config.DataConfig{DataDir: tmpDir},
+		OAuth:   config.OAuthConfig{ClientSecrets: secretsPath},
+		Identity: config.IdentityConfig{
+			Addresses: []string{"alias@example.com", "alt@work.com"},
+		},
+	}
+	logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	testCmd := &cobra.Command{
+		Use:  "add-account <email>",
+		Args: cobra.ExactArgs(1),
+		RunE: addAccountCmd.RunE,
+	}
+	testCmd.Flags().StringVar(&oauthAppName, "oauth-app", "", "")
+	testCmd.Flags().BoolVar(&headless, "headless", false, "")
+	testCmd.Flags().BoolVar(&forceReauth, "force", false, "")
+	testCmd.Flags().StringVar(&accountDisplayName, "display-name", "", "")
+	testCmd.Flags().BoolVar(&noDefaultIdentityAddAccount, "no-default-identity", false, "")
+
+	root := newTestRootCmd()
+	root.AddCommand(testCmd)
+	// --no-default-identity isolates the test to the legacy migration path:
+	// the auto-default would otherwise add a third identity row.
+	root.SetArgs([]string{"add-account", "user@example.com", "--no-default-identity"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	src, err := findGmailSource(s, "user@example.com")
+	if err != nil {
+		t.Fatalf("find source: %v", err)
+	}
+	if src == nil {
+		t.Fatal("source not found")
+	}
+
+	ids, err := s.ListAccountIdentities(src.ID)
+	if err != nil {
+		t.Fatalf("ListAccountIdentities: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 legacy-migrated identity rows on first invocation, got %d: %+v", len(ids), ids)
+	}
+	got := map[string]string{ids[0].Address: ids[0].SourceSignal, ids[1].Address: ids[1].SourceSignal}
+	for _, addr := range []string{"alias@example.com", "alt@work.com"} {
+		signal, ok := got[addr]
+		if !ok {
+			t.Errorf("missing identity row for %q (have %+v)", addr, got)
+			continue
+		}
+		if signal != "config_migration" {
+			t.Errorf("address %q: source_signal = %q, want config_migration", addr, signal)
+		}
+	}
+
+	applied, err := s.IsMigrationApplied("legacy_identity_to_per_account")
+	if err != nil {
+		t.Fatalf("IsMigrationApplied: %v", err)
+	}
+	if !applied {
+		t.Error("migration sentinel should be set after first successful add-account")
+	}
+}

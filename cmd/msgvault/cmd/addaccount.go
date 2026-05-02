@@ -152,6 +152,9 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("create source: %w", err)
 			}
+			if err := runPostSourceCreateMigrations(s); err != nil {
+				return fmt.Errorf("post-source-create migrations: %w", err)
+			}
 			// Update oauth_app binding if it changed or was newly specified
 			if bindingChanged || (resolvedApp != "" && !source.OAuthApp.Valid) {
 				newApp := sql.NullString{String: resolvedApp, Valid: resolvedApp != ""}
@@ -205,6 +208,9 @@ Examples:
 		source, err := s.GetOrCreateSource("gmail", email)
 		if err != nil {
 			return fmt.Errorf("create source: %w", err)
+		}
+		if err := runPostSourceCreateMigrations(s); err != nil {
+			return fmt.Errorf("post-source-create migrations: %w", err)
 		}
 
 		// Update oauth_app binding (set or clear)
