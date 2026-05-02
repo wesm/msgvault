@@ -1646,3 +1646,36 @@ func TestSearchByDomains(t *testing.T) {
 		}
 	})
 }
+
+// TestServeHTTPWithOptions_ContextCancellation verifies that the HTTP
+// transport honours ctx cancellation by gracefully shutting the server
+// down and returning ctx.Err(). Regression-guards a roborev #299
+// finding where Start was called without ever consulting ctx.
+func TestServeHTTPWithOptions_ContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Bind on :0 so we don't conflict with anything on the host.
+	opts := ServeOptions{
+		Engine:         &querytest.MockEngine{},
+		AttachmentsDir: t.TempDir(),
+		DataDir:        t.TempDir(),
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ServeHTTPWithOptions(ctx, opts, "127.0.0.1:0")
+	}()
+
+	// Give the goroutine a moment to start the listener.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("ServeHTTPWithOptions did not return after context cancellation")
+	}
+}

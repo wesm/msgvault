@@ -2,7 +2,11 @@ package mcp
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
 	"os"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -81,24 +85,9 @@ type ServeOptions struct {
 	Backend vector.Backend
 }
 
-// Serve creates an MCP server with email archive tools and serves over stdio.
-// It blocks until stdin is closed or the context is cancelled.
-// dataDir is the base data directory (e.g., ~/.msgvault) used for deletions.
-//
-// Serve is a thin wrapper around ServeWithOptions that leaves the vector
-// fields empty; callers that want vector/hybrid search should use
-// ServeWithOptions directly.
-func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir string) error {
-	return ServeWithOptions(ctx, ServeOptions{
-		Engine:         engine,
-		AttachmentsDir: attachmentsDir,
-		DataDir:        dataDir,
-	})
-}
-
-// ServeWithOptions creates an MCP server from opts and serves over stdio.
-// It blocks until stdin is closed or the context is cancelled.
-func ServeWithOptions(ctx context.Context, opts ServeOptions) error {
+// newMCPServer builds an MCP server with all tools registered from opts.
+// Shared by ServeWithOptions (stdio) and ServeHTTPWithOptions (HTTP).
+func newMCPServer(opts ServeOptions) *server.MCPServer {
 	s := server.NewMCPServer(
 		"msgvault",
 		"1.0.0",
@@ -128,8 +117,67 @@ func ServeWithOptions(ctx context.Context, opts ServeOptions) error {
 		s.AddTool(findSimilarMessagesTool(), h.findSimilarMessages)
 	}
 
+	return s
+}
+
+// Serve creates an MCP server with email archive tools and serves over stdio.
+// It blocks until stdin is closed or the context is cancelled.
+// dataDir is the base data directory (e.g., ~/.msgvault) used for deletions.
+//
+// Serve is a thin wrapper around ServeWithOptions that leaves the vector
+// fields empty; callers that want vector/hybrid search should use
+// ServeWithOptions directly.
+func Serve(ctx context.Context, engine query.Engine, attachmentsDir, dataDir string) error {
+	return ServeWithOptions(ctx, ServeOptions{
+		Engine:         engine,
+		AttachmentsDir: attachmentsDir,
+		DataDir:        dataDir,
+	})
+}
+
+// ServeWithOptions creates an MCP server from opts and serves over stdio.
+// It blocks until stdin is closed or the context is cancelled.
+func ServeWithOptions(ctx context.Context, opts ServeOptions) error {
+	s := newMCPServer(opts)
 	stdio := server.NewStdioServer(s)
 	return stdio.Listen(ctx, os.Stdin, os.Stdout)
+}
+
+// ServeHTTPWithOptions creates an MCP server from opts and serves over
+// StreamableHTTP on the given address. Useful for daemonized deployments
+// where remote MCP clients (Claude Desktop, IDE plugins, custom
+// integrations) connect over a network rather than a local stdin/stdout
+// pipe.
+//
+// When ctx is canceled (e.g. on SIGINT in the daemon), the HTTP server
+// is shut down gracefully via httpServer.Shutdown so in-flight requests
+// can complete. Mirrors how ServeWithOptions threads the context through
+// the stdio Listen call.
+func ServeHTTPWithOptions(ctx context.Context, opts ServeOptions, addr string) error {
+	s := newMCPServer(opts)
+	httpServer := server.NewStreamableHTTPServer(s)
+	fmt.Fprintf(os.Stderr, "Starting MCP server on %s\n", addr)
+
+	errCh := make(chan error, 1)
+	go func() {
+		if err := httpServer.Start(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		// Graceful shutdown with a short bound; in-flight tool calls
+		// usually finish in milliseconds, so 10s is plenty.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutdownCtx)
+		return ctx.Err()
+	}
 }
 
 func searchMessagesTool(vectorAvailable bool) mcp.Tool {
