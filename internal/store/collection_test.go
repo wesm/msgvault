@@ -169,6 +169,27 @@ func TestCollection_Idempotent(t *testing.T) {
 	})
 }
 
+// TestCollection_DefaultAllIsImmutable verifies that explicit
+// add/remove/delete on the auto-managed "All" collection are rejected
+// with ErrCollectionImmutable. Otherwise the next EnsureDefaultCollection
+// call would silently revert the change, surprising the user.
+func TestCollection_DefaultAllIsImmutable(t *testing.T) {
+	f := storetest.New(t)
+	st := f.Store
+
+	testutil.MustNoErr(t, st.EnsureDefaultCollection(), "EnsureDefaultCollection")
+
+	if err := st.AddSourcesToCollection("All", []int64{f.Source.ID}); err != store.ErrCollectionImmutable {
+		t.Errorf("AddSourcesToCollection(All) = %v, want ErrCollectionImmutable", err)
+	}
+	if err := st.RemoveSourcesFromCollection("All", []int64{f.Source.ID}); err != store.ErrCollectionImmutable {
+		t.Errorf("RemoveSourcesFromCollection(All) = %v, want ErrCollectionImmutable", err)
+	}
+	if err := st.DeleteCollection("All"); err != store.ErrCollectionImmutable {
+		t.Errorf("DeleteCollection(All) = %v, want ErrCollectionImmutable", err)
+	}
+}
+
 func TestCollection_DefaultAllIncremental(t *testing.T) {
 	f := storetest.New(t)
 	st := f.Store

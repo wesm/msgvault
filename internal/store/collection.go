@@ -25,21 +25,36 @@ type CollectionWithSources struct {
 	MessageCount int64
 }
 
+// DefaultCollectionName is the always-present collection that mirrors
+// every source. It is auto-managed by EnsureDefaultCollection on every
+// schema init, so explicit add/remove/delete operations against it are
+// rejected; the next CLI invocation would silently revert any change.
+const DefaultCollectionName = "All"
+
 // ErrCollectionNotFound is returned when a collection lookup has no hits.
 var ErrCollectionNotFound = errors.New("collection not found")
 
-// EnsureDefaultCollection creates the "All" collection if it doesn't
-// exist and adds all current sources to it. Safe to call on every
-// schema init.
+// ErrCollectionImmutable is returned when an explicit mutation is
+// attempted against the auto-managed default collection.
+var ErrCollectionImmutable = errors.New(
+	"the \"All\" collection is auto-managed and cannot be modified by hand",
+)
+
+// EnsureDefaultCollection creates the auto-managed default collection
+// if it doesn't exist and adds all current sources to it. Safe to call
+// on every schema init. Mutations to this collection are rejected by
+// AddSourcesToCollection / RemoveSourcesFromCollection / DeleteCollection
+// so users don't get a silent revert on the next CLI invocation.
 func (s *Store) EnsureDefaultCollection() error {
 	var id int64
 	err := s.db.QueryRow(
-		`SELECT id FROM collections WHERE name = 'All'`,
+		`SELECT id FROM collections WHERE name = ?`, DefaultCollectionName,
 	).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		res, err := s.db.Exec(
 			`INSERT INTO collections (name, description)
-			 VALUES ('All', 'All accounts')`,
+			 VALUES (?, 'All accounts')`,
+			DefaultCollectionName,
 		)
 		if err != nil {
 			return fmt.Errorf("create default collection: %w", err)
@@ -196,7 +211,11 @@ func (s *Store) getCollectionID(name string) (int64, error) {
 }
 
 // AddSourcesToCollection attaches sources to a collection. Idempotent.
+// Rejects mutations of the auto-managed default collection.
 func (s *Store) AddSourcesToCollection(name string, sourceIDs []int64) error {
+	if name == DefaultCollectionName {
+		return ErrCollectionImmutable
+	}
 	if err := s.validateSourceIDs(sourceIDs); err != nil {
 		return err
 	}
@@ -220,7 +239,11 @@ func (s *Store) AddSourcesToCollection(name string, sourceIDs []int64) error {
 }
 
 // RemoveSourcesFromCollection detaches sources. Idempotent.
+// Rejects mutations of the auto-managed default collection.
 func (s *Store) RemoveSourcesFromCollection(name string, sourceIDs []int64) error {
+	if name == DefaultCollectionName {
+		return ErrCollectionImmutable
+	}
 	if err := s.validateSourceIDs(sourceIDs); err != nil {
 		return err
 	}
@@ -243,7 +266,11 @@ func (s *Store) RemoveSourcesFromCollection(name string, sourceIDs []int64) erro
 }
 
 // DeleteCollection drops the collection. Sources and messages untouched.
+// Rejects deletion of the auto-managed default collection.
 func (s *Store) DeleteCollection(name string) error {
+	if name == DefaultCollectionName {
+		return ErrCollectionImmutable
+	}
 	res, err := s.db.Exec(
 		`DELETE FROM collections WHERE name = ?`, name,
 	)
@@ -278,10 +305,13 @@ func (s *Store) hydrateCollection(
 		}
 		sourceIDs = append(sourceIDs, sid)
 	}
-	_ = rows.Close()
+	// Idiomatic ordering: check rows.Err() before closing so the
+	// iteration error is observed against an open rows handle.
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
 		return nil, err
 	}
+	_ = rows.Close()
 
 	var count int64
 	if len(sourceIDs) > 0 {
