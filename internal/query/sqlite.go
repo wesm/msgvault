@@ -741,7 +741,7 @@ func (e *SQLiteEngine) GetMessageSummariesByIDs(ctx context.Context, ids []int64
 		LEFT JOIN message_recipients mr_sender ON mr_sender.message_id = m.id AND mr_sender.recipient_type = 'from'
 		LEFT JOIN participants p_sender ON p_sender.id = COALESCE(mr_sender.participant_id, m.sender_id)
 		LEFT JOIN conversations conv ON conv.id = m.conversation_id
-		WHERE m.id IN (%s) AND m.deleted_from_source_at IS NULL
+		WHERE m.id IN (%s) AND m.deleted_at IS NULL AND m.deleted_from_source_at IS NULL
 	`, strings.Join(placeholders, ","))
 
 	rows, err := e.db.QueryContext(ctx, q, args...)
