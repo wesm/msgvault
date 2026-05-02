@@ -513,7 +513,7 @@ func TestInitSchema_AddsDeletedAtToLegacyMessagesTable(t *testing.T) {
 	// query uses both deleted_at and deleted_from_source_at.
 	var n int
 	if err := st.DB().QueryRow(
-		"SELECT COUNT(*) FROM messages WHERE " + store.LiveMessagesWhere(""),
+		"SELECT COUNT(*) FROM messages WHERE " + store.LiveMessagesWhere("", true),
 	).Scan(&n); err != nil {
 		t.Fatalf("post-migration live count: %v", err)
 	}

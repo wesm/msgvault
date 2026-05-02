@@ -236,7 +236,7 @@ func copyData(tx *sql.Tx, rowCount int) (*CopyResult, error) {
 		SELECT id FROM src.messages
 		WHERE %s
 		ORDER BY COALESCE(sent_at, received_at, internal_date)
-			DESC, id DESC LIMIT ?`, LiveMessagesWhere("")), rowCount); err != nil {
+			DESC, id DESC LIMIT ?`, LiveMessagesWhere("", true)), rowCount); err != nil {
 		return nil, fmt.Errorf("select messages: %w", err)
 	}
 

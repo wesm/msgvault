@@ -854,7 +854,7 @@ func (s *Store) CountMessagesForSource(sourceID int64) (int64, error) {
 	var count int64
 	err := s.db.QueryRow(fmt.Sprintf(`
 		SELECT COUNT(*) FROM messages WHERE source_id = ? AND %s
-	`, LiveMessagesWhere("")), sourceID).Scan(&count)
+	`, LiveMessagesWhere("", true)), sourceID).Scan(&count)
 	return count, err
 }
 
@@ -865,7 +865,7 @@ func (s *Store) CountMessagesWithRaw(sourceID int64) (int64, error) {
 		SELECT COUNT(*) FROM messages m
 		JOIN message_raw mr ON m.id = mr.message_id
 		WHERE m.source_id = ? AND %s
-	`, LiveMessagesWhere("m")), sourceID).Scan(&count)
+	`, LiveMessagesWhere("m", true)), sourceID).Scan(&count)
 	return count, err
 }
 
@@ -873,7 +873,7 @@ func (s *Store) CountMessagesWithRaw(sourceID int64) (int64, error) {
 // Uses reservoir sampling with random offsets for O(limit) performance on large tables,
 // falling back to ORDER BY RANDOM() for small tables where the overhead isn't significant.
 func (s *Store) GetRandomMessageIDs(sourceID int64, limit int) ([]int64, error) {
-	live := LiveMessagesWhere("")
+	live := LiveMessagesWhere("", true)
 	// Get total count first
 	var total int64
 	err := s.db.QueryRow(fmt.Sprintf(`

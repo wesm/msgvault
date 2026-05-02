@@ -530,27 +530,27 @@ func (s *Store) GetStatsForScope(sourceIDs []int64) (*Stats, error) {
 			dest  *int64
 		}{
 			{
-				"SELECT COUNT(*) FROM messages WHERE " + LiveMessagesWhere(""),
+				"SELECT COUNT(*) FROM messages WHERE " + LiveMessagesWhere("", true),
 				nil,
 				&stats.MessageCount,
 			},
 			{
 				"SELECT COUNT(*) FROM conversations WHERE EXISTS (" +
-					"SELECT 1 FROM messages m WHERE m.conversation_id = conversations.id AND " + LiveMessagesWhere("m") +
+					"SELECT 1 FROM messages m WHERE m.conversation_id = conversations.id AND " + LiveMessagesWhere("m", true) +
 					")",
 				nil,
 				&stats.ThreadCount,
 			},
 			{
 				"SELECT COUNT(*) FROM attachments a WHERE EXISTS (" +
-					"SELECT 1 FROM messages m WHERE m.id = a.message_id AND " + LiveMessagesWhere("m") +
+					"SELECT 1 FROM messages m WHERE m.id = a.message_id AND " + LiveMessagesWhere("m", true) +
 					")",
 				nil,
 				&stats.AttachmentCount,
 			},
 			{
 				"SELECT COUNT(*) FROM labels l WHERE EXISTS (" +
-					"SELECT 1 FROM message_labels ml JOIN messages m ON m.id = ml.message_id WHERE ml.label_id = l.id AND " + LiveMessagesWhere("m") +
+					"SELECT 1 FROM message_labels ml JOIN messages m ON m.id = ml.message_id WHERE ml.label_id = l.id AND " + LiveMessagesWhere("m", true) +
 					")",
 				nil,
 				&stats.LabelCount,
@@ -585,25 +585,25 @@ func (s *Store) GetStatsForScope(sourceIDs []int64) (*Stats, error) {
 			dest  *int64
 		}{
 			{
-				"SELECT COUNT(*) FROM messages WHERE " + LiveMessagesWhere("") + " AND " + inClause,
+				"SELECT COUNT(*) FROM messages WHERE " + LiveMessagesWhere("", true) + " AND " + inClause,
 				cloneArgs(),
 				&stats.MessageCount,
 			},
 			{
-				"SELECT COUNT(DISTINCT conversation_id) FROM messages WHERE " + LiveMessagesWhere("") + " AND " + inClause,
+				"SELECT COUNT(DISTINCT conversation_id) FROM messages WHERE " + LiveMessagesWhere("", true) + " AND " + inClause,
 				cloneArgs(),
 				&stats.ThreadCount,
 			},
 			{
 				"SELECT COUNT(*) FROM attachments a WHERE EXISTS (" +
-					"SELECT 1 FROM messages m WHERE m.id = a.message_id AND " + LiveMessagesWhere("m") +
+					"SELECT 1 FROM messages m WHERE m.id = a.message_id AND " + LiveMessagesWhere("m", true) +
 					" AND m." + inClause + ")",
 				cloneArgs(),
 				&stats.AttachmentCount,
 			},
 			{
 				"SELECT COUNT(DISTINCT ml.label_id) FROM message_labels ml " +
-					"JOIN messages m ON m.id = ml.message_id WHERE " + LiveMessagesWhere("m") +
+					"JOIN messages m ON m.id = ml.message_id WHERE " + LiveMessagesWhere("m", true) +
 					" AND m." + inClause,
 				cloneArgs(),
 				&stats.LabelCount,

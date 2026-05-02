@@ -13,6 +13,7 @@ import (
 	"time"
 
 	sqlite3 "github.com/mattn/go-sqlite3"
+	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/vector"
 )
 
@@ -304,7 +305,7 @@ func (b *Backend) seedPending(ctx context.Context, gen vector.GenerationID, now 
 	// query-time live filtering (dropDeletedFromSource,
 	// filteredMessageIDs) enforces the live-message contract.
 	rows, err := b.mainDB.QueryContext(ctx,
-		`SELECT id FROM messages WHERE deleted_at IS NULL AND deleted_from_source_at IS NULL`)
+		fmt.Sprintf(`SELECT id FROM messages WHERE %s`, store.LiveMessagesWhere("", true)))
 	if err != nil {
 		return fmt.Errorf("select messages: %w", err)
 	}
@@ -813,9 +814,9 @@ func (b *Backend) dropDeletedFromSource(ctx context.Context, hits []vector.Hit) 
 	if err != nil {
 		return nil, fmt.Errorf("encode hit ids: %w", err)
 	}
-	q := `SELECT id FROM messages
+	q := fmt.Sprintf(`SELECT id FROM messages
 	       WHERE id IN (SELECT value FROM json_each(?))
-	         AND deleted_at IS NULL AND deleted_from_source_at IS NULL`
+	         AND %s`, store.LiveMessagesWhere("", true))
 	rows, err := b.mainDB.QueryContext(ctx, q, string(blob))
 	if err != nil {
 		return nil, fmt.Errorf("live-hit filter: %w", err)
@@ -844,7 +845,7 @@ func (b *Backend) dropDeletedFromSource(ctx context.Context, hits []vector.Hit) 
 // filteredMessageIDs runs the filter against the main DB and returns
 // matching message IDs. See spec §5.3.
 func (b *Backend) filteredMessageIDs(ctx context.Context, f vector.Filter) ([]int64, error) {
-	clauses := []string{"m.deleted_at IS NULL AND m.deleted_from_source_at IS NULL"}
+	clauses := []string{store.LiveMessagesWhere("m", true)}
 	var args []any
 
 	if len(f.SourceIDs) > 0 {

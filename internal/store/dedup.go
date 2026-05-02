@@ -67,7 +67,7 @@ func (s *Store) FindDuplicatesByRFC822ID(sourceIDs ...int64) ([]DuplicateGroupKe
 		FROM messages
 		WHERE rfc822_message_id IS NOT NULL
 		  AND rfc822_message_id != ''
-		  AND ` + LiveMessagesWhere("")
+		  AND ` + LiveMessagesWhere("", true)
 	var args []any
 	if len(sourceIDs) > 0 {
 		placeholders := make([]string, len(sourceIDs))
@@ -127,7 +127,7 @@ func (s *Store) GetDuplicateGroupMessages(
 		FROM messages m
 		JOIN sources s ON s.id = m.source_id
 		LEFT JOIN message_raw mr ON mr.message_id = m.id
-		WHERE m.rfc822_message_id = ? AND ` + LiveMessagesWhere("m")
+		WHERE m.rfc822_message_id = ? AND ` + LiveMessagesWhere("m", true)
 	args := []any{rfc822ID}
 	if len(sourceIDs) > 0 {
 		placeholders := make([]string, len(sourceIDs))
@@ -259,7 +259,7 @@ func (s *Store) GetAllRawMIMECandidates(
 		FROM messages m
 		JOIN sources s ON s.id = m.source_id
 		JOIN message_raw mr ON mr.message_id = m.id
-		WHERE ` + LiveMessagesWhere("m")
+		WHERE ` + LiveMessagesWhere("m", true)
 	var args []any
 	if len(sourceIDs) > 0 {
 		placeholders := make([]string, len(sourceIDs))
@@ -444,7 +444,7 @@ func (s *Store) DeleteAllDeduped() (deleted int64, distinctBatches int64, err er
 }
 
 func (s *Store) CountActiveMessages(sourceIDs ...int64) (int64, error) {
-	query := "SELECT COUNT(*) FROM messages WHERE " + LiveMessagesWhere("")
+	query := "SELECT COUNT(*) FROM messages WHERE " + LiveMessagesWhere("", true)
 	var args []any
 	if len(sourceIDs) > 0 {
 		placeholders := make([]string, len(sourceIDs))
@@ -463,7 +463,7 @@ func (s *Store) CountMessagesWithoutRFC822ID(sourceIDs ...int64) (int64, error) 
 	q := `SELECT COUNT(*) FROM messages m
 		JOIN message_raw mr ON mr.message_id = m.id
 		WHERE (m.rfc822_message_id IS NULL OR m.rfc822_message_id = '')
-		  AND ` + LiveMessagesWhere("m")
+		  AND ` + LiveMessagesWhere("m", true)
 	var args []any
 	if len(sourceIDs) > 0 {
 		placeholders := make([]string, len(sourceIDs))
@@ -497,7 +497,7 @@ func (s *Store) BackfillRFC822IDs(
 	countQ := `SELECT COUNT(*) FROM messages m
 		JOIN message_raw mr ON mr.message_id = m.id
 		WHERE (m.rfc822_message_id IS NULL OR m.rfc822_message_id = '')
-		  AND ` + LiveMessagesWhere("m") + scopeClause
+		  AND ` + LiveMessagesWhere("m", true) + scopeClause
 	err = s.db.QueryRow(countQ, scopeArgs...).Scan(&total)
 	if err != nil {
 		return 0, 0, fmt.Errorf("count backfill candidates: %w", err)
@@ -513,7 +513,7 @@ func (s *Store) BackfillRFC822IDs(
 		batchQ := `SELECT m.id FROM messages m
 			JOIN message_raw mr ON mr.message_id = m.id
 			WHERE (m.rfc822_message_id IS NULL OR m.rfc822_message_id = '')
-			  AND ` + LiveMessagesWhere("m") + `
+			  AND ` + LiveMessagesWhere("m", true) + `
 			  AND m.id > ?` + scopeClause + `
 			ORDER BY m.id
 			LIMIT ?`

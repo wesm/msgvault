@@ -15,6 +15,7 @@ import (
 
 	_ "github.com/marcboeker/go-duckdb"
 	"github.com/wesm/msgvault/internal/search"
+	"github.com/wesm/msgvault/internal/store"
 )
 
 // DuckDBEngine implements Engine using DuckDB for fast Parquet queries.
@@ -653,7 +654,7 @@ func (e *DuckDBEngine) buildWhereClause(opts AggregateOptions, keyColumns ...str
 	// message_type IS NULL and '' handle old data without the column.
 	conditions = append(conditions, "(msg.message_type = 'email' OR msg.message_type IS NULL OR msg.message_type = '')")
 
-	conditions = append(conditions, "msg.deleted_at IS NULL")
+	conditions = append(conditions, store.LiveMessagesWhere("msg", opts.HideDeletedFromSource))
 	conditions, args = appendSourceFilter(conditions, args, "msg.", opts.SourceID, opts.SourceIDs)
 
 	if opts.After != nil {
@@ -668,9 +669,6 @@ func (e *DuckDBEngine) buildWhereClause(opts AggregateOptions, keyColumns ...str
 
 	if opts.WithAttachmentsOnly {
 		conditions = append(conditions, "msg.has_attachments = 1")
-	}
-	if opts.HideDeletedFromSource {
-		conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
 	}
 
 	// Text search filter for aggregates - filter on view's key columns
@@ -857,7 +855,7 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 	// message_type IS NULL and '' handle old data without the column.
 	conditions = append(conditions, "(msg.message_type = 'email' OR msg.message_type IS NULL OR msg.message_type = '')")
 
-	conditions = append(conditions, "msg.deleted_at IS NULL")
+	conditions = append(conditions, store.LiveMessagesWhere("msg", filter.HideDeletedFromSource))
 	conditions, args = appendSourceFilter(conditions, args, "msg.", filter.SourceID, filter.SourceIDs)
 
 	if filter.ConversationID != nil {
@@ -877,9 +875,6 @@ func (e *DuckDBEngine) buildFilterConditions(filter MessageFilter) (string, []in
 
 	if filter.WithAttachmentsOnly {
 		conditions = append(conditions, "msg.has_attachments = true")
-	}
-	if filter.HideDeletedFromSource {
-		conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
 	}
 
 	// Sender filter - check both message_recipients (email) and direct sender_id (WhatsApp/chat)
@@ -1042,6 +1037,11 @@ func (e *DuckDBEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 		return nil, err
 	}
 
+	// Reconcile opts.HideDeletedFromSource into filter so the helper
+	// inside buildFilterConditions sees the OR of both fields.
+	if opts.HideDeletedFromSource {
+		filter.HideDeletedFromSource = true
+	}
 	where, args := e.buildFilterConditions(filter)
 
 	// Add opts-based conditions (source_id, date range, attachment filter)
@@ -1059,9 +1059,6 @@ func (e *DuckDBEngine) SubAggregate(ctx context.Context, filter MessageFilter, g
 	}
 	if opts.WithAttachmentsOnly {
 		where += " AND msg.has_attachments = true"
-	}
-	if opts.HideDeletedFromSource {
-		where += " AND msg.deleted_from_source_at IS NULL"
 	}
 
 	// Add search query conditions using the view's key columns
@@ -1118,14 +1115,11 @@ func (e *DuckDBEngine) GetTotalStats(ctx context.Context, opts StatsOptions) (*T
 	// Restrict to email messages only; NULL and '' handle pre-message_type data.
 	conditions = append(conditions, emailOnlyFilterMsg)
 
-	conditions = append(conditions, "msg.deleted_at IS NULL")
+	conditions = append(conditions, store.LiveMessagesWhere("msg", opts.HideDeletedFromSource))
 	conditions, args = appendSourceFilter(conditions, args, "msg.", opts.SourceID, opts.SourceIDs)
 
 	if opts.WithAttachmentsOnly {
 		conditions = append(conditions, "msg.has_attachments = 1")
-	}
-	if opts.HideDeletedFromSource {
-		conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
 	}
 
 	// Search filter — uses EXISTS subqueries so no row multiplication.
@@ -1469,8 +1463,9 @@ func (e *DuckDBEngine) Search(ctx context.Context, q *search.Query, limit, offse
 	var args []interface{}
 	var joins []string
 
-	// Exclude rows soft-deleted by deduplicate (sqlite_scan path).
-	conditions = append(conditions, "m.deleted_at IS NULL")
+	// Exclude rows soft-deleted by deduplicate; gate source-deleted on
+	// q.HideDeleted via the helper.
+	conditions = append(conditions, store.LiveMessagesWhere("m", q.HideDeleted))
 
 	// From filter
 	if len(q.FromAddrs) > 0 {
@@ -1559,11 +1554,6 @@ func (e *DuckDBEngine) Search(ctx context.Context, q *search.Query, limit, offse
 
 	// Account filter
 	conditions, args = appendSourceFilter(conditions, args, "m.", nil, q.AccountIDs)
-
-	// Hide-deleted filter
-	if q.HideDeleted {
-		conditions = append(conditions, "m.deleted_from_source_at IS NULL")
-	}
 
 	if limit == 0 {
 		limit = 100
@@ -1666,9 +1656,10 @@ func (e *DuckDBEngine) GetGmailIDsByFilter(ctx context.Context, filter MessageFi
 	var conditions []string
 	var args []interface{}
 
-	// Always exclude deleted messages
-	conditions = append(conditions, "msg.deleted_at IS NULL")
-	conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
+	// Always exclude deleted messages.
+	// Always pass true: this surface feeds remote-deletion staging and
+	// must never honor an opt-in.
+	conditions = append(conditions, store.LiveMessagesWhere("msg", true))
 	conditions, args = appendSourceFilter(conditions, args, "msg.", filter.SourceID, filter.SourceIDs)
 
 	// Use EXISTS subqueries for filtering (becomes semi-joins, no duplicates)
@@ -2309,7 +2300,7 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 	conditions = append(conditions, emailOnlyFilterMsg)
 
 	// Apply basic filter conditions (ignoring join flags for search - we handle those differently)
-	conditions = append(conditions, "msg.deleted_at IS NULL")
+	conditions = append(conditions, store.LiveMessagesWhere("msg", filter.HideDeletedFromSource))
 	conditions, args = appendSourceFilter(conditions, args, "msg.", filter.SourceID, filter.SourceIDs)
 	if filter.After != nil {
 		conditions = append(conditions, "msg.sent_at >= CAST(? AS TIMESTAMP)")
@@ -2321,9 +2312,6 @@ func (e *DuckDBEngine) buildSearchConditions(q *search.Query, filter MessageFilt
 	}
 	if filter.WithAttachmentsOnly {
 		conditions = append(conditions, "msg.has_attachments = true")
-	}
-	if filter.HideDeletedFromSource {
-		conditions = append(conditions, "msg.deleted_from_source_at IS NULL")
 	}
 	// Sender filter - check both message_recipients (email/phone) and direct sender_id (WhatsApp/chat)
 	if filter.Sender != "" {
