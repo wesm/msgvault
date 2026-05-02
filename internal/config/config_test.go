@@ -1565,3 +1565,60 @@ func TestMicrosoftConfig_DefaultTenant(t *testing.T) {
 		t.Errorf("EffectiveTenantID() = %q, want %q", cfg.Microsoft.EffectiveTenantID(), "common")
 	}
 }
+
+func TestDatabasePath(t *testing.T) {
+	t.Run("plain filesystem path passes through", func(t *testing.T) {
+		cfg := &Config{}
+		cfg.Data.DataDir = "/tmp/data"
+		got, err := cfg.DatabasePath()
+		if err != nil {
+			t.Fatalf("DatabasePath: %v", err)
+		}
+		want := filepath.Join("/tmp/data", "msgvault.db")
+		if got != want {
+			t.Errorf("DatabasePath() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("file: URI is stripped", func(t *testing.T) {
+		cfg := &Config{}
+		cfg.Data.DatabaseURL = "file:/var/lib/msgvault.db"
+		got, err := cfg.DatabasePath()
+		if err != nil {
+			t.Fatalf("DatabasePath: %v", err)
+		}
+		if got != "/var/lib/msgvault.db" {
+			t.Errorf("DatabasePath() = %q, want '/var/lib/msgvault.db'", got)
+		}
+	})
+
+	t.Run("file: URI with query string drops query", func(t *testing.T) {
+		cfg := &Config{}
+		cfg.Data.DatabaseURL = "file:/var/lib/msgvault.db?_journal_mode=WAL&_busy_timeout=5000"
+		got, err := cfg.DatabasePath()
+		if err != nil {
+			t.Fatalf("DatabasePath: %v", err)
+		}
+		if got != "/var/lib/msgvault.db" {
+			t.Errorf("DatabasePath() = %q, want '/var/lib/msgvault.db'", got)
+		}
+	})
+
+	t.Run("postgres:// is rejected", func(t *testing.T) {
+		cfg := &Config{}
+		cfg.Data.DatabaseURL = "postgres://user@host:5432/db"
+		_, err := cfg.DatabasePath()
+		if err == nil {
+			t.Fatal("DatabasePath: expected error for non-file DSN, got nil")
+		}
+	})
+
+	t.Run("empty file: URI is rejected", func(t *testing.T) {
+		cfg := &Config{}
+		cfg.Data.DatabaseURL = "file:"
+		_, err := cfg.DatabasePath()
+		if err == nil {
+			t.Fatal("DatabasePath: expected error for empty file: URI, got nil")
+		}
+	})
+}

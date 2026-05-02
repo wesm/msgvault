@@ -85,7 +85,13 @@ func runDeduplicate(cmd *cobra.Command, _ []string) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	dbPath := cfg.DatabaseDSN()
+	// dbPath is the on-disk filesystem path used by VACUUM INTO
+	// backup; resolving it now also rejects non-file DSNs (e.g.
+	// postgres://) up-front rather than at the first backup attempt.
+	dbPath, err := cfg.DatabasePath()
+	if err != nil {
+		return fmt.Errorf("resolve database path: %w", err)
+	}
 
 	deletionsDir := filepath.Join(cfg.Data.DataDir, "deletions")
 
@@ -220,12 +226,15 @@ func runDeduplicate(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	engine := dedup.NewEngine(st, config, logger)
-
 	if len(accountSourceIDs) == 0 {
+		// Per-source path constructs its own scoped engines per
+		// source, so no top-level engine is needed here.
 		return runDeduplicatePerSource(cmd, st, dbPath, config)
 	}
 
+	// Single-account/single-collection path uses one engine shared
+	// across the whole scope.
+	engine := dedup.NewEngine(st, config, logger)
 	return runDeduplicateOnce(cmd, st, dbPath, config, engine)
 }
 

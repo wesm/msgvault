@@ -334,6 +334,39 @@ func (c *Config) DatabaseDSN() string {
 	return filepath.Join(c.Data.DataDir, "msgvault.db")
 }
 
+// DatabasePath returns the on-disk SQLite filesystem path for backup
+// operations (VACUUM INTO, copies). It accepts the plain filesystem
+// path and the SQLite "file:" URI form, stripping any URI query string.
+// Returns an error for non-file DSNs (e.g. "postgres://..."), which
+// the SQLite-only backup helpers cannot operate on.
+func (c *Config) DatabasePath() (string, error) {
+	dsn := c.DatabaseDSN()
+	switch {
+	case strings.HasPrefix(dsn, "file:"):
+		// file: URI: strip scheme and any "?query" suffix.
+		// SQLite accepts file:/abs/path and file:rel/path; both are
+		// just filesystem paths once the scheme is removed.
+		path := strings.TrimPrefix(dsn, "file:")
+		if i := strings.IndexByte(path, '?'); i >= 0 {
+			path = path[:i]
+		}
+		if path == "" {
+			return "", fmt.Errorf("empty file: URI in database DSN: %q", dsn)
+		}
+		return path, nil
+	case strings.Contains(dsn, "://"):
+		// postgres://, mysql://, etc. — non-file DSN; backup is
+		// SQLite-specific and the caller can't operate on these.
+		return "", fmt.Errorf(
+			"backup operations require a SQLite filesystem DSN; "+
+				"got non-file DSN %q (set [data].database_url to a "+
+				"plain filesystem path or file: URI)", dsn,
+		)
+	default:
+		return dsn, nil
+	}
+}
+
 // AttachmentsDir returns the path to the attachments directory.
 func (c *Config) AttachmentsDir() string {
 	return filepath.Join(c.Data.DataDir, "attachments")
