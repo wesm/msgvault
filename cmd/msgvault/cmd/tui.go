@@ -291,11 +291,16 @@ func cacheNeedsBuild(dbPath, analyticsDir string) cacheStaleness {
 	// Parquet export, so a dedup run after the last cache build leaves
 	// stale duplicate rows in the cache. Detect that by counting hides
 	// since LastSyncAt and force a full rebuild if any are present.
+	// The deleted_from_source_at IS NULL clause keeps the count
+	// disjoint from the deletedSinceBuild count above so a row that is
+	// both source-deleted and dedup-hidden after LastSyncAt is reported
+	// once (as a deletion), not double-counted in the reason string.
 	var hiddenSinceBuild int64
 	err = db.DB().QueryRow(`
 		SELECT COUNT(*) FROM messages
 		WHERE deleted_at IS NOT NULL
 		  AND deleted_at >= ?
+		  AND deleted_from_source_at IS NULL
 	`, syncAtStr).Scan(&hiddenSinceBuild)
 	if err != nil {
 		return cacheStaleness{
