@@ -262,6 +262,15 @@ func (e *Engine) Scan(ctx context.Context) (*Report, error) {
 		return nil, fmt.Errorf("AccountSourceIDs must be non-empty; use per-source iteration for unscoped dedup")
 	}
 
+	started := time.Now()
+	e.logger.Info("dedup scan start",
+		"account", e.config.Account,
+		"sources", len(e.config.AccountSourceIDs),
+		"is_collection", e.config.ScopeIsCollection,
+		"content_hash_fallback", e.config.ContentHashFallback,
+		"dry_run", e.config.DryRun,
+	)
+
 	count, err := e.store.CountMessagesWithoutRFC822ID(
 		e.config.AccountSourceIDs...,
 	)
@@ -433,6 +442,14 @@ func (e *Engine) Scan(ctx context.Context) (*Report, error) {
 		[]DuplicateGroup(nil), report.Groups[:maxSamples]...,
 	)
 
+	e.logger.Info("dedup scan done",
+		"groups", report.DuplicateGroups,
+		"messages_to_prune", report.DuplicateMessages,
+		"content_hash_groups", report.ContentHashGroups,
+		"backfilled", report.BackfilledCount,
+		"skipped_decompression_errors", report.SkippedDecompressionErrors,
+		"duration_ms", time.Since(started).Milliseconds(),
+	)
 	return report, nil
 }
 
@@ -788,6 +805,15 @@ func (e *Engine) Execute(
 ) (*ExecutionSummary, error) {
 	summary := &ExecutionSummary{BatchID: batchID}
 
+	started := time.Now()
+	e.logger.Info("dedup execute start",
+		"batch", batchID,
+		"account", e.config.Account,
+		"groups", report.DuplicateGroups,
+		"messages_to_prune", report.DuplicateMessages,
+		"stage_remote_deletion", e.config.DeleteDupsFromSourceServer,
+	)
+
 	remoteByKey := make(map[remoteKey][]string)
 
 	for i, group := range report.Groups {
@@ -846,6 +872,15 @@ func (e *Engine) Execute(
 		summary.StagedManifests = staged
 	}
 
+	e.logger.Info("dedup execute done",
+		"batch", batchID,
+		"groups_merged", summary.GroupsMerged,
+		"messages_removed", summary.MessagesRemoved,
+		"labels_transferred", summary.LabelsTransferred,
+		"raw_mime_backfilled", summary.RawMIMEBackfilled,
+		"staged_manifests", len(summary.StagedManifests),
+		"duration_ms", time.Since(started).Milliseconds(),
+	)
 	return summary, nil
 }
 
@@ -971,12 +1006,27 @@ func dedupStrings(in []string) []string {
 // are joined into a single returned error alongside the restored row
 // count and the list of manifests already in progress.
 func (e *Engine) Undo(batchID string) (int64, []string, error) {
+	started := time.Now()
+	e.logger.Info("dedup undo start", "batch", batchID)
+
 	restored, err := e.store.UndoDedup(batchID)
 	if err != nil {
+		e.logger.Warn("dedup undo failed",
+			"batch", batchID,
+			"duration_ms", time.Since(started).Milliseconds(),
+			"error", err.Error(),
+		)
 		return 0, nil, err
 	}
 
 	if e.config.DeletionsDir == "" {
+		e.logger.Info("dedup undo done",
+			"batch", batchID,
+			"restored", restored,
+			"manifests_cancelled", 0,
+			"manifests_still_running", 0,
+			"duration_ms", time.Since(started).Milliseconds(),
+		)
 		return restored, nil, nil
 	}
 
@@ -995,6 +1045,7 @@ func (e *Engine) Undo(batchID string) (int64, []string, error) {
 
 	var stillExecuting []string
 	var cancelErrs []error
+	cancelled := 0
 	prefix := batchID + "-"
 	for _, m := range pending {
 		if !strings.HasPrefix(m.ID, prefix) {
@@ -1004,7 +1055,9 @@ func (e *Engine) Undo(batchID string) (int64, []string, error) {
 			cancelErrs = append(cancelErrs, fmt.Errorf(
 				"cancel manifest %s: %w", m.ID, err,
 			))
+			continue
 		}
+		cancelled++
 	}
 	for _, m := range inProgress {
 		if !strings.HasPrefix(m.ID, prefix) {
@@ -1012,6 +1065,14 @@ func (e *Engine) Undo(batchID string) (int64, []string, error) {
 		}
 		stillExecuting = append(stillExecuting, m.ID)
 	}
+	e.logger.Info("dedup undo done",
+		"batch", batchID,
+		"restored", restored,
+		"manifests_cancelled", cancelled,
+		"manifests_still_running", len(stillExecuting),
+		"cancel_errors", len(cancelErrs),
+		"duration_ms", time.Since(started).Milliseconds(),
+	)
 	if len(cancelErrs) > 0 {
 		return restored, stillExecuting, errors.Join(cancelErrs...)
 	}
