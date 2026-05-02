@@ -1430,6 +1430,10 @@ func MergeFilterIntoQuery(q *search.Query, filter MessageFilter) *search.Query {
 	merged.BccAddrs = append([]string(nil), q.BccAddrs...)
 	merged.SubjectTerms = append([]string(nil), q.SubjectTerms...)
 	merged.Labels = append([]string(nil), q.Labels...)
+	// Deep-copy AccountIDs alongside the other slices so the merged
+	// query never aliases the original's slice header. Filter overrides
+	// below replace the deep-copied slice when set.
+	merged.AccountIDs = append([]int64(nil), q.AccountIDs...)
 
 	// Account filter - always apply if set. Multi-source SourceIDs takes
 	// precedence over single SourceID, matching appendSourceFilter
