@@ -350,10 +350,18 @@ func (c *Config) DatabasePath() (string, error) {
 			return "", fmt.Errorf("parse file: URI %q: %w", dsn, err)
 		}
 		// SQLite accepts both file:/abs/path (Path) and file:rel/path
-		// (Opaque) shapes; url.Parse decodes percent-encoding for both.
+		// (Opaque) shapes. url.Parse decodes percent-encoding for Path
+		// but NOT for Opaque, so a relative file: URI like
+		// "file:my%20vault.db" leaves the encoding intact in u.Opaque
+		// and the on-disk filename never matches. PathUnescape handles
+		// the relative-form case explicitly.
 		path := u.Path
 		if path == "" {
-			path = u.Opaque
+			decoded, err := url.PathUnescape(u.Opaque)
+			if err != nil {
+				return "", fmt.Errorf("decode file: URI opaque part %q: %w", u.Opaque, err)
+			}
+			path = decoded
 		}
 		if path == "" {
 			return "", fmt.Errorf("empty file: URI in database DSN: %q", dsn)

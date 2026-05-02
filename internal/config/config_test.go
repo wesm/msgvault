@@ -1629,6 +1629,22 @@ func TestDatabasePath(t *testing.T) {
 		}
 	})
 
+	t.Run("file: URI relative path with percent-encoding (Opaque)", func(t *testing.T) {
+		// url.Parse decodes percent-encoding for u.Path but not u.Opaque,
+		// so DatabasePath has to PathUnescape the relative-form bytes
+		// itself. Without that, "file:my%20vault.db" never matches the
+		// on-disk filename "my vault.db" and backups break.
+		cfg := &Config{}
+		cfg.Data.DatabaseURL = "file:my%20vault.db"
+		got, err := cfg.DatabasePath()
+		if err != nil {
+			t.Fatalf("DatabasePath: %v", err)
+		}
+		if got != "my vault.db" {
+			t.Errorf("DatabasePath() = %q, want 'my vault.db'", got)
+		}
+	})
+
 	t.Run("postgres:// is rejected", func(t *testing.T) {
 		cfg := &Config{}
 		cfg.Data.DatabaseURL = "postgres://user@host:5432/db"
