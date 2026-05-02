@@ -85,11 +85,18 @@ Examples:
 		if searchMode != "fts" && searchOffset > 0 {
 			return fmt.Errorf("--offset is not supported with --mode=%s (pagination is single-page)", searchMode)
 		}
-		// Vector and hybrid modes need query text to embed; --account or
-		// --collection alone don't supply any. FTS still allows scoped
-		// queryless searches.
-		if searchMode != "fts" && queryStr == "" {
-			return fmt.Errorf("--mode=%s requires query text to embed; pass a query or use --mode=fts", searchMode)
+		// Vector and hybrid modes need free-text terms to embed; both
+		// an empty raw query and a filter-only query (e.g. `from:alice`)
+		// would fail at the embed call. Check both up front and surface
+		// a CLI error rather than a late engine-level one. FTS still
+		// allows scoped queryless searches.
+		if searchMode != "fts" {
+			if queryStr == "" {
+				return fmt.Errorf("--mode=%s requires query text to embed; pass a query or use --mode=fts", searchMode)
+			}
+			if len(search.Parse(queryStr).TextTerms) == 0 {
+				return fmt.Errorf("--mode=%s requires free-text terms to embed; %q parsed to filters only — add a search phrase or use --mode=fts", searchMode, queryStr)
+			}
 		}
 
 		// Resolve --account / --collection once, before the mode branch,

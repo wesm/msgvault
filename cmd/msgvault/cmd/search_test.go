@@ -425,6 +425,35 @@ func TestSearchCmd_VectorOrHybridRequireQueryText(t *testing.T) {
 	}
 }
 
+// TestSearchCmd_VectorOrHybridRejectFilterOnlyQuery rejects vector/
+// hybrid invocations whose query parses to filter terms only (no
+// free-text). The embed client needs text to vectorize, so a query
+// like `from:alice` would fail at the engine layer; reject it at the
+// CLI surface instead.
+func TestSearchCmd_VectorOrHybridRejectFilterOnlyQuery(t *testing.T) {
+	for _, mode := range []string{"vector", "hybrid"} {
+		t.Run(mode, func(t *testing.T) {
+			savedCfg := cfg
+			defer func() { cfg = savedCfg; resetSearchFlags() }()
+
+			cfg = &config.Config{}
+
+			root := newTestRootCmd()
+			root.AddCommand(searchCmd)
+			root.SetArgs([]string{
+				"search", "--mode", mode, "from:alice",
+			})
+			err := root.Execute()
+			if err == nil {
+				t.Fatalf("expected error for filter-only --mode=%s query", mode)
+			}
+			if !strings.Contains(err.Error(), "free-text terms") {
+				t.Errorf("error = %q, want substring 'free-text terms'", err)
+			}
+		})
+	}
+}
+
 // TestSearchCmd_MutualExclusion confirms --account and --collection are rejected together.
 func TestSearchCmd_MutualExclusion(t *testing.T) {
 	var a, b string
