@@ -141,36 +141,63 @@ func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied, deferr
 	return true, false, len(sources), len(normalized), nil
 }
 
+// StartupMigrationResult describes the outcome of RunStartupMigrations
+// so callers can log accurately. Notice is the user-facing string to
+// print to stderr (empty when nothing happened).
+type StartupMigrationResult struct {
+	// Applied is true when the legacy identity migration actually
+	// inserted per-account identity rows on this call.
+	Applied bool
+	// Deferred is true when the migration was parked because no
+	// source exists yet; addresses remain in the legacy config and
+	// will migrate on the next command after a source is created.
+	Deferred bool
+	// SourceCount is the number of sources the addresses were
+	// distributed across (only meaningful when Applied).
+	SourceCount int
+	// AddressCount is the post-normalization count of legacy
+	// addresses (meaningful for both Applied and Deferred).
+	AddressCount int
+	// Notice is the user-facing string the caller should print.
+	// Empty when there was nothing to report.
+	Notice string
+}
+
 // RunStartupMigrations runs all one-time data migrations that should execute
 // on every command launch. It is idempotent: already-applied migrations are
 // skipped. legacyIdentityAddresses comes from cfg.Identity.Addresses.
 //
-// Returns a non-empty notice string when migration was actually performed,
-// or when legacy [identity] addresses are configured but no source exists
-// yet (deferred path) so the user is told their config is parked rather
-// than silently dropped. Caller should print the notice to stderr.
-// Returns empty string when migration was already applied or had nothing
-// to migrate.
-func (s *Store) RunStartupMigrations(legacyIdentityAddresses []string) (string, error) {
+// The returned StartupMigrationResult's Notice field is non-empty when the
+// migration was performed (Applied) or when legacy addresses are parked
+// because no source exists yet (Deferred). Caller should print Notice to
+// stderr. The structured fields let the caller log the deferred and applied
+// paths distinctly.
+func (s *Store) RunStartupMigrations(legacyIdentityAddresses []string) (StartupMigrationResult, error) {
 	applied, deferred, sources, addrs, err := s.MigrateLegacyIdentityConfig(legacyIdentityAddresses)
 	if err != nil {
-		return "", err
+		return StartupMigrationResult{}, err
 	}
-	if deferred {
-		return fmt.Sprintf(
+	res := StartupMigrationResult{
+		Applied:      applied,
+		Deferred:     deferred,
+		SourceCount:  sources,
+		AddressCount: addrs,
+	}
+	switch {
+	case deferred:
+		res.Notice = fmt.Sprintf(
 			"Notice: legacy [identity] config has %d address(es) but no accounts exist yet.\n"+
 				"The migration will run on the next command after you add an account\n"+
 				"(e.g. 'msgvault add-account ...').",
 			addrs,
-		), nil
+		)
+	case applied:
+		res.Notice = fmt.Sprintf(
+			"Migrated legacy [identity] config to per-account identities (%d addresses across %d accounts).\n"+
+				"Run 'msgvault identity list' to review per-account identities;\n"+
+				"the [identity] block in config.toml is no longer used.",
+			addrs, sources,
+		)
 	}
-	if !applied {
-		return "", nil
-	}
-	return fmt.Sprintf(
-		"Migrated legacy [identity] config to per-account identities (%d addresses across %d accounts).\n"+
-			"Run 'msgvault identity list' to review per-account identities;\n"+
-			"the [identity] block in config.toml is no longer used.",
-		addrs, sources,
-	), nil
+	return res, nil
 }

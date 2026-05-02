@@ -16,18 +16,26 @@ import (
 // created. Always returns nil unless the migration itself errors.
 func runStartupMigrations(s *store.Store) error {
 	addrs := cfg.Identity.Addresses
-	notice, err := s.RunStartupMigrations(addrs)
+	res, err := s.RunStartupMigrations(addrs)
 	if err != nil {
 		logger.Warn("startup migration failed", "error", err)
 		return err
 	}
-	if notice != "" {
+	switch {
+	case res.Deferred:
+		logger.Warn("legacy [identity] block in config detected (migration deferred until a source exists)",
+			"address_count", res.AddressCount,
+			"hint", "run 'msgvault add-account ...' to create a source; the migration will retry on the next command")
+	case res.Applied:
 		logger.Warn("legacy [identity] block in config detected",
-			"count", len(addrs),
+			"address_count", res.AddressCount,
 			"hint", "please review per-account identities via 'msgvault identity list'")
 		logger.Warn("legacy identity migrated",
-			"addresses", len(addrs))
-		fmt.Fprintln(os.Stderr, notice)
+			"addresses", res.AddressCount,
+			"sources", res.SourceCount)
+	}
+	if res.Notice != "" {
+		fmt.Fprintln(os.Stderr, res.Notice)
 	}
 	return nil
 }
