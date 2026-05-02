@@ -569,6 +569,12 @@ func (e *Engine) GetMessageSummariesByIDs(ctx context.Context, ids []int64) ([]q
 	return out, nil
 }
 
+// GetMessageRaw returns raw MIME data for a message.
+// This operation is not supported in remote mode.
+func (e *Engine) GetMessageRaw(ctx context.Context, id int64) ([]byte, error) {
+	return nil, ErrNotSupported
+}
+
 // GetAttachment returns attachment metadata by ID.
 // This operation is not supported in remote mode.
 func (e *Engine) GetAttachment(ctx context.Context, id int64) (*query.AttachmentInfo, error) {

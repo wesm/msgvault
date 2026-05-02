@@ -1448,6 +1448,14 @@ func (e *DuckDBEngine) GetAttachment(ctx context.Context, id int64) (*Attachment
 	return nil, fmt.Errorf("GetAttachment requires SQLite: pass sqliteDB to NewDuckDBEngine")
 }
 
+// GetMessageRaw returns the decompressed raw MIME data for a message.
+func (e *DuckDBEngine) GetMessageRaw(ctx context.Context, id int64) ([]byte, error) {
+	if e.sqliteDB != nil {
+		return getMessageRawShared(ctx, e.sqliteDB, "", id)
+	}
+	return nil, fmt.Errorf("GetMessageRaw requires SQLite: pass sqliteDB to NewDuckDBEngine")
+}
+
 func (e *DuckDBEngine) getMessageByQuery(ctx context.Context, whereClause string, args ...interface{}) (*MessageDetail, error) {
 	return getMessageByQueryShared(ctx, e.db, "sqlite_db.", whereClause, args...)
 }

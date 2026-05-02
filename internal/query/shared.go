@@ -183,6 +183,38 @@ func extractBodyFromRawShared(ctx context.Context, db *sql.DB, tablePrefix strin
 	return parsed.GetBodyText(), nil
 }
 
+// getMessageRawShared retrieves and decompresses raw MIME data for a message.
+// Returns nil, nil if no raw data is stored.
+func getMessageRawShared(ctx context.Context, db *sql.DB, tablePrefix string, messageID int64) ([]byte, error) {
+	var compressed []byte
+	var compression sql.NullString
+
+	err := db.QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT raw_data, compression FROM %smessage_raw WHERE message_id = ?
+	`, tablePrefix), messageID).Scan(&compressed, &compression)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query message_raw for id %d: %w", messageID, err)
+	}
+
+	if compression.Valid && compression.String == "zlib" {
+		r, err := zlib.NewReader(bytes.NewReader(compressed))
+		if err != nil {
+			return nil, fmt.Errorf("zlib reader for id %d: %w", messageID, err)
+		}
+		defer func() { _ = r.Close() }()
+		raw, err := io.ReadAll(r)
+		if err != nil {
+			return nil, fmt.Errorf("zlib decompress message_raw id %d: %w", messageID, err)
+		}
+		return raw, nil
+	}
+
+	return compressed, nil
+}
+
 // getMessageByQueryShared retrieves a full message detail by an arbitrary WHERE clause.
 // tablePrefix is "" for direct SQLite or "sqlite_db." for DuckDB's sqlite_scan.
 func getMessageByQueryShared(ctx context.Context, db *sql.DB, tablePrefix string, whereClause string, args ...interface{}) (*MessageDetail, error) {
