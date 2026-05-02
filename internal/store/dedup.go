@@ -30,8 +30,13 @@ type DuplicateMessageRow struct {
 	HasRawMIME       bool
 	LabelCount       int
 	IsFromMe         bool
-	HasSentLabel     bool   // true if the message has the Gmail SENT label
-	FromEmail        string // lower-cased From: address (for identity-match sent detection)
+	HasSentLabel     bool // true if the message has the Gmail SENT label
+	// Raw From: address with original case preserved. The dedup engine
+	// normalizes via NormalizeIdentifierForCompare for identity-match
+	// sent detection, which is case-insensitive for email shapes and
+	// case-sensitive for synthetic identifiers (Matrix MXIDs, chat
+	// handles).
+	FromEmail string
 }
 
 // MergeResult holds the counts from a MergeDuplicates operation.

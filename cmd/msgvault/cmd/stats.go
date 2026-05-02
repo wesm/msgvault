@@ -59,6 +59,15 @@ Use --local to force local database.`,
 			}
 
 			sourceIDs := scope.SourceIDs()
+			// A collection with zero member sources resolves to a non-nil
+			// Scope (Collection set, Source nil) so IsEmpty above is false,
+			// but SourceIDs is empty. GetStatsForScope treats an empty
+			// slice as "unscoped" and would silently return archive-wide
+			// counts. Reject explicitly with the same shape as the
+			// IsEmpty branch above.
+			if len(sourceIDs) == 0 {
+				return fmt.Errorf("--collection %q has no member accounts", statsCollection)
+			}
 			dbStats, err := st.GetStatsForScope(sourceIDs)
 			if err != nil {
 				logger.Warn("stats failed", "error", err.Error())

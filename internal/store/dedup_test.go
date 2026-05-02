@@ -328,3 +328,50 @@ func TestStore_GetDuplicateGroupMessages_PreservesFromCase(t *testing.T) {
 		t.Errorf("FromEmail = %q, want %q (case must be preserved)", rows[0].FromEmail, mxid)
 	}
 }
+
+// TestStore_GetAllRawMIMECandidates_PreservesFromCase mirrors
+// TestStore_GetDuplicateGroupMessages_PreservesFromCase but covers the
+// content-hash candidate path. Both queries had the same SQL `LOWER()`
+// problem before iter12; both fixes need regression coverage so a
+// future refactor that reintroduces lowercasing in either query is
+// caught. Iter13 claude follow-up.
+func TestStore_GetAllRawMIMECandidates_PreservesFromCase(t *testing.T) {
+	f := storetest.New(t)
+
+	mxid := "@Bob:matrix.org"
+	pid := f.EnsureParticipant(mxid, "", "")
+
+	id := newRFC822Message(t, f, "msg-mxid-raw", "rfc822-mxid-raw")
+
+	if _, err := f.Store.DB().Exec(
+		f.Store.Rebind(`INSERT INTO message_recipients
+			(message_id, participant_id, recipient_type)
+			VALUES (?, ?, 'from')`),
+		id, pid,
+	); err != nil {
+		t.Fatalf("insert from recipient: %v", err)
+	}
+
+	// GetAllRawMIMECandidates only returns messages that have a raw
+	// MIME row, so synthesize one.
+	testutil.MustNoErr(t,
+		f.Store.UpsertMessageRaw(id, []byte("From: "+mxid+"\r\n\r\nbody")),
+		"UpsertMessageRaw",
+	)
+
+	cands, err := f.Store.GetAllRawMIMECandidates()
+	testutil.MustNoErr(t, err, "GetAllRawMIMECandidates")
+	var got *store.ContentHashCandidate
+	for i := range cands {
+		if cands[i].ID == id {
+			got = &cands[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("test message %d not in candidates: %+v", id, cands)
+	}
+	if got.FromEmail != mxid {
+		t.Errorf("FromEmail = %q, want %q (case must be preserved)", got.FromEmail, mxid)
+	}
+}
