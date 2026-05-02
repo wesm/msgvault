@@ -129,13 +129,15 @@ type DataConfig struct {
 
 // OAuthApp holds configuration for a named OAuth application.
 type OAuthApp struct {
-	ClientSecrets string `toml:"client_secrets"`
+	ClientSecrets     string `toml:"client_secrets"`
+	ServiceAccountKey string `toml:"service_account_key"`
 }
 
 // OAuthConfig holds OAuth configuration.
 type OAuthConfig struct {
-	ClientSecrets string              `toml:"client_secrets"`
-	Apps          map[string]OAuthApp `toml:"apps"`
+	ClientSecrets     string              `toml:"client_secrets"`
+	ServiceAccountKey string              `toml:"service_account_key"`
+	Apps              map[string]OAuthApp `toml:"apps"`
 }
 
 // ClientSecretsFor returns the client secrets path for the given app name.
@@ -160,14 +162,27 @@ func (o *OAuthConfig) ClientSecretsFor(name string) (string, error) {
 	return app.ClientSecrets, nil
 }
 
+// ServiceAccountKeyFor returns the service account key path for the given app name.
+// Empty name returns the default. Non-empty name looks up Apps[name].
+// Returns "" if no service account key is configured for the given app.
+func (o *OAuthConfig) ServiceAccountKeyFor(name string) string {
+	if name == "" {
+		return o.ServiceAccountKey
+	}
+	if app, ok := o.Apps[name]; ok {
+		return app.ServiceAccountKey
+	}
+	return ""
+}
+
 // HasAnyConfig returns true if any OAuth configuration exists
 // (default or named apps).
 func (o *OAuthConfig) HasAnyConfig() bool {
-	if o.ClientSecrets != "" {
+	if o.ClientSecrets != "" || o.ServiceAccountKey != "" {
 		return true
 	}
 	for _, app := range o.Apps {
-		if app.ClientSecrets != "" {
+		if app.ClientSecrets != "" || app.ServiceAccountKey != "" {
 			return true
 		}
 	}
@@ -292,9 +307,11 @@ func Load(path, homeDir string) (*Config, error) {
 	cfg.Data.DataDir = expandPath(cfg.Data.DataDir)
 	cfg.Log.Dir = expandPath(cfg.Log.Dir)
 	cfg.OAuth.ClientSecrets = expandPath(cfg.OAuth.ClientSecrets)
+	cfg.OAuth.ServiceAccountKey = expandPath(cfg.OAuth.ServiceAccountKey)
 	cfg.Vector.DBPath = expandPath(cfg.Vector.DBPath)
 	for name, app := range cfg.OAuth.Apps {
 		app.ClientSecrets = expandPath(app.ClientSecrets)
+		app.ServiceAccountKey = expandPath(app.ServiceAccountKey)
 		cfg.OAuth.Apps[name] = app
 	}
 
@@ -304,9 +321,11 @@ func Load(path, homeDir string) (*Config, error) {
 		cfg.Data.DataDir = resolveRelative(cfg.Data.DataDir, cfg.HomeDir)
 		cfg.Log.Dir = resolveRelative(cfg.Log.Dir, cfg.HomeDir)
 		cfg.OAuth.ClientSecrets = resolveRelative(cfg.OAuth.ClientSecrets, cfg.HomeDir)
+		cfg.OAuth.ServiceAccountKey = resolveRelative(cfg.OAuth.ServiceAccountKey, cfg.HomeDir)
 		cfg.Vector.DBPath = resolveRelative(cfg.Vector.DBPath, cfg.HomeDir)
 		for name, app := range cfg.OAuth.Apps {
 			app.ClientSecrets = resolveRelative(app.ClientSecrets, cfg.HomeDir)
+			app.ServiceAccountKey = resolveRelative(app.ServiceAccountKey, cfg.HomeDir)
 			cfg.OAuth.Apps[name] = app
 		}
 	}

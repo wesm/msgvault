@@ -17,6 +17,7 @@ import (
 	"github.com/wesm/msgvault/internal/oauth"
 	"github.com/wesm/msgvault/internal/store"
 	"github.com/wesm/msgvault/internal/sync"
+	"golang.org/x/oauth2"
 )
 
 var (
@@ -118,14 +119,20 @@ Examples:
 						fmt.Printf("Skipping %s (OAuth not configured)\n", src.Identifier)
 						continue
 					}
-					mgr, err := getOAuthMgr(sourceOAuthApp(src))
-					if err != nil {
-						syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", src.Identifier, err))
-						continue
-					}
-					if !mgr.HasToken(src.Identifier) {
-						fmt.Printf("Skipping %s (no OAuth token - run 'add-account' first)\n", src.Identifier)
-						continue
+					appName := sourceOAuthApp(src)
+					// Service accounts are always ready — no per-user token needed
+					if saKey := cfg.OAuth.ServiceAccountKeyFor(appName); saKey != "" {
+						// Service account configured, skip token check
+					} else {
+						mgr, err := getOAuthMgr(appName)
+						if err != nil {
+							syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", src.Identifier, err))
+							continue
+						}
+						if !mgr.HasToken(src.Identifier) {
+							fmt.Printf("Skipping %s (no OAuth token - run 'add-account' first)\n", src.Identifier)
+							continue
+						}
 					}
 				case "imap":
 					skipMsg, parseErr := imapSkipReason(src)
@@ -183,11 +190,14 @@ Examples:
 				break
 			}
 
-			// Ensure the OAuth manager is initialized before syncing Gmail sources.
+			// Ensure credentials are available before syncing Gmail sources.
 			if src.SourceType == "gmail" || src.SourceType == "" {
-				if _, err := getOAuthMgr(sourceOAuthApp(src)); err != nil {
-					syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", src.Identifier, err))
-					continue
+				appName := sourceOAuthApp(src)
+				if cfg.OAuth.ServiceAccountKeyFor(appName) == "" {
+					if _, err := getOAuthMgr(appName); err != nil {
+						syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", src.Identifier, err))
+						continue
+					}
 				}
 			}
 
@@ -214,19 +224,43 @@ Examples:
 	},
 }
 
-// buildAPIClient creates the appropriate gmail.API client for the given source.
-func buildAPIClient(ctx context.Context, src *store.Source, getOAuthMgr func(string) (*oauth.Manager, error)) (gmail.API, error) {
+// buildAPIClient creates the appropriate gmail.API client for the given
+// source. saScopes is used when the resolved oauth_app is backed by a
+// service account key; for browser-OAuth sources, scopes flow through the
+// caller-provided getOAuthMgr factory. Pass nil to use oauth.Scopes; pass
+// oauth.ScopesDeletion (or another set) for workflows that need elevated
+// access.
+func buildAPIClient(ctx context.Context, src *store.Source, getOAuthMgr func(string) (*oauth.Manager, error), saScopes []string) (gmail.API, error) {
 	switch src.SourceType {
 	case "gmail", "":
-		oauthMgr, err := getOAuthMgr(sourceOAuthApp(src))
-		if err != nil {
-			return nil, err
-		}
-		interactive := isatty.IsTerminal(os.Stdin.Fd()) ||
-			isatty.IsCygwinTerminal(os.Stdin.Fd())
-		tokenSource, err := getTokenSourceWithReauth(ctx, oauthMgr, src.Identifier, interactive)
-		if err != nil {
-			return nil, err
+		appName := sourceOAuthApp(src)
+		var tokenSource oauth2.TokenSource
+
+		// Check for service account configuration
+		if saKeyPath := cfg.OAuth.ServiceAccountKeyFor(appName); saKeyPath != "" {
+			scopes := saScopes
+			if len(scopes) == 0 {
+				scopes = oauth.Scopes
+			}
+			saMgr, err := oauth.NewServiceAccountManager(saKeyPath, scopes)
+			if err != nil {
+				return nil, fmt.Errorf("service account: %w", err)
+			}
+			tokenSource, err = saMgr.TokenSource(ctx, src.Identifier)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			oauthMgr, err := getOAuthMgr(appName)
+			if err != nil {
+				return nil, err
+			}
+			interactive := isatty.IsTerminal(os.Stdin.Fd()) ||
+				isatty.IsCygwinTerminal(os.Stdin.Fd())
+			tokenSource, err = getTokenSourceWithReauth(ctx, oauthMgr, src.Identifier, interactive)
+			if err != nil {
+				return nil, err
+			}
 		}
 		rateLimiter := gmail.NewRateLimiter(float64(cfg.Sync.RateLimitQPS))
 		return gmail.NewClient(tokenSource,
@@ -296,7 +330,7 @@ func buildAPIClient(ctx context.Context, src *store.Source, getOAuthMgr func(str
 }
 
 func runFullSync(ctx context.Context, s *store.Store, getOAuthMgr func(string) (*oauth.Manager, error), src *store.Source, vf *vectorFeatures) error {
-	apiClient, err := buildAPIClient(ctx, src, getOAuthMgr)
+	apiClient, err := buildAPIClient(ctx, src, getOAuthMgr, nil)
 	if err != nil {
 		return err
 	}

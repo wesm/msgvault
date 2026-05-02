@@ -15,6 +15,7 @@ import (
 	"github.com/wesm/msgvault/internal/mime"
 	"github.com/wesm/msgvault/internal/oauth"
 	"github.com/wesm/msgvault/internal/store"
+	"golang.org/x/oauth2"
 )
 
 var (
@@ -91,19 +92,8 @@ Examples:
 			appName = sourceOAuthApp(src)
 		}
 
-		// Resolve OAuth credentials
-		clientSecretsPath, err := cfg.OAuth.ClientSecretsFor(appName)
-		if err != nil {
-			if !cfg.OAuth.HasAnyConfig() {
-				return errOAuthNotConfigured()
-			}
-			return err
-		}
-
-		// Create OAuth manager and get token source
-		oauthMgr, err := oauth.NewManager(clientSecretsPath, cfg.TokensDir(), logger)
-		if err != nil {
-			return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
+		if !cfg.OAuth.HasAnyConfig() {
+			return errOAuthNotConfigured()
 		}
 
 		// Set up context with cancellation
@@ -119,11 +109,34 @@ Examples:
 			cancel()
 		}()
 
-		interactive := isatty.IsTerminal(os.Stdin.Fd()) ||
-			isatty.IsCygwinTerminal(os.Stdin.Fd())
-		tokenSource, err := getTokenSourceWithReauth(ctx, oauthMgr, email, interactive)
-		if err != nil {
-			return err
+		// Resolve a Gmail token source. Service-account-bound sources mint
+		// a fresh JWT-based token on demand; browser-OAuth sources reuse
+		// the stored refresh token (and may prompt for re-auth in TTY).
+		var tokenSource oauth2.TokenSource
+		if saKeyPath := cfg.OAuth.ServiceAccountKeyFor(appName); saKeyPath != "" {
+			saMgr, saErr := oauth.NewServiceAccountManager(saKeyPath, oauth.Scopes)
+			if saErr != nil {
+				return fmt.Errorf("service account: %w", saErr)
+			}
+			tokenSource, err = saMgr.TokenSource(ctx, email)
+			if err != nil {
+				return fmt.Errorf("service account token for %s: %w", email, err)
+			}
+		} else {
+			clientSecretsPath, secretsErr := cfg.OAuth.ClientSecretsFor(appName)
+			if secretsErr != nil {
+				return secretsErr
+			}
+			oauthMgr, mgrErr := oauth.NewManager(clientSecretsPath, cfg.TokensDir(), logger)
+			if mgrErr != nil {
+				return wrapOAuthError(fmt.Errorf("create oauth manager: %w", mgrErr))
+			}
+			interactive := isatty.IsTerminal(os.Stdin.Fd()) ||
+				isatty.IsCygwinTerminal(os.Stdin.Fd())
+			tokenSource, err = getTokenSourceWithReauth(ctx, oauthMgr, email, interactive)
+			if err != nil {
+				return err
+			}
 		}
 
 		// Create Gmail client (no rate limiter needed for single call)
