@@ -15,10 +15,14 @@ const migrationLegacyIdentity = "legacy_identity_to_per_account"
 // empty or blank-only address list still marks the migration applied so
 // a later config change does not re-run the migration unexpectedly.
 //
-// Returns (applied bool, sourceCount int, addressCount int, err error).
+// Returns (applied bool, deferred bool, sourceCount int, addressCount int, err error).
 //
 //	applied:      true if this call performed the migration; false if
 //	              already applied or no addresses to migrate.
+//	deferred:     true when legacy addresses are configured but no
+//	              sources exist yet, so the migration is parked until
+//	              the user adds an account. Distinguishable from the
+//	              "already applied" / "no addresses" no-ops.
 //	sourceCount:  number of accounts that received identity records.
 //	addressCount: number of distinct addresses migrated (per source).
 //
@@ -26,13 +30,13 @@ const migrationLegacyIdentity = "legacy_identity_to_per_account"
 // legacy address. After this call, the legacy [identity] config block
 // is no longer load-bearing; the dedup engine should read from
 // account_identities instead.
-func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied bool, sourceCount int, addressCount int, err error) {
+func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied, deferred bool, sourceCount, addressCount int, err error) {
 	already, err := s.IsMigrationApplied(migrationLegacyIdentity)
 	if err != nil {
-		return false, 0, 0, err
+		return false, false, 0, 0, err
 	}
 	if already {
-		return false, 0, 0, nil
+		return false, false, 0, 0, nil
 	}
 
 	// Normalize addresses: trim whitespace, deduplicate, drop empties.
@@ -52,14 +56,14 @@ func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied bool, s
 
 	if len(normalized) == 0 {
 		if err := s.MarkMigrationApplied(migrationLegacyIdentity); err != nil {
-			return false, 0, 0, err
+			return false, false, 0, 0, err
 		}
-		return false, 0, 0, nil
+		return false, false, 0, 0, nil
 	}
 
 	sources, err := s.ListSources("")
 	if err != nil {
-		return false, 0, 0, fmt.Errorf("list sources for identity migration: %w", err)
+		return false, false, 0, 0, fmt.Errorf("list sources for identity migration: %w", err)
 	}
 
 	// If the user has legacy [identity] addresses configured but no
@@ -69,7 +73,7 @@ func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied bool, s
 	// user adds would never receive them. Leave the sentinel unmarked
 	// and let the next command run after a source exists pick it up.
 	if len(sources) == 0 {
-		return false, 0, 0, nil
+		return false, true, 0, 0, nil
 	}
 
 	if err := s.withTx(func(tx *loggedTx) error {
@@ -128,32 +132,42 @@ func (s *Store) MigrateLegacyIdentityConfig(addresses []string) (applied bool, s
 		)
 		return txErr
 	}); err != nil {
-		return false, 0, 0, fmt.Errorf("migrate legacy identity config: %w", err)
+		return false, false, 0, 0, fmt.Errorf("migrate legacy identity config: %w", err)
 	}
 
-	return true, len(sources), len(normalized), nil
+	return true, false, len(sources), len(normalized), nil
 }
 
 // RunStartupMigrations runs all one-time data migrations that should execute
 // on every command launch. It is idempotent: already-applied migrations are
 // skipped. legacyIdentityAddresses comes from cfg.Identity.Addresses.
 //
-// Returns a non-empty notice string when migration was actually performed
-// (caller should print it to stderr). Returns empty string when migration was
-// a no-op or already applied.
+// Returns a non-empty notice string when migration was actually performed,
+// or when legacy [identity] addresses are configured but no source exists
+// yet (deferred path) so the user is told their config is parked rather
+// than silently dropped. Caller should print the notice to stderr.
+// Returns empty string when migration was already applied or had nothing
+// to migrate.
 func (s *Store) RunStartupMigrations(legacyIdentityAddresses []string) (string, error) {
-	applied, sources, addrs, err := s.MigrateLegacyIdentityConfig(legacyIdentityAddresses)
+	applied, deferred, sources, addrs, err := s.MigrateLegacyIdentityConfig(legacyIdentityAddresses)
 	if err != nil {
 		return "", err
+	}
+	if deferred {
+		return fmt.Sprintf(
+			"Notice: legacy [identity] config has %d address(es) but no accounts exist yet.\n"+
+				"The migration will run on the next command after you add an account\n"+
+				"(e.g. 'msgvault add-account ...').",
+			len(legacyIdentityAddresses),
+		), nil
 	}
 	if !applied {
 		return "", nil
 	}
-	notice := fmt.Sprintf(
+	return fmt.Sprintf(
 		"Migrated legacy [identity] config to per-account identities (%d addresses across %d accounts).\n"+
 			"Run 'msgvault identity list' to review per-account identities;\n"+
 			"the [identity] block in config.toml is no longer used.",
 		addrs, sources,
-	)
-	return notice, nil
+	), nil
 }

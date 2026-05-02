@@ -72,7 +72,9 @@ type Config struct {
 
 	// DeleteDupsFromSourceServer, when true, writes pending
 	// deletion manifests for pruned duplicates that meet ALL of:
-	//   1. the pruned copy lives in a remote source (gmail/imap),
+	//   1. the pruned copy lives in a remote source whose type
+	//      appears in remoteSourceTypes (gmail today; imap is gated
+	//      until staged manifests can be routed to an IMAP executor),
 	//   2. the surviving copy is in the SAME source_id (i.e. the
 	//      very same remote mailbox holds the winner).
 	//
@@ -110,9 +112,15 @@ var DefaultSourcePreference = []string{
 
 // remoteSourceTypes lists source types whose messages can be deleted
 // via the deletion-staging machinery.
+//
+// Only gmail is listed today: the staged-deletion manifest format and
+// executor are Gmail-specific (manifest.GmailIDs, gmail.API client). Adding
+// "imap" here would let an IMAP dedup run with --delete-dups-from-source-server
+// stage manifests that delete-staged would then try to execute through Gmail.
+// Re-add IMAP only after manifests record source type and delete-staged can
+// route to an IMAP executor.
 var remoteSourceTypes = map[string]bool{
 	"gmail": true,
-	"imap":  true,
 }
 
 // Engine orchestrates duplicate detection and merging.

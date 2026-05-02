@@ -16,11 +16,14 @@ func TestMigrateLegacyIdentityConfig_Basic(t *testing.T) {
 
 	addresses := []string{"alice@example.com", "alice@work.com", "shared@example.com"}
 
-	applied, sources, addrs, err := st.MigrateLegacyIdentityConfig(addresses)
+	applied, deferred, sources, addrs, err := st.MigrateLegacyIdentityConfig(addresses)
 	testutil.MustNoErr(t, err, "MigrateLegacyIdentityConfig")
 
 	if !applied {
 		t.Error("applied should be true on first run")
+	}
+	if deferred {
+		t.Error("deferred should be false when sources exist")
 	}
 	if sources != 2 {
 		t.Errorf("sources = %d, want 2", sources)
@@ -50,7 +53,7 @@ func TestMigrateLegacyIdentityConfig_MergesExistingSignal(t *testing.T) {
 
 	testutil.MustNoErr(t, st.AddAccountIdentity(f.Source.ID, "alice@example.com", "account-identifier"), "AddAccountIdentity")
 
-	applied, _, _, err := st.MigrateLegacyIdentityConfig([]string{"alice@example.com"})
+	applied, _, _, _, err := st.MigrateLegacyIdentityConfig([]string{"alice@example.com"})
 	testutil.MustNoErr(t, err, "MigrateLegacyIdentityConfig")
 	if !applied {
 		t.Fatal("applied should be true on first run")
@@ -72,10 +75,10 @@ func TestMigrateLegacyIdentityConfig_SecondCallNoOp(t *testing.T) {
 
 	addresses := []string{"alice@example.com"}
 
-	_, _, _, err := st.MigrateLegacyIdentityConfig(addresses)
+	_, _, _, _, err := st.MigrateLegacyIdentityConfig(addresses)
 	testutil.MustNoErr(t, err, "first migration")
 
-	applied, sources, addrs, err := st.MigrateLegacyIdentityConfig(addresses)
+	applied, _, sources, addrs, err := st.MigrateLegacyIdentityConfig(addresses)
 	testutil.MustNoErr(t, err, "second migration")
 
 	if applied {
@@ -89,10 +92,13 @@ func TestMigrateLegacyIdentityConfig_SecondCallNoOp(t *testing.T) {
 func TestMigrateLegacyIdentityConfig_DeferredUntilSourceExists(t *testing.T) {
 	st := testutil.NewTestStore(t)
 
-	applied, sources, addrs, err := st.MigrateLegacyIdentityConfig([]string{"alice@example.com"})
+	applied, deferred, sources, addrs, err := st.MigrateLegacyIdentityConfig([]string{"alice@example.com"})
 	testutil.MustNoErr(t, err, "first migration")
 	if applied {
 		t.Fatal("applied should be false before any sources exist")
+	}
+	if !deferred {
+		t.Fatal("deferred should be true when addresses exist but no sources")
 	}
 	if sources != 0 || addrs != 0 {
 		t.Fatalf("counts = (%d, %d), want (0, 0)", sources, addrs)
@@ -101,10 +107,13 @@ func TestMigrateLegacyIdentityConfig_DeferredUntilSourceExists(t *testing.T) {
 	_, err = st.GetOrCreateSource("gmail", "alice@example.com")
 	testutil.MustNoErr(t, err, "GetOrCreateSource")
 
-	applied, sources, addrs, err = st.MigrateLegacyIdentityConfig([]string{"alice@example.com"})
+	applied, deferred, sources, addrs, err = st.MigrateLegacyIdentityConfig([]string{"alice@example.com"})
 	testutil.MustNoErr(t, err, "second migration")
 	if !applied {
 		t.Fatal("applied should be true after a source exists")
+	}
+	if deferred {
+		t.Fatal("deferred should be false once a source exists")
 	}
 	if sources != 1 || addrs != 1 {
 		t.Fatalf("counts = (%d, %d), want (1, 1)", sources, addrs)
@@ -115,7 +124,7 @@ func TestMigrateLegacyIdentityConfig_EmptyAddresses(t *testing.T) {
 	f := storetest.New(t)
 	st := f.Store
 
-	applied, sources, addrs, err := st.MigrateLegacyIdentityConfig(nil)
+	applied, _, sources, addrs, err := st.MigrateLegacyIdentityConfig(nil)
 	testutil.MustNoErr(t, err, "MigrateLegacyIdentityConfig empty")
 
 	if applied {
@@ -137,7 +146,7 @@ func TestMigrateLegacyIdentityConfig_TrimsWhitespace(t *testing.T) {
 	f := storetest.New(t)
 	st := f.Store
 
-	_, _, _, err := st.MigrateLegacyIdentityConfig([]string{"  ME@Example.COM  "})
+	_, _, _, _, err := st.MigrateLegacyIdentityConfig([]string{"  ME@Example.COM  "})
 	testutil.MustNoErr(t, err, "MigrateLegacyIdentityConfig")
 
 	ids, err := st.ListAccountIdentities(f.Source.ID)
@@ -154,7 +163,7 @@ func TestMigrateLegacyIdentityConfig_PreservesCase(t *testing.T) {
 	f := storetest.New(t)
 	st := f.Store
 
-	applied, _, _, err := st.MigrateLegacyIdentityConfig([]string{"Alice@Example.com"})
+	applied, _, _, _, err := st.MigrateLegacyIdentityConfig([]string{"Alice@Example.com"})
 	testutil.MustNoErr(t, err, "MigrateLegacyIdentityConfig")
 	if !applied {
 		t.Fatal("expected applied=true on first run")

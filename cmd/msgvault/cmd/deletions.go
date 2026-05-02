@@ -208,6 +208,16 @@ var (
 	deleteAccount string
 )
 
+// remoteDeleteEnvVar gates execution of staged deletions against Gmail
+// for the v1 release. Staging, listing, and inspecting manifests stay
+// available unconditionally so the rest of the pipeline can be exercised;
+// only the destructive Gmail-API call is gated.
+const remoteDeleteEnvVar = "MSGVAULT_ENABLE_REMOTE_DELETE"
+
+func remoteDeleteEnabled() bool {
+	return os.Getenv(remoteDeleteEnvVar) == "1"
+}
+
 var deleteStagedCmd = &cobra.Command{
 	Use:   "delete-staged [batch-id]",
 	Short: "Execute staged deletions",
@@ -216,12 +226,16 @@ var deleteStagedCmd = &cobra.Command{
 By default, messages are permanently deleted using batch API (fast, no recovery).
 Use --trash to move messages to Gmail trash instead (recoverable for 30 days, slower).
 
+Execution is gated for the v1 release. Set MSGVAULT_ENABLE_REMOTE_DELETE=1 to
+opt in. Read-only modes (--list, --dry-run) work without the gate.
+
 Examples:
-  msgvault delete-staged                # Permanent delete all pending (fast)
-  msgvault delete-staged batch-123      # Delete specific batch
-  msgvault delete-staged --list         # Show staged batches without executing
-  msgvault delete-staged --trash        # Move to trash instead (slower)
-  msgvault delete-staged --yes          # Skip confirmation`,
+  msgvault delete-staged --list         # Show staged batches (always allowed)
+  msgvault delete-staged --dry-run      # Preview without executing (always allowed)
+  MSGVAULT_ENABLE_REMOTE_DELETE=1 msgvault delete-staged
+  MSGVAULT_ENABLE_REMOTE_DELETE=1 msgvault delete-staged batch-123
+  MSGVAULT_ENABLE_REMOTE_DELETE=1 msgvault delete-staged --trash
+  MSGVAULT_ENABLE_REMOTE_DELETE=1 msgvault delete-staged --yes`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		deletionsDir := filepath.Join(cfg.Data.DataDir, "deletions")
 		manager, err := deletion.NewManager(deletionsDir)
@@ -305,6 +319,18 @@ Examples:
 		if deleteDryRun {
 			fmt.Println("Dry run - no messages will be deleted.")
 			return nil
+		}
+
+		// Gate the destructive Gmail-API call for the v1 release.
+		// --list and --dry-run already returned above without hitting this.
+		if !remoteDeleteEnabled() {
+			return fmt.Errorf(
+				"remote deletion is gated in this release; "+
+					"set %s=1 to opt in. "+
+					"Use 'msgvault delete-staged --list' or --dry-run to inspect "+
+					"staged batches without executing.",
+				remoteDeleteEnvVar,
+			)
 		}
 
 		// Require confirmation

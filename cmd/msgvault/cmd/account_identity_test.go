@@ -104,7 +104,7 @@ func TestConfirmDefaultIdentity_LegacyMigrationOverridesNoDefault(t *testing.T) 
 	}
 	// Simulate --no-default-identity: do not call confirmDefaultIdentity.
 	// Then run startup migrations with a non-empty legacy address list.
-	applied, _, _, err := s.MigrateLegacyIdentityConfig([]string{"alice@example.com"})
+	applied, _, _, _, err := s.MigrateLegacyIdentityConfig([]string{"alice@example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}

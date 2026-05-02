@@ -296,13 +296,13 @@ func isUniqueConstraintErr(err error) bool {
 // retry if interrupted. Runs under a single vectors.db transaction so
 // the seed itself is atomic.
 func (b *Backend) seedPending(ctx context.Context, gen vector.GenerationID, now int64) error {
-	// Embedding-seeding: skip dedup-hidden and remote-deleted rows.
-	// Note: dedup Execute does not remove vector-store rows by design.
-	// If a message is embedded then later soft-deleted, the embedding
-	// stays in the vector store; query-time live filtering
-	// (dropDeletedFromSource, filteredMessageIDs) enforces the
-	// live-message contract. See the design alignment spec's
-	// "Cache And Index Policy" section.
+	// Embedding-seeding: skip dedup-hidden and remote-deleted rows
+	// using the canonical live-message predicate
+	// (store.LiveMessagesWhere). Dedup Execute does not remove
+	// vector-store rows by design: if a message is embedded then later
+	// soft-deleted, the embedding stays in the vector store and
+	// query-time live filtering (dropDeletedFromSource,
+	// filteredMessageIDs) enforces the live-message contract.
 	rows, err := b.mainDB.QueryContext(ctx,
 		`SELECT id FROM messages WHERE deleted_at IS NULL AND deleted_from_source_at IS NULL`)
 	if err != nil {
