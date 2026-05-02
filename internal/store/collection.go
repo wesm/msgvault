@@ -82,6 +82,15 @@ func (s *Store) CreateCollection(
 	if name == "" {
 		return nil, fmt.Errorf("collection name is required")
 	}
+	if name == DefaultCollectionName {
+		// Mirror the AddSourcesToCollection / RemoveSourcesFromCollection
+		// / DeleteCollection guards: the default collection is auto-
+		// managed by EnsureDefaultCollection. A manual create of "All"
+		// would have raced the auto-create; rejecting up front gives
+		// the consistent error surface as the rest of the collection
+		// surface.
+		return nil, ErrCollectionImmutable
+	}
 	if len(sourceIDs) == 0 {
 		return nil, fmt.Errorf(
 			"collection %q needs at least one source", name,
