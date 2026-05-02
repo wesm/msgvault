@@ -380,18 +380,21 @@ func (s *Store) DeleteDedupedBatch(batchID string) (int64, error) {
 
 // DeleteAllDeduped permanently deletes every dedup-hidden row regardless of
 // batch. Returns the number of rows deleted and the number of distinct
-// batches affected.
+// batches affected. Distinct-batch counting only considers rows that have a
+// batch ID; the delete itself is not gated on batch ID, so any future code
+// path that soft-hides a row without a batch is also captured.
 //
 // This is irreversible. Caller is responsible for backups.
 // Attachments cascade-delete from the metadata row; on-disk blobs are
 // content-addressed and survive until separate cleanup.
 func (s *Store) DeleteAllDeduped() (deleted int64, distinctBatches int64, err error) {
+	committed := false
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, 0, fmt.Errorf("delete all dedup-hidden: begin tx: %w", err)
 	}
 	defer func() {
-		if err != nil {
+		if !committed {
 			_ = tx.Rollback()
 		}
 	}()
@@ -406,7 +409,7 @@ func (s *Store) DeleteAllDeduped() (deleted int64, distinctBatches int64, err er
 
 	result, err := tx.Exec(`
 		DELETE FROM messages
-		WHERE deleted_at IS NOT NULL AND delete_batch_id IS NOT NULL
+		WHERE deleted_at IS NOT NULL
 	`)
 	if err != nil {
 		return 0, 0, fmt.Errorf("delete all dedup-hidden: delete: %w", err)
@@ -419,6 +422,7 @@ func (s *Store) DeleteAllDeduped() (deleted int64, distinctBatches int64, err er
 	if err = tx.Commit(); err != nil {
 		return 0, 0, fmt.Errorf("delete all dedup-hidden: commit: %w", err)
 	}
+	committed = true
 	return deleted, distinctBatches, nil
 }
 
@@ -524,6 +528,11 @@ func (s *Store) BackfillRFC822IDs(
 			id           int64
 			normalizedID string
 		}, 0, len(batchIDs))
+		// Failed rows are not updated and are not retried in this run:
+		// because lastID advances past every batch element below, the
+		// next batch query (m.id > lastID) skips them. The selection
+		// filter (rfc822_message_id IS NULL OR '') will pick them up
+		// again on the next BackfillRFC822IDs invocation.
 		for _, id := range batchIDs {
 			raw, err := s.GetMessageRaw(id)
 			if err != nil {
