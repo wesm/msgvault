@@ -317,6 +317,15 @@ Examples:
 		// to create the first source. Required when the deferred legacy
 		// identity migration parked at startup because no source existed.
 		// Cheap no-op once the migration sentinel is set.
+		//
+		// Migration error returns before the summary print on purpose:
+		// minimal in-scope shape for #304's deferred legacy [identity]
+		// migration retry. The alternative (capture, print summary,
+		// return after) would restructure pre-existing summary code
+		// this PR otherwise leaves alone. Migration is idempotent —
+		// next invocation retries and prints summary then. UX polish
+		// tracked in
+		// private/drafts/2026-05-02-issue-import-migration-error-ux.md.
 		if sourceID != 0 {
 			if err := runPostSourceCreateMigrations(st); err != nil {
 				return fmt.Errorf("post-source-create migrations: %w", err)

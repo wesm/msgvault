@@ -214,6 +214,15 @@ func importSingleAccount(
 	}
 
 	if summary.SourceID != 0 {
+		// Migration error returns before printImportSummary on
+		// purpose: this is the minimal in-scope shape for the deferred
+		// legacy [identity] migration retry that #304 introduces. The
+		// alternative (capture error, print summary, return after)
+		// would restructure pre-existing summary-print code that this
+		// PR otherwise leaves alone. The migration is idempotent — the
+		// next invocation retries and prints the summary then. UX
+		// polish tracked separately in
+		// private/drafts/2026-05-02-issue-import-migration-error-ux.md.
 		if err := runPostSourceCreateMigrations(st); err != nil {
 			return fmt.Errorf("post-source-create migrations: %w", err)
 		}
@@ -348,6 +357,11 @@ func importAutoAccounts(
 		}
 
 		if summary.SourceID != 0 {
+			// `continue` skips the per-account summary print on
+			// purpose — same scope rationale as importSingleAccount
+			// above. UX polish tracked in
+			// private/drafts/2026-05-02-issue-import-migration-error-ux.md
+			// for a follow-up PR.
 			if err := runPostSourceCreateMigrations(st); err != nil {
 				importErrors = append(importErrors, fmt.Errorf("%s: post-source-create migrations: %w", identifier, err))
 				continue
