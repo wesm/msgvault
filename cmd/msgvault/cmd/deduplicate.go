@@ -278,6 +278,13 @@ func runDeduplicatePerSource(
 			return fmt.Errorf("scan %s: %w", src.Identifier, err)
 		}
 		if report.DuplicateGroups == 0 {
+			// Scan can backfill rfc822_message_id even when no duplicate
+			// groups are produced (idempotent metadata derivation). Report
+			// that side effect so the user knows the scan did something
+			// before falling through to the "No duplicates." message.
+			if report.BackfilledCount != 0 {
+				fmt.Print(engineScoped.FormatReport(report))
+			}
 			fmt.Println("  No duplicates.")
 			fmt.Println()
 			continue
