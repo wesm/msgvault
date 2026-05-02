@@ -21,9 +21,10 @@ var deduplicateCmd = &cobra.Command{
 	Use:     "deduplicate",
 	Aliases: []string{"dedup", "dedupe"},
 	Short:   "Find and merge duplicate messages within an account",
-	Long: `Find and merge duplicate messages that were ingested through multiple paths
-for the same account (for example, Gmail API sync plus an mbox export of the
-same mailbox, or an IMAP sync plus an emlx import).
+	Long: `Find and merge duplicate messages within a single account
+(for example, the same mbox imported twice, or stored MIME that
+generates two copies of the same RFC822 Message-ID inside one ingest
+source). Cross-source comparison requires --collection.
 
 Duplicates are grouped by the RFC822 Message-ID header. For each group the
 engine selects a survivor, unions the labels from every copy onto the
@@ -33,9 +34,14 @@ By default, deduplicate ONLY modifies the msgvault database. Your original
 source files and remote servers are never modified. Hidden rows can be
 restored with --undo, so a dedup run is fully reversible.
 
+Terminology:
+  "account"     One ingest source/archive (a single Gmail OAuth
+                connection, one mbox import, one IMAP source, etc.).
+  "collection"  A named, user-defined grouping of accounts.
+
 Scope:
-  --account <email>     Scope dedup to one account. Never crosses source
-                        boundaries.
+  --account <name>      Scope dedup to one account. Never crosses
+                        source boundaries.
   --collection <name>   Dedup across every member account of a collection.
                         This is the only way to compare messages across
                         sources, and it is an explicit user opt-in:
@@ -48,7 +54,7 @@ Scope:
                         remote deletion when the loser and the survivor
                         share a source (same-source-only).
   (no flag)             Dedup runs per-account independently for every
-                        source. Source boundaries are never crossed.
+                        account. Source boundaries are never crossed.
 
 Use --dry-run to scan and report without writing anything.
 Use --content-hash to also group messages by normalized raw MIME when

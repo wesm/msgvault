@@ -1,20 +1,35 @@
-// Package dedup provides cross-source duplicate detection and merging.
+// Package dedup provides duplicate detection and merging for msgvault.
+//
+// # Terminology
+//
+// "Account" means one ingest source/archive (a single Gmail OAuth
+// connection, one mbox import, one IMAP source, etc.). "Collection"
+// means a named, user-defined grouping of accounts. Cross-source dedup
+// is only available via --collection; --account always operates on a
+// single source.
 //
 // # Scoping rules
 //
-// Dedup is always run against a single logical account. Without explicit
-// account scoping, dedup operates on one source at a time (intra-source),
-// which means a duplicate group can only contain messages that were
-// ingested twice into the same source (for example, re-importing the
-// same mbox twice). When the caller supplies an account, dedup operates
-// on every source belonging to that account at once (for example, a
-// Gmail API sync plus a mbox export of the same mailbox).
+// Without explicit scope, dedup operates on one account at a time and
+// duplicate groups can only contain messages ingested twice into the
+// same account (for example, re-importing the same mbox twice).
 //
-// Dedup intentionally never merges messages across different accounts.
-// This is critical for sent messages: a message alice sends to bob is
-// one logical message but it has a legitimate copy in alice's "Sent"
-// collection and a legitimate copy in bob's "Inbox". Both copies share
-// the same RFC822 Message-ID. If both accounts are archived in
+// With --account, dedup is restricted to the named account and behaves
+// the same way — source boundaries are never crossed.
+//
+// With --collection, dedup compares messages across every account in
+// the collection. This is the only way to merge duplicates that span
+// sources, and it is an explicit user opt-in. Pruned losers are hidden
+// locally and reversible via --undo. Remote-deletion staging stays
+// same-source-only even under collection scope, so the user's
+// authoritative remote mailbox can never be touched because of a
+// duplicate found in a different account.
+//
+// Outside collection scope, dedup never merges messages across
+// different accounts. This is critical for sent messages: a message
+// alice sends to bob is one logical message but it has a legitimate
+// copy in alice's Sent folder and another in bob's Inbox. Both copies
+// share the same RFC822 Message-ID. If both accounts are archived in
 // msgvault, they must be preserved independently because deleting one
 // would change the other user's view of history. Sent-message handling
 // is covered in more detail by FormatMethodology.
@@ -1013,7 +1028,7 @@ func (e *Engine) FormatReport(r *Report) string {
 			"Note: %d messages need RFC822 Message-ID backfill "+
 				"from stored MIME (skipped in dry-run).\n"+
 				"These messages will be backfilled and included "+
-				"when you run with --apply.\n\n",
+				"when you re-run without --dry-run.\n\n",
 			-r.BackfilledCount)
 	} else if r.BackfilledCount > 0 {
 		fmt.Fprintf(&sb,
@@ -1107,36 +1122,35 @@ func (e *Engine) FormatMethodology() string {
 	switch {
 	case e.config.ScopeIsCollection:
 		fmt.Fprintf(&sb,
-			"  Scoped to collection: %s (%d source(s) across "+
-				"multiple accounts).\n"+
-				"  Cross-account dedup is enabled within this "+
-				"collection.\n",
+			"  Scoped to collection: %s (%d account(s)). "+
+				"Cross-account dedup\n"+
+				"  is enabled within this collection.\n",
 			e.config.Account, len(e.config.AccountSourceIDs))
 	case e.config.Account != "":
 		fmt.Fprintf(&sb,
-			"  Scoped to account: %s (%d source(s)). "+
-				"Cross-source dedup is enabled\n"+
-				"  within this account.\n",
-			e.config.Account, len(e.config.AccountSourceIDs))
+			"  Scoped to account: %s. Source boundaries are "+
+				"never crossed.\n",
+			e.config.Account)
 	case len(e.config.AccountSourceIDs) > 0:
 		fmt.Fprintf(&sb,
-			"  Scoped to %d source(s). Cross-source dedup is "+
-				"enabled within that set.\n",
+			"  Scoped to %d source(s). Source boundaries are "+
+				"never crossed.\n",
 			len(e.config.AccountSourceIDs))
 	default:
 		sb.WriteString(
-			"  No account specified — only messages that appear " +
+			"  No scope specified — only messages that appear " +
 				"twice in the\n" +
-				"  SAME source are eligible. Rerun with " +
-				"--account <email> to dedup\n" +
-				"  across sources that belong to one mailbox " +
-				"(e.g. Gmail sync +\n" +
-				"  mbox import of the same account).\n",
+				"  SAME account are eligible. To compare across " +
+				"accounts, group\n" +
+				"  them in a collection and rerun with " +
+				"--collection <name>.\n",
 		)
 	}
 	sb.WriteString("\n")
 
 	sb.WriteString("Detection:\n")
+	sb.WriteString("  Message-ID is primary; content-hash is a " +
+		"supplementary fallback.\n")
 	sb.WriteString("  Messages are grouped by the RFC822 Message-ID " +
 		"header.\n")
 	sb.WriteString("  Messages missing that header are backfilled " +
