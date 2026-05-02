@@ -396,6 +396,35 @@ func TestSearchCmd_CollectionFlagUnknown(t *testing.T) {
 	}
 }
 
+// TestSearchCmd_VectorOrHybridRequireQueryText rejects empty-query
+// vector/hybrid invocations even when scope flags are supplied.
+// FTS allows queryless scoped searches; vector/hybrid don't, because
+// the embeddings client needs text to vectorize.
+func TestSearchCmd_VectorOrHybridRequireQueryText(t *testing.T) {
+	for _, mode := range []string{"vector", "hybrid"} {
+		t.Run(mode, func(t *testing.T) {
+			savedCfg := cfg
+			defer func() { cfg = savedCfg; resetSearchFlags() }()
+
+			cfg = &config.Config{}
+
+			root := newTestRootCmd()
+			root.AddCommand(searchCmd)
+			root.SetArgs([]string{
+				"search", "--mode", mode,
+				"--account", "alice@example.com",
+			})
+			err := root.Execute()
+			if err == nil {
+				t.Fatalf("expected error for queryless --mode=%s", mode)
+			}
+			if !strings.Contains(err.Error(), "requires query text") {
+				t.Errorf("error = %q, want substring 'requires query text'", err)
+			}
+		})
+	}
+}
+
 // TestSearchCmd_MutualExclusion confirms --account and --collection are rejected together.
 func TestSearchCmd_MutualExclusion(t *testing.T) {
 	var a, b string

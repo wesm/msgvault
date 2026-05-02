@@ -85,6 +85,12 @@ Examples:
 		if searchMode != "fts" && searchOffset > 0 {
 			return fmt.Errorf("--offset is not supported with --mode=%s (pagination is single-page)", searchMode)
 		}
+		// Vector and hybrid modes need query text to embed; --account or
+		// --collection alone don't supply any. FTS still allows scoped
+		// queryless searches.
+		if searchMode != "fts" && queryStr == "" {
+			return fmt.Errorf("--mode=%s requires query text to embed; pass a query or use --mode=fts", searchMode)
+		}
 
 		// Resolve --account / --collection once, before the mode branch,
 		// so FTS, vector, and hybrid all see the same SourceIDs. Earlier,
