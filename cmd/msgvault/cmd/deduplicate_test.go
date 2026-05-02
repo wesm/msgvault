@@ -80,3 +80,54 @@ func TestDeduplicateCollectionResolution_MultiSource(t *testing.T) {
 		t.Errorf("DisplayName = %q, want %q", scope.DisplayName(), collName)
 	}
 }
+
+// TestPrintAccumulatedUndoHint asserts the helper's behavior:
+// no-op for <2 batches, prints recipe for ≥2. Iter15 follow-up:
+// the exit-on-Execute-error path now also calls this helper so a
+// user who hits an error mid-loop still sees how to undo what
+// already ran.
+func TestPrintAccumulatedUndoHint(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		batches      []string
+		wantContains []string
+		wantNoOutput bool
+	}{
+		{
+			name:         "no batches",
+			batches:      nil,
+			wantNoOutput: true,
+		},
+		{
+			name:         "single batch",
+			batches:      []string{"dedup-1"},
+			wantNoOutput: true,
+		},
+		{
+			name:    "two batches",
+			batches: []string{"dedup-a", "dedup-b"},
+			wantContains: []string{
+				"To undo all of the above",
+				"--undo dedup-a",
+				"--undo dedup-b",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			done := captureStdout(t)
+			printAccumulatedUndoHint(tc.batches)
+			out := done()
+			if tc.wantNoOutput {
+				if out != "" {
+					t.Errorf("expected no output, got %q", out)
+				}
+				return
+			}
+			for _, want := range tc.wantContains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q; got:\n%s", want, out)
+				}
+			}
+		})
+	}
+}

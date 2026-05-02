@@ -356,6 +356,12 @@ func runDeduplicatePerSource(
 				printDedupSummary(summary)
 				fmt.Println()
 			}
+			// Surface the undo hint for any prior sources that DID
+			// succeed in this run before returning the error. Without
+			// this, a user who hit an error on source N has no
+			// visibility into how to undo sources 1..N-1's changes
+			// without grepping the slog output.
+			printAccumulatedUndoHint(executedBatches)
 			return fmt.Errorf("execute %s: %w", src.Identifier, err)
 		}
 		executedBatches = append(executedBatches, summary.BatchID)
@@ -368,15 +374,27 @@ func runDeduplicatePerSource(
 	} else if !anyRan {
 		fmt.Println("No duplicates found in any source.")
 	} else if len(executedBatches) > 1 {
-		var b strings.Builder
-		b.WriteString("\nTo undo all of the above:\n  msgvault deduplicate")
-		for _, id := range executedBatches {
-			fmt.Fprintf(&b, " --undo %s", id)
-		}
-		b.WriteString("\n")
-		fmt.Print(b.String())
+		printAccumulatedUndoHint(executedBatches)
 	}
 	return nil
+}
+
+// printAccumulatedUndoHint prints the multi-batch undo recipe for an
+// in-progress per-source dedup run. Called from both the happy path
+// (after all sources complete) and the Execute-error path (so a user
+// who hit an error mid-loop still sees how to undo what already ran).
+// No-op for fewer than 2 batches.
+func printAccumulatedUndoHint(executedBatches []string) {
+	if len(executedBatches) < 2 {
+		return
+	}
+	var b strings.Builder
+	b.WriteString("\nTo undo all of the above:\n  msgvault deduplicate")
+	for _, id := range executedBatches {
+		fmt.Fprintf(&b, " --undo %s", id)
+	}
+	b.WriteString("\n")
+	fmt.Print(b.String())
 }
 
 func runDeduplicateOnce(
@@ -559,9 +577,16 @@ func printStillRunningWarning(ids []string) {
 	if len(ids) == 0 {
 		return
 	}
+	// "Currently executing" specifically — these manifests have already
+	// been promoted from pending to in-progress, so they can't be
+	// cancelled (the executor will run them to completion). This is a
+	// different class of message from a pending-cancel *failure*
+	// (which surfaces as a returned error from Undo, not via this
+	// warning).
 	fmt.Printf(
-		"\nWarning: the following deletion manifests are already in " +
-			"progress\nand cannot be cancelled:\n",
+		"\nWarning: the following deletion manifests are currently " +
+			"executing\nand cannot be cancelled (the executor will run " +
+			"them to completion):\n",
 	)
 	for _, id := range ids {
 		fmt.Printf("  - %s\n", id)

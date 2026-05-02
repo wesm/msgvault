@@ -392,6 +392,18 @@ func (s *Store) DeleteDedupedBatch(batchID string) (int64, error) {
 // This is irreversible. Caller is responsible for backups.
 // Attachments cascade-delete from the metadata row; on-disk blobs are
 // content-addressed and survive until separate cleanup.
+//
+// FUTURE REFINEMENT (out of scope for #304): the predicate
+// `deleted_at IS NOT NULL` is currently safe because `deleted_at` is
+// only ever set by the dedup soft-hide path. If a future feature adds
+// any other soft-delete semantics that share this column (e.g. a
+// "trash" view, a per-message hide), this delete will silently destroy
+// those rows alongside dedup-hidden ones. The right shape if/when that
+// happens is either rename the column to make the contract explicit
+// (e.g. `dedup_hidden_at`) or gate the delete on a positive marker
+// (`delete_batch_id IS NOT NULL OR dedup_origin = 1`-style). Flagged
+// here so the future change-author notices before introducing the
+// ambiguity. Iter15 review surfaced this as future-proofing.
 func (s *Store) DeleteAllDeduped() (deleted int64, distinctBatches int64, err error) {
 	committed := false
 	tx, err := s.db.Begin()
