@@ -918,9 +918,7 @@ Every question should answer cleanly without qualifications.
 
 ---
 
-*Specification authored by [@jesserobbins](https://github.com/jesserobbins),
-incorporating design-review feedback from upstream maintainer
-[@wesm](https://github.com/wesm) on
-[PR #286](https://github.com/wesm/msgvault/pull/286). Drafted with
-Claude Code (Opus 4.7) and the [Primeradiant Superpowers](https://github.com/obra/superpowers)
-toolchain.*
+*Authored by [@jesserobbins](https://github.com/jesserobbins), with
+support from [@wesm](https://github.com/wesm). Tools used:
+[Primeradiant Superpowers](https://github.com/obra/superpowers) and
+[roborev](https://github.com/wesm/roborev), backed by Claude and Codex.*
