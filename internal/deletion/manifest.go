@@ -203,11 +203,12 @@ var statusDirMap = map[Status]string{
 	StatusInProgress: "in_progress",
 	StatusCompleted:  "completed",
 	StatusFailed:     "failed",
+	StatusCancelled:  "cancelled",
 }
 
 // persistedStatuses lists all statuses that have on-disk directories.
 var persistedStatuses = []Status{
-	StatusPending, StatusInProgress, StatusCompleted, StatusFailed,
+	StatusPending, StatusInProgress, StatusCompleted, StatusFailed, StatusCancelled,
 }
 
 // Manager handles deletion manifest files.

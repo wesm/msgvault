@@ -423,7 +423,7 @@ func TestNewManager(t *testing.T) {
 	}
 
 	// Verify all directories were created
-	expectedDirs := []string{"pending", "in_progress", "completed", "failed"}
+	expectedDirs := []string{"pending", "in_progress", "completed", "failed", "cancelled"}
 	for _, d := range expectedDirs {
 		path := filepath.Join(baseDir, d)
 		if info, err := os.Stat(path); err != nil || !info.IsDir() {
@@ -698,6 +698,7 @@ func TestStatusDirMap(t *testing.T) {
 		StatusInProgress: "in_progress",
 		StatusCompleted:  "completed",
 		StatusFailed:     "failed",
+		StatusCancelled:  "cancelled",
 	}
 	for status, wantDir := range expectedMappings {
 		gotDir, ok := statusDirMap[status]
@@ -723,6 +724,7 @@ func TestDirForStatus(t *testing.T) {
 		{StatusInProgress, "in_progress"},
 		{StatusCompleted, "completed"},
 		{StatusFailed, "failed"},
+		{StatusCancelled, "cancelled"},
 	}
 
 	for _, tc := range tests {
@@ -760,11 +762,17 @@ func TestPersistedStatusesComplete(t *testing.T) {
 		}
 	}
 
-	// StatusCancelled should NOT be in persistedStatuses (cancelled manifests are deleted)
+	// StatusCancelled MUST be in persistedStatuses; cancelled manifests
+	// are persisted on disk for audit (per spec § Manifest format).
+	found := false
 	for _, ps := range persistedStatuses {
 		if ps == StatusCancelled {
-			t.Errorf("StatusCancelled should not be in persistedStatuses")
+			found = true
+			break
 		}
+	}
+	if !found {
+		t.Errorf("StatusCancelled missing from persistedStatuses; cancelled manifests must persist on disk")
 	}
 }
 
