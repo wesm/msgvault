@@ -34,23 +34,23 @@ const (
 func confirmDestructive(r io.Reader, w io.Writer, mode ConfirmMode) (bool, error) {
 	switch mode {
 	case ConfirmModePermanent:
-		fmt.Fprint(w, `Type "delete" to confirm permanent deletion (no recovery): `)
+		_, _ = fmt.Fprint(w, `Type "delete" to confirm permanent deletion (no recovery): `)
 		scanner := bufio.NewScanner(r)
 		if !scanner.Scan() {
 			if err := scanner.Err(); err != nil {
 				return false, fmt.Errorf("read confirmation: %w", err)
 			}
-			fmt.Fprintln(w, "Cancelled. Drop --permanent to use trash deletion without elevated permissions.")
+			_, _ = fmt.Fprintln(w, "Cancelled. Drop --permanent to use trash deletion without elevated permissions.")
 			return false, nil
 		}
 		if strings.TrimSpace(scanner.Text()) != "delete" {
-			fmt.Fprintln(w, "Cancelled. Drop --permanent to use trash deletion without elevated permissions.")
+			_, _ = fmt.Fprintln(w, "Cancelled. Drop --permanent to use trash deletion without elevated permissions.")
 			return false, nil
 		}
 		return true, nil
 
 	case ConfirmModeAllHidden:
-		fmt.Fprint(w, "Proceed? This is irreversible. [y/N]: ")
+		_, _ = fmt.Fprint(w, "Proceed? This is irreversible. [y/N]: ")
 		scanner := bufio.NewScanner(r)
 		if !scanner.Scan() {
 			if err := scanner.Err(); err != nil {

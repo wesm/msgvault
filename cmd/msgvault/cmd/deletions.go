@@ -59,8 +59,8 @@ func runListDeletionsForManager(mgr *deletion.Manager, w io.Writer) error {
 	}
 
 	if len(pending) == 0 && len(inProgress) == 0 && len(completed) == 0 && len(failed) == 0 && len(cancelled) == 0 {
-		fmt.Fprintln(w, "No deletion batches found.")
-		fmt.Fprintln(w, "\nTo stage messages for deletion, use the TUI or create a manifest manually.")
+		_, _ = fmt.Fprintln(w, "No deletion batches found.")
+		_, _ = fmt.Fprintln(w, "\nTo stage messages for deletion, use the TUI or create a manifest manually.")
 		return nil
 	}
 
@@ -68,11 +68,11 @@ func runListDeletionsForManager(mgr *deletion.Manager, w io.Writer) error {
 		if len(manifests) == 0 {
 			return
 		}
-		fmt.Fprintf(w, "\n%s:\n", status)
-		fmt.Fprintf(w, "  %-25s  %-10s  %10s  %s\n", "ID", "Status", "Messages", "Created")
-		fmt.Fprintf(w, "  %-25s  %-10s  %10s  %s\n", "---", "------", "--------", "-------")
+		_, _ = fmt.Fprintf(w, "\n%s:\n", status)
+		_, _ = fmt.Fprintf(w, "  %-25s  %-10s  %10s  %s\n", "ID", "Status", "Messages", "Created")
+		_, _ = fmt.Fprintf(w, "  %-25s  %-10s  %10s  %s\n", "---", "------", "--------", "-------")
 		for _, m := range manifests {
-			fmt.Fprintf(w, "  %-25s  %-10s  %10d  %s\n",
+			_, _ = fmt.Fprintf(w, "  %-25s  %-10s  %10d  %s\n",
 				truncate(m.ID, 25),
 				m.Status,
 				len(m.GmailIDs),
