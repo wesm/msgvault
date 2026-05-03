@@ -567,32 +567,67 @@ func TestManager_Transitions(t *testing.T) {
 func TestManager_CancelManifest(t *testing.T) {
 	mgr := testManager(t)
 
-	m := createTestManifest(t, mgr, "cancel test")
+	manifest := createTestManifest(t, mgr, "cancel test")
 
 	// Cancel it
-	if err := mgr.CancelManifest(m.ID); err != nil {
+	if err := mgr.CancelManifest(manifest.ID); err != nil {
 		t.Fatalf("CancelManifest() error = %v", err)
 	}
 
-	// Should be gone
-	assertListCount(t, mgr.ListPending, 0)
+	baseDir := filepath.Dir(mgr.PendingDir())
+
+	// File should now exist at cancelled/<id>.json with Status=cancelled.
+	cancelledPath := filepath.Join(baseDir, "cancelled", manifest.ID+".json")
+	if _, err := os.Stat(cancelledPath); err != nil {
+		t.Fatalf("expected cancelled manifest at %s: %v", cancelledPath, err)
+	}
+	loaded, err := LoadManifest(cancelledPath)
+	if err != nil {
+		t.Fatalf("load cancelled manifest: %v", err)
+	}
+	if loaded.Status != StatusCancelled {
+		t.Errorf("loaded.Status = %q, want %q", loaded.Status, StatusCancelled)
+	}
+	// File should be absent from pending/.
+	pendingPath := filepath.Join(baseDir, "pending", manifest.ID+".json")
+	if _, err := os.Stat(pendingPath); !os.IsNotExist(err) {
+		t.Errorf("expected pending manifest gone, got err=%v", err)
+	}
 }
 
 func TestManager_CancelManifest_InProgress(t *testing.T) {
 	mgr := testManager(t)
-	m := createTestManifest(t, mgr, "cancel in-progress")
+	manifest := createTestManifest(t, mgr, "cancel in-progress")
 
 	// Move to in_progress
-	if err := mgr.MoveManifest(m.ID, StatusPending, StatusInProgress); err != nil {
+	if err := mgr.MoveManifest(manifest.ID, StatusPending, StatusInProgress); err != nil {
 		t.Fatalf("MoveManifest() error = %v", err)
 	}
 
 	// Cancel it
-	if err := mgr.CancelManifest(m.ID); err != nil {
+	if err := mgr.CancelManifest(manifest.ID); err != nil {
 		t.Fatalf("CancelManifest() error = %v", err)
 	}
 
-	assertListCount(t, mgr.ListInProgress, 0)
+	baseDir := filepath.Dir(mgr.PendingDir())
+
+	// File should now exist at cancelled/<id>.json with Status=cancelled.
+	cancelledPath := filepath.Join(baseDir, "cancelled", manifest.ID+".json")
+	if _, err := os.Stat(cancelledPath); err != nil {
+		t.Fatalf("expected cancelled manifest at %s: %v", cancelledPath, err)
+	}
+	loaded, err := LoadManifest(cancelledPath)
+	if err != nil {
+		t.Fatalf("load cancelled manifest: %v", err)
+	}
+	if loaded.Status != StatusCancelled {
+		t.Errorf("loaded.Status = %q, want %q", loaded.Status, StatusCancelled)
+	}
+	// File should be absent from in_progress/.
+	inProgressPath := filepath.Join(baseDir, "in_progress", manifest.ID+".json")
+	if _, err := os.Stat(inProgressPath); !os.IsNotExist(err) {
+		t.Errorf("expected in_progress manifest gone, got err=%v", err)
+	}
 }
 
 func TestManager_CancelManifest_NotFound(t *testing.T) {
