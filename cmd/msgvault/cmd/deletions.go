@@ -361,18 +361,19 @@ Examples:
 				return nil
 			}
 		} else if !deleteYes {
-			fmt.Print("Proceed with deletion? [y/N]: ")
+			out := cmd.OutOrStdout()
+			_, _ = fmt.Fprint(out, "Proceed with deletion? [y/N]: ")
 			scanner := bufio.NewScanner(cmd.InOrStdin())
 			if !scanner.Scan() {
 				if err := scanner.Err(); err != nil {
 					return fmt.Errorf("read confirmation: %w", err)
 				}
-				fmt.Println("Cancelled.")
+				_, _ = fmt.Fprintln(out, "Cancelled.")
 				return nil
 			}
 			answer := strings.TrimSpace(scanner.Text())
 			if answer != "y" && answer != "Y" {
-				fmt.Println("Cancelled.")
+				_, _ = fmt.Fprintln(out, "Cancelled.")
 				return nil
 			}
 		}
