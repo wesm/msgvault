@@ -1,8 +1,11 @@
 package store
 
 import (
+	"bytes"
+	"compress/zlib"
 	"database/sql"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -550,22 +553,34 @@ func (s *Store) BackfillRFC822IDs(
 		// next batch query (m.id > lastID) skips them. The selection
 		// filter (rfc822_message_id IS NULL OR '') will pick them up
 		// again on the next BackfillRFC822IDs invocation.
-		for _, id := range batchIDs {
-			raw, err := s.GetMessageRaw(id)
-			if err != nil {
-				failed++
-				continue
+		seen := make(map[int64]bool, len(batchIDs))
+		streamErr := s.StreamMessageRaw(batchIDs, func(id int64, rawData []byte, compression string) {
+			seen[id] = true
+			raw := rawData
+			if compression == "zlib" {
+				r, err := zlib.NewReader(bytes.NewReader(rawData))
+				if err != nil {
+					failed++
+					return
+				}
+				decompressed, err := io.ReadAll(r)
+				_ = r.Close()
+				if err != nil {
+					failed++
+					return
+				}
+				raw = decompressed
 			}
 			parsed, err := mime.Parse(raw)
 			if err != nil || parsed.MessageID == "" {
 				failed++
-				continue
+				return
 			}
 			normalizedID := strings.TrimSpace(parsed.MessageID)
 			normalizedID = strings.Trim(normalizedID, "<>")
 			if normalizedID == "" {
 				failed++
-				continue
+				return
 			}
 			updates = append(updates, struct {
 				id           int64
@@ -574,6 +589,16 @@ func (s *Store) BackfillRFC822IDs(
 				id:           id,
 				normalizedID: normalizedID,
 			})
+		})
+		if streamErr != nil {
+			return updated, failed, fmt.Errorf("stream raw for backfill batch: %w", streamErr)
+		}
+		// Rows whose message_raw row went missing between the batch
+		// SELECT and the stream are counted as failed so totals reconcile.
+		for _, id := range batchIDs {
+			if !seen[id] {
+				failed++
+			}
 		}
 
 		var batchUpdated int64
