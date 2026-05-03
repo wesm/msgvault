@@ -351,6 +351,70 @@ func TestEngine_ContentHashFallbackFindsNormalizedDuplicates(t *testing.T) {
 	}
 }
 
+// TestEngine_ContentHash_TwoMessageIDSurvivors_BothPreserved verifies the
+// spec contract: "A content-hash group with two Message-ID survivors keeps
+// both as winners (one per Message-ID group)."
+//
+// Four messages, two distinct RFC822 Message-IDs (two messages each). All
+// four carry raw MIME that normalizes to the same content hash, so the
+// content-hash pass would ordinarily group the two survivors together.
+// The correct behaviour is to skip that content-hash group entirely —
+// total losers must equal 2 (one per MID group), never 3.
+func TestEngine_ContentHash_TwoMessageIDSurvivors_BothPreserved(t *testing.T) {
+	f := storetest.New(t)
+	st := f.Store
+	gmail := f.Source
+
+	// Two MID groups, two messages each.
+	idA1 := addMessage(t, st, gmail, "src-a1", "mid-A", false)
+	idA2 := addMessage(t, st, gmail, "src-a2", "mid-A", false)
+	idB1 := addMessage(t, st, gmail, "src-b1", "mid-B", false)
+	idB2 := addMessage(t, st, gmail, "src-b2", "mid-B", false)
+
+	// All four messages share the same normalized content (stripped headers
+	// differ, canonical From/Subject/Date/body are identical) so both
+	// Message-ID survivors land in the same content-hash group.
+	makeRaw := func(received, delivered, labels string) []byte {
+		return []byte(
+			"Received: " + received + "\r\n" +
+				"Delivered-To: " + delivered + "\r\n" +
+				"X-Gmail-Labels: " + labels + "\r\n" +
+				"From: sender@example.com\r\n" +
+				"Subject: Two MID survivors\r\n" +
+				"Date: Mon, 1 Jan 2024 12:00:00 +0000\r\n" +
+				"\r\n" +
+				"Body that is identical across all four copies.",
+		)
+	}
+	testutil.MustNoErr(t, st.UpsertMessageRaw(idA1, makeRaw("mx1.google.com", "a1@example.com", "INBOX")), "raw A1")
+	testutil.MustNoErr(t, st.UpsertMessageRaw(idA2, makeRaw("mx2.google.com", "a2@example.com", "SENT")), "raw A2")
+	testutil.MustNoErr(t, st.UpsertMessageRaw(idB1, makeRaw("mx3.google.com", "b1@example.com", "INBOX")), "raw B1")
+	testutil.MustNoErr(t, st.UpsertMessageRaw(idB2, makeRaw("mx4.google.com", "b2@example.com", "SENT")), "raw B2")
+
+	eng := dedup.NewEngine(st, dedup.Config{
+		AccountSourceIDs:    []int64{gmail.ID},
+		Account:             "test@example.com",
+		ContentHashFallback: true,
+	}, nil)
+
+	report, err := eng.Scan(context.Background())
+	testutil.MustNoErr(t, err, "Scan")
+
+	// Two MID groups, no content-hash group (the group with two MID
+	// survivors must be skipped, not appended).
+	if report.DuplicateGroups != 2 {
+		t.Errorf("DuplicateGroups = %d, want 2", report.DuplicateGroups)
+	}
+	if report.ContentHashGroups != 0 {
+		t.Errorf("ContentHashGroups = %d, want 0 (MID-survivor group must be skipped)", report.ContentHashGroups)
+	}
+	// One loser per MID group; the buggy code yields 3 by demoting one
+	// Message-ID survivor.
+	if report.DuplicateMessages != 2 {
+		t.Errorf("DuplicateMessages = %d, want 2 (one loser per MID group)", report.DuplicateMessages)
+	}
+}
+
 func TestEngine_ContentHashFallbackDisabledByDefault(t *testing.T) {
 	f := storetest.New(t)
 	st := f.Store

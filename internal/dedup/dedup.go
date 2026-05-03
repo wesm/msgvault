@@ -411,12 +411,25 @@ func (e *Engine) Scan(ctx context.Context) (*Report, error) {
 		}
 		report.SkippedDecompressionErrors = skipped
 		for _, g := range contentHashGroups {
-			// If this content-hash group contains a Message-ID survivor
-			// that did not win the content-hash survivor selection, force
-			// the Message-ID survivor to win. Demoting a survivor that
-			// has already absorbed labels from its Message-ID losers
-			// would silently destroy that union when MergeDuplicates
-			// soft-deletes the demoted survivor.
+			// Spec § Detection: "A content-hash group with two Message-ID
+			// survivors keeps both as winners (one per Message-ID group)."
+			// Count how many Message-ID-pass survivors landed in this group;
+			// if more than one, neither should be demoted — skip entirely.
+			midSurvivorCount := 0
+			for _, m := range g.Messages {
+				if messageIDSurvivors[m.ID] {
+					midSurvivorCount++
+				}
+			}
+			if midSurvivorCount > 1 {
+				continue
+			}
+
+			// If this content-hash group contains exactly one Message-ID
+			// survivor that did not win the content-hash survivor selection,
+			// force that survivor to win. Demoting a survivor that has already
+			// absorbed labels from its Message-ID losers would silently destroy
+			// that union when MergeDuplicates soft-deletes the demoted survivor.
 			for j, m := range g.Messages {
 				if j == g.Survivor {
 					continue
