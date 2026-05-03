@@ -6,8 +6,30 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/wesm/msgvault/internal/deletion"
 )
+
+func TestDeleteStaged_PermanentAndYesMutuallyExclusive(t *testing.T) {
+	cmd := &cobra.Command{
+		Use:  "delete-staged",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	var permanent, yes bool
+	cmd.Flags().BoolVar(&permanent, "permanent", false, "")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "")
+	cmd.MarkFlagsMutuallyExclusive("permanent", "yes")
+	cmd.SetArgs([]string{"--permanent", "--yes"})
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("err = nil, want mutual-exclusion error")
+	}
+	if !strings.Contains(err.Error(), "permanent") || !strings.Contains(err.Error(), "yes") {
+		t.Errorf("err = %q, want substrings 'permanent' and 'yes'", err.Error())
+	}
+}
 
 func TestListDeletions_ShowsCancelled(t *testing.T) {
 	tmpDir := t.TempDir()
