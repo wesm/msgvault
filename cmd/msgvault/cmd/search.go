@@ -109,15 +109,46 @@ Examples:
 		}
 
 		if searchMode != "fts" {
-			// Hybrid/vector path opens its own sql.DB directly; the store
-			// returned by scope resolution isn't needed there.
+			// Hybrid/vector path opens its own sql.DB directly. When a
+			// scoped store is in hand, schema init has already run on
+			// this DSN; otherwise we have to run it ourselves so the
+			// raw sql.DB inside runHybridSearch sees the deleted_at /
+			// deleted_from_source_at columns the vector backend filters
+			// on. Close immediately — migration state persists in the
+			// file on disk, and runHybridSearch will reopen.
 			if scopedStore != nil {
 				_ = scopedStore.Close()
+			} else {
+				if err := initLocalSchema(); err != nil {
+					return err
+				}
 			}
 			return runHybridSearch(cmd, queryStr, searchMode, searchExplain, scope)
 		}
 		return runLocalSearch(cmd, queryStr, scope, scopedStore)
 	},
+}
+
+// initLocalSchema opens the local store, runs InitSchema and the
+// startup migrations, then closes it. Used by the unscoped vector/
+// hybrid path so the raw sql.DB that runHybridSearch opens sees a
+// fully-migrated schema (notably the deleted_at column the vector
+// backend filters on, added by this branch's ALTER TABLE migration).
+// Scoped queries don't need this because resolveSearchScope already
+// runs the same init on the same DSN.
+func initLocalSchema() error {
+	s, err := store.Open(cfg.DatabaseDSN())
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.InitSchema(); err != nil {
+		return fmt.Errorf("init schema: %w", err)
+	}
+	if err := runStartupMigrations(s); err != nil {
+		return fmt.Errorf("startup migrations: %w", err)
+	}
+	return nil
 }
 
 // resolveSearchScope opens the local store just long enough to resolve
