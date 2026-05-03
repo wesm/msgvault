@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -351,11 +352,26 @@ Examples:
 		}
 
 		// Require confirmation
-		if !deleteYes {
+		if deletePermanent {
+			ok, err := confirmDestructive(cmd.InOrStdin(), cmd.OutOrStdout(), ConfirmModePermanent)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
+		} else if !deleteYes {
 			fmt.Print("Proceed with deletion? [y/N]: ")
-			var response string
-			_, _ = fmt.Scanln(&response)
-			if response != "y" && response != "Y" {
+			scanner := bufio.NewScanner(cmd.InOrStdin())
+			if !scanner.Scan() {
+				if err := scanner.Err(); err != nil {
+					return fmt.Errorf("read confirmation: %w", err)
+				}
+				fmt.Println("Cancelled.")
+				return nil
+			}
+			answer := strings.TrimSpace(scanner.Text())
+			if answer != "y" && answer != "Y" {
 				fmt.Println("Cancelled.")
 				return nil
 			}
