@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -30,55 +31,62 @@ with their ID, status, message count, and creation date.`,
 		if err != nil {
 			return fmt.Errorf("create manager: %w", err)
 		}
-
-		// List all statuses
-		pending, err := manager.ListPending()
-		if err != nil {
-			return fmt.Errorf("list pending deletions: %w", err)
-		}
-		inProgress, err := manager.ListInProgress()
-		if err != nil {
-			return fmt.Errorf("list in-progress deletions: %w", err)
-		}
-		completed, err := manager.ListCompleted()
-		if err != nil {
-			return fmt.Errorf("list completed deletions: %w", err)
-		}
-		failed, err := manager.ListFailed()
-		if err != nil {
-			return fmt.Errorf("list failed deletions: %w", err)
-		}
-
-		if len(pending) == 0 && len(inProgress) == 0 && len(completed) == 0 && len(failed) == 0 {
-			fmt.Println("No deletion batches found.")
-			fmt.Println("\nTo stage messages for deletion, use the TUI or create a manifest manually.")
-			return nil
-		}
-
-		printManifestTable := func(status string, manifests []*deletion.Manifest) {
-			if len(manifests) == 0 {
-				return
-			}
-			fmt.Printf("\n%s:\n", status)
-			fmt.Printf("  %-25s  %-10s  %10s  %s\n", "ID", "Status", "Messages", "Created")
-			fmt.Printf("  %-25s  %-10s  %10s  %s\n", "---", "------", "--------", "-------")
-			for _, m := range manifests {
-				fmt.Printf("  %-25s  %-10s  %10d  %s\n",
-					truncate(m.ID, 25),
-					m.Status,
-					len(m.GmailIDs),
-					m.CreatedAt.Format("2006-01-02 15:04"),
-				)
-			}
-		}
-
-		printManifestTable("Pending", pending)
-		printManifestTable("In Progress", inProgress)
-		printManifestTable("Completed (recent)", limitManifests(completed, 10))
-		printManifestTable("Failed", failed)
-
-		return nil
+		return runListDeletionsForManager(manager, cmd.OutOrStdout())
 	},
+}
+
+func runListDeletionsForManager(mgr *deletion.Manager, w io.Writer) error {
+	pending, err := mgr.ListPending()
+	if err != nil {
+		return fmt.Errorf("list pending deletions: %w", err)
+	}
+	inProgress, err := mgr.ListInProgress()
+	if err != nil {
+		return fmt.Errorf("list in-progress deletions: %w", err)
+	}
+	completed, err := mgr.ListCompleted()
+	if err != nil {
+		return fmt.Errorf("list completed deletions: %w", err)
+	}
+	failed, err := mgr.ListFailed()
+	if err != nil {
+		return fmt.Errorf("list failed deletions: %w", err)
+	}
+	cancelled, err := mgr.ListCancelled()
+	if err != nil {
+		return fmt.Errorf("list cancelled deletions: %w", err)
+	}
+
+	if len(pending) == 0 && len(inProgress) == 0 && len(completed) == 0 && len(failed) == 0 && len(cancelled) == 0 {
+		fmt.Fprintln(w, "No deletion batches found.")
+		fmt.Fprintln(w, "\nTo stage messages for deletion, use the TUI or create a manifest manually.")
+		return nil
+	}
+
+	printManifestTable := func(status string, manifests []*deletion.Manifest) {
+		if len(manifests) == 0 {
+			return
+		}
+		fmt.Fprintf(w, "\n%s:\n", status)
+		fmt.Fprintf(w, "  %-25s  %-10s  %10s  %s\n", "ID", "Status", "Messages", "Created")
+		fmt.Fprintf(w, "  %-25s  %-10s  %10s  %s\n", "---", "------", "--------", "-------")
+		for _, m := range manifests {
+			fmt.Fprintf(w, "  %-25s  %-10s  %10d  %s\n",
+				truncate(m.ID, 25),
+				m.Status,
+				len(m.GmailIDs),
+				m.CreatedAt.Format("2006-01-02 15:04"),
+			)
+		}
+	}
+
+	printManifestTable("Pending", pending)
+	printManifestTable("In Progress", inProgress)
+	printManifestTable("Completed (recent)", limitManifests(completed, 10))
+	printManifestTable("Failed", failed)
+	printManifestTable("Cancelled (recent)", limitManifests(cancelled, 10))
+
+	return nil
 }
 
 var showDeletionCmd = &cobra.Command{
