@@ -126,6 +126,8 @@ func AssertManifestInState(t *testing.T, mgr *Manager, id string, state Status) 
 		dir = mgr.CompletedDir()
 	case StatusFailed:
 		dir = mgr.FailedDir()
+	case StatusCancelled:
+		dir = mgr.dirForStatus(StatusCancelled)
 	default:
 		t.Fatalf("unknown state %q", state)
 	}
@@ -527,6 +529,8 @@ func TestManager_Transitions(t *testing.T) {
 		{"in_progress->failed", [][2]Status{{StatusPending, StatusInProgress}, {StatusInProgress, StatusFailed}}, false, [4]int{0, 0, 0, 1}},
 		{"completed->pending (invalid)", [][2]Status{{StatusPending, StatusInProgress}, {StatusInProgress, StatusCompleted}, {StatusCompleted, StatusPending}}, true, [4]int{}},
 		{"pending->pending (invalid)", [][2]Status{{StatusPending, StatusPending}}, true, [4]int{}},
+		{"pending->cancelled", [][2]Status{{StatusPending, StatusCancelled}}, false, [4]int{0, 0, 0, 0}},
+		{"in_progress->cancelled", [][2]Status{{StatusPending, StatusInProgress}, {StatusInProgress, StatusCancelled}}, false, [4]int{0, 0, 0, 0}},
 	}
 
 	for _, tc := range tests {

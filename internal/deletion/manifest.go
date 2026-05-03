@@ -351,7 +351,7 @@ func (m *Manager) MoveManifest(id string, fromStatus, toStatus Status) error {
 	}
 
 	switch toStatus {
-	case StatusInProgress, StatusCompleted, StatusFailed:
+	case StatusInProgress, StatusCompleted, StatusFailed, StatusCancelled:
 		// allowed
 	default:
 		return fmt.Errorf("cannot move to status %s", toStatus)
