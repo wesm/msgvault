@@ -108,8 +108,14 @@ func runDeleteDeduped(cmd *cobra.Command, _ []string) error {
 	}
 
 	// --all-hidden always prompts, even when --yes is set; spec rung 03 invariant.
+	// Mode picks how EOF is handled: AllHidden treats closed stdin as a contract
+	// violation (must not be silently bypassed), YesNo treats it as cancel.
 	if !deleteDedupedYes || deleteDedupedAllHidden {
-		ok, err := confirmDestructive(cmd.InOrStdin(), cmd.OutOrStdout(), ConfirmModeAllHidden)
+		mode := ConfirmModeYesNo
+		if deleteDedupedAllHidden {
+			mode = ConfirmModeAllHidden
+		}
+		ok, err := confirmDestructive(cmd.InOrStdin(), cmd.OutOrStdout(), mode)
 		if err != nil {
 			return err
 		}

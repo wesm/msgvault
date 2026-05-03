@@ -78,3 +78,36 @@ func TestConfirmDestructive_AllHidden_StdinClosed(t *testing.T) {
 		t.Errorf("err = %q, want substring %q", err.Error(), wantSubstr)
 	}
 }
+
+func TestConfirmDestructive_YesNo_YesAccepted(t *testing.T) {
+	var out bytes.Buffer
+	ok, err := confirmDestructive(strings.NewReader("y\n"), &out, ConfirmModeYesNo)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if !ok {
+		t.Errorf("ok = false on 'y', want true under YesNo mode")
+	}
+}
+
+func TestConfirmDestructive_YesNo_NoRejected(t *testing.T) {
+	var out bytes.Buffer
+	ok, err := confirmDestructive(strings.NewReader("n\n"), &out, ConfirmModeYesNo)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if ok {
+		t.Errorf("ok = true on 'n', want false")
+	}
+}
+
+func TestConfirmDestructive_YesNo_StdinClosed(t *testing.T) {
+	var out bytes.Buffer
+	ok, err := confirmDestructive(strings.NewReader(""), &out, ConfirmModeYesNo)
+	if err != nil {
+		t.Fatalf("err = %v on closed stdin, want nil (cancel-on-EOF)", err)
+	}
+	if ok {
+		t.Errorf("ok = true on closed stdin, want false")
+	}
+}

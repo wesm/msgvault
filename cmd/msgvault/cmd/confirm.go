@@ -21,6 +21,12 @@ const (
 	// targeting every hidden row. Accepts y/yes; n/no/EOF. EOF produces
 	// the contract-naming error (cannot be skipped with --yes).
 	ConfirmModeAllHidden
+
+	// ConfirmModeYesNo — ordinary destructive prompt that may be
+	// skipped with --yes by the caller. Accepts y/yes; n/no/EOF cancel
+	// without an error so scripted/non-interactive use exits cleanly
+	// when the prompt is reached unexpectedly.
+	ConfirmModeYesNo
 )
 
 // confirmDestructive prompts on the provided writer and reads a single
@@ -59,6 +65,18 @@ func confirmDestructive(r io.Reader, w io.Writer, mode ConfirmMode) (bool, error
 			return false, fmt.Errorf(
 				"no confirmation input (stdin closed); --all-hidden cannot be skipped with --yes",
 			)
+		}
+		answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
+		return answer == "y" || answer == "yes", nil
+
+	case ConfirmModeYesNo:
+		_, _ = fmt.Fprint(w, "Proceed? This is irreversible. [y/N]: ")
+		scanner := bufio.NewScanner(r)
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return false, fmt.Errorf("read confirmation: %w", err)
+			}
+			return false, nil
 		}
 		answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
 		return answer == "y" || answer == "yes", nil
