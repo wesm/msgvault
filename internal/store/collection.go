@@ -37,7 +37,7 @@ var ErrCollectionNotFound = errors.New("collection not found")
 // ErrCollectionImmutable is returned when an explicit mutation is
 // attempted against the auto-managed default collection.
 var ErrCollectionImmutable = errors.New(
-	"the \"All\" collection is auto-managed and cannot be modified by hand",
+	`cannot modify the auto-managed "All" collection`,
 )
 
 // EnsureDefaultCollection creates the auto-managed default collection
