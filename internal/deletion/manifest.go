@@ -274,6 +274,11 @@ func (m *Manager) ListFailed() ([]*Manifest, error) {
 	return m.listManifests(m.dirForStatus(StatusFailed))
 }
 
+// ListCancelled returns all cancelled deletion manifests.
+func (m *Manager) ListCancelled() ([]*Manifest, error) {
+	return m.listManifests(m.dirForStatus(StatusCancelled))
+}
+
 func (m *Manager) listManifests(dir string) ([]*Manifest, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

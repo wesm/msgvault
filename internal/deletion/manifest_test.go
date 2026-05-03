@@ -815,6 +815,25 @@ func TestPersistedStatusesComplete(t *testing.T) {
 	}
 }
 
+func TestManager_ListCancelled(t *testing.T) {
+	mgr := testManager(t)
+
+	manifest := createTestManifest(t, mgr, "test cancel")
+	if err := mgr.CancelManifest(manifest.ID); err != nil {
+		t.Fatalf("CancelManifest: %v", err)
+	}
+	got, err := mgr.ListCancelled()
+	if err != nil {
+		t.Fatalf("ListCancelled: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListCancelled returned %d manifests, want 1", len(got))
+	}
+	if got[0].ID != manifest.ID {
+		t.Errorf("got ID %q, want %q", got[0].ID, manifest.ID)
+	}
+}
+
 // TestManager_SaveManifest_UnknownStatus tests saving with an unknown status.
 func TestManager_SaveManifest_UnknownStatus(t *testing.T) {
 	mgr := testManager(t)
