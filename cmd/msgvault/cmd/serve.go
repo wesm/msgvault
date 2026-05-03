@@ -86,6 +86,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err := s.InitSchema(); err != nil {
 		return fmt.Errorf("init schema: %w", err)
 	}
+	if err := runStartupMigrations(s); err != nil {
+		return fmt.Errorf("startup migrations: %w", err)
+	}
 
 	// Set up cancellable context early so vector-backend initialization
 	// (which may open files and run migrations) respects Ctrl+C.
@@ -379,6 +382,9 @@ func runScheduledSync(ctx context.Context, email string, s *store.Store, getOAut
 	source, err := s.GetOrCreateSource("gmail", email)
 	if err != nil {
 		return fmt.Errorf("get source: %w", err)
+	}
+	if err := runPostSourceCreateMigrations(s); err != nil {
+		return fmt.Errorf("post-source-create migrations: %w", err)
 	}
 
 	// Run incremental sync

@@ -2,11 +2,79 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/wesm/msgvault/internal/remote"
 	"github.com/wesm/msgvault/internal/store"
 )
+
+// runStartupMigrations pulls legacy identity addresses from the global config
+// and runs the one-time migration. If migration was performed, the notice is
+// logged and printed to stderr. If the migration is deferred because no source
+// exists yet, it will be retried on a later command after a source has been
+// created — and ingest commands that create the first source should call
+// runPostSourceCreateMigrations after GetOrCreateSource so the deferred
+// migration applies on the same invocation.
+//
+// Always returns nil unless the migration itself errors.
+func runStartupMigrations(s *store.Store) error {
+	addrs := cfg.Identity.Addresses
+	res, err := s.RunStartupMigrations(addrs)
+	if err != nil {
+		logger.Warn("startup migration failed", "error", err)
+		return err
+	}
+	// Success cases log at Info (the operation succeeded; res.Notice is
+	// the user-facing surface on stderr). Reserved Warn for the actual
+	// error path above.
+	switch {
+	case res.Deferred:
+		logger.Info("legacy [identity] block in config detected (migration deferred until a source exists)",
+			"address_count", res.AddressCount,
+			"hint", "run 'msgvault add-account ...' to create a source; the migration will retry on the next command")
+	case res.Applied:
+		logger.Info("legacy identity migrated",
+			"addresses", res.AddressCount,
+			"sources", res.SourceCount)
+	}
+	if res.Notice != "" {
+		fmt.Fprintln(os.Stderr, res.Notice)
+	}
+	return nil
+}
+
+// runStartupMigrationsForIngest is a variant for ingest commands that are
+// about to create the first source. If no source exists yet, the legacy
+// identity migration would just defer with a "will run on the next command"
+// notice that is no longer accurate (the post-source-create call below
+// will fire on the same invocation). Skip the pre-source call entirely in
+// that case; runPostSourceCreateMigrations does all the work and emits
+// the accurate "applied" notice.
+//
+// When sources already exist (steady state), behaves exactly like
+// runStartupMigrations.
+func runStartupMigrationsForIngest(s *store.Store) error {
+	srcs, err := s.ListSources("")
+	if err != nil {
+		return fmt.Errorf("list sources: %w", err)
+	}
+	if len(srcs) == 0 {
+		return nil
+	}
+	return runStartupMigrations(s)
+}
+
+// runPostSourceCreateMigrations re-runs startup migrations after the caller
+// has just created a source. The legacy identity migration defers when no
+// source exists at startup, so on a fresh install the very first
+// add-account / add-imap / add-o365 / import-* invocation needs a second
+// pass to actually apply the migration on the same invocation that created
+// the first source. Subsequent calls are O(1) — once the migration sentinel
+// is set, MigrateLegacyIdentityConfig short-circuits.
+func runPostSourceCreateMigrations(s *store.Store) error {
+	return runStartupMigrations(s)
+}
 
 // MessageStore is the interface for commands that need basic message operations.
 // Both store.Store and remote.Store implement this interface.
@@ -64,6 +132,25 @@ func OpenRemoteStore() (RemoteStore, error) {
 func openLocalStore() (*store.Store, error) {
 	dbPath := cfg.DatabaseDSN()
 	return store.Open(dbPath)
+}
+
+// openLocalStoreAndInit opens the local SQLite database, initializes the
+// schema, and runs startup migrations. Callers that previously called
+// store.Open + s.InitSchema separately should migrate to this helper.
+func openLocalStoreAndInit() (*store.Store, error) {
+	s, err := openLocalStore()
+	if err != nil {
+		return nil, err
+	}
+	if err := s.InitSchema(); err != nil {
+		_ = s.Close()
+		return nil, fmt.Errorf("init schema: %w", err)
+	}
+	if err := runStartupMigrations(s); err != nil {
+		_ = s.Close()
+		return nil, fmt.Errorf("startup migrations: %w", err)
+	}
+	return s, nil
 }
 
 // openRemoteStore creates a remote store client.

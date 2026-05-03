@@ -203,11 +203,12 @@ var statusDirMap = map[Status]string{
 	StatusInProgress: "in_progress",
 	StatusCompleted:  "completed",
 	StatusFailed:     "failed",
+	StatusCancelled:  "cancelled",
 }
 
 // persistedStatuses lists all statuses that have on-disk directories.
 var persistedStatuses = []Status{
-	StatusPending, StatusInProgress, StatusCompleted, StatusFailed,
+	StatusPending, StatusInProgress, StatusCompleted, StatusFailed, StatusCancelled,
 }
 
 // Manager handles deletion manifest files.
@@ -271,6 +272,11 @@ func (m *Manager) ListCompleted() ([]*Manifest, error) {
 // ListFailed returns all failed deletion manifests.
 func (m *Manager) ListFailed() ([]*Manifest, error) {
 	return m.listManifests(m.dirForStatus(StatusFailed))
+}
+
+// ListCancelled returns all cancelled deletion manifests.
+func (m *Manager) ListCancelled() ([]*Manifest, error) {
+	return m.listManifests(m.dirForStatus(StatusCancelled))
 }
 
 func (m *Manager) listManifests(dir string) ([]*Manifest, error) {
@@ -350,7 +356,7 @@ func (m *Manager) MoveManifest(id string, fromStatus, toStatus Status) error {
 	}
 
 	switch toStatus {
-	case StatusInProgress, StatusCompleted, StatusFailed:
+	case StatusInProgress, StatusCompleted, StatusFailed, StatusCancelled:
 		// allowed
 	default:
 		return fmt.Errorf("cannot move to status %s", toStatus)
@@ -361,18 +367,28 @@ func (m *Manager) MoveManifest(id string, fromStatus, toStatus Status) error {
 	return os.Rename(fromPath, toPath)
 }
 
-// CancelManifest removes a pending or in-progress manifest.
+// CancelManifest moves a pending or in-progress manifest to the
+// cancelled directory and updates its inline Status field. Returns
+// an error if the manifest is not found in pending or in_progress.
 func (m *Manager) CancelManifest(id string) error {
-	// Try pending first, then in_progress
-	for _, dir := range []string{m.PendingDir(), m.InProgressDir()} {
-		path := filepath.Join(dir, id+".json")
-		err := os.Remove(path)
-		if err == nil {
-			return nil
+	for _, fromStatus := range []Status{StatusPending, StatusInProgress} {
+		fromPath := filepath.Join(m.dirForStatus(fromStatus), id+".json")
+		if _, err := os.Stat(fromPath); os.IsNotExist(err) {
+			continue
 		}
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("remove %s: %w", path, err)
+		manifest, err := LoadManifest(fromPath)
+		if err != nil {
+			return fmt.Errorf("load manifest %s: %w", id, err)
 		}
+		manifest.Status = StatusCancelled
+		// Status written before move; a crash here leaves the file in
+		// the source dir with Status=cancelled. Spec § Manifest format
+		// names the directory location as authoritative — recoverable
+		// on next operation. Matches finalizeExecution's two-step shape.
+		if err := manifest.Save(fromPath); err != nil {
+			return fmt.Errorf("update status %s: %w", id, err)
+		}
+		return m.MoveManifest(id, fromStatus, StatusCancelled)
 	}
 	return fmt.Errorf("manifest %s not found in pending or in_progress", id)
 }
