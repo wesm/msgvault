@@ -107,9 +107,9 @@ func runDeleteDeduped(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	if !deleteDedupedYes {
-		fmt.Print("Proceed? This is irreversible. [y/N]: ")
-		ok, err := readDedupYesNo(cmd)
+	// --all-hidden always prompts, even when --yes is set; spec rung 03 invariant.
+	if !deleteDedupedYes || deleteDedupedAllHidden {
+		ok, err := confirmDestructive(cmd.InOrStdin(), cmd.OutOrStdout(), ConfirmModeAllHidden)
 		if err != nil {
 			return err
 		}
