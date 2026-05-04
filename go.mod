@@ -19,8 +19,8 @@ require (
 	github.com/jackc/pgx/v5 v5.9.1
 	github.com/jhillyerd/enmime v1.3.0
 	github.com/marcboeker/go-duckdb v1.8.5
-	github.com/mark3labs/mcp-go v0.48.0
-	github.com/mattn/go-isatty v0.0.21
+	github.com/mark3labs/mcp-go v0.49.0
+	github.com/mattn/go-isatty v0.0.22
 	github.com/mattn/go-runewidth v0.0.23
 	github.com/mattn/go-sqlite3 v1.14.42
 	github.com/muesli/termenv v0.16.0
