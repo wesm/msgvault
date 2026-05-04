@@ -691,3 +691,115 @@ func TestAddAccount_HeadlessExplicitEmptyOAuthApp(t *testing.T) {
 		)
 	}
 }
+
+func TestAddAccount_HeadlessServiceAccountReturnsActionableError(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	savedCfg := cfg
+	savedLogger := logger
+	savedHeadless := headless
+	savedOAuthApp := oauthAppName
+	savedForce := forceReauth
+	defer func() {
+		cfg = savedCfg
+		logger = savedLogger
+		headless = savedHeadless
+		oauthAppName = savedOAuthApp
+		forceReauth = savedForce
+	}()
+
+	cfg = &config.Config{
+		HomeDir: tmpDir,
+		Data:    config.DataConfig{DataDir: tmpDir},
+		OAuth: config.OAuthConfig{
+			Apps: map[string]config.OAuthApp{
+				"workspace": {ServiceAccountKey: filepath.Join(tmpDir, "service-account.json")},
+			},
+		},
+	}
+	logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	testCmd := &cobra.Command{
+		Use:  "add-account <email>",
+		Args: cobra.ExactArgs(1),
+		RunE: addAccountCmd.RunE,
+	}
+	testCmd.Flags().StringVar(&oauthAppName, "oauth-app", "", "")
+	testCmd.Flags().BoolVar(&headless, "headless", false, "")
+	testCmd.Flags().BoolVar(&forceReauth, "force", false, "")
+	testCmd.Flags().StringVar(&accountDisplayName, "display-name", "", "")
+
+	root := newTestRootCmd()
+	root.AddCommand(testCmd)
+	root.SetArgs([]string{
+		"add-account", "user@company.com",
+		"--headless", "--oauth-app", "workspace",
+	})
+
+	getOutput := captureStdout(t)
+	err := root.Execute()
+	output := getOutput()
+
+	if err == nil {
+		t.Fatal("expected --headless service account error")
+	}
+	if !strings.Contains(err.Error(), "service accounts do not use --headless") {
+		t.Fatalf("error = %v, want service accounts do not use --headless", err)
+	}
+	if strings.Contains(output, "Headless Server Setup") {
+		t.Fatalf("service account path should not print browser OAuth headless instructions:\n%s", output)
+	}
+}
+
+func TestAddAccount_ForceServiceAccountReturnsActionableError(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	savedCfg := cfg
+	savedLogger := logger
+	savedHeadless := headless
+	savedOAuthApp := oauthAppName
+	savedForce := forceReauth
+	defer func() {
+		cfg = savedCfg
+		logger = savedLogger
+		headless = savedHeadless
+		oauthAppName = savedOAuthApp
+		forceReauth = savedForce
+	}()
+
+	cfg = &config.Config{
+		HomeDir: tmpDir,
+		Data:    config.DataConfig{DataDir: tmpDir},
+		OAuth: config.OAuthConfig{
+			Apps: map[string]config.OAuthApp{
+				"workspace": {ServiceAccountKey: filepath.Join(tmpDir, "service-account.json")},
+			},
+		},
+	}
+	logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	testCmd := &cobra.Command{
+		Use:  "add-account <email>",
+		Args: cobra.ExactArgs(1),
+		RunE: addAccountCmd.RunE,
+	}
+	testCmd.Flags().StringVar(&oauthAppName, "oauth-app", "", "")
+	testCmd.Flags().BoolVar(&headless, "headless", false, "")
+	testCmd.Flags().BoolVar(&forceReauth, "force", false, "")
+	testCmd.Flags().StringVar(&accountDisplayName, "display-name", "", "")
+
+	root := newTestRootCmd()
+	root.AddCommand(testCmd)
+	root.SetArgs([]string{
+		"add-account", "user@company.com",
+		"--force", "--oauth-app", "workspace",
+	})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected --force service account error")
+	}
+	if !strings.Contains(err.Error(), "service accounts do not use --force") {
+		t.Fatalf("error = %v, want service accounts do not use --force", err)
+	}
+}

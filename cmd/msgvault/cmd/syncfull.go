@@ -121,9 +121,7 @@ Examples:
 					}
 					appName := sourceOAuthApp(src)
 					// Service accounts are always ready — no per-user token needed
-					if saKey := cfg.OAuth.ServiceAccountKeyFor(appName); saKey != "" {
-						// Service account configured, skip token check
-					} else {
+					if cfg.OAuth.ServiceAccountKeyFor(appName) == "" {
 						mgr, err := getOAuthMgr(appName)
 						if err != nil {
 							syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", src.Identifier, err))

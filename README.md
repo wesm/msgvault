@@ -164,6 +164,22 @@ To switch an existing account to a different OAuth app:
 msgvault add-account you@acme.com --oauth-app acme   # re-authorizes
 ```
 
+### Google Service Accounts
+
+Workspace admins can use a Google service account with domain-wide delegation instead of per-user OAuth tokens:
+
+```toml
+[oauth.apps.acme]
+service_account_key = "/secure/path/service-account.json"
+```
+
+In Google Admin Console, authorize the service account client for `https://www.googleapis.com/auth/gmail.readonly` and `https://www.googleapis.com/auth/gmail.modify`. If you will run `delete-staged` with permanent deletion, also authorize `https://mail.google.com/`. Keep the key file owner-only, for example `chmod 600 /secure/path/service-account.json`.
+
+```bash
+msgvault add-account you@acme.com --oauth-app acme
+msgvault sync-full you@acme.com
+```
+
 ## MCP Server
 
 msgvault includes an MCP server that lets AI assistants search, analyze, and read your archived messages. Connect it to Claude Desktop or any MCP-capable agent and query your full message history conversationally. See the [MCP documentation](https://msgvault.io/usage/chat/) for setup instructions.

@@ -45,25 +45,6 @@ Examples:
 			return fmt.Errorf("--headless and --force cannot be used together: --force requires browser-based OAuth which is not available in headless mode")
 		}
 
-		// For --headless, try to inherit the stored binding so the
-		// printed instructions include --oauth-app. DB errors are
-		// non-fatal since headless only prints instructions.
-		if headless {
-			app := oauthAppName
-			if !cmd.Flags().Changed("oauth-app") {
-				if s, openErr := store.Open(cfg.DatabaseDSN()); openErr == nil {
-					defer func() { _ = s.Close() }()
-					if initErr := s.InitSchema(); initErr == nil {
-						if src, _ := findGmailSource(s, email); src != nil {
-							app = sourceOAuthApp(src)
-						}
-					}
-				}
-			}
-			oauth.PrintHeadlessInstructions(email, cfg.TokensDir(), app)
-			return nil
-		}
-
 		// Resolve which client secrets to use
 		resolvedApp := oauthAppName
 		oauthAppExplicit := cmd.Flags().Changed("oauth-app")
@@ -107,8 +88,20 @@ Examples:
 			}
 		}
 
+		saKeyPath := cfg.OAuth.ServiceAccountKeyFor(resolvedApp)
+		if headless {
+			if saKeyPath != "" {
+				return fmt.Errorf("service accounts do not use --headless; run add-account without --headless")
+			}
+			oauth.PrintHeadlessInstructions(email, cfg.TokensDir(), resolvedApp)
+			return nil
+		}
+
 		// Check for service account configuration first
-		if saKeyPath := cfg.OAuth.ServiceAccountKeyFor(resolvedApp); saKeyPath != "" {
+		if saKeyPath != "" {
+			if forceReauth {
+				return fmt.Errorf("service accounts do not use --force; tokens are minted on demand from the configured service account key")
+			}
 			saMgr, saErr := oauth.NewServiceAccountManager(saKeyPath, oauth.Scopes)
 			if saErr != nil {
 				return fmt.Errorf("service account: %w", saErr)
@@ -120,6 +113,20 @@ Examples:
 				return fmt.Errorf("service account token for %s: %w", email, saErr)
 			}
 			if saErr := oauth.ValidateTokenEmail(cmd.Context(), ts, email); saErr != nil {
+				var mismatch *oauth.TokenMismatchError
+				if errors.As(saErr, &mismatch) {
+					existing, lookupErr := findGmailSource(s, email)
+					if lookupErr != nil {
+						return fmt.Errorf("service account validation failed: %w (also: %v)", saErr, lookupErr)
+					}
+					if existing == nil {
+						return fmt.Errorf(
+							"%w\nIf %s is the primary address, re-add with:\n"+
+								"  msgvault add-account %s",
+							saErr, mismatch.Actual, mismatch.Actual,
+						)
+					}
+				}
 				return fmt.Errorf("service account validation for %s: %w", email, saErr)
 			}
 

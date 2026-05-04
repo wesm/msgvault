@@ -307,56 +307,12 @@ const resolveTimeout = 10 * time.Second
 func (m *Manager) resolveTokenEmail(
 	ctx context.Context, email string, token *oauth2.Token,
 ) (string, error) {
-	valCtx, cancel := context.WithTimeout(ctx, resolveTimeout)
-	defer cancel()
-
-	ts := m.config.TokenSource(valCtx, token)
-	client := oauth2.NewClient(valCtx, ts)
-
 	profileURL := m.profileURL
 	if profileURL == "" {
 		profileURL = defaultProfileURL
 	}
-	req, err := http.NewRequestWithContext(valCtx, "GET", profileURL, nil)
-	if err != nil {
-		return "", fmt.Errorf("create profile request: %w", err)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf(
-			"could not verify token belongs to %s: %w "+
-				"(re-run the command to try again)", email, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf(
-			"could not verify token belongs to %s: "+
-				"Gmail API returned HTTP %d: %s "+
-				"(re-run the command to try again)",
-			email, resp.StatusCode, string(body))
-	}
-
-	var profile struct {
-		EmailAddress string `json:"emailAddress"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
-		return "", fmt.Errorf(
-			"could not verify token belongs to %s: "+
-				"failed to parse profile response: %w "+
-				"(re-run the command to try again)", email, err)
-	}
-
-	if !sameGoogleAccount(email, profile.EmailAddress) {
-		return "", &TokenMismatchError{
-			Expected: email,
-			Actual:   profile.EmailAddress,
-		}
-	}
-
-	return profile.EmailAddress, nil
+	ts := m.config.TokenSource(ctx, token)
+	return fetchTokenProfileEmail(ctx, ts, profileURL, email, tokenProfileErrorOAuth)
 }
 
 // sameGoogleAccount returns true if two email addresses belong to the
@@ -702,42 +658,78 @@ func TokenFilePath(tokensDir, email string) string {
 	return filepath.Join(tokensDir, safe+".json")
 }
 
-// ValidateTokenEmail calls the Gmail profile API to confirm that the token
-// source can access the given email account. Used by service account flows
-// where no Manager is available.
-func ValidateTokenEmail(ctx context.Context, ts oauth2.TokenSource, email string) error {
+type tokenProfileErrorMode int
+
+const (
+	tokenProfileErrorOAuth tokenProfileErrorMode = iota
+	tokenProfileErrorServiceAccount
+)
+
+func fetchTokenProfileEmail(
+	ctx context.Context,
+	ts oauth2.TokenSource,
+	profileURL string,
+	email string,
+	mode tokenProfileErrorMode,
+) (string, error) {
 	valCtx, cancel := context.WithTimeout(ctx, resolveTimeout)
 	defer cancel()
 
 	client := oauth2.NewClient(valCtx, ts)
-	req, err := http.NewRequestWithContext(valCtx, "GET", defaultProfileURL, nil)
+	req, err := http.NewRequestWithContext(valCtx, "GET", profileURL, nil)
 	if err != nil {
-		return fmt.Errorf("create profile request: %w", err)
+		return "", fmt.Errorf("create profile request: %w", err)
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("verify access to %s: %w", email, err)
+		if mode == tokenProfileErrorOAuth {
+			return "", fmt.Errorf(
+				"could not verify token belongs to %s: %w "+
+					"(re-run the command to try again)", email, err)
+		}
+		return "", fmt.Errorf("verify access to %s: %w", email, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("Gmail API returned HTTP %d for %s: %s", resp.StatusCode, email, string(body))
+		if mode == tokenProfileErrorOAuth {
+			return "", fmt.Errorf(
+				"could not verify token belongs to %s: "+
+					"Gmail API returned HTTP %d: %s "+
+					"(re-run the command to try again)",
+				email, resp.StatusCode, string(body))
+		}
+		return "", fmt.Errorf("gmail API returned HTTP %d for %s: %s", resp.StatusCode, email, string(body))
 	}
 
 	var profile struct {
 		EmailAddress string `json:"emailAddress"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
-		return fmt.Errorf("parse profile for %s: %w", email, err)
+		if mode == tokenProfileErrorOAuth {
+			return "", fmt.Errorf(
+				"could not verify token belongs to %s: "+
+					"failed to parse profile response: %w "+
+					"(re-run the command to try again)", email, err)
+		}
+		return "", fmt.Errorf("parse profile for %s: %w", email, err)
 	}
 
 	if !sameGoogleAccount(email, profile.EmailAddress) {
-		return &TokenMismatchError{Expected: email, Actual: profile.EmailAddress}
+		return "", &TokenMismatchError{Expected: email, Actual: profile.EmailAddress}
 	}
 
-	return nil
+	return profile.EmailAddress, nil
+}
+
+// ValidateTokenEmail calls the Gmail profile API to confirm that the token
+// source can access the given email account. Used by service account flows
+// where no Manager is available.
+func ValidateTokenEmail(ctx context.Context, ts oauth2.TokenSource, email string) error {
+	_, err := fetchTokenProfileEmail(ctx, ts, defaultProfileURL, email, tokenProfileErrorServiceAccount)
+	return err
 }
 
 // DeleteToken removes the token file for the given email.

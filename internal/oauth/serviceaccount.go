@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -19,6 +20,22 @@ type ServiceAccountManager struct {
 
 // NewServiceAccountManager creates a manager from a service account JSON key file.
 func NewServiceAccountManager(keyPath string, scopes []string) (*ServiceAccountManager, error) {
+	if len(scopes) == 0 {
+		return nil, fmt.Errorf("service account requires at least one scope")
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(keyPath)
+		if err != nil {
+			return nil, fmt.Errorf("read service account key: %w", err)
+		}
+		if info.Mode().Perm()&0o077 != 0 {
+			return nil, fmt.Errorf(
+				"service account key permissions for %s are too open (%04o); use chmod 600 %s",
+				keyPath, info.Mode().Perm(), keyPath,
+			)
+		}
+	}
+
 	data, err := os.ReadFile(keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("read service account key: %w", err)
@@ -29,7 +46,10 @@ func NewServiceAccountManager(keyPath string, scopes []string) (*ServiceAccountM
 		return nil, fmt.Errorf("parse service account key: %w", err)
 	}
 
-	return &ServiceAccountManager{keyData: data, scopes: scopes}, nil
+	return &ServiceAccountManager{
+		keyData: data,
+		scopes:  append([]string(nil), scopes...),
+	}, nil
 }
 
 // TokenSource returns an oauth2.TokenSource that impersonates the given user

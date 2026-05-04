@@ -1208,6 +1208,35 @@ func TestOAuthConfig_ClientSecretsFor(t *testing.T) {
 	}
 }
 
+func TestOAuthConfig_ServiceAccountKeyFor(t *testing.T) {
+	cfg := OAuthConfig{
+		ServiceAccountKey: "/keys/default.json",
+		Apps: map[string]OAuthApp{
+			"workspace": {ServiceAccountKey: "/keys/workspace.json"},
+			"oauth":     {ClientSecrets: "/secrets/oauth.json"},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		appName string
+		want    string
+	}{
+		{"default", "", "/keys/default.json"},
+		{"named app", "workspace", "/keys/workspace.json"},
+		{"named app without service account", "oauth", ""},
+		{"missing app", "missing", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cfg.ServiceAccountKeyFor(tt.appName); got != tt.want {
+				t.Errorf("ServiceAccountKeyFor(%q) = %q, want %q", tt.appName, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOAuthConfig_HasAnyConfig(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1241,6 +1270,30 @@ func TestOAuthConfig_HasAnyConfig(t *testing.T) {
 				},
 			},
 			want: false,
+		},
+		{
+			name:   "default service account only",
+			config: OAuthConfig{ServiceAccountKey: "/path/to/service-account.json"},
+			want:   true,
+		},
+		{
+			name: "named service account only",
+			config: OAuthConfig{
+				Apps: map[string]OAuthApp{
+					"workspace": {ServiceAccountKey: "/path/to/workspace.json"},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "mixed oauth and service account",
+			config: OAuthConfig{
+				ClientSecrets: "/path/to/default.json",
+				Apps: map[string]OAuthApp{
+					"workspace": {ServiceAccountKey: "/path/to/workspace.json"},
+				},
+			},
+			want: true,
 		},
 	}
 
@@ -1453,6 +1506,76 @@ client_secrets = "secrets/acme.json"
 	}
 	if acme.ClientSecrets != expectedAcme {
 		t.Errorf("Apps[acme].ClientSecrets = %q, want %q", acme.ClientSecrets, expectedAcme)
+	}
+}
+
+func TestLoadWithServiceAccountKeysExpandsPaths(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	t.Setenv("MSGVAULT_HOME", tmpDir)
+
+	configContent := `
+[oauth]
+service_account_key = "~/keys/default-service-account.json"
+
+[oauth.apps.workspace]
+service_account_key = "~/keys/workspace-service-account.json"
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+
+	cfg, err := Load("", "")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	expectedDefault := filepath.Join(home, "keys/default-service-account.json")
+	if cfg.OAuth.ServiceAccountKey != expectedDefault {
+		t.Errorf("ServiceAccountKey = %q, want %q", cfg.OAuth.ServiceAccountKey, expectedDefault)
+	}
+
+	expectedWorkspace := filepath.Join(home, "keys/workspace-service-account.json")
+	workspace := cfg.OAuth.Apps["workspace"]
+	if workspace.ServiceAccountKey != expectedWorkspace {
+		t.Errorf("Apps[workspace].ServiceAccountKey = %q, want %q", workspace.ServiceAccountKey, expectedWorkspace)
+	}
+}
+
+func TestLoadWithServiceAccountKeysResolvesRelativePaths(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	configContent := `
+[oauth]
+service_account_key = "keys/default-service-account.json"
+
+[oauth.apps.workspace]
+service_account_key = "keys/workspace-service-account.json"
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+
+	cfg, err := Load(configPath, "")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	expectedDefault := filepath.Join(tmpDir, "keys/default-service-account.json")
+	if cfg.OAuth.ServiceAccountKey != expectedDefault {
+		t.Errorf("ServiceAccountKey = %q, want %q", cfg.OAuth.ServiceAccountKey, expectedDefault)
+	}
+
+	expectedWorkspace := filepath.Join(tmpDir, "keys/workspace-service-account.json")
+	workspace := cfg.OAuth.Apps["workspace"]
+	if workspace.ServiceAccountKey != expectedWorkspace {
+		t.Errorf("Apps[workspace].ServiceAccountKey = %q, want %q", workspace.ServiceAccountKey, expectedWorkspace)
 	}
 }
 

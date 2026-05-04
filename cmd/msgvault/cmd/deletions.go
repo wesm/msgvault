@@ -522,6 +522,14 @@ Examples:
 
 				// Check if this is a scope error - offer to re-authorize (Gmail only)
 				if src.SourceType == "gmail" && isInsufficientScopeError(execErr) {
+					if cfg.OAuth.ServiceAccountKeyFor(sourceOAuthApp(src)) != "" {
+						return fmt.Errorf(
+							"service account lacks required Gmail deletion scope for %s: "+
+								"authorize https://mail.google.com/ for the service account client "+
+								"in Google Admin Console, then run delete-staged again",
+							account,
+						)
+					}
 					oauthMgr, mgrErr := getOAuthMgr(sourceOAuthApp(src))
 					if mgrErr != nil {
 						return mgrErr
