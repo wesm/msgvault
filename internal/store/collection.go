@@ -45,32 +45,40 @@ var ErrCollectionImmutable = errors.New(
 // on every schema init. Mutations to this collection are rejected by
 // AddSourcesToCollection / RemoveSourcesFromCollection / DeleteCollection
 // so users don't get a silent revert on the next CLI invocation.
+//
+// Concurrency: the create step uses INSERT OR IGNORE (dialect-rewritten
+// for PostgreSQL via dialect.InsertOrIgnore) followed by an unconditional
+// SELECT, so two processes calling this at the same time both succeed —
+// the second insert is ignored, both selects return the same row id.
+// Earlier this used SELECT-then-INSERT, which raced when a CLI command
+// and `serve` both initialised the schema simultaneously.
 func (s *Store) EnsureDefaultCollection() error {
-	var id int64
-	err := s.db.QueryRow(
-		`SELECT id FROM collections WHERE name = ?`, DefaultCollectionName,
-	).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		res, err := s.db.Exec(
-			`INSERT INTO collections (name, description)
+	if _, err := s.db.Exec(
+		s.dialect.InsertOrIgnore(
+			`INSERT OR IGNORE INTO collections (name, description)
 			 VALUES (?, 'All accounts')`,
-			DefaultCollectionName,
-		)
-		if err != nil {
-			return fmt.Errorf("create default collection: %w", err)
-		}
-		id, _ = res.LastInsertId()
-	} else if err != nil {
-		return fmt.Errorf("check default collection: %w", err)
+		),
+		DefaultCollectionName,
+	); err != nil {
+		return fmt.Errorf("create default collection: %w", err)
+	}
+
+	var id int64
+	if err := s.db.QueryRow(
+		`SELECT id FROM collections WHERE name = ?`, DefaultCollectionName,
+	).Scan(&id); err != nil {
+		return fmt.Errorf("look up default collection id: %w", err)
 	}
 
 	// Add all sources not already in it.
-	_, err = s.db.Exec(
+	if _, err := s.db.Exec(
 		`INSERT OR IGNORE INTO collection_sources (collection_id, source_id)
 		 SELECT ?, id FROM sources`,
 		id,
-	)
-	return err
+	); err != nil {
+		return fmt.Errorf("seed default collection membership: %w", err)
+	}
+	return nil
 }
 
 // CreateCollection inserts a new collection with the given name,
