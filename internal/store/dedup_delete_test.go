@@ -104,6 +104,50 @@ func TestDeleteAllDeduped_MultipleBatches(t *testing.T) {
 	}
 }
 
+// TestDeleteAllDeduped_PreservesBatchlessSoftDelete verifies that a row with
+// deleted_at set but no delete_batch_id is *not* purged by DeleteAllDeduped.
+// The contract is "permanently remove rows the dedup pipeline soft-hid",
+// keyed on the positive delete_batch_id marker. A future feature that writes
+// deleted_at for any other reason (trash view, per-message hide) must not
+// have its rows silently destroyed by the dedup hard-delete rung.
+func TestDeleteAllDeduped_PreservesBatchlessSoftDelete(t *testing.T) {
+	f := storetest.New(t)
+
+	// One real dedup batch — should be purged.
+	idKeep := newRFC822Message(t, f, "keep", "rfc822-batchless")
+	idDrop := newRFC822Message(t, f, "drop", "rfc822-batchless")
+	_, err := f.Store.MergeDuplicates(idKeep, []int64{idDrop}, "batch-real")
+	testutil.MustNoErr(t, err, "MergeDuplicates")
+
+	// One row soft-hidden without a batch ID — simulates a future
+	// non-dedup soft-delete writer. Should survive DeleteAllDeduped.
+	idBatchless := newRFC822Message(t, f, "batchless", "rfc822-other")
+	_, err = f.Store.DB().Exec(
+		"UPDATE messages SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?",
+		idBatchless,
+	)
+	testutil.MustNoErr(t, err, "set batchless deleted_at")
+
+	deleted, batches, err := f.Store.DeleteAllDeduped()
+	testutil.MustNoErr(t, err, "DeleteAllDeduped")
+	if deleted != 1 {
+		t.Errorf("DeleteAllDeduped deleted = %d, want 1 (only the batched row)", deleted)
+	}
+	if batches != 1 {
+		t.Errorf("DeleteAllDeduped distinctBatches = %d, want 1", batches)
+	}
+
+	// The batchless row must still exist after the purge.
+	var count int
+	err = f.Store.DB().QueryRow(
+		"SELECT COUNT(*) FROM messages WHERE id = ?", idBatchless,
+	).Scan(&count)
+	testutil.MustNoErr(t, err, "query batchless row after delete")
+	if count != 1 {
+		t.Errorf("batchless soft-deleted row %d was purged; DeleteAllDeduped must only touch dedup-batched rows", idBatchless)
+	}
+}
+
 // TestDeleteAllDeduped_Empty verifies that DeleteAllDeduped with no hidden rows
 // returns 0/0 without error.
 func TestDeleteAllDeduped_Empty(t *testing.T) {

@@ -57,14 +57,14 @@ func runDeleteDeduped(cmd *cobra.Command, _ []string) error {
 	// compute pre-delete stats and totalN before prompting.
 	var totalN int64
 	if deleteDedupedAllHidden {
-		// Match DeleteAllDeduped's predicates exactly: row count
-		// covers every dedup-hidden row (including any batchless ones)
-		// while distinct-batch count is restricted to rows that have a
-		// batch ID. Otherwise the prompt under-reports vs. the actual
-		// rows deleted.
+		// Match DeleteAllDeduped's predicate exactly: only rows that
+		// the dedup pipeline soft-hid (deleted_at IS NOT NULL AND
+		// delete_batch_id IS NOT NULL) are eligible for purge, so the
+		// prompt counts must use the same gate. A bare deleted_at row
+		// would over-report compared to the actual delete.
 		var distinctBatches int64
 		err = st.DB().QueryRow(
-			st.Rebind("SELECT COUNT(*) FROM messages WHERE deleted_at IS NOT NULL"),
+			st.Rebind("SELECT COUNT(*) FROM messages WHERE deleted_at IS NOT NULL AND delete_batch_id IS NOT NULL"),
 		).Scan(&totalN)
 		if err != nil {
 			return fmt.Errorf("count hidden messages: %w", err)
