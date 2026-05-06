@@ -22,9 +22,10 @@ Deleted rows cannot be recovered with --undo. Pending remote-deletion
 manifests still reference Gmail/IMAP message IDs and remain valid
 after a local delete.
 
-Vector and parquet caches may contain stale entries for deleted rows
-until rebuilt. Run 'msgvault build-cache --full-rebuild' after a large
-delete.`,
+Parquet analytics and the vector index may contain stale entries for
+deleted rows until rebuilt; the rebuild commands are separate. Run
+'msgvault build-cache --full-rebuild' for parquet analytics and
+'msgvault build-embeddings --full-rebuild' for the vector index.`,
 	RunE: runDeleteDeduped,
 }
 
@@ -145,8 +146,10 @@ func runDeleteDeduped(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	// Note: vector and parquet caches may contain entries for deleted
-	// rows; the user-facing summary recommends 'build-cache --full-rebuild'.
+	// Note: parquet analytics and the vector index may contain entries
+	// for deleted rows; the post-run summary recommends rebuilding each
+	// separately ('build-cache --full-rebuild' and
+	// 'build-embeddings --full-rebuild').
 
 	var deletedTotal int64
 	var batchCount int64
@@ -170,8 +173,9 @@ func runDeleteDeduped(cmd *cobra.Command, _ []string) error {
 
 	out := cmd.OutOrStdout()
 	_, _ = fmt.Fprintf(out, "\nDeleted %d message(s) from %d batch(es).\n\n", deletedTotal, batchCount)
-	_, _ = fmt.Fprintln(out, "Vector and parquet caches may have stale entries; run")
-	_, _ = fmt.Fprintln(out, "'msgvault build-cache --full-rebuild' to rebuild them.")
+	_, _ = fmt.Fprintln(out, "Caches may have stale entries; rebuild each separately:")
+	_, _ = fmt.Fprintln(out, "  'msgvault build-cache --full-rebuild'        (parquet analytics)")
+	_, _ = fmt.Fprintln(out, "  'msgvault build-embeddings --full-rebuild'   (vector index, if enabled)")
 
 	return nil
 }
