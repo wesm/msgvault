@@ -788,6 +788,35 @@ func TestDuckDBEngine_AggregateBySenderName_PhoneFallback(t *testing.T) {
 	}
 }
 
+// TestDuckDBEngine_AggregateBySenderName_SearchByPhone covers the search
+// path for phone-only senders. Without phone_number in the SenderNames
+// keyColumns, a phone-only participant would appear in the unfiltered
+// aggregate but disappear when the user searches for that same phone.
+func TestDuckDBEngine_AggregateBySenderName_SearchByPhone(t *testing.T) {
+	b := NewTestDataBuilder(t)
+	b.AddSource("test@gmail.com")
+	phoneOnly := b.AddPhoneParticipant("+15551234567", "")
+	other := b.AddParticipant("alice@test.com", "test.com", "Alice")
+	smsMsg := b.AddMessage(MessageOpt{Subject: "SMS", SentAt: makeDate(2024, 1, 15), SizeEstimate: 1000})
+	b.AddFrom(smsMsg, phoneOnly, "")
+	emailMsg := b.AddMessage(MessageOpt{Subject: "Hello", SentAt: makeDate(2024, 1, 16), SizeEstimate: 1000})
+	b.AddFrom(emailMsg, other, "Alice")
+	b.SetEmptyAttachments()
+	engine := b.BuildEngine()
+
+	ctx := context.Background()
+	opts := DefaultAggregateOptions()
+	opts.SearchQuery = "+15551234567"
+	results, err := engine.Aggregate(ctx, ViewSenderNames, opts)
+	if err != nil {
+		t.Fatalf("Aggregate ViewSenderNames (search by phone): %v", err)
+	}
+	requireAggregateRow(t, results, "+15551234567")
+	if got := len(results); got != 1 {
+		t.Errorf("phone search should isolate the phone-only sender; got %d rows", got)
+	}
+}
+
 func TestDuckDBEngine_ListMessages_MatchEmptySenderName(t *testing.T) {
 	// Build Parquet data with a message that has no sender
 	b := NewTestDataBuilder(t)

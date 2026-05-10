@@ -729,6 +729,7 @@ func getViewDef(view ViewType, granularity TimeGranularity, tablePrefix string) 
 			keyExpr:    nameExpr,
 			joinClause: fmt.Sprintf("JOIN mr %s ON %s.message_id = msg.id AND %s.recipient_type = 'from'\n\t\t\t\tJOIN p %s ON %s.id = %s.participant_id", mrAlias, mrAlias, mrAlias, pAlias, pAlias, mrAlias),
 			nullGuard:  nameExpr + " IS NOT NULL",
+			keyColumns: []string{pAlias + ".email_address", pAlias + ".display_name", pAlias + ".phone_number"},
 		}, nil
 	case ViewRecipients:
 		return aggViewDef{
