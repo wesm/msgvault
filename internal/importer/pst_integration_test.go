@@ -3,6 +3,7 @@ package importer
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wesm/msgvault/internal/store"
@@ -86,6 +87,88 @@ func TestImportPst_SupportPST_Idempotent(t *testing.T) {
 	}
 	if second.MessagesAdded != 0 {
 		t.Errorf("second import: added=%d, want 0", second.MessagesAdded)
+	}
+}
+
+// TestImportPst_LegacyKeyMigration verifies that re-importing a PST whose
+// rows were created by a pre-fingerprint version of msgvault (keyed as
+// "pst-<EntryID>") rewrites those keys forward and reports every message as
+// skipped, instead of duplicating rows under the new "pst-<archiveID>-<EntryID>"
+// scheme.
+func TestImportPst_LegacyKeyMigration(t *testing.T) {
+	st := openIntegrationStore(t)
+	pstPath := filepath.Join(pstTestdataDir, "support.pst")
+	opts := PstImportOptions{
+		Identifier: "support@hackingteam.com",
+		NoResume:   true,
+	}
+
+	first, err := ImportPst(context.Background(), st, pstPath, opts)
+	if err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+	if first.MessagesAdded == 0 {
+		t.Fatal("first import added no messages")
+	}
+
+	// Rewrite every PST row's source_message_id to its pre-fingerprint form
+	// to simulate a database populated by an older msgvault version.
+	rows, err := st.DB().Query(
+		`SELECT id, source_message_id FROM messages WHERE source_message_id LIKE 'pst-%'`)
+	if err != nil {
+		t.Fatalf("query rows: %v", err)
+	}
+	type row struct {
+		ID  int64
+		Key string
+	}
+	var pstRows []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.ID, &r.Key); err != nil {
+			_ = rows.Close()
+			t.Fatalf("scan: %v", err)
+		}
+		pstRows = append(pstRows, r)
+	}
+	_ = rows.Close()
+	if len(pstRows) == 0 {
+		t.Fatal("no PST rows found after first import")
+	}
+
+	for _, r := range pstRows {
+		parts := strings.SplitN(r.Key, "-", 3)
+		if len(parts) != 3 {
+			t.Fatalf("unexpected source_message_id format: %q", r.Key)
+		}
+		legacy := "pst-" + parts[2]
+		if err := st.RenameSourceMessageID(r.ID, legacy); err != nil {
+			t.Fatalf("rename to legacy: %v", err)
+		}
+	}
+
+	second, err := ImportPst(context.Background(), st, pstPath, opts)
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if second.MessagesAdded != 0 {
+		t.Errorf("MessagesAdded = %d, want 0 (legacy rows should migrate, not duplicate)",
+			second.MessagesAdded)
+	}
+	if second.MessagesSkipped != int64(len(pstRows)) {
+		t.Errorf("MessagesSkipped = %d, want %d", second.MessagesSkipped, len(pstRows))
+	}
+
+	// No "pst-<EntryID>" rows (legacy form, single hyphen) should remain.
+	var legacyCount int
+	if err := st.DB().QueryRow(
+		`SELECT COUNT(*) FROM messages
+		 WHERE source_message_id LIKE 'pst-%' AND source_message_id NOT LIKE 'pst-%-%'`,
+	).Scan(&legacyCount); err != nil {
+		t.Fatalf("count legacy: %v", err)
+	}
+	if legacyCount != 0 {
+		t.Errorf("legacy key count = %d, want 0 (all should be migrated)", legacyCount)
 	}
 }
 

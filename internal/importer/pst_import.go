@@ -284,14 +284,20 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 	)
 
 	type pendingPstMessage struct {
-		Raw          []byte
-		RawHash      string
-		SourceMsgID  string
-		FallbackDate time.Time
-		LabelID      int64
-		FolderIndex  int
-		FolderPath   string
-		MsgIndex     int64
+		Raw         []byte
+		RawHash     string
+		SourceMsgID string
+		// LegacySourceMsgID is the pre-fingerprint key form ("pst-<EntryID>")
+		// used to migrate rows imported by msgvault versions predating the
+		// archive fingerprint. Migration is guarded by raw-content hash to
+		// avoid corrupting data from a different archive whose EntryID
+		// happens to match.
+		LegacySourceMsgID string
+		FallbackDate      time.Time
+		LabelID           int64
+		FolderIndex       int
+		FolderPath        string
+		MsgIndex          int64
 	}
 
 	var (
@@ -316,8 +322,12 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 		}
 
 		ids := make([]string, len(pending))
+		legacyIDs := make([]string, 0, len(pending))
 		for i, p := range pending {
 			ids[i] = p.SourceMsgID
+			if p.LegacySourceMsgID != "" {
+				legacyIDs = append(legacyIDs, p.LegacySourceMsgID)
+			}
 		}
 
 		existingWithRaw, errWithRaw := st.MessageExistsWithRawBatch(src.ID, ids)
@@ -332,6 +342,18 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 			cp.ErrorsCount++
 			summary.Errors++
 			log.Warn("existence check (any) failed", "error", errAny)
+		}
+
+		// Look up legacy ("pst-<EntryID>") rows from msgvault versions
+		// predating the archive fingerprint. If a match exists and its raw
+		// content hashes to the same value we just extracted, migrate the
+		// row's source_message_id forward so subsequent imports dedup
+		// against it under the new scheme.
+		existingLegacy, errLegacy := st.MessageExistsWithRawBatch(src.ID, legacyIDs)
+		if errLegacy != nil {
+			cp.ErrorsCount++
+			summary.Errors++
+			log.Warn("legacy existence check failed", "error", errLegacy)
 		}
 
 		for _, p := range pending {
@@ -366,6 +388,30 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 						summary.MessagesSkipped++
 						if p.LabelID != 0 {
 							_ = st.AddMessageLabels(msgID, []int64{p.LabelID})
+						}
+						continue
+					}
+				}
+			}
+
+			// Legacy ("pst-<EntryID>") row migration: a prior import under
+			// the un-namespaced scheme may already hold this message. Only
+			// migrate when the stored raw bytes hash to the same value we
+			// just extracted — otherwise the legacy row belongs to a
+			// different archive that happened to allocate the same EntryID
+			// (the collision this commit fixes), and we must not overwrite
+			// it.
+			if errLegacy == nil && p.LegacySourceMsgID != "" {
+				if msgID, exists := existingLegacy[p.LegacySourceMsgID]; exists {
+					if migrateLegacyPstKey(st, msgID, p.RawHash, p.SourceMsgID, log) {
+						summary.MessagesSkipped++
+						if p.LabelID != 0 {
+							if err := st.AddMessageLabels(msgID, []int64{p.LabelID}); err != nil {
+								log.Warn("add labels to migrated message", "error", err)
+							}
+						}
+						if !checkpointBlocked && cp.MessagesProcessed%int64(opts.CheckpointInterval) == 0 {
+							saveCp(p.FolderIndex, p.FolderPath, p.MsgIndex)
 						}
 						continue
 					}
@@ -526,14 +572,15 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 			}
 
 			pending = append(pending, pendingPstMessage{
-				Raw:          raw,
-				RawHash:      rawHash,
-				SourceMsgID:  sourceMsgID,
-				FallbackDate: fallbackDate,
-				LabelID:      labelID,
-				FolderIndex:  fi,
-				FolderPath:   fr.Entry.Path,
-				MsgIndex:     currentMsgIdx,
+				Raw:               raw,
+				RawHash:           rawHash,
+				SourceMsgID:       sourceMsgID,
+				LegacySourceMsgID: "pst-" + entry.EntryID,
+				FallbackDate:      fallbackDate,
+				LabelID:           labelID,
+				FolderIndex:       fi,
+				FolderPath:        fr.Entry.Path,
+				MsgIndex:          currentMsgIdx,
 			})
 			pendingBytes += int64(len(raw))
 
@@ -574,6 +621,36 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 	}
 
 	return summary, nil
+}
+
+// migrateLegacyPstKey rewrites a pre-fingerprint "pst-<EntryID>" row to the
+// new "pst-<archiveID>-<EntryID>" key when the legacy row's stored raw bytes
+// hash to expectedHash (i.e. the same content we just extracted from this
+// archive). Returns true on successful migration; false (without migration)
+// when the hashes diverge or any step fails.
+func migrateLegacyPstKey(
+	st *store.Store, legacyMessageID int64,
+	expectedHash, newSourceMessageID string,
+	log *slog.Logger,
+) bool {
+	rawLegacy, err := st.GetMessageRaw(legacyMessageID)
+	if err != nil {
+		log.Warn("legacy raw fetch failed",
+			"message_id", legacyMessageID, "error", err)
+		return false
+	}
+	sum := sha256.Sum256(rawLegacy)
+	if hex.EncodeToString(sum[:]) != expectedHash {
+		// Different content under a shared EntryID — distinct archives.
+		// Leave the legacy row in place; ingest the new message normally.
+		return false
+	}
+	if err := st.RenameSourceMessageID(legacyMessageID, newSourceMessageID); err != nil {
+		log.Warn("rename legacy pst key failed",
+			"message_id", legacyMessageID, "new", newSourceMessageID, "error", err)
+		return false
+	}
+	return true
 }
 
 // pstArchiveFingerprint returns a short stable identifier for a PST file,

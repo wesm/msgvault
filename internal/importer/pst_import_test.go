@@ -2,6 +2,8 @@ package importer
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"os"
@@ -192,6 +194,76 @@ func TestPstArchiveFingerprint(t *testing.T) {
 	}
 	if fpC != fpA {
 		t.Errorf("same bytes should fingerprint the same: %q vs %q", fpA, fpC)
+	}
+}
+
+// TestMigrateLegacyPstKey verifies the safety invariant of the legacy-key
+// migration: rows are only renamed when the stored raw content hashes to the
+// expected value. A mismatch means the legacy row belongs to a different
+// archive that allocated the same EntryID, and we must not overwrite it.
+func TestMigrateLegacyPstKey(t *testing.T) {
+	st := openTestStorePst(t)
+
+	src, err := st.GetOrCreateSource("pst", "user@example.com")
+	if err != nil {
+		t.Fatalf("get/create source: %v", err)
+	}
+	convID, err := st.EnsureConversation(src.ID, "thread-1", "Test")
+	if err != nil {
+		t.Fatalf("ensure conversation: %v", err)
+	}
+
+	rawBytes := []byte("From: alice@example.com\r\nSubject: test\r\n\r\nbody\r\n")
+	sum := sha256.Sum256(rawBytes)
+	rawHash := hex.EncodeToString(sum[:])
+
+	const (
+		legacyID = "pst-12345"
+		newID    = "pst-abc123def456-12345"
+	)
+
+	msgID, err := st.PersistMessage(&store.MessagePersistData{
+		Message: &store.Message{
+			ConversationID:  convID,
+			SourceID:        src.ID,
+			SourceMessageID: legacyID,
+			MessageType:     "email",
+		},
+		RawMIME: rawBytes,
+	})
+	if err != nil {
+		t.Fatalf("persist message: %v", err)
+	}
+
+	// Mismatching hash → must not migrate.
+	if migrateLegacyPstKey(st, msgID, "deadbeef", newID, slog.Default()) {
+		t.Fatal("expected migration to fail on hash mismatch")
+	}
+	existing, err := st.MessageExistsBatch(src.ID, []string{legacyID})
+	if err != nil {
+		t.Fatalf("exists check: %v", err)
+	}
+	if existing[legacyID] != msgID {
+		t.Errorf("legacy key must remain after hash mismatch; got %v", existing)
+	}
+
+	// Matching hash → migrate, legacy key removed.
+	if !migrateLegacyPstKey(st, msgID, rawHash, newID, slog.Default()) {
+		t.Fatal("expected migration to succeed on hash match")
+	}
+	existing, err = st.MessageExistsBatch(src.ID, []string{newID})
+	if err != nil {
+		t.Fatalf("exists check (new): %v", err)
+	}
+	if existing[newID] != msgID {
+		t.Errorf("new key should be present after migration; got %v", existing)
+	}
+	existing, err = st.MessageExistsBatch(src.ID, []string{legacyID})
+	if err != nil {
+		t.Fatalf("exists check (legacy): %v", err)
+	}
+	if len(existing) != 0 {
+		t.Errorf("legacy key should be gone after migration; got %v", existing)
 	}
 }
 

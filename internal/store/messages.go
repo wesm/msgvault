@@ -124,6 +124,20 @@ func (s *Store) UpdateMessageOnDedup(
 	})
 }
 
+// RenameSourceMessageID updates the source_message_id of an existing message
+// without touching labels or any other column. Used to migrate keys forward
+// when an importer's identifier scheme changes (e.g. PST archive fingerprint
+// namespacing).
+func (s *Store) RenameSourceMessageID(messageID int64, newSourceMessageID string) error {
+	if _, err := s.db.Exec(
+		`UPDATE messages SET source_message_id = ? WHERE id = ?`,
+		newSourceMessageID, messageID,
+	); err != nil {
+		return fmt.Errorf("rename source_message_id: %w", err)
+	}
+	return nil
+}
+
 // MessageExistsWithRawBatch checks which message IDs already exist in the database
 // and have raw MIME data stored.
 // Returns a map of source_message_id -> internal message_id.
