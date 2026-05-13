@@ -125,6 +125,14 @@ func (b *Backend) FusedSearch(ctx context.Context, req vector.FusedRequest) ([]v
 	// unused K+1 row exists only so the outer query can report whether
 	// the pool was full.
 	kPlus1 := req.KPerSignal + 1
+	// Two over-fetch dimensions stacked on the ANN side:
+	//   - chunk-level: vec0 returns top-K chunks; with N chunks/msg
+	//     the top-K could pack from a few messages' tail chunks. Multiply
+	//     by chunkOverfetchFactor so the GROUP BY can still recover
+	//     KPerSignal distinct messages.
+	//   - K+1 probe: the trailing +1 (kPlus1) lets ann_used report
+	//     saturation when the pool runs full, identical to the BM25 side.
+	chunkK := kPlus1 * chunkOverfetchFactor
 	query := fmt.Sprintf(`
 WITH
   filtered AS (
@@ -159,16 +167,25 @@ WITH
   bm25_used AS (
     SELECT * FROM bm25 WHERE rnk <= %d
   ),
-  ann AS (
-    SELECT v.message_id,
-           v.distance AS vec_dist,
-           ROW_NUMBER() OVER (ORDER BY v.distance) AS rnk
+  ann_chunks AS (
+    SELECT ve.message_id, MIN(v.distance) AS vec_dist
       FROM %s v
+      JOIN vec.embeddings ve ON ve.embedding_id = v.embedding_id
      WHERE :query_vec IS NOT NULL
        AND v.generation_id = :gen
-       AND v.message_id IN (SELECT id FROM filtered)
+       AND v.embedding_id IN (
+            SELECT embedding_id FROM vec.embeddings
+             WHERE generation_id = :gen
+               AND message_id IN (SELECT id FROM filtered)
+       )
        AND v.embedding MATCH :query_vec
        AND k = %d
+     GROUP BY ve.message_id
+  ),
+  ann AS (
+    SELECT message_id, vec_dist,
+           ROW_NUMBER() OVER (ORDER BY vec_dist) AS rnk
+      FROM ann_chunks
   ),
   ann_used AS (
     SELECT * FROM ann WHERE rnk <= %d
@@ -189,7 +206,7 @@ SELECT message_id, rrf_score, bm25_score, vector_score,
  ORDER BY rrf_score DESC, message_id ASC
  LIMIT :limit
 `, store.LiveMessagesWhere("m", true), senderGroupSQL, toGroupSQL, ccGroupSQL, bccGroupSQL, labelGroupSQL,
-		kPlus1, req.KPerSignal, vecTable, kPlus1, req.KPerSignal)
+		kPlus1, req.KPerSignal, vecTable, chunkK, req.KPerSignal)
 
 	var queryVecArg any
 	if req.QueryVec != nil {

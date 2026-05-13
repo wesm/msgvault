@@ -39,6 +39,181 @@ func TestMigrate_FreshAndIdempotent(t *testing.T) {
 	}
 }
 
+// TestMigrate_LegacyToChunked builds a pre-chunking vectors.db
+// (embeddings keyed by (generation_id, message_id), vec0 with
+// `message_id INTEGER PRIMARY KEY`), runs Migrate, and asserts:
+//
+//   - the embeddings table picks up the new columns
+//     (embedding_id, chunk_index, chunk_char_start, chunk_char_end);
+//   - legacy rows are preserved as chunk_index=0 with
+//     embedding_id == legacy message_id;
+//   - the vec0 table is rebuilt with embedding_id as its rowid,
+//     keeping all rows so existing embeddings remain searchable;
+//   - the AUTOINCREMENT counter is bumped past every legacy
+//     embedding_id so new inserts don't collide with retained
+//     rowids;
+//   - a second Migrate is a no-op (idempotent).
+func TestMigrate_LegacyToChunked(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	db := openTestDB(t, path)
+	t.Cleanup(func() { _ = db.Close() })
+
+	// Hand-build the pre-chunking schema. Mirrors schema.sql as it
+	// shipped at PR #277 / spec §5.2.
+	legacyDDL := []string{
+		`CREATE TABLE schema_version (version INTEGER PRIMARY KEY)`,
+		`INSERT INTO schema_version VALUES (1)`,
+		`CREATE TABLE index_generations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			model TEXT NOT NULL, dimension INTEGER NOT NULL,
+			fingerprint TEXT NOT NULL, started_at INTEGER NOT NULL,
+			completed_at INTEGER, activated_at INTEGER,
+			state TEXT NOT NULL, message_count INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE TABLE embeddings (
+			generation_id INTEGER NOT NULL REFERENCES index_generations(id) ON DELETE CASCADE,
+			message_id INTEGER NOT NULL,
+			embedded_at INTEGER NOT NULL,
+			source_char_len INTEGER NOT NULL,
+			truncated INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (generation_id, message_id)
+		)`,
+		`CREATE INDEX idx_embeddings_msg ON embeddings(message_id)`,
+		`CREATE TABLE pending_embeddings (
+			generation_id INTEGER NOT NULL REFERENCES index_generations(id) ON DELETE CASCADE,
+			message_id INTEGER NOT NULL,
+			enqueued_at INTEGER NOT NULL,
+			claimed_at INTEGER, claim_token TEXT,
+			PRIMARY KEY (generation_id, message_id)
+		)`,
+		`CREATE TABLE embed_runs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			generation_id INTEGER NOT NULL REFERENCES index_generations(id),
+			started_at INTEGER NOT NULL, ended_at INTEGER,
+			claimed INTEGER NOT NULL DEFAULT 0,
+			succeeded INTEGER NOT NULL DEFAULT 0,
+			failed INTEGER NOT NULL DEFAULT 0,
+			truncated INTEGER NOT NULL DEFAULT 0,
+			error TEXT
+		)`,
+		`CREATE VIRTUAL TABLE vectors_vec_d768 USING vec0(
+			generation_id INTEGER PARTITION KEY,
+			message_id    INTEGER PRIMARY KEY,
+			embedding     FLOAT[768]
+		)`,
+	}
+	for _, q := range legacyDDL {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("seed legacy DDL %q: %v", q, err)
+		}
+	}
+	// Seed one generation and two embedded rows. message_count =
+	// 2 to mirror what the pre-chunking Upsert path would have left
+	// behind.
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO index_generations (id, model, dimension, fingerprint, started_at, state, message_count)
+		 VALUES (1, 'm', 768, 'm:768', 100, 'active', 2)`); err != nil {
+		t.Fatalf("seed generation: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO embeddings (generation_id, message_id, embedded_at, source_char_len, truncated)
+		 VALUES (1, 10, 100, 50, 0), (1, 20, 100, 75, 1)`); err != nil {
+		t.Fatalf("seed embeddings: %v", err)
+	}
+	// vec0 demands its rowid match the second PK column; here the
+	// legacy schema uses message_id, so 10 and 20 both go in directly.
+	blob := func(v []float32) []byte { return float32SliceBlob(v) }
+	v10 := make([]float32, 768)
+	v20 := make([]float32, 768)
+	for i := range v10 {
+		v10[i] = 0.1
+		v20[i] = 0.2
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO vectors_vec_d768 (generation_id, message_id, embedding) VALUES (1, 10, ?)`, blob(v10)); err != nil {
+		t.Fatalf("seed vec rowid 10: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO vectors_vec_d768 (generation_id, message_id, embedding) VALUES (1, 20, ?)`, blob(v20)); err != nil {
+		t.Fatalf("seed vec rowid 20: %v", err)
+	}
+
+	// Run the migration.
+	if err := Migrate(ctx, db, 768); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	// embeddings now has the chunked-layout columns, and the legacy
+	// rows survived as chunk_index=0 with embedding_id == old message_id.
+	rows, err := db.QueryContext(ctx,
+		`SELECT embedding_id, message_id, chunk_index, source_char_len, truncated
+		   FROM embeddings ORDER BY message_id`)
+	if err != nil {
+		t.Fatalf("select embeddings: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	type row struct {
+		eid, mid, ci, charLen, trunc int64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.eid, &r.mid, &r.ci, &r.charLen, &r.trunc); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, r)
+	}
+	want := []row{
+		{eid: 10, mid: 10, ci: 0, charLen: 50, trunc: 0},
+		{eid: 20, mid: 20, ci: 0, charLen: 75, trunc: 1},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("rows = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for i, r := range got {
+		if r != want[i] {
+			t.Errorf("row[%d] = %+v, want %+v", i, r, want[i])
+		}
+	}
+
+	// vec0 rowid is now embedding_id; verify both rows can be joined
+	// back to embeddings.
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM vectors_vec_d768 v
+		   JOIN embeddings e ON e.embedding_id = v.embedding_id
+		  WHERE v.generation_id = 1`).Scan(&n); err != nil {
+		t.Fatalf("join count: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("joined vec rows = %d, want 2", n)
+	}
+
+	// AUTOINCREMENT counter bumped past max legacy embedding_id (20).
+	var seq int64
+	if err := db.QueryRowContext(ctx,
+		`SELECT seq FROM sqlite_sequence WHERE name = 'embeddings'`).Scan(&seq); err != nil {
+		t.Fatalf("sqlite_sequence: %v", err)
+	}
+	if seq < 20 {
+		t.Errorf("sqlite_sequence.seq = %d, want >= 20", seq)
+	}
+
+	// Idempotent: a second Migrate must do nothing and leave the rows
+	// untouched.
+	if err := Migrate(ctx, db, 768); err != nil {
+		t.Fatalf("second Migrate: %v", err)
+	}
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM embeddings`).Scan(&n); err != nil {
+		t.Fatalf("post-2nd count: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("post-2nd embeddings = %d, want 2", n)
+	}
+}
+
 func TestMigrate_CreatesDimensionSpecificVecTable(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t, filepath.Join(t.TempDir(), "v.db"))

@@ -1,0 +1,187 @@
+package embed
+
+import (
+	"strings"
+	"unicode/utf8"
+)
+
+// ChunkSpan describes one window into the preprocessed source text.
+// CharStart / CharEnd are rune offsets (not byte offsets) into the
+// input string passed to ChunkText, so a backend can recover the exact
+// substring later for highlighting. Text is that substring, already
+// extracted; callers feed Text directly to the embedder.
+type ChunkSpan struct {
+	Text      string
+	CharStart int
+	CharEnd   int
+}
+
+// ChunkText splits text into windows of at most maxRunes runes each,
+// overlapping by overlapRunes runes between consecutive windows. The
+// goal is twofold:
+//
+//  1. Every span fits inside the embedder's context window. A message
+//     longer than maxRunes that would otherwise be truncated (and lose
+//     its tail) instead produces multiple spans, each individually
+//     embedded.
+//  2. A query term that lives near a window boundary can still match.
+//     The overlap means a sentence straddling the cut shows up
+//     verbatim in both spans, so the ANN search retrieves whichever
+//     span scores higher.
+//
+// When the input fits, ChunkText returns a single span covering the
+// whole text. When it doesn't, ChunkText prefers to cut at the last
+// paragraph break (\n\n) inside the final 25% of the window, falling
+// back to a sentence terminator (". "/"! "/"? "/"\n"), then to a word
+// boundary (space), then to a hard rune cut. This avoids slicing the
+// embedder's input mid-word, which materially helps recall on prose.
+//
+// maxRunes <= 0 disables chunking and returns a single span. The
+// overlap is clamped so it never exceeds maxRunes/2 — an overlap as
+// large as the window itself would loop forever.
+func ChunkText(text string, maxRunes, overlapRunes int) []ChunkSpan {
+	if text == "" {
+		return nil
+	}
+	if maxRunes <= 0 {
+		return []ChunkSpan{{Text: text, CharStart: 0, CharEnd: utf8.RuneCountInString(text)}}
+	}
+
+	totalRunes := utf8.RuneCountInString(text)
+	if totalRunes <= maxRunes {
+		return []ChunkSpan{{Text: text, CharStart: 0, CharEnd: totalRunes}}
+	}
+	if overlapRunes < 0 {
+		overlapRunes = 0
+	}
+	if overlapRunes >= maxRunes {
+		overlapRunes = maxRunes / 2
+	}
+
+	// Pre-compute byte offsets for every rune so each window slice is
+	// O(window) rather than O(text). Slice indices live in rune space;
+	// byte conversion happens once via runeByteOffsets[i].
+	runeByteOffsets := buildRuneByteOffsets(text)
+	// runeByteOffsets has one entry per rune plus a sentinel for the
+	// trailing position, so len-1 == totalRunes.
+	if len(runeByteOffsets)-1 != totalRunes {
+		// Defensive: out-of-band UTF-8 should never reach here, but
+		// fall back to a single span rather than panic on a bad input.
+		return []ChunkSpan{{Text: text, CharStart: 0, CharEnd: totalRunes}}
+	}
+
+	var spans []ChunkSpan
+	cursor := 0
+	for cursor < totalRunes {
+		windowEnd := cursor + maxRunes
+		if windowEnd > totalRunes {
+			windowEnd = totalRunes
+		}
+		// Look for a soft break in the back quarter of the window;
+		// if found, cut there instead of the hard end. Skip this when
+		// the window already reaches the end of text — no need to find
+		// a "nice" cut for the final span.
+		cut := windowEnd
+		if windowEnd < totalRunes {
+			searchFloor := cursor + (maxRunes * 3 / 4)
+			if searchFloor < cursor+1 {
+				searchFloor = cursor + 1
+			}
+			cut = findSoftBreak(text, runeByteOffsets, searchFloor, windowEnd)
+		}
+
+		startByte := runeByteOffsets[cursor]
+		endByte := runeByteOffsets[cut]
+		span := ChunkSpan{
+			Text:      text[startByte:endByte],
+			CharStart: cursor,
+			CharEnd:   cut,
+		}
+		spans = append(spans, span)
+
+		if cut >= totalRunes {
+			break
+		}
+		// Advance the cursor by (window - overlap), but never less
+		// than 1 rune — guards against pathological inputs where the
+		// soft break sits inside the overlap zone.
+		advance := (cut - cursor) - overlapRunes
+		if advance < 1 {
+			advance = 1
+		}
+		cursor += advance
+	}
+	return spans
+}
+
+// buildRuneByteOffsets returns a slice of length runeCount+1 where
+// entry i is the byte offset of rune i (and the final entry is len(s)).
+// Used by ChunkText to map rune-space slice indices back to byte slices
+// without walking the string twice per window.
+func buildRuneByteOffsets(s string) []int {
+	out := make([]int, 0, len(s)/2+1)
+	for i := range s {
+		out = append(out, i)
+	}
+	out = append(out, len(s))
+	return out
+}
+
+// findSoftBreak scans runeByteOffsets[floor:ceil] for the last
+// preferred break — paragraph, sentence, or word — and returns its
+// rune index. Returns ceil if no soft break is found in the search
+// window. Ordering: paragraph beats sentence beats word, so a "good"
+// boundary near the end wins over a "great" one near the beginning of
+// the search window. This keeps each chunk closer to maxRunes; cutting
+// far short to chase a paragraph break would waste budget.
+func findSoftBreak(text string, runeByteOffsets []int, floor, ceil int) int {
+	// Examine bytes between floor and ceil. We compare against fixed
+	// ASCII byte patterns — none of the break sequences span multi-byte
+	// runes, so byte-level lookups give the same answer as rune-level
+	// without the per-iteration UTF-8 decode.
+	byteFloor := runeByteOffsets[floor]
+	byteCeil := runeByteOffsets[ceil]
+	window := text[byteFloor:byteCeil]
+
+	paragraph := strings.LastIndex(window, "\n\n")
+	if paragraph >= 0 {
+		// Cut after the "\n\n" so the new chunk does not begin with
+		// blank lines.
+		return byteToRune(runeByteOffsets, byteFloor+paragraph+2)
+	}
+
+	// Sentence terminators followed by space/newline. Check ". " /
+	// "? " / "! " / ".\n" / "?\n" / "!\n".
+	bestSentence := -1
+	for _, term := range []string{". ", "? ", "! ", ".\n", "?\n", "!\n"} {
+		if idx := strings.LastIndex(window, term); idx > bestSentence {
+			bestSentence = idx + len(term)
+		}
+	}
+	if bestSentence > 0 {
+		return byteToRune(runeByteOffsets, byteFloor+bestSentence)
+	}
+
+	// Word boundary — last space in the window.
+	if space := strings.LastIndexByte(window, ' '); space > 0 {
+		return byteToRune(runeByteOffsets, byteFloor+space+1)
+	}
+
+	return ceil
+}
+
+// byteToRune converts a byte offset into the rune index by binary
+// searching runeByteOffsets. Faster than a linear scan when the offset
+// is far from either end of the string.
+func byteToRune(runeByteOffsets []int, b int) int {
+	lo, hi := 0, len(runeByteOffsets)-1
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if runeByteOffsets[mid] < b {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	return lo
+}

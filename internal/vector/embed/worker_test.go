@@ -40,6 +40,104 @@ func TestDerivedStaleThreshold(t *testing.T) {
 	}
 }
 
+// TestWorker_FansOutLongMessageIntoMultipleChunks confirms the
+// chunking path: a single pending message whose preprocessed body
+// exceeds MaxInputChars produces N > 1 embedder inputs, all of which
+// land in the embeddings table with distinct chunk_index values, and
+// the queue is drained in one shot (not N times) — Complete is
+// keyed on message_id, not on (message_id, chunk_index).
+func TestWorker_FansOutLongMessageIntoMultipleChunks(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkerFixture(t, 1)
+
+	// Replace the seeded message's body with one long enough to need
+	// multiple chunks at MaxInputChars=200. Each "paragraph" is ~150
+	// chars; six paragraphs ≈ 900 chars → at least 4 chunks.
+	body := ""
+	for i := 0; i < 6; i++ {
+		body += "lorem ipsum dolor sit amet consectetur adipiscing elit. " +
+			"sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. " +
+			"ut enim ad minim veniam quis nostrud exercitation. " +
+			"\n\n"
+	}
+	if _, err := f.MainDB.Exec(`UPDATE message_bodies SET body_text = ? WHERE message_id = 1`, body); err != nil {
+		t.Fatalf("update body: %v", err)
+	}
+
+	w := NewWorker(WorkerDeps{
+		Backend:       f.Backend,
+		VectorsDB:     f.VectorsDB,
+		MainDB:        f.MainDB,
+		Client:        f.FakeClient,
+		Preprocess:    PreprocessConfig{},
+		MaxInputChars: 200, // forces multi-chunk fan-out
+		BatchSize:     8,
+	})
+	res, err := w.RunOnce(ctx, f.BuildingGen)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if res.Succeeded != 1 {
+		t.Errorf("succeeded=%d, want 1 (one distinct message embedded)", res.Succeeded)
+	}
+	if res.Failed != 0 {
+		t.Errorf("failed=%d, want 0", res.Failed)
+	}
+
+	// embeddings should hold N > 1 rows for the message, with
+	// consecutive chunk_index values starting at 0.
+	var rowCount int
+	if err := f.VectorsDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM embeddings WHERE generation_id = ? AND message_id = 1`,
+		int64(f.BuildingGen)).Scan(&rowCount); err != nil {
+		t.Fatalf("count chunks: %v", err)
+	}
+	if rowCount < 2 {
+		t.Fatalf("expected >= 2 chunk rows, got %d", rowCount)
+	}
+	var distinctCI int
+	if err := f.VectorsDB.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT chunk_index) FROM embeddings WHERE generation_id = ? AND message_id = 1`,
+		int64(f.BuildingGen)).Scan(&distinctCI); err != nil {
+		t.Fatalf("count distinct chunk_index: %v", err)
+	}
+	if distinctCI != rowCount {
+		t.Errorf("distinct chunk_index=%d, want %d (each chunk should be uniquely indexed)", distinctCI, rowCount)
+	}
+	var minCI, maxCI int
+	if err := f.VectorsDB.QueryRowContext(ctx,
+		`SELECT MIN(chunk_index), MAX(chunk_index) FROM embeddings WHERE generation_id = ?`,
+		int64(f.BuildingGen)).Scan(&minCI, &maxCI); err != nil {
+		t.Fatalf("min/max chunk_index: %v", err)
+	}
+	if minCI != 0 || maxCI != rowCount-1 {
+		t.Errorf("chunk_index range = [%d, %d], want [0, %d]", minCI, maxCI, rowCount-1)
+	}
+	// message_count tracks distinct messages, so it must read as 1
+	// despite the multi-chunk fan-out.
+	var msgCount int
+	if err := f.VectorsDB.QueryRowContext(ctx,
+		`SELECT message_count FROM index_generations WHERE id = ?`,
+		int64(f.BuildingGen)).Scan(&msgCount); err != nil {
+		t.Fatalf("read message_count: %v", err)
+	}
+	if msgCount != 1 {
+		t.Errorf("message_count = %d, want 1", msgCount)
+	}
+	// Queue is fully drained: Complete is keyed on message_id, so all
+	// chunks of message 1 finish together when its singleton pending
+	// row is removed.
+	var pending int
+	if err := f.VectorsDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pending_embeddings WHERE generation_id = ?`,
+		int64(f.BuildingGen)).Scan(&pending); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	if pending != 0 {
+		t.Errorf("pending remaining: %d", pending)
+	}
+}
+
 func TestWorker_DrainsPendingEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	f := newWorkerFixture(t, 3)

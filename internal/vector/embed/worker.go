@@ -149,13 +149,27 @@ type RunResult struct {
 	Claimed, Succeeded, Failed, Truncated int
 }
 
-// msgText is the per-message preprocessed input to the embedder, carried
-// from fetch through to Chunk construction.
+// msgText is the per-message preprocessed input to the chunker, carried
+// from fetch through ChunkText. One msgText fans out to one or more
+// inputChunks below.
 type msgText struct {
 	ID    int64
 	Text  string
 	Chars int
-	Trunc bool
+}
+
+// inputChunk is one window into a message's preprocessed text, fed
+// 1:1 to the embedding client and turned into a vector.Chunk on the
+// way back. The (ID, ChunkIndex) pair is the durable key the backend
+// stores. ChunkIndex is dense and 0-based.
+type inputChunk struct {
+	ID         int64
+	ChunkIndex int
+	Text       string
+	Chars      int
+	CharStart  int
+	CharEnd    int
+	Trunc      bool
 }
 
 // ReclaimStale releases claims older than StaleThreshold so crashed
@@ -455,7 +469,6 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 	defer func() { _ = rows.Close() }()
 
 	var msgs []msgText
-	var inputs []string
 	var empty []int64
 	fetched := make(map[int64]struct{}, len(ids))
 	for rows.Next() {
@@ -471,19 +484,18 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 		if body == "" && bodyHTML != "" {
 			body = mime.StripHTML(bodyHTML)
 		}
-		txt, trunc := Preprocess(subject, body, w.deps.MaxInputChars, w.deps.Preprocess)
+		// Pass maxChars=0 so Preprocess does NOT truncate. Chunking
+		// (below) takes the full preprocessed text and divides it into
+		// windows of at most MaxInputChars runes each, so truncation
+		// would just throw away tail content that ChunkText would
+		// otherwise embed in a later chunk.
+		txt, _ := Preprocess(subject, body, 0, w.deps.Preprocess)
 		fetched[id] = struct{}{}
 		if strings.TrimSpace(txt) == "" {
 			empty = append(empty, id)
 			continue
 		}
-		// Preprocess truncates by runes, so the recorded length must
-		// also be a rune count. Using len(txt) (bytes) inflates
-		// SourceCharLen by 2-4x for CJK / emoji / accented text and
-		// breaks any downstream "did we truncate?" / "how big was the
-		// input?" reasoning.
-		msgs = append(msgs, msgText{ID: id, Text: txt, Chars: utf8.RuneCountInString(txt), Trunc: trunc})
-		inputs = append(inputs, txt)
+		msgs = append(msgs, msgText{ID: id, Text: txt, Chars: utf8.RuneCountInString(txt)})
 	}
 	if err := rows.Err(); err != nil {
 		return embedBatchResult{}, fmt.Errorf("iterate message rows: %w", err)
@@ -504,32 +516,71 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 		return embedBatchResult{missing: missing, empty: empty}, nil
 	}
 
+	// Chunk every message into windows of at most MaxInputChars runes.
+	// Short messages produce exactly one chunk; long ones produce N.
+	// Each chunk becomes one input to the embedder.
+	chunkWindow := w.deps.MaxInputChars
+	overlap := chunkOverlapFor(chunkWindow)
+	var pieces []inputChunk
+	var inputs []string
+	for _, m := range msgs {
+		spans := ChunkText(m.Text, chunkWindow, overlap)
+		for j, sp := range spans {
+			ic := inputChunk{
+				ID:         m.ID,
+				ChunkIndex: j,
+				Text:       sp.Text,
+				Chars:      sp.CharEnd - sp.CharStart,
+				CharStart:  sp.CharStart,
+				CharEnd:    sp.CharEnd,
+				// Trunc flags a chunk that hit the hard rune cap with
+				// no soft (paragraph/sentence/word) break to land on.
+				// Useful as a debugging signal in embeddings.truncated:
+				// chunks that hard-cut may have a sentence split across
+				// the boundary, which is the case the overlap window
+				// is meant to recover.
+				Trunc: chunkWindow > 0 && (sp.CharEnd-sp.CharStart) == chunkWindow &&
+					j < len(spans)-1,
+			}
+			pieces = append(pieces, ic)
+			inputs = append(inputs, sp.Text)
+		}
+	}
+
 	start := time.Now()
 	vecs, err := w.deps.Client.Embed(ctx, inputs)
 	if err != nil {
 		return embedBatchResult{}, fmt.Errorf("embed: %w", err)
 	}
 	w.deps.Log.Debug("embed batch",
-		"count", len(vecs), "chars", totalChars(msgs), "duration_ms", time.Since(start).Milliseconds())
+		"messages", len(msgs), "chunks", len(pieces),
+		"chars", totalPieceChars(pieces), "duration_ms", time.Since(start).Milliseconds())
 
-	if len(vecs) != len(msgs) {
-		return embedBatchResult{}, fmt.Errorf("embedder returned %d vectors for %d inputs", len(vecs), len(msgs))
+	if len(vecs) != len(pieces) {
+		return embedBatchResult{}, fmt.Errorf("embedder returned %d vectors for %d chunk inputs", len(vecs), len(pieces))
 	}
 
 	truncated := 0
 	chunks := make([]vector.Chunk, 0, len(vecs))
-	embeddedIDs := make([]int64, 0, len(vecs))
-	for i, m := range msgs {
-		if m.Trunc {
+	embeddedIDs := make([]int64, 0, len(msgs))
+	seenMsg := make(map[int64]struct{}, len(msgs))
+	for i, p := range pieces {
+		if p.Trunc {
 			truncated++
 		}
 		chunks = append(chunks, vector.Chunk{
-			MessageID:     m.ID,
-			Vector:        vecs[i],
-			SourceCharLen: m.Chars,
-			Truncated:     m.Trunc,
+			MessageID:      p.ID,
+			ChunkIndex:     p.ChunkIndex,
+			Vector:         vecs[i],
+			SourceCharLen:  p.Chars,
+			ChunkCharStart: p.CharStart,
+			ChunkCharEnd:   p.CharEnd,
+			Truncated:      p.Trunc,
 		})
-		embeddedIDs = append(embeddedIDs, m.ID)
+		if _, ok := seenMsg[p.ID]; !ok {
+			seenMsg[p.ID] = struct{}{}
+			embeddedIDs = append(embeddedIDs, p.ID)
+		}
 	}
 	return embedBatchResult{
 		chunks:      chunks,
@@ -703,10 +754,38 @@ func (w *Worker) reportProgress(done, batchMsgs, batchChars int, batchElapsed ti
 	})
 }
 
-func totalChars(ms []msgText) int {
+// totalPieceChars sums the rune counts of every chunk in the batch, for
+// debug logging — distinct from totalChars because a long message
+// contributes one msgText row but several inputChunk rows.
+func totalPieceChars(pieces []inputChunk) int {
 	n := 0
-	for _, m := range ms {
-		n += m.Chars
+	for _, p := range pieces {
+		n += p.Chars
 	}
 	return n
+}
+
+// chunkOverlapFor returns the rune count of overlap between consecutive
+// chunks. The overlap exists so a sentence or phrase that straddles a
+// window boundary survives in at least one chunk verbatim — without it,
+// a query term that lives on a cut would be invisible to ANN search.
+//
+// A fixed-fraction overlap (≈3% of the window, floored at 0 for small
+// windows) gives roughly one sentence of margin at typical chunk sizes
+// without materially padding the corpus. Hardcoded here rather than
+// pulled from config because the overlap is an implementation detail
+// of how chunks recover boundary content — making it tunable would let
+// users degrade recall in exchange for marginal storage savings, and
+// nobody has asked for that knob yet.
+func chunkOverlapFor(maxRunes int) int {
+	if maxRunes <= 0 {
+		return 0
+	}
+	if maxRunes < 200 {
+		// For very small windows the proportional overlap (~3%) is
+		// under a couple of dozen runes — not enough to recover a
+		// sentence — so fall back to "no overlap" rather than pretend.
+		return 0
+	}
+	return maxRunes / 30
 }
