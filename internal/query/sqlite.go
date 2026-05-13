@@ -1160,6 +1160,9 @@ func (e *SQLiteEngine) SearchByDomains(ctx context.Context, domains []string, af
 	}
 
 	conditions := []string{emailOnlyFilterM}
+	// Hide dedup losers (deleted_at) and source-deleted rows so this MCP-facing
+	// surface matches the visibility rules of Search/SearchFast.
+	conditions = append(conditions, store.LiveMessagesWhere("m", true))
 	conditions = append(conditions, fmt.Sprintf(`EXISTS (
 		SELECT 1 FROM message_recipients mr_dom
 		JOIN participants p_dom ON p_dom.id = mr_dom.participant_id

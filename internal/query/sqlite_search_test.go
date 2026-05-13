@@ -464,6 +464,45 @@ func TestMergeFilterIntoQuery_SliceAliasingMutation(t *testing.T) {
 	}
 }
 
+// TestSearchByDomains_HidesDeleted verifies SearchByDomains applies the
+// same live-message filter as Search/SearchFast: dedup losers (deleted_at)
+// are always hidden, and source-deleted rows (deleted_from_source_at) are
+// hidden too. Without the predicate this MCP-facing surface would surface
+// rows that every other read path suppresses.
+func TestSearchByDomains_HidesDeleted(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	all, err := env.Engine.SearchByDomains(ctx, []string{"example.com"}, nil, nil, 100, 0)
+	if err != nil {
+		t.Fatalf("SearchByDomains baseline: %v", err)
+	}
+	if len(all) != 5 {
+		t.Fatalf("baseline result count: got %d, want 5", len(all))
+	}
+
+	// Dedup-soft-delete one message — must always be hidden.
+	env.MarkDedupLoserByID(1)
+	// Source-delete another — also hidden by the full live-message predicate.
+	env.MarkDeletedByID(2)
+
+	results, err := env.Engine.SearchByDomains(ctx, []string{"example.com"}, nil, nil, 100, 0)
+	if err != nil {
+		t.Fatalf("SearchByDomains after deletes: %v", err)
+	}
+	if len(results) != 3 {
+		t.Errorf("after deletes: got %d, want 3", len(results))
+	}
+	for _, r := range results {
+		if r.ID == 1 {
+			t.Error("dedup-loser message 1 leaked into results")
+		}
+		if r.ID == 2 {
+			t.Error("source-deleted message 2 leaked into results")
+		}
+	}
+}
+
 func TestSearch_HideDeleted(t *testing.T) {
 	env := newTestEnv(t)
 
