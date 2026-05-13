@@ -15,6 +15,7 @@ import (
 	"time"
 
 	pstlib "github.com/mooijtech/go-pst/v6/pkg"
+	"github.com/wesm/msgvault/internal/mime"
 	pstreader "github.com/wesm/msgvault/internal/pst"
 	"github.com/wesm/msgvault/internal/store"
 )
@@ -146,6 +147,17 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 	src, err := st.GetOrCreateSource(opts.SourceType, opts.Identifier)
 	if err != nil {
 		return nil, fmt.Errorf("get/create source: %w", err)
+	}
+
+	// Index existing PST rows in this source by EntryID so the dedup
+	// check below can find rows under any prior key shape — the legacy
+	// "pst-<EntryID>" form, the current "pst-<fingerprint>-<EntryID>"
+	// form, or rows written under a now-stale fingerprint (e.g., the PST
+	// header counters changed between imports). Content equivalence is
+	// verified per match before any row is renamed.
+	existingByEntryID, err := loadExistingPstByEntryID(st, src.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load existing pst rows: %w", err)
 	}
 
 	// Set display name to the PST filename so it appears in list-accounts / get_stats.
@@ -287,17 +299,18 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 		Raw         []byte
 		RawHash     string
 		SourceMsgID string
-		// LegacySourceMsgID is the pre-fingerprint key form ("pst-<EntryID>")
-		// used to migrate rows imported by msgvault versions predating the
-		// archive fingerprint. Migration is guarded by raw-content hash to
-		// avoid corrupting data from a different archive whose EntryID
-		// happens to match.
-		LegacySourceMsgID string
-		FallbackDate      time.Time
-		LabelID           int64
-		FolderIndex       int
-		FolderPath        string
-		MsgIndex          int64
+		// EntryID is the per-archive PST node identifier (a decimal
+		// integer as string). Used to dedup against existing rows whose
+		// source_message_id encodes the same EntryID under a different
+		// (or absent) archive fingerprint — covers both rows imported by
+		// msgvault versions predating the fingerprint and rows imported
+		// from a PST whose header counters changed before re-import.
+		EntryID      string
+		FallbackDate time.Time
+		LabelID      int64
+		FolderIndex  int
+		FolderPath   string
+		MsgIndex     int64
 	}
 
 	var (
@@ -322,12 +335,8 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 		}
 
 		ids := make([]string, len(pending))
-		legacyIDs := make([]string, 0, len(pending))
 		for i, p := range pending {
 			ids[i] = p.SourceMsgID
-			if p.LegacySourceMsgID != "" {
-				legacyIDs = append(legacyIDs, p.LegacySourceMsgID)
-			}
 		}
 
 		existingWithRaw, errWithRaw := st.MessageExistsWithRawBatch(src.ID, ids)
@@ -342,18 +351,6 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 			cp.ErrorsCount++
 			summary.Errors++
 			log.Warn("existence check (any) failed", "error", errAny)
-		}
-
-		// Look up legacy ("pst-<EntryID>") rows from msgvault versions
-		// predating the archive fingerprint. If a match exists and its raw
-		// content hashes to the same value we just extracted, migrate the
-		// row's source_message_id forward so subsequent imports dedup
-		// against it under the new scheme.
-		existingLegacy, errLegacy := st.MessageExistsWithRawBatch(src.ID, legacyIDs)
-		if errLegacy != nil {
-			cp.ErrorsCount++
-			summary.Errors++
-			log.Warn("legacy existence check failed", "error", errLegacy)
 		}
 
 		for _, p := range pending {
@@ -394,27 +391,37 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 				}
 			}
 
-			// Legacy ("pst-<EntryID>") row migration: a prior import under
-			// the un-namespaced scheme may already hold this message. Only
-			// migrate when the stored raw bytes hash to the same value we
-			// just extracted — otherwise the legacy row belongs to a
-			// different archive that happened to allocate the same EntryID
-			// (the collision this commit fixes), and we must not overwrite
-			// it.
-			if errLegacy == nil && p.LegacySourceMsgID != "" {
-				if msgID, exists := existingLegacy[p.LegacySourceMsgID]; exists {
-					if migrateLegacyPstKey(st, msgID, p.RawHash, p.SourceMsgID, log) {
+			// Cross-fingerprint dedup: an existing row in this source may
+			// already hold this message under a different key — the
+			// legacy "pst-<EntryID>" form, or "pst-<otherFingerprint>-<EntryID>"
+			// from a previous import of the same archive whose header
+			// counters have since shifted. Migrate the row's key forward
+			// only when its parsed body content matches what we just
+			// extracted; a mismatch means a different archive coincidentally
+			// allocated the same EntryID and the existing row must be
+			// preserved.
+			if p.EntryID != "" {
+				migrated := false
+				for _, cand := range existingByEntryID[p.EntryID] {
+					if cand.SourceMsgID == p.SourceMsgID {
+						continue
+					}
+					if migratePstKey(st, cand.MsgID, p.Raw, p.SourceMsgID, log) {
 						summary.MessagesSkipped++
 						if p.LabelID != 0 {
-							if err := st.AddMessageLabels(msgID, []int64{p.LabelID}); err != nil {
+							if err := st.AddMessageLabels(cand.MsgID, []int64{p.LabelID}); err != nil {
 								log.Warn("add labels to migrated message", "error", err)
 							}
 						}
 						if !checkpointBlocked && cp.MessagesProcessed%int64(opts.CheckpointInterval) == 0 {
 							saveCp(p.FolderIndex, p.FolderPath, p.MsgIndex)
 						}
-						continue
+						migrated = true
+						break
 					}
+				}
+				if migrated {
+					continue
 				}
 			}
 
@@ -572,15 +579,15 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 			}
 
 			pending = append(pending, pendingPstMessage{
-				Raw:               raw,
-				RawHash:           rawHash,
-				SourceMsgID:       sourceMsgID,
-				LegacySourceMsgID: "pst-" + entry.EntryID,
-				FallbackDate:      fallbackDate,
-				LabelID:           labelID,
-				FolderIndex:       fi,
-				FolderPath:        fr.Entry.Path,
-				MsgIndex:          currentMsgIdx,
+				Raw:          raw,
+				RawHash:      rawHash,
+				SourceMsgID:  sourceMsgID,
+				EntryID:      entry.EntryID,
+				FallbackDate: fallbackDate,
+				LabelID:      labelID,
+				FolderIndex:  fi,
+				FolderPath:   fr.Entry.Path,
+				MsgIndex:     currentMsgIdx,
 			})
 			pendingBytes += int64(len(raw))
 
@@ -623,31 +630,96 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 	return summary, nil
 }
 
-// migrateLegacyPstKey rewrites a pre-fingerprint "pst-<EntryID>" row to the
-// new "pst-<archiveID>-<EntryID>" key when the legacy row's stored raw bytes
-// hash to expectedHash (i.e. the same content we just extracted from this
-// archive). Returns true on successful migration; false (without migration)
-// when the hashes diverge or any step fails.
-func migrateLegacyPstKey(
-	st *store.Store, legacyMessageID int64,
-	expectedHash, newSourceMessageID string,
+// existingPstRow is the per-EntryID bookkeeping needed to migrate an existing
+// PST row to the current import's key after content verification.
+type existingPstRow struct {
+	MsgID       int64
+	SourceMsgID string
+}
+
+// loadExistingPstByEntryID indexes every PST row in the given source by its
+// trailing EntryID. The same EntryID may map to multiple rows when prior
+// imports recorded the same message under different fingerprint forms (or no
+// fingerprint at all).
+func loadExistingPstByEntryID(st *store.Store, sourceID int64) (map[string][]existingPstRow, error) {
+	rows, err := st.ListPstSourceMessageIDs(sourceID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]existingPstRow, len(rows))
+	for _, r := range rows {
+		eid := entryIDFromPstSourceMessageID(r.SourceMessageID)
+		if eid == "" {
+			continue
+		}
+		out[eid] = append(out[eid], existingPstRow{
+			MsgID:       r.ID,
+			SourceMsgID: r.SourceMessageID,
+		})
+	}
+	return out, nil
+}
+
+// entryIDFromPstSourceMessageID returns the trailing EntryID from a PST
+// source_message_id. Handles both shapes the importer can produce:
+//
+//	pst-<EntryID>                  (pre-fingerprint imports)
+//	pst-<fingerprint>-<EntryID>    (current scheme)
+//
+// EntryIDs are decimal integers and never contain a hyphen themselves, so
+// the segment after the final hyphen identifies the EntryID unambiguously.
+func entryIDFromPstSourceMessageID(key string) string {
+	if !strings.HasPrefix(key, "pst-") {
+		return ""
+	}
+	rest := key[len("pst-"):]
+	if i := strings.LastIndex(rest, "-"); i >= 0 {
+		return rest[i+1:]
+	}
+	return rest
+}
+
+// migratePstKey renames an existing PST row to newSourceMessageID after
+// confirming via parsed body content that the row holds the same message
+// we are about to ingest. Comparing parsed bodies — rather than the raw
+// bytes — is essential because MIME boundaries used to be random and rows
+// from older msgvault builds carry boundaries that won't match the
+// deterministic ones the current builder emits. Subject is also compared
+// to guard against EntryID collisions across genuinely different archives.
+func migratePstKey(
+	st *store.Store, existingMessageID int64,
+	currentRaw []byte, newSourceMessageID string,
 	log *slog.Logger,
 ) bool {
-	rawLegacy, err := st.GetMessageRaw(legacyMessageID)
+	existingRaw, err := st.GetMessageRaw(existingMessageID)
 	if err != nil {
-		log.Warn("legacy raw fetch failed",
-			"message_id", legacyMessageID, "error", err)
+		log.Warn("existing raw fetch failed",
+			"message_id", existingMessageID, "error", err)
 		return false
 	}
-	sum := sha256.Sum256(rawLegacy)
-	if hex.EncodeToString(sum[:]) != expectedHash {
-		// Different content under a shared EntryID — distinct archives.
-		// Leave the legacy row in place; ingest the new message normally.
+	existingParsed, err := mime.Parse(existingRaw)
+	if err != nil {
+		log.Warn("existing parse failed",
+			"message_id", existingMessageID, "error", err)
 		return false
 	}
-	if err := st.RenameSourceMessageID(legacyMessageID, newSourceMessageID); err != nil {
-		log.Warn("rename legacy pst key failed",
-			"message_id", legacyMessageID, "new", newSourceMessageID, "error", err)
+	currentParsed, err := mime.Parse(currentRaw)
+	if err != nil {
+		log.Warn("current parse failed", "error", err)
+		return false
+	}
+	if existingParsed.BodyText != currentParsed.BodyText {
+		return false
+	}
+	if existingParsed.BodyHTML != currentParsed.BodyHTML {
+		return false
+	}
+	if existingParsed.Subject != currentParsed.Subject {
+		return false
+	}
+	if err := st.RenameSourceMessageID(existingMessageID, newSourceMessageID); err != nil {
+		log.Warn("rename pst key failed",
+			"message_id", existingMessageID, "new", newSourceMessageID, "error", err)
 		return false
 	}
 	return true

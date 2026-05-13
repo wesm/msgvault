@@ -90,29 +90,12 @@ func TestImportPst_SupportPST_Idempotent(t *testing.T) {
 	}
 }
 
-// TestImportPst_LegacyKeyMigration verifies that re-importing a PST whose
-// rows were created by a pre-fingerprint version of msgvault (keyed as
-// "pst-<EntryID>") rewrites those keys forward and reports every message as
-// skipped, instead of duplicating rows under the new "pst-<archiveID>-<EntryID>"
-// scheme.
-func TestImportPst_LegacyKeyMigration(t *testing.T) {
-	st := openIntegrationStore(t)
-	pstPath := filepath.Join(pstTestdataDir, "support.pst")
-	opts := PstImportOptions{
-		Identifier: "support@hackingteam.com",
-		NoResume:   true,
-	}
-
-	first, err := ImportPst(context.Background(), st, pstPath, opts)
-	if err != nil {
-		t.Fatalf("first import: %v", err)
-	}
-	if first.MessagesAdded == 0 {
-		t.Fatal("first import added no messages")
-	}
-
-	// Rewrite every PST row's source_message_id to its pre-fingerprint form
-	// to simulate a database populated by an older msgvault version.
+// rewritePstKeys rewrites every PST row's source_message_id in the store
+// using the supplied transform, returning the count rewritten. Used by
+// tests to simulate database states left behind by other msgvault versions
+// (pre-fingerprint or with a now-stale fingerprint).
+func rewritePstKeys(t *testing.T, st *store.Store, transform func(string) string) int {
+	t.Helper()
 	rows, err := st.DB().Query(
 		`SELECT id, source_message_id FROM messages WHERE source_message_id LIKE 'pst-%'`)
 	if err != nil {
@@ -132,19 +115,43 @@ func TestImportPst_LegacyKeyMigration(t *testing.T) {
 		pstRows = append(pstRows, r)
 	}
 	_ = rows.Close()
-	if len(pstRows) == 0 {
-		t.Fatal("no PST rows found after first import")
+	for _, r := range pstRows {
+		if err := st.RenameSourceMessageID(r.ID, transform(r.Key)); err != nil {
+			t.Fatalf("rename %q: %v", r.Key, err)
+		}
+	}
+	return len(pstRows)
+}
+
+// TestImportPst_LegacyKeyMigration verifies that re-importing a PST whose
+// rows were created by a pre-fingerprint version of msgvault (keyed as
+// "pst-<EntryID>") migrates those keys forward and reports every message
+// as skipped, instead of duplicating under the new fingerprinted scheme.
+func TestImportPst_LegacyKeyMigration(t *testing.T) {
+	st := openIntegrationStore(t)
+	pstPath := filepath.Join(pstTestdataDir, "support.pst")
+	opts := PstImportOptions{
+		Identifier: "support@hackingteam.com",
+		NoResume:   true,
 	}
 
-	for _, r := range pstRows {
-		parts := strings.SplitN(r.Key, "-", 3)
+	first, err := ImportPst(context.Background(), st, pstPath, opts)
+	if err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+	if first.MessagesAdded == 0 {
+		t.Fatal("first import added no messages")
+	}
+
+	count := rewritePstKeys(t, st, func(key string) string {
+		parts := strings.SplitN(key, "-", 3)
 		if len(parts) != 3 {
-			t.Fatalf("unexpected source_message_id format: %q", r.Key)
+			t.Fatalf("unexpected source_message_id format: %q", key)
 		}
-		legacy := "pst-" + parts[2]
-		if err := st.RenameSourceMessageID(r.ID, legacy); err != nil {
-			t.Fatalf("rename to legacy: %v", err)
-		}
+		return "pst-" + parts[2]
+	})
+	if count == 0 {
+		t.Fatal("no PST rows found after first import")
 	}
 
 	second, err := ImportPst(context.Background(), st, pstPath, opts)
@@ -155,11 +162,10 @@ func TestImportPst_LegacyKeyMigration(t *testing.T) {
 		t.Errorf("MessagesAdded = %d, want 0 (legacy rows should migrate, not duplicate)",
 			second.MessagesAdded)
 	}
-	if second.MessagesSkipped != int64(len(pstRows)) {
-		t.Errorf("MessagesSkipped = %d, want %d", second.MessagesSkipped, len(pstRows))
+	if second.MessagesSkipped != int64(count) {
+		t.Errorf("MessagesSkipped = %d, want %d", second.MessagesSkipped, count)
 	}
 
-	// No "pst-<EntryID>" rows (legacy form, single hyphen) should remain.
 	var legacyCount int
 	if err := st.DB().QueryRow(
 		`SELECT COUNT(*) FROM messages
@@ -169,6 +175,67 @@ func TestImportPst_LegacyKeyMigration(t *testing.T) {
 	}
 	if legacyCount != 0 {
 		t.Errorf("legacy key count = %d, want 0 (all should be migrated)", legacyCount)
+	}
+}
+
+// TestImportPst_FingerprintChangeMigration verifies that re-importing a PST
+// whose header counters have shifted since the prior import — yielding a
+// different archive fingerprint — still dedups against the rows recorded
+// under the old fingerprint. Without this, any read-write touch on the PST
+// (e.g., opening it in Outlook) would silently duplicate every message on
+// the next import.
+func TestImportPst_FingerprintChangeMigration(t *testing.T) {
+	st := openIntegrationStore(t)
+	pstPath := filepath.Join(pstTestdataDir, "support.pst")
+	opts := PstImportOptions{
+		Identifier: "support@hackingteam.com",
+		NoResume:   true,
+	}
+
+	first, err := ImportPst(context.Background(), st, pstPath, opts)
+	if err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+	if first.MessagesAdded == 0 {
+		t.Fatal("first import added no messages")
+	}
+
+	// Replace the actual fingerprint segment with a different 12-char value
+	// to mimic the database state left by a previous import of the same
+	// archive whose header counters have since changed.
+	const staleFingerprint = "deadbeef0011"
+	count := rewritePstKeys(t, st, func(key string) string {
+		parts := strings.SplitN(key, "-", 3)
+		if len(parts) != 3 {
+			t.Fatalf("unexpected source_message_id format: %q", key)
+		}
+		return "pst-" + staleFingerprint + "-" + parts[2]
+	})
+	if count == 0 {
+		t.Fatal("no PST rows found after first import")
+	}
+
+	second, err := ImportPst(context.Background(), st, pstPath, opts)
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if second.MessagesAdded != 0 {
+		t.Errorf("MessagesAdded = %d, want 0 (stale-fingerprint rows should migrate)",
+			second.MessagesAdded)
+	}
+	if second.MessagesSkipped != int64(count) {
+		t.Errorf("MessagesSkipped = %d, want %d", second.MessagesSkipped, count)
+	}
+
+	var staleCount int
+	if err := st.DB().QueryRow(
+		`SELECT COUNT(*) FROM messages WHERE source_message_id LIKE 'pst-' || ? || '-%'`,
+		staleFingerprint,
+	).Scan(&staleCount); err != nil {
+		t.Fatalf("count stale: %v", err)
+	}
+	if staleCount != 0 {
+		t.Errorf("stale-fingerprint count = %d, want 0", staleCount)
 	}
 }
 

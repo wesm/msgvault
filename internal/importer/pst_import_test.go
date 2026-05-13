@@ -1,11 +1,13 @@
 package importer
 
 import (
+	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"mime/multipart"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"testing"
@@ -197,11 +199,52 @@ func TestPstArchiveFingerprint(t *testing.T) {
 	}
 }
 
-// TestMigrateLegacyPstKey verifies the safety invariant of the legacy-key
-// migration: rows are only renamed when the stored raw content hashes to the
-// expected value. A mismatch means the legacy row belongs to a different
-// archive that allocated the same EntryID, and we must not overwrite it.
-func TestMigrateLegacyPstKey(t *testing.T) {
+// buildAlternativeMIME constructs a multipart/alternative MIME document with
+// the supplied boundary, text body, and HTML body. Used by migration tests
+// to exercise the case where two raw blobs encode the same content under
+// different boundaries — the situation that broke the prior byte-hash check
+// and motivated parse-based comparison.
+func buildAlternativeMIME(t *testing.T, subject, boundary, text, html string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf,
+		"Subject: %s\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=%q\r\n\r\n",
+		subject, boundary,
+	)
+	mw := multipart.NewWriter(&buf)
+	if err := mw.SetBoundary(boundary); err != nil {
+		t.Fatalf("set boundary: %v", err)
+	}
+	th := make(textproto.MIMEHeader)
+	th.Set("Content-Type", "text/plain; charset=utf-8")
+	pw, err := mw.CreatePart(th)
+	if err != nil {
+		t.Fatalf("create text part: %v", err)
+	}
+	if _, err := pw.Write([]byte(text)); err != nil {
+		t.Fatalf("write text part: %v", err)
+	}
+	hh := make(textproto.MIMEHeader)
+	hh.Set("Content-Type", "text/html; charset=utf-8")
+	pw, err = mw.CreatePart(hh)
+	if err != nil {
+		t.Fatalf("create html part: %v", err)
+	}
+	if _, err := pw.Write([]byte(html)); err != nil {
+		t.Fatalf("write html part: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestMigratePstKey verifies the dedup migration's parse-based equivalence
+// check: rows are migrated when the stored and incoming MIME parse to the
+// same Subject/BodyText/BodyHTML even if the raw bytes differ (e.g. random
+// vs deterministic multipart boundaries), and refused when the parsed
+// content differs.
+func TestMigratePstKey(t *testing.T) {
 	st := openTestStorePst(t)
 
 	src, err := st.GetOrCreateSource("pst", "user@example.com")
@@ -213,15 +256,17 @@ func TestMigrateLegacyPstKey(t *testing.T) {
 		t.Fatalf("ensure conversation: %v", err)
 	}
 
-	rawBytes := []byte("From: alice@example.com\r\nSubject: test\r\n\r\nbody\r\n")
-	sum := sha256.Sum256(rawBytes)
-	rawHash := hex.EncodeToString(sum[:])
-
 	const (
 		legacyID = "pst-12345"
 		newID    = "pst-abc123def456-12345"
+		subject  = "Same content under different boundaries"
+		bodyText = "hello world\r\n"
+		bodyHTML = "<p>hello world</p>\r\n"
 	)
 
+	// Stored: legacy-style raw with one boundary (mimicking the random
+	// boundaries the pre-fingerprint builder produced).
+	storedRaw := buildAlternativeMIME(t, subject, "BOUNDARY-LEGACY-aaaa", bodyText, bodyHTML)
 	msgID, err := st.PersistMessage(&store.MessagePersistData{
 		Message: &store.Message{
 			ConversationID:  convID,
@@ -229,27 +274,29 @@ func TestMigrateLegacyPstKey(t *testing.T) {
 			SourceMessageID: legacyID,
 			MessageType:     "email",
 		},
-		RawMIME: rawBytes,
+		RawMIME: storedRaw,
 	})
 	if err != nil {
 		t.Fatalf("persist message: %v", err)
 	}
 
-	// Mismatching hash → must not migrate.
-	if migrateLegacyPstKey(st, msgID, "deadbeef", newID, slog.Default()) {
-		t.Fatal("expected migration to fail on hash mismatch")
+	// Different content → must not migrate.
+	mismatchRaw := buildAlternativeMIME(t, subject, "BOUNDARY-X-1111", "different body", bodyHTML)
+	if migratePstKey(st, msgID, mismatchRaw, newID, slog.Default()) {
+		t.Fatal("expected migration to fail when body content differs")
 	}
 	existing, err := st.MessageExistsBatch(src.ID, []string{legacyID})
 	if err != nil {
-		t.Fatalf("exists check: %v", err)
+		t.Fatalf("exists check (legacy): %v", err)
 	}
 	if existing[legacyID] != msgID {
-		t.Errorf("legacy key must remain after hash mismatch; got %v", existing)
+		t.Errorf("legacy key must remain on content mismatch; got %v", existing)
 	}
 
-	// Matching hash → migrate, legacy key removed.
-	if !migrateLegacyPstKey(st, msgID, rawHash, newID, slog.Default()) {
-		t.Fatal("expected migration to succeed on hash match")
+	// Same body/subject under a different boundary → must migrate.
+	matchRaw := buildAlternativeMIME(t, subject, "BOUNDARY-CURRENT-bbbb", bodyText, bodyHTML)
+	if !migratePstKey(st, msgID, matchRaw, newID, slog.Default()) {
+		t.Fatal("expected migration on matching body across different boundaries")
 	}
 	existing, err = st.MessageExistsBatch(src.ID, []string{newID})
 	if err != nil {
@@ -260,10 +307,32 @@ func TestMigrateLegacyPstKey(t *testing.T) {
 	}
 	existing, err = st.MessageExistsBatch(src.ID, []string{legacyID})
 	if err != nil {
-		t.Fatalf("exists check (legacy): %v", err)
+		t.Fatalf("exists check (legacy after): %v", err)
 	}
 	if len(existing) != 0 {
 		t.Errorf("legacy key should be gone after migration; got %v", existing)
+	}
+}
+
+// TestEntryIDFromPstSourceMessageID covers the parser that buckets existing
+// rows by EntryID, including both legacy "pst-<EntryID>" rows and current
+// "pst-<fingerprint>-<EntryID>" rows.
+func TestEntryIDFromPstSourceMessageID(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"pst-12345", "12345"},
+		{"pst-abc123def456-12345", "12345"},
+		{"pst-fingerprint-7", "7"},
+		{"pst-", ""},
+		{"", ""},
+		{"gmail-12345", ""},
+	}
+	for _, tc := range cases {
+		if got := entryIDFromPstSourceMessageID(tc.in); got != tc.want {
+			t.Errorf("entryIDFromPstSourceMessageID(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 
