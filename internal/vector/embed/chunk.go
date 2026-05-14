@@ -39,7 +39,17 @@ type ChunkSpan struct {
 // maxRunes <= 0 disables chunking and returns a single span. The
 // overlap is clamped so it never exceeds maxRunes/2 — an overlap as
 // large as the window itself would loop forever.
-func ChunkText(text string, maxRunes, overlapRunes int) []ChunkSpan {
+//
+// maxSpans caps the number of returned spans, dropping tail content
+// from any message that would otherwise produce more chunks. <= 0
+// disables the cap. The cap exists for a real-world failure mode:
+// system-generated error dumps and stack traces can exceed 10 MB of
+// body text and would chunk into thousands of spans, blowing past the
+// embedder's batch-size assumptions and pushing the whole batch over
+// the API timeout. Most callers should pass a generous cap (50–100)
+// — enough to cover any legitimate long-form email while keeping
+// pathological inputs bounded.
+func ChunkText(text string, maxRunes, overlapRunes, maxSpans int) []ChunkSpan {
 	if text == "" {
 		return nil
 	}
@@ -73,6 +83,15 @@ func ChunkText(text string, maxRunes, overlapRunes int) []ChunkSpan {
 	var spans []ChunkSpan
 	cursor := 0
 	for cursor < totalRunes {
+		if maxSpans > 0 && len(spans) >= maxSpans {
+			// Hit the per-message cap. The tail of the message is
+			// dropped; the spans collected so far already cover the
+			// head, which is what semantic search cares about. We
+			// could synthesize a final "remaining content omitted"
+			// span here, but that would just feed the embedder a
+			// content-free string.
+			break
+		}
 		windowEnd := cursor + maxRunes
 		if windowEnd > totalRunes {
 			windowEnd = totalRunes

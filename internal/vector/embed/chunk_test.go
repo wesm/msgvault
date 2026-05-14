@@ -8,13 +8,13 @@ import (
 
 func TestChunkText(t *testing.T) {
 	t.Run("EmptyInputReturnsNil", func(t *testing.T) {
-		if got := ChunkText("", 100, 10); got != nil {
+		if got := ChunkText("", 100, 10, 0); got != nil {
 			t.Errorf("got %v, want nil", got)
 		}
 	})
 
 	t.Run("ShortInputReturnsSingleSpan", func(t *testing.T) {
-		got := ChunkText("hello world", 100, 10)
+		got := ChunkText("hello world", 100, 10, 0)
 		if len(got) != 1 {
 			t.Fatalf("len = %d, want 1", len(got))
 		}
@@ -28,7 +28,7 @@ func TestChunkText(t *testing.T) {
 
 	t.Run("MaxRunesZeroDisablesChunking", func(t *testing.T) {
 		text := strings.Repeat("x", 1000)
-		got := ChunkText(text, 0, 10)
+		got := ChunkText(text, 0, 10, 0)
 		if len(got) != 1 || got[0].Text != text {
 			t.Errorf("expected single span covering whole text")
 		}
@@ -42,7 +42,7 @@ func TestChunkText(t *testing.T) {
 		first := strings.Repeat("a", 80)
 		second := strings.Repeat("b", 50)
 		text := first + "\n\n" + second
-		got := ChunkText(text, 100, 10)
+		got := ChunkText(text, 100, 10, 0)
 		if len(got) < 2 {
 			t.Fatalf("expected >= 2 chunks, got %d", len(got))
 		}
@@ -58,7 +58,7 @@ func TestChunkText(t *testing.T) {
 		first := strings.Repeat("a", 80)
 		// Sentence terminator at offset 80 ("end. ").
 		text := first + ". " + strings.Repeat("b", 50)
-		got := ChunkText(text, 100, 10)
+		got := ChunkText(text, 100, 10, 0)
 		if len(got) < 2 {
 			t.Fatalf("expected >= 2 chunks")
 		}
@@ -73,7 +73,7 @@ func TestChunkText(t *testing.T) {
 		// a space (no sentence terminator). Cut should land at the
 		// last space inside [75, 100).
 		text := strings.Repeat("a", 90) + " " + strings.Repeat("b", 50)
-		got := ChunkText(text, 100, 10)
+		got := ChunkText(text, 100, 10, 0)
 		if len(got) < 2 {
 			t.Fatalf("expected >= 2 chunks")
 		}
@@ -86,7 +86,7 @@ func TestChunkText(t *testing.T) {
 		// 1000 unbroken non-space chars; no soft break anywhere. Each
 		// window should land on the hard cut at maxRunes.
 		text := strings.Repeat("a", 1000)
-		got := ChunkText(text, 100, 0)
+		got := ChunkText(text, 100, 0, 0)
 		if len(got) != 10 {
 			t.Fatalf("len = %d, want 10", len(got))
 		}
@@ -99,7 +99,7 @@ func TestChunkText(t *testing.T) {
 
 	t.Run("OverlapBetweenConsecutiveChunks", func(t *testing.T) {
 		text := strings.Repeat("a", 300)
-		got := ChunkText(text, 100, 20)
+		got := ChunkText(text, 100, 20, 0)
 		if len(got) < 2 {
 			t.Fatalf("expected >= 2 chunks")
 		}
@@ -115,7 +115,7 @@ func TestChunkText(t *testing.T) {
 		// the function must clamp it. With maxRunes=100 and
 		// overlap=500, effective overlap should be 50.
 		text := strings.Repeat("a", 300)
-		got := ChunkText(text, 100, 500)
+		got := ChunkText(text, 100, 500, 0)
 		if len(got) == 0 {
 			t.Fatal("got no chunks (overlap not clamped → infinite loop)")
 		}
@@ -133,7 +133,7 @@ func TestChunkText(t *testing.T) {
 			b.WriteString("こんにちは世界。")
 		}
 		text := b.String()
-		got := ChunkText(text, 80, 10)
+		got := ChunkText(text, 80, 10, 0)
 		if len(got) < 2 {
 			t.Fatalf("expected >= 2 chunks")
 		}
@@ -156,13 +156,49 @@ func TestChunkText(t *testing.T) {
 		}
 	})
 
+	t.Run("MaxSpansCapsOutputAndDropsTail", func(t *testing.T) {
+		// A pathological input — 10× window with no soft breaks — would
+		// normally chunk into 10 spans. With maxSpans=3 we get exactly 3
+		// covering the head, and the tail beyond the third chunk's end
+		// is dropped on the floor (real semantic search doesn't gain
+		// from embedding system-generated dumps).
+		text := strings.Repeat("a", 1000)
+		got := ChunkText(text, 100, 0, 3)
+		if len(got) != 3 {
+			t.Fatalf("len = %d, want 3 (capped)", len(got))
+		}
+		if got[0].CharStart != 0 {
+			t.Errorf("first chunk should start at 0, got %d", got[0].CharStart)
+		}
+		last := got[len(got)-1]
+		if last.CharEnd >= 1000 {
+			t.Errorf("last capped chunk ends at %d; expected dropped tail beyond it", last.CharEnd)
+		}
+	})
+
+	t.Run("MaxSpansZeroIsUnlimited", func(t *testing.T) {
+		text := strings.Repeat("a", 1000)
+		got := ChunkText(text, 100, 0, 0)
+		if len(got) != 10 {
+			t.Errorf("len = %d, want 10 (no cap)", len(got))
+		}
+	})
+
+	t.Run("MaxSpansLargerThanNaturalChunkCountIsNoop", func(t *testing.T) {
+		text := strings.Repeat("a", 300)
+		got := ChunkText(text, 100, 0, 100)
+		if len(got) != 3 {
+			t.Errorf("len = %d, want 3 (cap above natural)", len(got))
+		}
+	})
+
 	t.Run("ConcatenationCoversInputModuloOverlap", func(t *testing.T) {
 		// Stitching the chunks back together (advancing by stride =
 		// window - overlap from each chunk's start) must reconstruct
 		// the input verbatim. This is the property the overlap
 		// guarantee depends on for recall.
 		text := strings.Repeat("Lorem ipsum dolor sit amet. ", 200)
-		spans := ChunkText(text, 200, 30)
+		spans := ChunkText(text, 200, 30, 0)
 		if len(spans) < 2 {
 			t.Fatalf("need >= 2 chunks to test stitching")
 		}

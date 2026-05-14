@@ -518,13 +518,18 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 
 	// Chunk every message into windows of at most MaxInputChars runes.
 	// Short messages produce exactly one chunk; long ones produce N.
-	// Each chunk becomes one input to the embedder.
+	// Each chunk becomes one input to the embedder. The per-message
+	// span cap protects the batch from pathological inputs (10+ MB
+	// system error dumps, base64 blobs that survived sanitize): one
+	// such message could otherwise produce thousands of chunks and
+	// blow the batch past the embedder's request-time budget.
 	chunkWindow := w.deps.MaxInputChars
 	overlap := chunkOverlapFor(chunkWindow)
+	maxSpans := maxSpansPerMessage
 	var pieces []inputChunk
 	var inputs []string
 	for _, m := range msgs {
-		spans := ChunkText(m.Text, chunkWindow, overlap)
+		spans := ChunkText(m.Text, chunkWindow, overlap, maxSpans)
 		for j, sp := range spans {
 			ic := inputChunk{
 				ID:         m.ID,
@@ -764,6 +769,17 @@ func totalPieceChars(pieces []inputChunk) int {
 	}
 	return n
 }
+
+// maxSpansPerMessage caps the number of chunks emitted for any single
+// message. Picked empirically: typical email is under 5 chunks at a
+// 4 KB window; long-form prose (50–100 KB) tops out at 20–25; the cap
+// at 64 covers every legitimate case but stops 10+ MB system error
+// dumps and stack-trace forwards from generating thousands of chunks
+// that would push a single embed call past the API timeout. Set
+// statically rather than via config because the failure mode it
+// addresses is universal across embedding backends, not a tuning
+// knob users are expected to touch.
+const maxSpansPerMessage = 64
 
 // chunkOverlapFor returns the rune count of overlap between consecutive
 // chunks. The overlap exists so a sentence or phrase that straddles a
