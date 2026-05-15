@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wesm/msgvault/internal/mime"
 	"github.com/wesm/msgvault/internal/store"
 )
 
@@ -311,6 +312,100 @@ func TestMigratePstKey(t *testing.T) {
 	}
 	if len(existing) != 0 {
 		t.Errorf("legacy key should be gone after migration; got %v", existing)
+	}
+}
+
+// TestPstMessageDigest verifies the parsed-message digest used to gate
+// dedup migration: equal across reorderings of address lists but distinct
+// whenever Subject, Message-ID, Date, From/To/Cc, body text/HTML, or any
+// attachment content hash changes. Without these checks, two genuinely
+// different archives that coincidentally share an EntryID and body could
+// be silently collapsed.
+func TestPstMessageDigest(t *testing.T) {
+	baseDate := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	mk := func() *mime.Message {
+		return &mime.Message{
+			Subject:   "Hello",
+			MessageID: "<msg-1@example.com>",
+			Date:      baseDate,
+			From:      []mime.Address{{Email: "alice@example.com"}},
+			To:        []mime.Address{{Email: "bob@example.com"}},
+			Cc:        []mime.Address{{Email: "carol@example.com"}},
+			BodyText:  "hello world",
+			BodyHTML:  "<p>hello world</p>",
+			Attachments: []mime.Attachment{
+				{ContentHash: "att-hash-1"},
+			},
+		}
+	}
+
+	base := mk()
+	if pstMessageDigest(base) != pstMessageDigest(mk()) {
+		t.Fatal("identical messages must produce identical digests")
+	}
+
+	// Reordering From should not change the digest (sorted normalization).
+	reorderedFrom := mk()
+	reorderedFrom.From = []mime.Address{
+		{Email: "x@example.com"}, {Email: "alice@example.com"},
+	}
+	baseMultiFrom := mk()
+	baseMultiFrom.From = []mime.Address{
+		{Email: "alice@example.com"}, {Email: "x@example.com"},
+	}
+	if pstMessageDigest(baseMultiFrom) != pstMessageDigest(reorderedFrom) {
+		t.Error("digest must be order-independent for From addresses")
+	}
+
+	// Reordering attachment hashes likewise normalized.
+	swappedAtts := mk()
+	swappedAtts.Attachments = []mime.Attachment{
+		{ContentHash: "att-hash-2"}, {ContentHash: "att-hash-1"},
+	}
+	multiAtts := mk()
+	multiAtts.Attachments = []mime.Attachment{
+		{ContentHash: "att-hash-1"}, {ContentHash: "att-hash-2"},
+	}
+	if pstMessageDigest(multiAtts) != pstMessageDigest(swappedAtts) {
+		t.Error("digest must be order-independent for attachments")
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*mime.Message)
+	}{
+		{"different subject", func(m *mime.Message) { m.Subject = "Bye" }},
+		{"different message-id", func(m *mime.Message) { m.MessageID = "<msg-2@example.com>" }},
+		{"different date", func(m *mime.Message) { m.Date = baseDate.Add(time.Hour) }},
+		{"different from", func(m *mime.Message) {
+			m.From = []mime.Address{{Email: "eve@example.com"}}
+		}},
+		{"different to", func(m *mime.Message) {
+			m.To = []mime.Address{{Email: "eve@example.com"}}
+		}},
+		{"different cc", func(m *mime.Message) {
+			m.Cc = []mime.Address{{Email: "eve@example.com"}}
+		}},
+		{"different body text", func(m *mime.Message) { m.BodyText = "different" }},
+		{"different body html", func(m *mime.Message) { m.BodyHTML = "<p>different</p>" }},
+		{"different attachment hash", func(m *mime.Message) {
+			m.Attachments = []mime.Attachment{{ContentHash: "other"}}
+		}},
+		{"added attachment", func(m *mime.Message) {
+			m.Attachments = append(m.Attachments, mime.Attachment{ContentHash: "extra"})
+		}},
+		{"removed attachment", func(m *mime.Message) { m.Attachments = nil }},
+	}
+
+	baseDigest := pstMessageDigest(base)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := mk()
+			tc.mutate(m)
+			if pstMessageDigest(m) == baseDigest {
+				t.Errorf("digest unchanged after %s", tc.name)
+			}
+		})
 	}
 }
 

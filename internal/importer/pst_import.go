@@ -1,6 +1,7 @@
 package importer
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -680,12 +682,13 @@ func entryIDFromPstSourceMessageID(key string) string {
 }
 
 // migratePstKey renames an existing PST row to newSourceMessageID after
-// confirming via parsed body content that the row holds the same message
-// we are about to ingest. Comparing parsed bodies — rather than the raw
-// bytes — is essential because MIME boundaries used to be random and rows
-// from older msgvault builds carry boundaries that won't match the
-// deterministic ones the current builder emits. Subject is also compared
-// to guard against EntryID collisions across genuinely different archives.
+// confirming via a canonical parsed-message digest that the row holds the
+// same message we are about to ingest. Comparing via mime.Parse rather
+// than raw bytes is essential because pre-fingerprint builds emitted
+// random multipart boundaries; the digest goes further and covers
+// Message-ID, Date, From/To, and attachment content hashes so two
+// distinct archives that happen to share an EntryID and a body but
+// differ in any of those identifying fields are not collapsed.
 func migratePstKey(
 	st *store.Store, existingMessageID int64,
 	currentRaw []byte, newSourceMessageID string,
@@ -708,13 +711,7 @@ func migratePstKey(
 		log.Warn("current parse failed", "error", err)
 		return false
 	}
-	if existingParsed.BodyText != currentParsed.BodyText {
-		return false
-	}
-	if existingParsed.BodyHTML != currentParsed.BodyHTML {
-		return false
-	}
-	if existingParsed.Subject != currentParsed.Subject {
+	if pstMessageDigest(existingParsed) != pstMessageDigest(currentParsed) {
 		return false
 	}
 	if err := st.RenameSourceMessageID(existingMessageID, newSourceMessageID); err != nil {
@@ -723,6 +720,59 @@ func migratePstKey(
 		return false
 	}
 	return true
+}
+
+// pstMessageDigest returns a stable hex digest of the message's identifying
+// fields. Two parsed messages produce the same digest iff their Subject,
+// Message-ID, Date, From/To addresses, body text/HTML, and attachment
+// content hashes all match. Used by the dedup migration as a stronger
+// equivalence check than body-only comparison — sufficient to refuse
+// renaming when two archives coincidentally share an EntryID but differ
+// in any header or attachment.
+func pstMessageDigest(m *mime.Message) string {
+	var buf bytes.Buffer
+	buf.WriteString("subject:")
+	buf.WriteString(m.Subject)
+	buf.WriteString("\nmsgid:")
+	buf.WriteString(strings.Trim(m.MessageID, "<>"))
+	buf.WriteString("\ndate:")
+	if !m.Date.IsZero() {
+		buf.WriteString(m.Date.UTC().Format(time.RFC3339))
+	}
+	buf.WriteString("\nfrom:")
+	writeSortedEmails(&buf, m.From)
+	buf.WriteString("\nto:")
+	writeSortedEmails(&buf, m.To)
+	buf.WriteString("\ncc:")
+	writeSortedEmails(&buf, m.Cc)
+	buf.WriteString("\ntext:")
+	buf.WriteString(m.BodyText)
+	buf.WriteString("\nhtml:")
+	buf.WriteString(m.BodyHTML)
+	buf.WriteString("\natts:")
+	hashes := make([]string, 0, len(m.Attachments))
+	for _, a := range m.Attachments {
+		hashes = append(hashes, a.ContentHash)
+	}
+	sort.Strings(hashes)
+	for _, h := range hashes {
+		buf.WriteString(h)
+		buf.WriteByte(',')
+	}
+	sum := sha256.Sum256(buf.Bytes())
+	return hex.EncodeToString(sum[:])
+}
+
+func writeSortedEmails(buf *bytes.Buffer, addrs []mime.Address) {
+	emails := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		emails = append(emails, strings.ToLower(strings.TrimSpace(a.Email)))
+	}
+	sort.Strings(emails)
+	for _, e := range emails {
+		buf.WriteString(e)
+		buf.WriteByte(',')
+	}
 }
 
 // pstArchiveFingerprint returns a short stable identifier for a PST file,
