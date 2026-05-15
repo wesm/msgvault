@@ -166,6 +166,70 @@ func TestWorker_CapsRawBodyBeforePreprocess(t *testing.T) {
 	}
 }
 
+// TestWorker_PrefixBase64DoesNotHidePoseTail is the roborev #323
+// (2d8f45d) regression: a body whose first megabyte is an inline
+// base64 PNG must still get its prose tail to the embedder. Earlier
+// versions capped the raw body before sanitize, so the cap chopped
+// the base64 blob before StripBase64 could strip it — the prose
+// past the cap never reached Preprocess. The fix runs the cheap
+// pollution removal (CRLF + StripBase64) BEFORE the cap and the
+// heavy regex passes (StripHTML, URL tracking, whitespace) AFTER,
+// so blob-prefixed bodies preserve the prose.
+func TestWorker_PrefixBase64DoesNotHidePoseTail(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkerFixture(t, 1)
+
+	const sentinel = "QUICKFOX-MARKER-IS-THE-PROSE-TAIL"
+	// 2M chars of base64-shaped padding (no slashes; matches the
+	// strip regex), then 100 bytes of prose containing the
+	// sentinel.
+	hugeBase64 := strings.Repeat("A", 2_000_000)
+	body := "data:image/png;base64," + hugeBase64 + " " + sentinel + " end."
+	if _, err := f.MainDB.Exec(`UPDATE message_bodies SET body_text = ? WHERE message_id = 1`, body); err != nil {
+		t.Fatalf("update body: %v", err)
+	}
+
+	var observed []string
+	f.FakeClient.OnEmbed = func(inputs []string) ([][]float32, error) {
+		observed = append(observed, inputs...)
+		out := make([][]float32, len(inputs))
+		for i := range inputs {
+			v := make([]float32, 4)
+			v[0] = float32(len(inputs[i])%4 + 1)
+			out[i] = v
+		}
+		return out, nil
+	}
+
+	w := NewWorker(WorkerDeps{
+		Backend:       f.Backend,
+		VectorsDB:     f.VectorsDB,
+		MainDB:        f.MainDB,
+		Client:        f.FakeClient,
+		Preprocess:    PreprocessConfig{StripBase64: true},
+		MaxInputChars: 100,
+		BatchSize:     8,
+	})
+	if _, err := w.RunOnce(ctx, f.BuildingGen); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	// The sentinel — sitting past 2 MB of base64 in the raw body —
+	// must appear in at least one chunk handed to the embedder.
+	// Without the cheap-strip-first ordering, the cap would have
+	// chopped before the prose ever surfaced.
+	found := false
+	for _, s := range observed {
+		if strings.Contains(s, sentinel) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("sentinel %q absent from embedder inputs; the prose tail was lost behind the base64 blob", sentinel)
+	}
+}
+
 // TestWorker_TruncatedCountedPerMessageNotPerChunk pins the
 // roborev #323 (717ac4c) metric-accounting fix: when a single long
 // message produces multiple truncated chunks, RunResult.Truncated

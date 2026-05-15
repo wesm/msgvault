@@ -151,11 +151,16 @@ type RunResult struct {
 
 // msgText is the per-message preprocessed input to the chunker, carried
 // from fetch through ChunkText. One msgText fans out to one or more
-// inputChunks below.
+// inputChunks below. BodyTruncated tracks whether Preprocess hit its
+// MaxBodyRunes cap and silently dropped tail content; we propagate
+// this onto every chunk's Truncated flag so downstream accounting
+// records the message as truncated regardless of which chunk surfaces
+// it.
 type msgText struct {
-	ID    int64
-	Text  string
-	Chars int
+	ID            int64
+	Text          string
+	Chars         int
+	BodyTruncated bool
 }
 
 // inputChunk is one window into a message's preprocessed text, fed
@@ -484,35 +489,32 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 		if body == "" && bodyHTML != "" {
 			body = mime.StripHTML(bodyHTML)
 		}
-		// Cap the raw body before Preprocess so the regex passes inside
-		// (StripHTML, StripBase64, StripURLTracking, whitespace
-		// collapse) never run on more bytes than the chunker can
-		// possibly consume. Each transform is O(body_len) in CPU and
-		// allocates scratch buffers of similar size; without this cap
-		// a 100 MB body — pathological but possible after MIME
-		// parsing slips up — would burn seconds of CPU and tens of
-		// MB of scratch before the chunker dropped the tail anyway.
-		//
-		// The cap is sized generously: the chunker will keep at most
-		// maxSpansPerMessage * MaxInputChars runes of *post-sanitize*
-		// output, and sanitize routinely strips 10x of HTML/base64
-		// noise from polluted bodies. rawBodyMultiplier * that is
-		// far past any legitimate long-form email but still bounded.
-		if cap := w.deps.MaxInputChars * maxSpansPerMessage * rawBodyMultiplier; cap > 0 {
-			body = truncateToRunes(body, cap)
+		// Sized to give Preprocess a generous-but-bounded budget: the
+		// chunker emits at most maxSpansPerMessage * MaxInputChars
+		// runes of *post-sanitize* output, and sanitize routinely
+		// strips 10x of HTML/base64 noise from polluted bodies; the
+		// rawBodyMultiplier covers the worst case. Preprocess applies
+		// this cap *between* its cheap pollution-removal pass (CRLF
+		// normalize + base64 strip) and the heavier regex transforms,
+		// so a body whose first MB is an inline base64 image still
+		// gets its prose tail through the cap.
+		preprocessCfg := w.deps.Preprocess
+		if preprocessCfg.MaxBodyRunes == 0 && w.deps.MaxInputChars > 0 {
+			preprocessCfg.MaxBodyRunes = w.deps.MaxInputChars * maxSpansPerMessage * rawBodyMultiplier
 		}
-		// Pass maxChars=0 so Preprocess does NOT truncate. Chunking
-		// (below) takes the full preprocessed text and divides it into
-		// windows of at most MaxInputChars runes each, so truncation
-		// would just throw away tail content that ChunkText would
-		// otherwise embed in a later chunk.
-		txt, _ := Preprocess(subject, body, 0, w.deps.Preprocess)
+		// Pass maxChars=0 so Preprocess does NOT truncate the final
+		// output by character count. Chunking (below) takes the full
+		// preprocessed text and divides it into windows of at most
+		// MaxInputChars runes each, so output truncation would just
+		// throw away tail content that ChunkText would otherwise
+		// embed in a later chunk.
+		txt, bodyTrunc := Preprocess(subject, body, 0, preprocessCfg)
 		fetched[id] = struct{}{}
 		if strings.TrimSpace(txt) == "" {
 			empty = append(empty, id)
 			continue
 		}
-		msgs = append(msgs, msgText{ID: id, Text: txt, Chars: utf8.RuneCountInString(txt)})
+		msgs = append(msgs, msgText{ID: id, Text: txt, Chars: utf8.RuneCountInString(txt), BodyTruncated: bodyTrunc})
 	}
 	if err := rows.Err(); err != nil {
 		return embedBatchResult{}, fmt.Errorf("iterate message rows: %w", err)
@@ -560,9 +562,12 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 				// Useful as a debugging signal in embeddings.truncated:
 				// chunks that hard-cut may have a sentence split across
 				// the boundary, which is the case the overlap window
-				// is meant to recover.
-				Trunc: chunkWindow > 0 && (sp.CharEnd-sp.CharStart) == chunkWindow &&
-					j < len(spans)-1,
+				// is meant to recover. Also flagged true on every
+				// chunk of a message whose raw body hit Preprocess's
+				// MaxBodyRunes cap, so per-message truncation
+				// accounting downstream picks up either cause.
+				Trunc: m.BodyTruncated ||
+					(chunkWindow > 0 && (sp.CharEnd-sp.CharStart) == chunkWindow && j < len(spans)-1),
 			}
 			pieces = append(pieces, ic)
 			inputs = append(inputs, sp.Text)
@@ -833,23 +838,6 @@ func totalPieceChars(pieces []inputChunk) int {
 // letting a pathological 100 MB body burn CPU on regex passes that
 // would never produce additional retrievable content.
 const rawBodyMultiplier = 16
-
-// truncateToRunes returns s truncated to at most n runes. Cheaper
-// than `len([]rune(s))` for "is it over the cap" because it walks
-// at most n+1 runes and stops, vs. always walking the whole string.
-func truncateToRunes(s string, n int) string {
-	if n <= 0 {
-		return s
-	}
-	walked := 0
-	for i := range s {
-		if walked >= n {
-			return s[:i]
-		}
-		walked++
-	}
-	return s
-}
 
 // maxSpansPerMessage caps the number of chunks emitted for any single
 // message. Picked empirically: typical email is under 5 chunks at a
