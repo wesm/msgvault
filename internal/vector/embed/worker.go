@@ -484,6 +484,23 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 		if body == "" && bodyHTML != "" {
 			body = mime.StripHTML(bodyHTML)
 		}
+		// Cap the raw body before Preprocess so the regex passes inside
+		// (StripHTML, StripBase64, StripURLTracking, whitespace
+		// collapse) never run on more bytes than the chunker can
+		// possibly consume. Each transform is O(body_len) in CPU and
+		// allocates scratch buffers of similar size; without this cap
+		// a 100 MB body — pathological but possible after MIME
+		// parsing slips up — would burn seconds of CPU and tens of
+		// MB of scratch before the chunker dropped the tail anyway.
+		//
+		// The cap is sized generously: the chunker will keep at most
+		// maxSpansPerMessage * MaxInputChars runes of *post-sanitize*
+		// output, and sanitize routinely strips 10x of HTML/base64
+		// noise from polluted bodies. rawBodyMultiplier * that is
+		// far past any legitimate long-form email but still bounded.
+		if cap := w.deps.MaxInputChars * maxSpansPerMessage * rawBodyMultiplier; cap > 0 {
+			body = truncateToRunes(body, cap)
+		}
 		// Pass maxChars=0 so Preprocess does NOT truncate. Chunking
 		// (below) takes the full preprocessed text and divides it into
 		// windows of at most MaxInputChars runes each, so truncation
@@ -596,10 +613,8 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 	chunks := make([]vector.Chunk, 0, len(vecs))
 	embeddedIDs := make([]int64, 0, len(msgs))
 	seenMsg := make(map[int64]struct{}, len(msgs))
+	truncatedMsg := make(map[int64]struct{}, len(msgs))
 	for i, p := range pieces {
-		if p.Trunc {
-			truncated++
-		}
 		chunks = append(chunks, vector.Chunk{
 			MessageID:      p.ID,
 			ChunkIndex:     p.ChunkIndex,
@@ -612,6 +627,17 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 		if _, ok := seenMsg[p.ID]; !ok {
 			seenMsg[p.ID] = struct{}{}
 			embeddedIDs = append(embeddedIDs, p.ID)
+		}
+		// Count each truncated message once, not once per truncated
+		// chunk. truncated feeds RunResult.Truncated which the caller
+		// compares against Succeeded (a per-message count): keeping
+		// both metrics in the same units lets "what fraction was
+		// truncated" actually be a fraction.
+		if p.Trunc {
+			if _, seen := truncatedMsg[p.ID]; !seen {
+				truncatedMsg[p.ID] = struct{}{}
+				truncated++
+			}
 		}
 	}
 	return embedBatchResult{
@@ -795,6 +821,34 @@ func totalPieceChars(pieces []inputChunk) int {
 		n += p.Chars
 	}
 	return n
+}
+
+// rawBodyMultiplier is how much pre-sanitize body the worker is
+// willing to feed into Preprocess relative to what the chunker can
+// ultimately emit. The chunker keeps at most maxSpansPerMessage *
+// MaxInputChars runes of *post-sanitize* output; sanitize strips a
+// large but not unbounded fraction of HTML/base64/URL noise — 10x
+// is the empirical ceiling for HTML-heavy newsletters with inline
+// images. 16x gives comfortable headroom for the long tail without
+// letting a pathological 100 MB body burn CPU on regex passes that
+// would never produce additional retrievable content.
+const rawBodyMultiplier = 16
+
+// truncateToRunes returns s truncated to at most n runes. Cheaper
+// than `len([]rune(s))` for "is it over the cap" because it walks
+// at most n+1 runes and stops, vs. always walking the whole string.
+func truncateToRunes(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	walked := 0
+	for i := range s {
+		if walked >= n {
+			return s[:i]
+		}
+		walked++
+	}
+	return s
 }
 
 // maxSpansPerMessage caps the number of chunks emitted for any single

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestDerivedStaleThreshold(t *testing.T) {
@@ -101,6 +102,117 @@ func TestWorker_SplitsChunkInputsAcrossSubBatches(t *testing.T) {
 		if n == 0 {
 			t.Errorf("sub-batch %d was empty", i)
 		}
+	}
+}
+
+// TestWorker_CapsRawBodyBeforePreprocess is the roborev #323 (717ac4c)
+// regression: a 5 MB body must not be handed to Preprocess in full.
+// Preprocess runs O(input) regex passes; without an upstream cap the
+// embedding worker pays seconds of CPU and tens of MB of scratch
+// allocs on every multi-megabyte body before the chunker drops the
+// tail anyway. The cap should be derived from MaxInputChars and
+// maxSpansPerMessage so it scales with what the chunker can actually
+// emit.
+func TestWorker_CapsRawBodyBeforePreprocess(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkerFixture(t, 1)
+
+	// 5 million chars of unbroken letters. Far larger than the
+	// raw-body cap (which at MaxInputChars=100 is 100 * 64 * 16 =
+	// 102,400 runes), but well-defined under regex passes if those
+	// run unbounded.
+	hugeBody := strings.Repeat("a", 5_000_000)
+	if _, err := f.MainDB.Exec(`UPDATE message_bodies SET body_text = ? WHERE message_id = 1`, hugeBody); err != nil {
+		t.Fatalf("update body: %v", err)
+	}
+
+	// Capture every input the worker hands to the embedder. The
+	// individual input slices together represent the chunker's
+	// output; the total must come from at most the cap window.
+	var observed []string
+	f.FakeClient.OnEmbed = func(inputs []string) ([][]float32, error) {
+		observed = append(observed, inputs...)
+		out := make([][]float32, len(inputs))
+		for i := range inputs {
+			v := make([]float32, 4)
+			v[0] = float32(len(inputs[i])%4 + 1)
+			out[i] = v
+		}
+		return out, nil
+	}
+
+	w := NewWorker(WorkerDeps{
+		Backend:       f.Backend,
+		VectorsDB:     f.VectorsDB,
+		MainDB:        f.MainDB,
+		Client:        f.FakeClient,
+		Preprocess:    PreprocessConfig{},
+		MaxInputChars: 100,
+		BatchSize:     8,
+	})
+	if _, err := w.RunOnce(ctx, f.BuildingGen); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	// All inputs must fit within the chunker's output window
+	// (maxSpansPerMessage * MaxInputChars = 6400 runes). The raw
+	// body cap means Preprocess only ever saw ~102K runes, not 5M.
+	totalRunes := 0
+	for _, s := range observed {
+		totalRunes += utf8.RuneCountInString(s)
+	}
+	if totalRunes > maxSpansPerMessage*100 {
+		t.Errorf("total embedder input runes = %d, want <= %d (chunker window)", totalRunes, maxSpansPerMessage*100)
+	}
+}
+
+// TestWorker_TruncatedCountedPerMessageNotPerChunk pins the
+// roborev #323 (717ac4c) metric-accounting fix: when a single long
+// message produces multiple truncated chunks, RunResult.Truncated
+// must record one message, not one per chunk. Otherwise progress
+// metrics inflate (a single oversized message could read as N
+// truncations in a Succeeded=1 batch).
+func TestWorker_TruncatedCountedPerMessageNotPerChunk(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkerFixture(t, 1)
+
+	// Long unbroken text: ChunkText's hard-cut path marks all but
+	// the last span as Trunc=true. With MaxInputChars=100 the body
+	// produces several truncated chunks before maxSpans caps it.
+	body := strings.Repeat("a", 600)
+	if _, err := f.MainDB.Exec(`UPDATE message_bodies SET body_text = ? WHERE message_id = 1`, body); err != nil {
+		t.Fatalf("update body: %v", err)
+	}
+
+	w := NewWorker(WorkerDeps{
+		Backend:       f.Backend,
+		VectorsDB:     f.VectorsDB,
+		MainDB:        f.MainDB,
+		Client:        f.FakeClient,
+		Preprocess:    PreprocessConfig{},
+		MaxInputChars: 100,
+		BatchSize:     8,
+	})
+	res, err := w.RunOnce(ctx, f.BuildingGen)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if res.Succeeded != 1 {
+		t.Errorf("Succeeded = %d, want 1", res.Succeeded)
+	}
+	// Confirm the chunks table actually has multiple truncated
+	// rows for this message — otherwise the test wouldn't be
+	// exercising the per-message-vs-per-chunk distinction.
+	var truncChunks int
+	if err := f.VectorsDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM embeddings WHERE message_id = 1 AND truncated = 1`).Scan(&truncChunks); err != nil {
+		t.Fatalf("count truncated chunks: %v", err)
+	}
+	if truncChunks < 2 {
+		t.Fatalf("test produced %d truncated chunks, expected >= 2 to exercise the metric", truncChunks)
+	}
+	if res.Truncated != 1 {
+		t.Errorf("Truncated = %d, want 1 (one message, regardless of %d truncated chunks)", res.Truncated, truncChunks)
 	}
 }
 
