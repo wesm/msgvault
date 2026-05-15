@@ -164,21 +164,26 @@ func TestMigrate_LegacyToChunked(t *testing.T) {
 		}
 		got = append(got, r)
 	}
-	want := []row{
-		{eid: 10, mid: 10, ci: 0, charLen: 50, trunc: 0},
-		{eid: 20, mid: 20, ci: 0, charLen: 75, trunc: 1},
+	// AUTOINCREMENT allocates fresh embedding_ids — they must be
+	// distinct and positive. The actual values depend on insertion
+	// order, so verify the *shape* (distinct, all > 0) rather than
+	// pin specific numbers.
+	if len(got) != 2 {
+		t.Fatalf("rows = %d, want 2 (%v)", len(got), got)
 	}
-	if len(got) != len(want) {
-		t.Fatalf("rows = %d, want %d (%v)", len(got), len(want), got)
+	if got[0].mid != 10 || got[0].ci != 0 || got[0].charLen != 50 || got[0].trunc != 0 {
+		t.Errorf("row[0] non-eid fields = %+v, want mid=10 ci=0 charLen=50 trunc=0", got[0])
 	}
-	for i, r := range got {
-		if r != want[i] {
-			t.Errorf("row[%d] = %+v, want %+v", i, r, want[i])
-		}
+	if got[1].mid != 20 || got[1].ci != 0 || got[1].charLen != 75 || got[1].trunc != 1 {
+		t.Errorf("row[1] non-eid fields = %+v, want mid=20 ci=0 charLen=75 trunc=1", got[1])
+	}
+	if got[0].eid <= 0 || got[1].eid <= 0 || got[0].eid == got[1].eid {
+		t.Errorf("embedding_ids = %d, %d; want distinct positive values", got[0].eid, got[1].eid)
 	}
 
-	// vec0 rowid is now embedding_id; verify both rows can be joined
-	// back to embeddings.
+	// vec0 rowid is now the AUTOINCREMENT embedding_id (not the
+	// legacy message_id). Verify the rebuild used the mapping so
+	// every legacy vec0 row joins back to its embedding.
 	var n int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM vectors_vec_d768 v
@@ -188,16 +193,6 @@ func TestMigrate_LegacyToChunked(t *testing.T) {
 	}
 	if n != 2 {
 		t.Errorf("joined vec rows = %d, want 2", n)
-	}
-
-	// AUTOINCREMENT counter bumped past max legacy embedding_id (20).
-	var seq int64
-	if err := db.QueryRowContext(ctx,
-		`SELECT seq FROM sqlite_sequence WHERE name = 'embeddings'`).Scan(&seq); err != nil {
-		t.Fatalf("sqlite_sequence: %v", err)
-	}
-	if seq < 20 {
-		t.Errorf("sqlite_sequence.seq = %d, want >= 20", seq)
 	}
 
 	// Idempotent: a second Migrate must do nothing and leave the rows
@@ -211,6 +206,142 @@ func TestMigrate_LegacyToChunked(t *testing.T) {
 	}
 	if n != 2 {
 		t.Errorf("post-2nd embeddings = %d, want 2", n)
+	}
+}
+
+// TestMigrate_LegacyToChunked_MultiGenerationCollision is the
+// regression test for roborev #323's high-risk finding: the legacy
+// embeddings PK was (generation_id, message_id), so the same
+// message_id could legitimately appear in two generations (one
+// active, one building). An earlier draft of the migration mapped
+// embedding_id := message_id, which collided on the new UNIQUE
+// constraint as soon as that case arose. This test reproduces that
+// shape and asserts the migration succeeds, allocating distinct
+// embedding_ids per (gen, msg) pair and preserving every legacy
+// vec0 row through the rebuild.
+func TestMigrate_LegacyToChunked_MultiGenerationCollision(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	db := openTestDB(t, path)
+	t.Cleanup(func() { _ = db.Close() })
+
+	legacyDDL := []string{
+		`CREATE TABLE schema_version (version INTEGER PRIMARY KEY)`,
+		`INSERT INTO schema_version VALUES (1)`,
+		`CREATE TABLE index_generations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			model TEXT NOT NULL, dimension INTEGER NOT NULL,
+			fingerprint TEXT NOT NULL, started_at INTEGER NOT NULL,
+			completed_at INTEGER, activated_at INTEGER,
+			state TEXT NOT NULL, message_count INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE TABLE embeddings (
+			generation_id INTEGER NOT NULL REFERENCES index_generations(id) ON DELETE CASCADE,
+			message_id INTEGER NOT NULL,
+			embedded_at INTEGER NOT NULL,
+			source_char_len INTEGER NOT NULL,
+			truncated INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (generation_id, message_id)
+		)`,
+		`CREATE INDEX idx_embeddings_msg ON embeddings(message_id)`,
+		`CREATE TABLE pending_embeddings (
+			generation_id INTEGER NOT NULL REFERENCES index_generations(id) ON DELETE CASCADE,
+			message_id INTEGER NOT NULL,
+			enqueued_at INTEGER NOT NULL,
+			claimed_at INTEGER, claim_token TEXT,
+			PRIMARY KEY (generation_id, message_id)
+		)`,
+		`CREATE TABLE embed_runs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			generation_id INTEGER NOT NULL REFERENCES index_generations(id),
+			started_at INTEGER NOT NULL, ended_at INTEGER,
+			claimed INTEGER NOT NULL DEFAULT 0,
+			succeeded INTEGER NOT NULL DEFAULT 0,
+			failed INTEGER NOT NULL DEFAULT 0,
+			truncated INTEGER NOT NULL DEFAULT 0,
+			error TEXT
+		)`,
+		`CREATE VIRTUAL TABLE vectors_vec_d768 USING vec0(
+			generation_id INTEGER PARTITION KEY,
+			message_id    INTEGER PRIMARY KEY,
+			embedding     FLOAT[768]
+		)`,
+	}
+	for _, q := range legacyDDL {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("seed legacy DDL %q: %v", q, err)
+		}
+	}
+	// Two generations: gen 1 active, gen 2 building. Both contain
+	// embeddings rows for message 10 (the realistic case: an active
+	// gen has it embedded; a building gen seeded it again because the
+	// worker re-embeds the whole corpus per generation). The vec0
+	// table only carries the gen 1 vector — vec0's rowid uniqueness
+	// would have rejected the gen 2 row at write time under the
+	// legacy code, so historical databases at most carry conflicting
+	// embeddings rows + a single vec0 row per message_id.
+	//
+	// Under the buggy migration (embedding_id := message_id), the
+	// gen=2/msg=10 row collided on the UNIQUE(gen,msg,ci) constraint
+	// because eid=10 was already taken by gen=1/msg=10. The fixed
+	// migration lets AUTOINCREMENT allocate distinct eids.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO index_generations (id, model, dimension, fingerprint, started_at, state, message_count) VALUES
+		  (1, 'm', 768, 'm:768', 100, 'active',   1),
+		  (2, 'm', 768, 'm:768', 200, 'building', 1)`); err != nil {
+		t.Fatalf("seed generations: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO embeddings (generation_id, message_id, embedded_at, source_char_len, truncated) VALUES
+		  (1, 10, 100, 50, 0),
+		  (2, 10, 200, 50, 0)`); err != nil {
+		t.Fatalf("seed embeddings: %v", err)
+	}
+	v := make([]float32, 768)
+	for i := range v {
+		v[i] = 0.1
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO vectors_vec_d768 (generation_id, message_id, embedding) VALUES (1, 10, ?)`,
+		float32SliceBlob(v)); err != nil {
+		t.Fatalf("seed vec gen=1 msg=10: %v", err)
+	}
+
+	if err := Migrate(ctx, db, 768); err != nil {
+		t.Fatalf("Migrate (this is what the old migration could not survive): %v", err)
+	}
+
+	// Both legacy embeddings rows preserved with distinct
+	// embedding_ids — the AUTOINCREMENT allocation steps around the
+	// (gen=1, msg=10) / (gen=2, msg=10) collision that broke the old
+	// hard-coded eid=msg shortcut.
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM embeddings`).Scan(&n); err != nil {
+		t.Fatalf("count embeddings: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("embeddings rows = %d, want 2", n)
+	}
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT embedding_id) FROM embeddings`).Scan(&n); err != nil {
+		t.Fatalf("count distinct eid: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("distinct embedding_ids = %d, want 2 (one per (gen, msg))", n)
+	}
+
+	// vec0 join still resolves cleanly for the row that was actually
+	// embedded (gen=1, msg=10). The mapping looked up the new eid via
+	// the embeddings table rather than the now-invalid eid=msg
+	// shortcut.
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM vectors_vec_d768 v
+		  JOIN embeddings e ON e.embedding_id = v.embedding_id
+		 WHERE v.generation_id = 1 AND e.message_id = 10`).Scan(&n); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("join returned %d rows, want 1", n)
 	}
 }
 

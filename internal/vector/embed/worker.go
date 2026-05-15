@@ -552,14 +552,41 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 		}
 	}
 
+	// Split chunk inputs into sub-batches of at most BatchSize so a
+	// long-form message that fans out to many chunks doesn't push a
+	// single embed call past the provider's per-request limit (Ollama
+	// stops responding around 250 inputs; OpenAI caps at 2048; either
+	// way, payload size + request-timeout grow with the input count).
+	// The pending queue stays per-message — a message completes only
+	// after every one of its chunks has been embedded and upserted in
+	// this same call, so partial-failure semantics are unchanged.
+	embedSubBatchSize := w.deps.BatchSize
+	if embedSubBatchSize <= 0 {
+		embedSubBatchSize = len(inputs)
+	}
 	start := time.Now()
-	vecs, err := w.deps.Client.Embed(ctx, inputs)
-	if err != nil {
-		return embedBatchResult{}, fmt.Errorf("embed: %w", err)
+	vecs := make([][]float32, 0, len(inputs))
+	for i := 0; i < len(inputs); i += embedSubBatchSize {
+		end := i + embedSubBatchSize
+		if end > len(inputs) {
+			end = len(inputs)
+		}
+		got, err := w.deps.Client.Embed(ctx, inputs[i:end])
+		if err != nil {
+			return embedBatchResult{}, fmt.Errorf("embed: %w", err)
+		}
+		if len(got) != end-i {
+			return embedBatchResult{}, fmt.Errorf(
+				"embedder returned %d vectors for %d inputs in sub-batch [%d:%d)",
+				len(got), end-i, i, end)
+		}
+		vecs = append(vecs, got...)
 	}
 	w.deps.Log.Debug("embed batch",
 		"messages", len(msgs), "chunks", len(pieces),
-		"chars", totalPieceChars(pieces), "duration_ms", time.Since(start).Milliseconds())
+		"chars", totalPieceChars(pieces),
+		"sub_batches", (len(inputs)+embedSubBatchSize-1)/embedSubBatchSize,
+		"duration_ms", time.Since(start).Milliseconds())
 
 	if len(vecs) != len(pieces) {
 		return embedBatchResult{}, fmt.Errorf("embedder returned %d vectors for %d chunk inputs", len(vecs), len(pieces))

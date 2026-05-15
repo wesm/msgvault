@@ -141,29 +141,24 @@ func migrateEmbeddingsToChunked(ctx context.Context, db *sql.DB) error {
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX idx_embeddings_gen_msg ON embeddings(generation_id, message_id)`); err != nil {
 		return fmt.Errorf("create idx_embeddings_gen_msg: %w", err)
 	}
-	// Copy: embedding_id := message_id (one chunk per message in legacy
-	// layout). chunk_char_start/_end default to 0 — they describe the
-	// preprocessed-text span used at embed time and we don't have that
-	// information for already-embedded rows. The fact that they are 0
-	// is acceptable: chunk_char_* is debug-only metadata.
+	// Copy without specifying embedding_id so AUTOINCREMENT allocates
+	// a fresh, globally-unique rowid for each legacy row. The legacy
+	// embeddings PK was (generation_id, message_id), which allows the
+	// same message_id to appear under multiple generations (e.g. one
+	// active + one building); equating embedding_id with message_id
+	// would have collided on the new UNIQUE constraint in that case.
+	// chunk_char_start/_end default to 0 — they describe the
+	// preprocessed-text span used at embed time and we don't have
+	// that information for already-embedded rows. chunk_char_* is
+	// debug-only metadata, so a zero placeholder is acceptable.
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO embeddings
-			(embedding_id, generation_id, message_id, chunk_index,
+			(generation_id, message_id, chunk_index,
 			 embedded_at, source_char_len, chunk_char_start, chunk_char_end, truncated)
-		SELECT message_id, generation_id, message_id, 0,
+		SELECT generation_id, message_id, 0,
 			   embedded_at, source_char_len, 0, source_char_len, truncated
 		FROM embeddings_legacy`); err != nil {
 		return fmt.Errorf("copy legacy embeddings: %w", err)
-	}
-	// Bump the AUTOINCREMENT counter past every legacy embedding_id so
-	// new chunk inserts cannot collide with retained legacy rowids
-	// (which equal legacy message_ids). sqlite_sequence is auto-created
-	// the first time an AUTOINCREMENT row is inserted, so by the time
-	// this runs it exists and has been seeded by the INSERT above.
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE sqlite_sequence SET seq = COALESCE((SELECT MAX(embedding_id) FROM embeddings), 0)
-		WHERE name = 'embeddings'`); err != nil {
-		return fmt.Errorf("seed sqlite_sequence: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DROP TABLE embeddings_legacy`); err != nil {
 		return fmt.Errorf("drop embeddings_legacy: %w", err)
@@ -248,10 +243,15 @@ func migrateVecTablesToChunked(ctx context.Context, db *sql.DB) error {
 
 // rebuildVecTableForChunking drops the legacy vec0 table named `name`
 // and recreates it under the new schema (embedding_id PRIMARY KEY in
-// place of message_id PRIMARY KEY), preserving every row. Because the
-// legacy schema's message_id was the rowid AND migrateEmbeddingsToChunked
-// preserved embedding_id == message_id for legacy rows, the rowid value
-// stays identical across the rebuild — only the column name changes.
+// place of message_id PRIMARY KEY), preserving every row.
+//
+// The new vec0 rowid is the AUTOINCREMENT embedding_id allocated by
+// migrateEmbeddingsToChunked, looked up here via the (generation_id,
+// message_id) of each legacy row. This mapping is required because
+// the legacy embeddings PK allows the same message_id under multiple
+// generations, so a simple rowid=message_id carry-over would collide;
+// the explicit lookup keeps each generation's vectors disjoint in
+// the rebuilt vec0 table.
 //
 // The drop + create + re-insert sequence runs inside a single
 // transaction. SQLite supports transactional DDL on virtual tables;
@@ -263,7 +263,7 @@ func migrateVecTablesToChunked(ctx context.Context, db *sql.DB) error {
 func rebuildVecTableForChunking(ctx context.Context, db *sql.DB, name string, dim int) error {
 	type vecRow struct {
 		gen   int64
-		rowid int64
+		msgID int64
 		blob  []byte
 	}
 	// Read every legacy row up-front, *outside* the transaction. The
@@ -281,7 +281,7 @@ func rebuildVecTableForChunking(ctx context.Context, db *sql.DB, name string, di
 	var legacyRows []vecRow
 	for rows.Next() {
 		var r vecRow
-		if err := rows.Scan(&r.gen, &r.rowid, &r.blob); err != nil {
+		if err := rows.Scan(&r.gen, &r.msgID, &r.blob); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("scan legacy row: %w", err)
 		}
@@ -289,6 +289,29 @@ func rebuildVecTableForChunking(ctx context.Context, db *sql.DB, name string, di
 	}
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("close legacy rows: %w", err)
+	}
+
+	// Build (generation_id, message_id) -> embedding_id mapping from
+	// the already-migrated embeddings table. The migration above
+	// inserted exactly one chunk_index=0 row per legacy embedding, so
+	// every legacy vec0 row has a corresponding embedding_id.
+	type key struct{ gen, msg int64 }
+	mapping := make(map[key]int64, len(legacyRows))
+	mapRows, err := db.QueryContext(ctx,
+		`SELECT generation_id, message_id, embedding_id FROM embeddings WHERE chunk_index = 0`)
+	if err != nil {
+		return fmt.Errorf("read embedding_id mapping: %w", err)
+	}
+	for mapRows.Next() {
+		var g, m, eid int64
+		if err := mapRows.Scan(&g, &m, &eid); err != nil {
+			_ = mapRows.Close()
+			return fmt.Errorf("scan embedding_id mapping: %w", err)
+		}
+		mapping[key{g, m}] = eid
+	}
+	if err := mapRows.Close(); err != nil {
+		return fmt.Errorf("close mapping rows: %w", err)
 	}
 
 	tx, err := db.BeginTx(ctx, nil)
@@ -320,8 +343,16 @@ func rebuildVecTableForChunking(ctx context.Context, db *sql.DB, name string, di
 		}
 		defer func() { _ = stmt.Close() }()
 		for _, r := range legacyRows {
-			if _, err := stmt.ExecContext(ctx, r.gen, r.rowid, r.blob); err != nil {
-				return fmt.Errorf("reinsert row gen=%d rowid=%d: %w", r.gen, r.rowid, err)
+			eid, ok := mapping[key{r.gen, r.msgID}]
+			if !ok {
+				// Defensive: every legacy vec0 row should have a
+				// matching embeddings row from the prior migration
+				// step. If not, we'd silently drop the vector — flag
+				// it loudly instead so the operator can investigate.
+				return fmt.Errorf("no embedding_id mapping for gen=%d msg=%d (legacy embeddings/vec0 out of sync)", r.gen, r.msgID)
+			}
+			if _, err := stmt.ExecContext(ctx, r.gen, eid, r.blob); err != nil {
+				return fmt.Errorf("reinsert row gen=%d msg=%d eid=%d: %w", r.gen, r.msgID, eid, err)
 			}
 		}
 	}

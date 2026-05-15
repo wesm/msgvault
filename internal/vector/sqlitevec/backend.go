@@ -796,6 +796,22 @@ func (b *Backend) Search(ctx context.Context, gen vector.GenerationID, queryVec 
 		return nil, err
 	}
 
+	// The filtered path's GROUP BY hides the same hazard as the
+	// empty-filter path: a few messages with many matching chunks
+	// could pack the top-k chunk pool and collapse below k distinct
+	// messages once grouped. Widen the chunk fetch with the same
+	// doubling loop, bounded by the actual chunk count in the
+	// generation so the loop always terminates.
+	var chunkCeiling int
+	if err := b.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM embeddings WHERE generation_id = ?`,
+		int64(gen)).Scan(&chunkCeiling); err != nil {
+		return nil, fmt.Errorf("lookup chunk count: %w", err)
+	}
+	if chunkCeiling == 0 {
+		return nil, nil
+	}
+
 	q := fmt.Sprintf(`
 		SELECT e.message_id, MIN(v.distance) AS distance
 		  FROM %s v
@@ -808,21 +824,30 @@ func (b *Backend) Search(ctx context.Context, gen vector.GenerationID, queryVec 
 		 ORDER BY distance ASC
 	`, vecTable, idClause)
 
-	allArgs := make([]any, 0, 3+len(filterArgs))
-	// k is multiplied by chunkOverfetchFactor so the GROUP BY has
-	// enough chunks to recover k distinct messages even when a few
-	// messages contribute several chunks each.
-	allArgs = append(allArgs, int64(gen), float32SliceBlob(queryVec), k*chunkOverfetchFactor)
-	allArgs = append(allArgs, filterArgs...)
+	fetch := k * chunkOverfetchFactor
+	if fetch < k {
+		fetch = k
+	}
+	for {
+		if fetch > chunkCeiling {
+			fetch = chunkCeiling
+		}
+		allArgs := make([]any, 0, 3+len(filterArgs))
+		allArgs = append(allArgs, int64(gen), float32SliceBlob(queryVec), fetch)
+		allArgs = append(allArgs, filterArgs...)
 
-	hits, err := b.scanHits(ctx, q, allArgs...)
-	if err != nil {
-		return nil, err
+		hits, err := b.scanHits(ctx, q, allArgs...)
+		if err != nil {
+			return nil, err
+		}
+		if len(hits) >= k || fetch >= chunkCeiling {
+			if len(hits) > k {
+				hits = hits[:k]
+			}
+			return hits, nil
+		}
+		fetch *= 2
 	}
-	if len(hits) > k {
-		hits = hits[:k]
-	}
-	return hits, nil
 }
 
 // chunkOverfetchFactor multiplies the requested k when fetching from

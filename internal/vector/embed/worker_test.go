@@ -40,6 +40,70 @@ func TestDerivedStaleThreshold(t *testing.T) {
 	}
 }
 
+// TestWorker_SplitsChunkInputsAcrossSubBatches verifies that a
+// message whose chunk fan-out exceeds BatchSize is sent to the
+// embedder across multiple sub-batched Embed calls. Without the
+// split, a 64-chunk message claimed via BatchSize=8 would flatten
+// into a single 64-input request, exceeding provider per-request
+// limits and tripping API timeouts (the very failure mode caught by
+// roborev #323).
+func TestWorker_SplitsChunkInputsAcrossSubBatches(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkerFixture(t, 1)
+
+	// Build a body large enough to produce ~12 chunks at
+	// MaxInputChars=80 with the worker's overlap heuristic. Any value
+	// well above BatchSize would do; 12 is comfortably enough to
+	// exercise multiple sub-batches.
+	var body string
+	for i := 0; i < 40; i++ {
+		body += "lorem ipsum dolor sit amet consectetur adipiscing elit. "
+	}
+	if _, err := f.MainDB.Exec(`UPDATE message_bodies SET body_text = ? WHERE message_id = 1`, body); err != nil {
+		t.Fatalf("update body: %v", err)
+	}
+
+	// Capture the size of every Embed call so we can prove the split
+	// happened and that no sub-batch exceeded BatchSize.
+	const batchSize = 4
+	var sizes []int
+	f.FakeClient.OnEmbed = func(inputs []string) ([][]float32, error) {
+		sizes = append(sizes, len(inputs))
+		out := make([][]float32, len(inputs))
+		for i := range inputs {
+			v := make([]float32, 4)
+			v[0] = float32(len(inputs[i])%4 + 1)
+			out[i] = v
+		}
+		return out, nil
+	}
+
+	w := NewWorker(WorkerDeps{
+		Backend:       f.Backend,
+		VectorsDB:     f.VectorsDB,
+		MainDB:        f.MainDB,
+		Client:        f.FakeClient,
+		Preprocess:    PreprocessConfig{},
+		MaxInputChars: 80,
+		BatchSize:     batchSize,
+	})
+	if _, err := w.RunOnce(ctx, f.BuildingGen); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	if len(sizes) < 2 {
+		t.Fatalf("expected >= 2 sub-batches, got %d (sizes=%v)", len(sizes), sizes)
+	}
+	for i, n := range sizes {
+		if n > batchSize {
+			t.Errorf("sub-batch %d had %d inputs, want <= %d", i, n, batchSize)
+		}
+		if n == 0 {
+			t.Errorf("sub-batch %d was empty", i)
+		}
+	}
+}
+
 // TestWorker_FansOutLongMessageIntoMultipleChunks confirms the
 // chunking path: a single pending message whose preprocessed body
 // exceeds MaxInputChars produces N > 1 embedder inputs, all of which
