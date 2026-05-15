@@ -156,6 +156,28 @@ func TestChunkText(t *testing.T) {
 		}
 	})
 
+	t.Run("MaxSpansCapsInputBytesProcessed", func(t *testing.T) {
+		// Roborev regression on e83967b: a multi-megabyte body must
+		// not cause the chunker to walk the entire input before
+		// maxSpans takes effect. With maxSpans=3 and maxRunes=100,
+		// the chunker should look at at most ~300 runes regardless
+		// of how long the input is. Use a 10M-rune input; if
+		// buildRuneByteOffsets ever ran over the whole thing, this
+		// test would dominate the suite at ~100ms+; with the early
+		// cap it stays at the same cost as the 1K-rune cases below.
+		text := strings.Repeat("a", 10_000_000)
+		got := ChunkText(text, 100, 0, 3)
+		if len(got) != 3 {
+			t.Fatalf("len = %d, want 3 (input cap kicks in before allocating offsets for 10M runes)", len(got))
+		}
+		// All emitted spans come from the head of the input.
+		for i, s := range got {
+			if s.CharEnd > 300 {
+				t.Errorf("chunk %d ends at %d, want <= 300 (the cap window)", i, s.CharEnd)
+			}
+		}
+	})
+
 	t.Run("MaxSpansCapsOutputAndDropsTail", func(t *testing.T) {
 		// A pathological input — 10× window with no soft breaks — would
 		// normally chunk into 10 spans. With maxSpans=3 we get exactly 3

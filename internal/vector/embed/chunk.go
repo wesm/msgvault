@@ -57,6 +57,27 @@ func ChunkText(text string, maxRunes, overlapRunes, maxSpans int) []ChunkSpan {
 		return []ChunkSpan{{Text: text, CharStart: 0, CharEnd: utf8.RuneCountInString(text)}}
 	}
 
+	// Cap text early. Without this, a sync that lands a multi-megabyte
+	// body forces buildRuneByteOffsets to allocate ~8 bytes per rune
+	// for the whole input — a 15 MB email becomes a ~120 MB allocation
+	// even though only the first maxSpans*maxRunes worth of content
+	// can possibly be emitted. The chunker only ever reads ahead
+	// within a window of maxRunes runes, so this cap is lossless for
+	// the spans it would otherwise emit; the tail beyond the cap
+	// would have been dropped on the floor by the maxSpans guard
+	// inside the loop anyway.
+	if maxSpans > 0 {
+		keep := maxSpans * maxRunes
+		walked := 0
+		for i := range text {
+			if walked >= keep {
+				text = text[:i]
+				break
+			}
+			walked++
+		}
+	}
+
 	totalRunes := utf8.RuneCountInString(text)
 	if totalRunes <= maxRunes {
 		return []ChunkSpan{{Text: text, CharStart: 0, CharEnd: totalRunes}}
