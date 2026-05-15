@@ -40,11 +40,25 @@ var (
 	// + dotall so the body can span newlines.
 	reStyleBlock  = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
 	reScriptBlock = regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
-	// reHTMLTag matches a single HTML/XML tag. The {0,500} length cap
-	// avoids catastrophic backtracking on adversarial input and keeps a
-	// degenerate "<" with no closing ">" from eating the rest of the
-	// message — we'd rather leave a stray "<" than swallow real prose.
-	reHTMLTag = regexp.MustCompile(`<[^>]{0,500}>`)
+	// reHTMLTag matches a single HTML tag.
+	//
+	// The leading `</?` allows opening or closing tags. The tag-name
+	// rule (`[a-zA-Z][a-zA-Z0-9-]*`) is intentionally strict so the
+	// stripper does NOT eat angle-bracketed prose that resembles a tag
+	// but isn't one:
+	//
+	//   <john@example.com>          – inline email address, `@` rejects
+	//   <https://example.com>       – URL, the `:` rejects
+	//   2 < 3 and 5 > 4             – math, space-then-digit rejects
+	//   <Aug 6, 2026>               – date placeholder, space rejects
+	//
+	// The optional whitespace-then-attributes group `(?:\s[^>]{0,400})?`
+	// only fires when an attribute would actually follow — every real
+	// HTML tag puts whitespace between the name and the first
+	// attribute. The {0,400} cap inside the attribute body bounds
+	// backtracking on adversarial input. The trailing `/?>` covers
+	// self-closing tags like <br/> and <img .../>.
+	reHTMLTag = regexp.MustCompile(`</?[a-zA-Z][a-zA-Z0-9-]*(?:\s[^>]{0,400})?\s*/?>`)
 
 	// reDataURI matches data:...;base64,XXXX blobs (typically inline
 	// images that leaked into body_text). These can be tens of KB each

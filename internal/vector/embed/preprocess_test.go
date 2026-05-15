@@ -179,6 +179,46 @@ func TestPreprocess(t *testing.T) {
 			wantTrunc: false,
 		},
 		{
+			// Regression: roborev #322 flagged that the original
+			// `<[^>]{0,500}>` pattern ate any angle-bracketed prose. An
+			// inline RFC-style email address must survive — `@` is
+			// rejected by the strict tag-name pattern.
+			name:      "StripHTMLPreservesAngleBracketEmailAddress",
+			subject:   "",
+			body:      "Please CC John <john@example.com> on the next reply.",
+			maxChars:  1000,
+			cfg:       PreprocessConfig{StripHTML: true},
+			checkWant: true,
+			want:      "Please CC John <john@example.com> on the next reply.",
+			wantTrunc: false,
+		},
+		{
+			// Regression: an angle-bracket URL (the markdown autolink
+			// convention) must survive. The `:` after the scheme breaks
+			// the tag-name pattern.
+			name:      "StripHTMLPreservesAngleBracketURL",
+			subject:   "",
+			body:      "See <https://example.com/page>.",
+			maxChars:  1000,
+			cfg:       PreprocessConfig{StripHTML: true},
+			checkWant: true,
+			want:      "See <https://example.com/page>.",
+			wantTrunc: false,
+		},
+		{
+			// Regression: math/comparison prose passes through. `< 3`
+			// and `> 4` each have a non-letter immediately after the
+			// bracket, so the tag-name pattern rejects them.
+			name:      "StripHTMLPreservesMathPunctuation",
+			subject:   "",
+			body:      "Show me rows where x < 3 and y > 4 but z != 0.",
+			maxChars:  1000,
+			cfg:       PreprocessConfig{StripHTML: true},
+			checkWant: true,
+			want:      "Show me rows where x < 3 and y > 4 but z != 0.",
+			wantTrunc: false,
+		},
+		{
 			// <style>…</style> wraps CSS that should never reach the
 			// embedder. The whole block (tags + body) must be removed
 			// before the generic HTML-tag stripper would otherwise leave
