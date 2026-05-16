@@ -49,12 +49,21 @@ type ChunkSpan struct {
 // the API timeout. Most callers should pass a generous cap (50–100)
 // — enough to cover any legitimate long-form email while keeping
 // pathological inputs bounded.
-func ChunkText(text string, maxRunes, overlapRunes, maxSpans int) []ChunkSpan {
+//
+// The returned tailDropped is true when ChunkText dropped content past
+// the last emitted span — either because the input was first truncated
+// by the maxSpans*maxRunes pre-cap, or because the maxSpans cap fired
+// inside the main loop while more chunks would otherwise have been
+// emitted. Callers use this to mark the message as truncated for
+// downstream metrics, regardless of whether the last emitted chunk
+// happened to land on a clean soft break (in which case the
+// per-chunk Trunc-on-hard-cut signal would not fire).
+func ChunkText(text string, maxRunes, overlapRunes, maxSpans int) (spans []ChunkSpan, tailDropped bool) {
 	if text == "" {
-		return nil
+		return nil, false
 	}
 	if maxRunes <= 0 {
-		return []ChunkSpan{{Text: text, CharStart: 0, CharEnd: utf8.RuneCountInString(text)}}
+		return []ChunkSpan{{Text: text, CharStart: 0, CharEnd: utf8.RuneCountInString(text)}}, false
 	}
 
 	// Cap text early. Without this, a sync that lands a multi-megabyte
@@ -72,6 +81,7 @@ func ChunkText(text string, maxRunes, overlapRunes, maxSpans int) []ChunkSpan {
 		for i := range text {
 			if walked >= keep {
 				text = text[:i]
+				tailDropped = true
 				break
 			}
 			walked++
@@ -80,7 +90,7 @@ func ChunkText(text string, maxRunes, overlapRunes, maxSpans int) []ChunkSpan {
 
 	totalRunes := utf8.RuneCountInString(text)
 	if totalRunes <= maxRunes {
-		return []ChunkSpan{{Text: text, CharStart: 0, CharEnd: totalRunes}}
+		return []ChunkSpan{{Text: text, CharStart: 0, CharEnd: totalRunes}}, tailDropped
 	}
 	if overlapRunes < 0 {
 		overlapRunes = 0
@@ -98,10 +108,9 @@ func ChunkText(text string, maxRunes, overlapRunes, maxSpans int) []ChunkSpan {
 	if len(runeByteOffsets)-1 != totalRunes {
 		// Defensive: out-of-band UTF-8 should never reach here, but
 		// fall back to a single span rather than panic on a bad input.
-		return []ChunkSpan{{Text: text, CharStart: 0, CharEnd: totalRunes}}
+		return []ChunkSpan{{Text: text, CharStart: 0, CharEnd: totalRunes}}, tailDropped
 	}
 
-	var spans []ChunkSpan
 	cursor := 0
 	for cursor < totalRunes {
 		if maxSpans > 0 && len(spans) >= maxSpans {
@@ -110,7 +119,11 @@ func ChunkText(text string, maxRunes, overlapRunes, maxSpans int) []ChunkSpan {
 			// head, which is what semantic search cares about. We
 			// could synthesize a final "remaining content omitted"
 			// span here, but that would just feed the embedder a
-			// content-free string.
+			// content-free string. Flag tailDropped so the caller
+			// knows the message wasn't fully covered, regardless of
+			// where the last emitted chunk landed (the per-chunk
+			// Trunc flag only fires on hard cuts).
+			tailDropped = true
 			break
 		}
 		windowEnd := cursor + maxRunes
@@ -151,7 +164,7 @@ func ChunkText(text string, maxRunes, overlapRunes, maxSpans int) []ChunkSpan {
 		}
 		cursor += advance
 	}
-	return spans
+	return spans, tailDropped
 }
 
 // buildRuneByteOffsets returns a slice of length runeCount+1 where

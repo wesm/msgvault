@@ -548,7 +548,14 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 	var pieces []inputChunk
 	var inputs []string
 	for _, m := range msgs {
-		spans := ChunkText(m.Text, chunkWindow, overlap, maxSpans)
+		spans, chunkTail := ChunkText(m.Text, chunkWindow, overlap, maxSpans)
+		// A message is "truncated" if any of its content was dropped:
+		//   - body hit Preprocess's MaxBodyRunes cap, OR
+		//   - ChunkText dropped tail past maxSpans (regardless of
+		//     whether the last emitted chunk happened to land on a
+		//     soft break, in which case the per-chunk hard-cut flag
+		//     wouldn't fire).
+		msgTrunc := m.BodyTruncated || chunkTail
 		for j, sp := range spans {
 			ic := inputChunk{
 				ID:         m.ID,
@@ -557,16 +564,14 @@ func (w *Worker) embedBatch(ctx context.Context, ids []int64) (embedBatchResult,
 				Chars:      sp.CharEnd - sp.CharStart,
 				CharStart:  sp.CharStart,
 				CharEnd:    sp.CharEnd,
-				// Trunc flags a chunk that hit the hard rune cap with
-				// no soft (paragraph/sentence/word) break to land on.
-				// Useful as a debugging signal in embeddings.truncated:
-				// chunks that hard-cut may have a sentence split across
-				// the boundary, which is the case the overlap window
-				// is meant to recover. Also flagged true on every
-				// chunk of a message whose raw body hit Preprocess's
-				// MaxBodyRunes cap, so per-message truncation
-				// accounting downstream picks up either cause.
-				Trunc: m.BodyTruncated ||
+				// Trunc flags either: a hard-cut chunk where a
+				// sentence may have been split across the boundary
+				// (overlap exists to recover from this), or any
+				// chunk of a message that was truncated upstream.
+				// Both feed embeddings.truncated and the per-message
+				// counter so users see a faithful picture of which
+				// embeddings cover their full source content.
+				Trunc: msgTrunc ||
 					(chunkWindow > 0 && (sp.CharEnd-sp.CharStart) == chunkWindow && j < len(spans)-1),
 			}
 			pieces = append(pieces, ic)
