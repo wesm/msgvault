@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -122,6 +124,16 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 	cpFile := absPath
 	if resolved, err := filepath.EvalSymlinks(absPath); err == nil {
 		cpFile = resolved
+	}
+
+	// Per-archive fingerprint namespaces source_message_id so importing
+	// multiple PST files into the same source can't collide on EntryIDs
+	// (PST EntryIDs are only unique within a single archive). Derived from
+	// the PST header bytes so the fingerprint is stable across re-imports of
+	// the same file regardless of path, preserving idempotence.
+	archiveID, err := pstArchiveFingerprint(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint pst: %w", err)
 	}
 
 	// Build skip-folder set (case-insensitive).
@@ -498,12 +510,12 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 
 			sum := sha256.Sum256(raw)
 			rawHash := hex.EncodeToString(sum[:])
-			// Use the PST entry ID as the stable dedup key so that re-importing
-			// the same PST file always skips already-imported messages, even when
-			// the MIME reconstruction produces different bytes (e.g. random
-			// multipart boundaries). rawHash is still passed to IngestRawMessage
-			// as a fallback for thread ID generation.
-			sourceMsgID := "pst-" + entry.EntryID
+			// PST EntryIDs are unique only within a single PST file, so a bare
+			// "pst-<EntryID>" key would collide across archives sharing one
+			// source. Prefix with the archive fingerprint to keep dedup
+			// idempotent for re-imports of the same file while isolating
+			// different files imported under the same identifier.
+			sourceMsgID := fmt.Sprintf("pst-%s-%s", archiveID, entry.EntryID)
 
 			fallbackDate := entry.SentAt
 			if fallbackDate.IsZero() {
@@ -562,6 +574,29 @@ func ImportPst(ctx context.Context, st *store.Store, pstPath string, opts PstImp
 	}
 
 	return summary, nil
+}
+
+// pstArchiveFingerprint returns a short stable identifier for a PST file,
+// derived from a SHA-256 over its first 4 KiB. The PST header in that range
+// embeds counters (next BID, next NID, root NIDs) that differ across files
+// even when generated from the same template, so the prefix uniquely
+// distinguishes archives. Re-importing the same bytes yields the same
+// fingerprint regardless of path, preserving idempotence.
+func pstArchiveFingerprint(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+
+	var buf [4096]byte
+	n, err := io.ReadFull(f, buf[:])
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+
+	sum := sha256.Sum256(buf[:n])
+	return hex.EncodeToString(sum[:6]), nil
 }
 
 func savePstCheckpoint(st *store.Store, syncID int64, file string, folderIndex int, folderPath string, msgIndex int64, cp *store.Checkpoint) error {

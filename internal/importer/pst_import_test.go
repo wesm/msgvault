@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -140,6 +141,57 @@ func TestPstCheckpoint_RoundTrip(t *testing.T) {
 	}
 	if saved.MsgIndex != 100 {
 		t.Errorf("MsgIndex = %d, want 100", saved.MsgIndex)
+	}
+}
+
+// TestPstArchiveFingerprint verifies the helper produces stable, distinct
+// identifiers per file. Without this, importing two PST archives with the
+// same source identifier would collide on PST EntryIDs (which are unique
+// only within a single archive) and falsely skip or update unrelated rows.
+func TestPstArchiveFingerprint(t *testing.T) {
+	dir := t.TempDir()
+
+	// Two files with different headers — fingerprints must differ.
+	headerA := append([]byte("!BDN\x00\x00\x00\x00"), make([]byte, 4096)...)
+	headerB := append([]byte("!BDN\xff\xff\xff\xff"), make([]byte, 4096)...)
+	pathA := filepath.Join(dir, "a.pst")
+	pathB := filepath.Join(dir, "b.pst")
+	if err := os.WriteFile(pathA, headerA, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pathB, headerB, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fpA, err := pstArchiveFingerprint(pathA)
+	if err != nil {
+		t.Fatalf("fingerprint A: %v", err)
+	}
+	fpB, err := pstArchiveFingerprint(pathB)
+	if err != nil {
+		t.Fatalf("fingerprint B: %v", err)
+	}
+
+	if fpA == fpB {
+		t.Errorf("expected distinct fingerprints, got %q twice", fpA)
+	}
+	if len(fpA) != 12 || len(fpB) != 12 {
+		t.Errorf("expected 12-hex-char fingerprints, got %q (%d) and %q (%d)",
+			fpA, len(fpA), fpB, len(fpB))
+	}
+
+	// Same bytes → same fingerprint, regardless of path. This is what
+	// makes re-importing the same file idempotent under the new key.
+	pathC := filepath.Join(dir, "renamed.pst")
+	if err := os.WriteFile(pathC, headerA, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fpC, err := pstArchiveFingerprint(pathC)
+	if err != nil {
+		t.Fatalf("fingerprint C: %v", err)
+	}
+	if fpC != fpA {
+		t.Errorf("same bytes should fingerprint the same: %q vs %q", fpA, fpC)
 	}
 }
 
