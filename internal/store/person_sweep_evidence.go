@@ -1025,7 +1025,11 @@ type PersonSweepEvidenceAligner struct{ Store *Store }
 
 func (a PersonSweepEvidenceAligner) Align(ctx context.Context, input personfacts.EvidenceInput) (personfacts.AlignmentResult, error) {
 	reject := func(reason personfacts.DecisionReason, detail string) personfacts.AlignmentResult {
-		return personfacts.AlignmentResult{Failure: &personfacts.ValidationFailure{Action: personfacts.DecisionIdentityRejected, Reason: reason, Detail: detail}}
+		action := personfacts.DecisionIdentityRejected
+		if reason == personfacts.ReasonUnalignedEvidence {
+			action = personfacts.DecisionInvalid
+		}
+		return personfacts.AlignmentResult{Failure: &personfacts.ValidationFailure{Action: action, Reason: reason, Detail: detail}}
 	}
 	if input.SourceClass != personfacts.EvidenceArchive {
 		return reject(personfacts.ReasonUnalignedEvidence, "person sweep evidence must use archive class"), nil
