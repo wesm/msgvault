@@ -126,7 +126,7 @@ func TestSchemaVersionMalformedAndFuture(t *testing.T) {
 
 // schemaContractDigests and schemaContractPostgresDigests record, per
 // SchemaVersion, the digest of what that version builds on each backend.
-// Append only.
+// Released entries are fixed; revise the current unreleased version in place.
 var (
 	schemaContractDigests = []string{
 		1:  "08c288dc75ccc5c75f4513cf92a10f34a75b5e918f7ceea83bf870040e252358",
@@ -141,6 +141,7 @@ var (
 		10: "da0cc2d980a72019a4b62685f0938c23248237b5dad6e98e6e58756cf0a445aa",
 		11: "d3b5779bbd283bb4a6ccc932233bdbf7b4ea4d6c2453d43cf011a052a13c1064",
 		12: "77b6d3434f3091970112c2a27f20f8b9e940c0a71b5a16b280d552b3857412b5",
+		13: "721603a9e4c9ec42016ad10fcca4d10fdd02de92b218b084d2dcebf59c595d9e",
 	}
 	schemaContractPostgresDigests = []string{
 		1:  "7c554ff06468af9bf30950e6e4f2954b52f84d7dd0e6708f4fdd932fda007ed3",
@@ -155,6 +156,7 @@ var (
 		10: "abe822a2b3ba31bca556d4da218fd6542b3e4ba95acf4731231f47fc6a2a44f8",
 		11: "0a64c9d206531b241d1066d3426dd21f6334d1e2c99468d838b8dac4a794cf70",
 		12: "21a6d84fac2dd2c3c1d04d23e56e6fc977dfb4431a11beed75678274fbdf11b3",
+		13: "ca75a6223064744db6a3acddbb5f882951d9bf2727d90ad1b117c3e02b57e6e3",
 	}
 )
 
